@@ -12,6 +12,7 @@
 #include <cmocka.h>
 
 #include "daemon_runtime.h"
+#include "diagnostic_bundle.h"
 #include "nfqueue.h"
 #include "packet_output.h"
 
@@ -62,6 +63,8 @@ static void test_operations(void **state)
     struct jg_daemon_runtime *runtime = NULL;
     struct jg_daemon_runtime_stats stats;
     struct jg_policy_simulation simulation;
+    uint8_t *archive = NULL;
+    size_t archive_size = 0U;
     uint64_t generation = 0U;
 
     (void)state;
@@ -94,6 +97,14 @@ static void test_operations(void **state)
         -EINVAL);
     assert_int_equal(jg_daemon_runtime_update_blocklists(NULL, 1U, NULL),
                      -EINVAL);
+    assert_int_equal(
+        jg_diagnostic_bundle_create(NULL, runtime, 1U, &archive, &archive_size),
+        -EINVAL);
+    assert_int_equal(
+        jg_diagnostic_bundle_create(NULL, runtime, 1U, NULL, &archive_size),
+        -EINVAL);
+    assert_null(archive);
+    assert_int_equal(archive_size, 0U);
     jg_daemon_runtime_destroy(NULL);
 }
 

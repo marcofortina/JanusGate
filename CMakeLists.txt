@@ -105,6 +105,7 @@ add_library(
   src/daemon/dataplane.c
   src/daemon/dataplane_worker.c
   src/daemon/daemon_runtime.c
+  src/daemon/diagnostic_bundle.c
   src/daemon/dns_response.c
   src/daemon/fragment.c
   src/daemon/management.c
