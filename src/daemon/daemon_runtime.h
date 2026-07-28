@@ -75,6 +75,22 @@ struct jg_daemon_runtime_stats {
 };
 
 /**
+ * @brief Result of validating or reloading persistent runtime configuration.
+ */
+struct jg_daemon_configuration_status {
+    /** Persistent network-configuration revision. */
+    uint64_t network_revision;
+    /** Candidate or newly published policy generation. */
+    uint64_t policy_generation;
+    /** Number of normalized domain rules in the candidate snapshot. */
+    size_t domain_rule_count;
+    /** Number of destination rules in the candidate snapshot. */
+    size_t destination_rule_count;
+    /** Whether the persistent network topology differs from the running one. */
+    bool restart_required;
+};
+
+/**
  * @brief Initialize conservative production runtime defaults.
  *
  * @param[out] config Configuration to initialize; null is ignored.
@@ -176,6 +192,57 @@ int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime);
  * @thread_safety Calls require one externally serialized control writer.
  */
 int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime);
+
+/**
+ * @brief Validate complete persistent configuration without publishing it.
+ *
+ * The network configuration is checked against the live system through the
+ * privileged helper. DNS response settings and all policy data are decoded
+ * into a complete candidate snapshot which is discarded after validation.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[out] status Receives candidate metadata.
+ *
+ * @return 0 when all persistent configuration is valid.
+ * @return -EINVAL for a null argument.
+ * @return -EOVERFLOW when the next generation cannot be represented.
+ * @return A negative errno-style database, helper, allocation, or validation
+ * error otherwise.
+ *
+ * @thread_safety Calls require one externally serialized control writer.
+ *
+ * @side_effects Reads persistent state and performs live network validation
+ * without changing active policy or network state.
+ */
+int jg_daemon_runtime_validate_configuration(
+    struct jg_daemon_runtime *runtime,
+    struct jg_daemon_configuration_status *status);
+
+/**
+ * @brief Validate and reload persistent policy and DNS response settings.
+ *
+ * All candidate state is built before publication. Invalid state leaves the
+ * active policy and DNS behavior unchanged. Network topology changes are
+ * validated and reported through `status.restart_required`; service restart
+ * is required because queue and interface ownership are fixed at startup.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[out] status Receives published metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EOVERFLOW when the generation counter is exhausted.
+ * @return A negative errno-style database, helper, allocation, validation, or
+ * worker-update error otherwise.
+ *
+ * @thread_safety Calls require one externally serialized control writer.
+ *
+ * @side_effects Atomically publishes a policy snapshot and updates each
+ * worker's protected DNS response configuration.
+ */
+int jg_daemon_runtime_reload_configuration(
+    struct jg_daemon_runtime *runtime,
+    struct jg_daemon_configuration_status *status);
 
 /**
  * @brief Read the current immutable policy generation.

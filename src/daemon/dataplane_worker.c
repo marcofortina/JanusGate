@@ -17,6 +17,8 @@
 
 #include <time.h>
 
+#include <pthread.h>
+
 #include "dataplane.h"
 #include "dns_response.h"
 #include "janusgate/checked.h"
@@ -64,9 +66,11 @@ struct jg_dataplane_worker {
     size_t reader_index;
     jg_dataplane_reset_sender reset_sender;
     void *reset_context;
+    pthread_mutex_t dns_response_lock;
     struct jg_dns_response_config dns_response_config;
     jg_dataplane_frame_sender frame_sender;
     void *frame_context;
+    bool dns_response_lock_initialized;
 };
 
 /** @brief Determine whether packet parser limits are safe. */
@@ -142,26 +146,39 @@ static int respond_blocked_udp(struct jg_dataplane_worker *worker,
                                const uint8_t *query,
                                size_t query_size)
 {
+    struct jg_dns_response_config config;
+    jg_dataplane_frame_sender sender = NULL;
+    void *sender_context = NULL;
     size_t response_size = 0U;
-    int operation_result = jg_dns_response_build(
-        &result->packet, query, query_size, result->question_index,
-        &worker->dns_response_config, worker->dns_response,
-        JG_DNS_RESPONSE_FRAME_MAX, &response_size);
+    int operation_result = pthread_mutex_lock(&worker->dns_response_lock);
+
+    if (operation_result != 0) {
+        return -operation_result;
+    }
+    config = worker->dns_response_config;
+    sender = worker->frame_sender;
+    sender_context = worker->frame_context;
+    operation_result = pthread_mutex_unlock(&worker->dns_response_lock);
+    if (operation_result != 0) {
+        return -operation_result;
+    }
+    operation_result = jg_dns_response_build(
+        &result->packet, query, query_size, result->question_index, &config,
+        worker->dns_response, JG_DNS_RESPONSE_FRAME_MAX, &response_size);
 
     if (operation_result == 0 && response_size != 0U) {
-        if (worker->frame_sender == NULL) {
+        if (sender == NULL) {
             return -ENOTCONN;
         }
-        operation_result = worker->frame_sender(
-            worker->dns_response, response_size, worker->frame_context);
+        operation_result =
+            sender(worker->dns_response, response_size, sender_context);
     }
     if (operation_result == 0) {
-        if (worker->dns_response_config.action == JG_DNS_BLOCK_DROP) {
+        if (config.action == JG_DNS_BLOCK_DROP) {
             increment(&worker->stats.dns_dropped);
-        } else if (worker->dns_response_config.action == JG_DNS_BLOCK_REFUSED) {
+        } else if (config.action == JG_DNS_BLOCK_REFUSED) {
             increment(&worker->stats.dns_refused);
-        } else if (worker->dns_response_config.action ==
-                   JG_DNS_BLOCK_NXDOMAIN) {
+        } else if (config.action == JG_DNS_BLOCK_NXDOMAIN) {
             increment(&worker->stats.dns_nxdomain);
         } else {
             increment(&worker->stats.dns_sinkholed);
@@ -421,6 +438,12 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
     if (created == NULL) {
         return -ENOMEM;
     }
+    result = pthread_mutex_init(&created->dns_response_lock, NULL);
+    if (result != 0) {
+        free(created);
+        return -result;
+    }
+    created->dns_response_lock_initialized = true;
     created->store = store;
     created->reader_index = reader_index;
     if (limits == NULL) {
@@ -527,14 +550,20 @@ int jg_dataplane_worker_set_dns_response(
     jg_dataplane_frame_sender sender,
     void *context)
 {
+    int result = 0;
+
     if (worker == NULL || jg_dns_response_config_validate(config) != 0 ||
         (config->action != JG_DNS_BLOCK_DROP && sender == NULL)) {
         return -EINVAL;
     }
-    worker->dns_response_config = *config;
-    worker->frame_sender = sender;
-    worker->frame_context = context;
-    return 0;
+    result = pthread_mutex_lock(&worker->dns_response_lock);
+    if (result == 0) {
+        worker->dns_response_config = *config;
+        worker->frame_sender = sender;
+        worker->frame_context = context;
+        result = pthread_mutex_unlock(&worker->dns_response_lock);
+    }
+    return result == 0 ? 0 : -result;
 }
 
 /** @brief Classify one queued packet through a protected policy snapshot. */
@@ -667,5 +696,8 @@ void jg_dataplane_worker_destroy(struct jg_dataplane_worker *worker)
     free(worker->dns_response);
     free(worker->fragment_frame);
     free(worker->fragment_payload);
+    if (worker->dns_response_lock_initialized) {
+        (void)pthread_mutex_destroy(&worker->dns_response_lock);
+    }
     free(worker);
 }

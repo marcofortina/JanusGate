@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <net/if.h>
 
@@ -30,8 +31,18 @@ struct jg_daemon_runtime {
     struct jg_dataplane_worker *workers[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_packet_output *outputs[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_nfqueue_group *queues;
+    struct jg_network_config active_network;
+    struct jg_dns_response_config active_dns_response;
     atomic_uint_fast64_t policy_generation;
     size_t worker_count;
+};
+
+/** Complete validated candidate retained until publication or destruction. */
+struct runtime_configuration_candidate {
+    struct jg_database_network_config network;
+    struct jg_dns_response_config dns_response;
+    struct jg_policy_snapshot *policy;
+    struct jg_policy_snapshot_info policy_info;
 };
 
 /** @brief Add one counter with saturation at its largest representation. */
@@ -118,6 +129,40 @@ static int resolve_interface(const char *name, uint32_t *index)
     }
     *index = (uint32_t)resolved;
     return 0;
+}
+
+/** @brief Compare two canonical network configurations semantically. */
+static bool network_configurations_equal(const struct jg_network_config *left,
+                                         const struct jg_network_config *right)
+{
+    return strcmp(left->bridge, right->bridge) == 0 &&
+           strcmp(left->ingress, right->ingress) == 0 &&
+           strcmp(left->egress, right->egress) == 0 &&
+           strcmp(left->management, right->management) == 0 &&
+           left->bridge_mtu == right->bridge_mtu &&
+           left->queue_first == right->queue_first &&
+           left->queue_count == right->queue_count &&
+           left->queue_length == right->queue_length &&
+           left->failure_mode == right->failure_mode &&
+           left->stp == right->stp &&
+           left->multicast_snooping == right->multicast_snooping &&
+           left->queue_cpu_fanout == right->queue_cpu_fanout;
+}
+
+/** @brief Compare two validated DNS response configurations semantically. */
+static bool dns_response_configurations_equal(
+    const struct jg_dns_response_config *left,
+    const struct jg_dns_response_config *right)
+{
+    return left->action == right->action &&
+           left->has_ipv4_sinkhole == right->has_ipv4_sinkhole &&
+           left->has_ipv6_sinkhole == right->has_ipv6_sinkhole &&
+           left->checksum_ipv4_udp == right->checksum_ipv4_udp &&
+           memcmp(left->ipv4_sinkhole, right->ipv4_sinkhole,
+                  sizeof(left->ipv4_sinkhole)) == 0 &&
+           memcmp(left->ipv6_sinkhole, right->ipv6_sinkhole,
+                  sizeof(left->ipv6_sinkhole)) == 0 &&
+           left->sinkhole_ttl == right->sinkhole_ttl;
 }
 
 /** @brief Create every exclusive policy worker and raw packet output. */
@@ -315,6 +360,10 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     if (result == 0) {
         result = start_queues(started, config, &network, ingress_index);
     }
+    if (result == 0) {
+        started->active_network = network;
+        started->active_dns_response = dns_response;
+    }
     jg_policy_snapshot_destroy(snapshot);
     if (result != 0) {
         jg_daemon_runtime_destroy(started);
@@ -364,6 +413,162 @@ int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime)
         atomic_store_explicit(&runtime->policy_generation, generation,
                               memory_order_release);
     }
+    return result;
+}
+
+/** @brief Build and validate one complete persistent runtime candidate. */
+static int prepare_configuration(
+    struct jg_daemon_runtime *runtime,
+    struct runtime_configuration_candidate *candidate)
+{
+    uint64_t generation =
+        atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
+    int result = 0;
+
+    (void)memset(candidate, 0, sizeof(*candidate));
+    if (generation == UINT64_MAX) {
+        return -EOVERFLOW;
+    }
+    ++generation;
+    result = jg_database_load_network_config_record(runtime->database,
+                                                    &candidate->network);
+    if (result == 0) {
+        result = jg_netd_client_validate(&candidate->network.config);
+    }
+    jg_dns_response_config_default(&candidate->dns_response);
+    if (result == 0) {
+        result = jg_database_load_dns_response_config(runtime->database,
+                                                      &candidate->dns_response);
+        if (result == -ENOENT) {
+            result = 0;
+        }
+    }
+    if (result == 0) {
+        result = jg_database_load_policy_snapshot(runtime->database, generation,
+                                                  &candidate->policy);
+    }
+    if (result == 0) {
+        result = jg_policy_snapshot_get_info(candidate->policy,
+                                             &candidate->policy_info);
+    }
+    if (result != 0) {
+        jg_policy_snapshot_destroy(candidate->policy);
+        candidate->policy = NULL;
+    }
+    return result;
+}
+
+/** @brief Copy candidate metadata into a public configuration result. */
+static void configuration_status(
+    const struct jg_daemon_runtime *runtime,
+    const struct runtime_configuration_candidate *candidate,
+    struct jg_daemon_configuration_status *status)
+{
+    *status = (struct jg_daemon_configuration_status){
+        .network_revision = candidate->network.revision,
+        .policy_generation = candidate->policy_info.generation,
+        .domain_rule_count = candidate->policy_info.rule_count,
+        .destination_rule_count = candidate->policy_info.destination_rule_count,
+        .restart_required = !network_configurations_equal(
+            &runtime->active_network, &candidate->network.config),
+    };
+}
+
+/** @brief Replace DNS response settings in every running packet worker. */
+static int update_dns_response_configuration(
+    struct jg_daemon_runtime *runtime,
+    const struct jg_dns_response_config *config,
+    size_t worker_count)
+{
+    size_t index = 0U;
+    int result = 0;
+
+    for (index = 0U; result == 0 && index < worker_count; ++index) {
+        result = jg_dataplane_worker_set_dns_response(
+            runtime->workers[index], config, jg_packet_output_send_client_frame,
+            runtime->outputs[index]);
+    }
+    return result;
+}
+
+/** @brief Validate all persistent configuration without publication. */
+int jg_daemon_runtime_validate_configuration(
+    struct jg_daemon_runtime *runtime,
+    struct jg_daemon_configuration_status *status)
+{
+    struct runtime_configuration_candidate candidate;
+    int result = 0;
+
+    if (runtime == NULL || status == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(status, 0, sizeof(*status));
+    result = prepare_configuration(runtime, &candidate);
+    if (result == 0) {
+        configuration_status(runtime, &candidate, status);
+    }
+    jg_policy_snapshot_destroy(candidate.policy);
+    return result;
+}
+
+/** @brief Validate and publish persistent policy and DNS response settings. */
+int jg_daemon_runtime_reload_configuration(
+    struct jg_daemon_runtime *runtime,
+    struct jg_daemon_configuration_status *status)
+{
+    struct runtime_configuration_candidate candidate;
+    bool dns_applied = false;
+    bool dns_changed = false;
+    int rollback_result = 0;
+    int result = 0;
+
+    if (runtime == NULL || status == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(status, 0, sizeof(*status));
+    result = prepare_configuration(runtime, &candidate);
+    if (result == 0) {
+        dns_changed = !dns_response_configurations_equal(
+            &runtime->active_dns_response, &candidate.dns_response);
+    }
+    if (result == 0 && dns_changed) {
+        size_t updated = 0U;
+
+        for (; updated < runtime->worker_count; ++updated) {
+            result = jg_dataplane_worker_set_dns_response(
+                runtime->workers[updated], &candidate.dns_response,
+                jg_packet_output_send_client_frame, runtime->outputs[updated]);
+            if (result != 0) {
+                break;
+            }
+        }
+        dns_applied = result == 0;
+        if (result != 0) {
+            rollback_result = update_dns_response_configuration(
+                runtime, &runtime->active_dns_response, updated);
+        }
+    }
+    if (result == 0) {
+        result = jg_policy_store_replace(runtime->policies, candidate.policy);
+        if (result == 0) {
+            candidate.policy = NULL;
+        }
+    }
+    if (result != 0 && dns_applied && rollback_result == 0) {
+        rollback_result = update_dns_response_configuration(
+            runtime, &runtime->active_dns_response, runtime->worker_count);
+    }
+    if (rollback_result != 0) {
+        result = -EUCLEAN;
+    }
+    if (result == 0) {
+        runtime->active_dns_response = candidate.dns_response;
+        atomic_store_explicit(&runtime->policy_generation,
+                              candidate.policy_info.generation,
+                              memory_order_release);
+        configuration_status(runtime, &candidate, status);
+    }
+    jg_policy_snapshot_destroy(candidate.policy);
     return result;
 }
 

@@ -139,7 +139,8 @@ int jg_dataplane_worker_set_reset_sender(struct jg_dataplane_worker *worker,
  * @return 0 on success.
  * @return -EINVAL for invalid arguments or configuration.
  *
- * @thread_safety Configure the worker before its queue thread starts.
+ * @thread_safety Safe while the worker processes packets. Calls which replace
+ * the configuration must be externally serialized.
  */
 int jg_dataplane_worker_set_dns_response(
     struct jg_dataplane_worker *worker,

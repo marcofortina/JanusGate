@@ -58,6 +58,7 @@ static void test_configuration(void **state)
 static void test_operations(void **state)
 {
     struct jg_daemon_runtime_config config;
+    struct jg_daemon_configuration_status configuration_status;
     struct jg_daemon_runtime *runtime = NULL;
     struct jg_daemon_runtime_stats stats;
     struct jg_policy_simulation simulation;
@@ -72,6 +73,12 @@ static void test_operations(void **state)
     assert_int_equal(jg_daemon_runtime_wait(NULL), -EINVAL);
     assert_int_equal(jg_daemon_runtime_join(NULL), -EINVAL);
     assert_int_equal(jg_daemon_runtime_reload_policy(NULL), -EINVAL);
+    assert_int_equal(
+        jg_daemon_runtime_validate_configuration(NULL, &configuration_status),
+        -EINVAL);
+    assert_int_equal(
+        jg_daemon_runtime_reload_configuration(NULL, &configuration_status),
+        -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_policy_generation(NULL, &generation),
                      -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_policy_generation(runtime, NULL),
