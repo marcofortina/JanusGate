@@ -162,6 +162,7 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
                             char *output,
                             size_t output_size)
 {
+    char fragment_queue[64U];
     char queue[128U];
     char queue_range[32U];
     const char *queue_flags = "";
@@ -198,6 +199,14 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
     if (written < 0 || (size_t)written >= sizeof(queue)) {
         return -ENOSPC;
     }
+    written = snprintf(fragment_queue, sizeof(fragment_queue),
+                       config->failure_mode == JG_NETWORK_FAIL_OPEN
+                           ? "queue flags bypass to %u"
+                           : "queue to %u",
+                       (unsigned int)config->queue_first);
+    if (written < 0 || (size_t)written >= sizeof(fragment_queue)) {
+        return -ENOSPC;
+    }
 
     written = snprintf(
         output, output_size,
@@ -211,6 +220,10 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
         "  set encrypted_dns_ipv6 { type ipv6_addr; flags interval; }\n"
         "  chain inspect {\n"
         "    type filter hook prerouting priority -300; policy accept;\n"
+        "    iifname @ingress_port ether type ip ip frag-off & 0x3fff != 0 "
+        "counter %s comment \"JanusGate IPv4 fragments\"\n"
+        "    iifname @ingress_port ether type ip6 exthdr frag exists "
+        "counter %s comment \"JanusGate IPv6 fragments\"\n"
         "    iifname @ingress_port ether type ip ip daddr @destination_ipv4 "
         "counter %s comment \"JanusGate destination IPv4\"\n"
         "    iifname @ingress_port ether type ip6 ip6 daddr @destination_ipv6 "
@@ -236,8 +249,8 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
         "  }\n"
         "}\n",
         replace_owned ? "flush table bridge " JG_NETD_NFT_TABLE "\n" : "",
-        config->ingress, queue, queue, queue, queue, queue, queue, queue, queue,
-        queue, queue);
+        config->ingress, fragment_queue, fragment_queue, queue, queue, queue,
+        queue, queue, queue, queue, queue, queue, queue);
     return written < 0 || (size_t)written >= output_size ? -ENOSPC : 0;
 }
 

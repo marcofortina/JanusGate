@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "fragment.h"
 #include "janusgate/packet.h"
 #include "nfqueue.h"
 #include "policy_store.h"
@@ -46,10 +47,13 @@ struct jg_dataplane_worker;
  * @param[in,out] store Shared replaceable policy store.
  * @param[in] reader_index Exclusive policy reader index.
  * @param[in] limits Packet parser limits, or null for conservative defaults.
+ * @param[in] fragment_limits Fragment bounds, or null for defaults.
  * @param[out] worker Receives the owned worker.
  *
  * @return 0 on success.
  * @return -EINVAL for invalid arguments, limits, or reader index.
+ * @return -ERANGE when a supported fragment limit is exceeded.
+ * @return -EOVERFLOW when a fragment arena size cannot be represented.
  * @return -ENOMEM when allocation fails.
  *
  * @thread_safety Each reader index may belong to only one worker.
@@ -57,6 +61,7 @@ struct jg_dataplane_worker;
 int jg_dataplane_worker_create(struct jg_policy_store *store,
                                size_t reader_index,
                                const struct jg_packet_limits *limits,
+                               const struct jg_fragment_limits *fragment_limits,
                                struct jg_dataplane_worker **worker);
 
 /**
@@ -89,6 +94,21 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
  */
 int jg_dataplane_worker_get_stats(const struct jg_dataplane_worker *worker,
                                   struct jg_dataplane_stats *stats);
+
+/**
+ * @brief Read the worker's detailed fragment-tracker counters.
+ *
+ * @param[in] worker Data-plane worker.
+ * @param[out] stats Receives current fragment counters.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ *
+ * @thread_safety Safe while the worker processes packets.
+ */
+int jg_dataplane_worker_get_fragment_stats(
+    const struct jg_dataplane_worker *worker,
+    struct jg_fragment_stats *stats);
 
 /**
  * @brief Release one stopped data-plane worker.

@@ -9,9 +9,14 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "janusgate/checked.h"
+
 /** Ethernet source-address offset and size. */
 #define ETHERNET_SOURCE_OFFSET 6U
 #define ETHERNET_ADDRESS_SIZE 6U
+
+/** Fixed UDP header bytes. */
+#define UDP_HEADER_SIZE 8U
 
 /** Maximum valid IEEE 802.1Q VLAN identifier. */
 #define VLAN_ID_MAX 4094U
@@ -97,7 +102,6 @@ int jg_dataplane_evaluate(const uint8_t *frame,
                           const struct jg_policy_snapshot *snapshot,
                           struct jg_dataplane_result *result)
 {
-    struct jg_packet_view packet;
     struct jg_policy_client client;
     struct jg_dns_message dns;
     int evaluation_result = 0;
@@ -110,40 +114,93 @@ int jg_dataplane_evaluate(const uint8_t *frame,
         return -EINVAL;
     }
 
-    result->packet_result = jg_packet_parse(frame, frame_size, limits, &packet);
+    result->packet_result =
+        jg_packet_parse(frame, frame_size, limits, &result->packet);
     if (result->packet_result == JG_PACKET_NON_IP) {
         result->verdict = JG_NFQUEUE_ACCEPT;
         result->reason = JG_DATAPLANE_PASS;
         return 0;
     }
     if (result->packet_result != JG_PACKET_OK ||
-        build_client(&packet, &client) != 0) {
+        build_client(&result->packet, &client) != 0) {
         return 0;
     }
-    if (packet.fragmented) {
+    if (result->packet.fragmented) {
         result->verdict = JG_NFQUEUE_ACCEPT;
         result->reason = JG_DATAPLANE_FRAGMENT_PENDING;
         return 0;
     }
-    if (packet.transport == JG_TRANSPORT_TCP &&
-        (packet.destination_port == 53U || packet.destination_port == 443U ||
-         packet.destination_port == 853U)) {
+    if (result->packet.transport == JG_TRANSPORT_TCP &&
+        (result->packet.destination_port == 53U ||
+         result->packet.destination_port == 443U ||
+         result->packet.destination_port == 853U)) {
         result->verdict = JG_NFQUEUE_ACCEPT;
         result->reason = JG_DATAPLANE_STREAM_PENDING;
         return 0;
     }
-    if (packet.transport != JG_TRANSPORT_UDP ||
-        packet.destination_port != 53U) {
+    if (result->packet.transport != JG_TRANSPORT_UDP ||
+        result->packet.destination_port != 53U) {
         result->verdict = JG_NFQUEUE_ACCEPT;
         result->reason = JG_DATAPLANE_PASS;
         return 0;
     }
-    if (!packet.transport_complete) {
+    if (!result->packet.transport_complete) {
         return 0;
     }
 
-    result->dns_result = jg_dns_parse_query(frame + packet.payload_offset,
-                                            packet.payload_size, &dns);
+    result->dns_result =
+        jg_dns_parse_query(frame + result->packet.payload_offset,
+                           result->packet.payload_size, &dns);
+    if (result->dns_result != JG_DNS_OK) {
+        return 0;
+    }
+    evaluation_result = evaluate_dns(&dns, &client, snapshot, result);
+    return evaluation_result == 0 ? 0 : -EINVAL;
+}
+
+/** @brief Evaluate a complete UDP payload reconstructed from IP fragments. */
+int jg_dataplane_evaluate_reassembled_udp(
+    const struct jg_packet_view *packet,
+    const uint8_t *payload,
+    size_t payload_size,
+    const struct jg_policy_snapshot *snapshot,
+    struct jg_dataplane_result *result)
+{
+    struct jg_packet_view packet_copy;
+    struct jg_policy_client client;
+    struct jg_dns_message dns;
+    uint16_t destination_port = 0U;
+    uint16_t udp_size = 0U;
+    int evaluation_result = 0;
+
+    if (result == NULL) {
+        return -EINVAL;
+    }
+    if (packet != NULL) {
+        packet_copy = *packet;
+    }
+    initialize_result(result);
+    if (packet == NULL || payload == NULL || snapshot == NULL ||
+        !packet_copy.fragmented ||
+        packet_copy.ip_protocol != (uint8_t)JG_TRANSPORT_UDP) {
+        return -EINVAL;
+    }
+    result->packet = packet_copy;
+    result->packet_result = JG_PACKET_OK;
+    if (payload_size < UDP_HEADER_SIZE ||
+        !jg_read_u16_be(payload, payload_size, 2U, &destination_port) ||
+        !jg_read_u16_be(payload, payload_size, 4U, &udp_size) ||
+        (size_t)udp_size != payload_size ||
+        build_client(&packet_copy, &client) != 0) {
+        return 0;
+    }
+    if (destination_port != 53U) {
+        result->verdict = JG_NFQUEUE_ACCEPT;
+        result->reason = JG_DATAPLANE_PASS;
+        return 0;
+    }
+    result->dns_result = jg_dns_parse_query(
+        payload + UDP_HEADER_SIZE, payload_size - UDP_HEADER_SIZE, &dns);
     if (result->dns_result != JG_DNS_OK) {
         return 0;
     }

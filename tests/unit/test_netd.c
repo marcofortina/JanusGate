@@ -122,7 +122,12 @@ static void test_nft_rules(void **state)
         jg_netd_build_nft_rules(&config, false, rules, sizeof(rules)), 0);
     assert_non_null(strstr(rules, "table bridge janusgate"));
     assert_non_null(strstr(rules, "queue flags bypass,fanout to 100-101"));
+    assert_non_null(strstr(
+        rules,
+        "queue flags bypass to 100 comment \"JanusGate IPv4 fragments\""));
     assert_non_null(strstr(rules, "elements = { \"jg-test-in\" }"));
+    assert_non_null(strstr(rules, "ip frag-off & 0x3fff != 0"));
+    assert_non_null(strstr(rules, "exthdr frag exists"));
     assert_null(strstr(rules, "\"jg-test-out\""));
     assert_null(strstr(rules, "flush ruleset"));
 

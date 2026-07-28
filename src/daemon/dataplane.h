@@ -48,6 +48,8 @@ struct jg_dataplane_result {
     enum jg_packet_result packet_result;
     /** DNS parser result when UDP DNS was selected. */
     enum jg_dns_result dns_result;
+    /** Parsed packet view borrowing the evaluated frame. */
+    struct jg_packet_view packet;
     /** Index of the question producing @ref policy, or SIZE_MAX. */
     size_t question_index;
     /** Domain-policy explanation, borrowing immutable snapshot storage. */
@@ -78,5 +80,26 @@ int jg_dataplane_evaluate(const uint8_t *frame,
                           const struct jg_packet_limits *limits,
                           const struct jg_policy_snapshot *snapshot,
                           struct jg_dataplane_result *result);
+
+/**
+ * @brief Evaluate one reconstructed fragmented UDP payload.
+ *
+ * @param[in] packet Parsed fragment supplying client and protocol metadata.
+ * @param[in] payload Complete UDP header and payload bytes.
+ * @param[in] payload_size Number of reconstructed bytes.
+ * @param[in] snapshot Immutable policy snapshot.
+ * @param[out] result Receives the packet verdict and explanation.
+ *
+ * @return 0 when an explicit verdict was produced.
+ * @return -EINVAL for invalid arguments or non-UDP fragment metadata.
+ *
+ * @thread_safety Safe for concurrent calls using the same immutable snapshot.
+ */
+int jg_dataplane_evaluate_reassembled_udp(
+    const struct jg_packet_view *packet,
+    const uint8_t *payload,
+    size_t payload_size,
+    const struct jg_policy_snapshot *snapshot,
+    struct jg_dataplane_result *result);
 
 #endif
