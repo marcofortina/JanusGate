@@ -77,6 +77,8 @@ static void test_operations(void **state)
     assert_int_equal(
         jg_daemon_runtime_process_management(NULL, NULL, 0U, NULL, 0U, NULL),
         -EINVAL);
+    assert_int_equal(jg_daemon_runtime_update_blocklists(NULL, 1U, NULL),
+                     -EINVAL);
     jg_daemon_runtime_destroy(NULL);
 }
 

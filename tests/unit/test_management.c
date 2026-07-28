@@ -1304,6 +1304,67 @@ static void test_source_api(void **state)
     assert_int_equal(verification.records_inspected, 4U);
 }
 
+/** @brief Verify due remote sources retain health and system audit state. */
+static void test_scheduled_source_update(void **state)
+{
+    struct management_fixture *fixture = *state;
+    const struct jg_database_blocklist_source_config config = {
+        .name = "Scheduled source",
+        .url = "https://127.0.0.1:1/blocklist",
+        .format = JG_BLOCKLIST_FORMAT_DOMAIN,
+        .mode = JG_BLOCKLIST_STRICT,
+        .enabled = true,
+        .update_interval_seconds = 3600U,
+        .max_download_bytes = 4096U,
+        .max_decompressed_bytes = 8192U,
+        .connect_timeout_ms = 100U,
+        .transfer_timeout_ms = 100U,
+        .redirect_limit = 2U,
+        .retry_base_seconds = 10U,
+        .retry_max_seconds = 80U,
+    };
+    struct jg_database_blocklist_source source;
+    struct jg_database_blocklist_source updated;
+    struct jg_audit_record audit;
+    uint64_t total = 0U;
+    size_t attempts = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+
+    assert_int_equal(jg_database_create_blocklist_source(fixture->database,
+                                                         &config, &source),
+                     0);
+    assert_int_equal(jg_management_update_due_blocklists(fixture->management,
+                                                         100U, &attempts),
+                     0);
+    assert_int_equal(attempts, 1U);
+    assert_int_equal(jg_database_list_blocklist_sources(fixture->database, 0U,
+                                                        1U, &updated, &count,
+                                                        &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_FAILED);
+    assert_int_equal(updated.last_attempt_at, 100U);
+    assert_int_equal(updated.consecutive_failures, 1U);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, &audit, 1U,
+                                            &count, &total),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(total, 1U);
+    assert_int_equal(audit.actor_type, JG_AUDIT_ACTOR_SYSTEM);
+    assert_false(audit.has_actor_id);
+    assert_false(audit.success);
+    assert_string_equal(audit.source, "scheduler");
+    assert_string_equal(audit.action, "blocklist.source.refresh");
+
+    attempts = 1U;
+    assert_int_equal(jg_management_update_due_blocklists(fixture->management,
+                                                         101U, &attempts),
+                     0);
+    assert_int_equal(attempts, 0U);
+}
+
 /** @brief Verify malformed and cross-origin requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -1339,6 +1400,8 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_source_api, setup_management,
                                         teardown_management),
+        cmocka_unit_test_setup_teardown(test_scheduled_source_update,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
     };

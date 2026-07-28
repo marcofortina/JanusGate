@@ -430,6 +430,18 @@ int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
                                  response, response_size, written);
 }
 
+/** @brief Run due blocklist updates through serialized management state. */
+int jg_daemon_runtime_update_blocklists(struct jg_daemon_runtime *runtime,
+                                        uint64_t now,
+                                        size_t *attempts)
+{
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    return jg_management_update_due_blocklists(runtime->management, now,
+                                               attempts);
+}
+
 /** @brief Release the packet runtime in reverse ownership order. */
 void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
 {

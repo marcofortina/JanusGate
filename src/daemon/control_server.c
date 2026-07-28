@@ -9,12 +9,14 @@
 #include "control_server.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <poll.h>
 #include <pthread.h>
@@ -32,6 +34,9 @@
 
 /** Maximum wait for one local request or response. */
 #define JG_CONTROL_IO_TIMEOUT_SECONDS 5
+
+/** Interval between scheduled-source checks. */
+#define JG_CONTROL_UPDATE_INTERVAL_SECONDS 30U
 
 /** Complete ownership and thread state for one daemon control server. */
 struct jg_control_server {
@@ -393,6 +398,45 @@ static int configure_client_socket(int socket_fd)
     return 0;
 }
 
+/** @brief Read one nonnegative clock value as whole seconds. */
+static int clock_seconds(clockid_t clock_id, uint64_t *seconds)
+{
+    struct timespec value;
+
+    if (clock_gettime(clock_id, &value) != 0) {
+        return -errno;
+    }
+    if (value.tv_sec < 0) {
+        return -EIO;
+    }
+    *seconds = (uint64_t)value.tv_sec;
+    return 0;
+}
+
+/** @brief Run due source updates and schedule the next bounded check. */
+static int update_blocklists(struct jg_control_server *server,
+                             uint64_t monotonic_now,
+                             uint64_t *next_check)
+{
+    uint64_t wall_now = 0U;
+    int result = clock_seconds(CLOCK_REALTIME, &wall_now);
+
+    if (result == 0 && wall_now == 0U) {
+        result = -EIO;
+    }
+    if (result == 0) {
+        result = jg_daemon_runtime_update_blocklists(server->runtime, wall_now,
+                                                     NULL);
+    }
+    if (result == 0) {
+        *next_check =
+            monotonic_now > UINT64_MAX - JG_CONTROL_UPDATE_INTERVAL_SECONDS
+                ? UINT64_MAX
+                : monotonic_now + JG_CONTROL_UPDATE_INTERVAL_SECONDS;
+    }
+    return result;
+}
+
 /** @brief Accept and service peers until the stop event becomes readable. */
 static int serve_connections(struct jg_control_server *server)
 {
@@ -400,10 +444,27 @@ static int serve_connections(struct jg_control_server *server)
         {.fd = server->server_fd, .events = POLLIN},
         {.fd = server->stop_fd, .events = POLLIN},
     };
+    uint64_t next_update_check = 0U;
     int result = 0;
 
     while (result == 0) {
-        const int ready = poll(descriptors, 2U, -1);
+        uint64_t monotonic_now = 0U;
+        int timeout_ms = 0;
+        int ready = 0;
+
+        result = clock_seconds(CLOCK_MONOTONIC, &monotonic_now);
+        if (result == 0 && monotonic_now >= next_update_check) {
+            result =
+                update_blocklists(server, monotonic_now, &next_update_check);
+        }
+        if (result != 0) {
+            break;
+        }
+        timeout_ms =
+            next_update_check - monotonic_now > (uint64_t)INT_MAX / 1000U
+                ? INT_MAX
+                : (int)((next_update_check - monotonic_now) * 1000U);
+        ready = poll(descriptors, 2U, timeout_ms);
 
         if (ready < 0) {
             if (errno != EINTR) {

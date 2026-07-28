@@ -2314,6 +2314,7 @@ static int append_blocklist_update_audit(
 {
     char object_id[32U];
     char source_address[INET6_ADDRSTRLEN];
+    const bool system_actor = actor == NULL;
     const char *outcome = "rejected";
     json_t *details = json_object();
     char *encoded = NULL;
@@ -2328,35 +2329,43 @@ static int append_blocklist_update_audit(
     } else if (update->attempted) {
         outcome = "failed";
     }
-    if (written <= 0 || (size_t)written >= sizeof(object_id) ||
-        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
-                  remote->address, source_address,
-                  sizeof(source_address)) == NULL ||
-        details == NULL ||
-        json_object_set_new(details, "attempted",
-                            json_boolean(update->attempted)) != 0 ||
-        json_object_set_new(details, "outcome", json_string(outcome)) != 0 ||
-        json_object_set_new(details, "operation_result",
-                            json_integer(operation_result)) != 0 ||
-        json_object_set_new(details, "attempt_result",
-                            json_integer(update->attempt_result)) != 0 ||
-        json_object_set_new(details, "http_status",
-                            json_integer(update->report.http_status)) != 0 ||
-        json_object_set_new(
-            details, "download_bytes",
-            json_integer((json_int_t)update->report.body_size)) != 0 ||
-        json_object_set_new(
-            details, "entries_parsed",
-            json_integer((json_int_t)update->report.import.entries_parsed)) !=
-            0 ||
-        json_object_set_new(
-            details, "records_rejected",
-            json_integer((json_int_t)update->report.import.records_rejected)) !=
-            0 ||
-        json_object_set_new(details, "published", json_boolean(published)) !=
-            0 ||
-        json_object_set_new(details, "policy_generation",
-                            json_integer((json_int_t)generation)) != 0) {
+    if (system_actor) {
+        (void)snprintf(source_address, sizeof(source_address), "%s",
+                       "scheduler");
+    } else if (request == NULL || remote == NULL ||
+               inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET
+                                                                  : AF_INET6,
+                         remote->address, source_address,
+                         sizeof(source_address)) == NULL) {
+        result = -EINVAL;
+    }
+    if (result == 0 &&
+        (written <= 0 || (size_t)written >= sizeof(object_id) ||
+         details == NULL ||
+         json_object_set_new(details, "attempted",
+                             json_boolean(update->attempted)) != 0 ||
+         json_object_set_new(details, "outcome", json_string(outcome)) != 0 ||
+         json_object_set_new(details, "operation_result",
+                             json_integer(operation_result)) != 0 ||
+         json_object_set_new(details, "attempt_result",
+                             json_integer(update->attempt_result)) != 0 ||
+         json_object_set_new(details, "http_status",
+                             json_integer(update->report.http_status)) != 0 ||
+         json_object_set_new(
+             details, "download_bytes",
+             json_integer((json_int_t)update->report.body_size)) != 0 ||
+         json_object_set_new(
+             details, "entries_parsed",
+             json_integer((json_int_t)update->report.import.entries_parsed)) !=
+             0 ||
+         json_object_set_new(
+             details, "records_rejected",
+             json_integer(
+                 (json_int_t)update->report.import.records_rejected)) != 0 ||
+         json_object_set_new(details, "published", json_boolean(published)) !=
+             0 ||
+         json_object_set_new(details, "policy_generation",
+                             json_integer((json_int_t)generation)) != 0)) {
         result = -ENOMEM;
     }
     if (result == 0) {
@@ -2368,10 +2377,11 @@ static int append_blocklist_update_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
-            .actor_id = actor->actor_id,
+            .actor_type = system_actor ? JG_AUDIT_ACTOR_SYSTEM
+                                       : (actor->token ? JG_AUDIT_ACTOR_TOKEN
+                                                       : JG_AUDIT_ACTOR_USER),
+            .has_actor_id = !system_actor,
+            .actor_id = system_actor ? 0U : actor->actor_id,
             .source = source_address,
             .action = "blocklist.source.refresh",
             .object_type = "blocklist_source",
@@ -2383,7 +2393,7 @@ static int append_blocklist_update_audit(
             .new_revision = update->source.revision,
             .success = operation_result == 0 && update->attempt_result == 0 &&
                        (!update->activated || published),
-            .request_id = request->request_id,
+            .request_id = system_actor ? "" : request->request_id,
         };
         result = jg_database_audit_append(management->database, &event, NULL);
     }
@@ -3845,6 +3855,74 @@ static int handle_blocklist_source_refresh(
     }
     return respond_blocklist_update(request, &update, published, generation,
                                     output, output_size, written);
+}
+
+/** @brief Process and audit every enabled remote source currently due. */
+int jg_management_update_due_blocklists(struct jg_management *management,
+                                        uint64_t now,
+                                        size_t *attempts)
+{
+    struct jg_database_blocklist_source *sources = NULL;
+    uint64_t after_id = 0U;
+    size_t attempt_count = 0U;
+    bool has_more = true;
+    int result = 0;
+
+    if (management == NULL || now == 0U) {
+        return -EINVAL;
+    }
+    if (attempts != NULL) {
+        *attempts = 0U;
+    }
+    sources = calloc(JG_DATABASE_POLICY_PAGE_MAX, sizeof(*sources));
+    if (sources == NULL) {
+        return -ENOMEM;
+    }
+    while (result == 0 && has_more) {
+        size_t count = 0U;
+
+        result = jg_database_list_blocklist_sources(
+            management->database, after_id, JG_DATABASE_POLICY_PAGE_MAX,
+            sources, &count, &has_more);
+        for (size_t index = 0U; result == 0 && index < count; ++index) {
+            struct jg_blocklist_update_result update;
+            uint64_t generation = 0U;
+            bool published = false;
+
+            after_id = sources[index].id;
+            if (!sources[index].enabled || sources[index].url[0U] == '\0' ||
+                sources[index].next_attempt_at > now) {
+                continue;
+            }
+            result =
+                jg_blocklist_update(management->database, sources[index].id,
+                                    sources[index].revision, now, &update);
+            if (update.attempted) {
+                ++attempt_count;
+            }
+            if (result == 0 && update.activated) {
+                publish_blocklist_source_change(management, &published,
+                                                &generation);
+                if (!published) {
+                    result = -EIO;
+                }
+            }
+            if (update.source.id != 0U) {
+                const int audit_result = append_blocklist_update_audit(
+                    management, NULL, NULL, NULL, &update, result, published,
+                    generation, now);
+
+                if (audit_result != 0) {
+                    result = audit_result;
+                }
+            }
+        }
+    }
+    free(sources);
+    if (attempts != NULL) {
+        *attempts = attempt_count;
+    }
+    return result;
 }
 
 /** @brief Return one authenticated stable page of domain rules. */

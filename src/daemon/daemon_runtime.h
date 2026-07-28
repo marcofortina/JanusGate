@@ -253,6 +253,25 @@ int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
                                          size_t *written);
 
 /**
+ * @brief Process every scheduled blocklist source currently due.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[in] now Current Unix time in seconds.
+ * @param[out] attempts Receives the number of HTTPS attempts; null discards it.
+ *
+ * @return 0 when all due sources were processed.
+ * @return -EINVAL for an invalid runtime or timestamp.
+ * @return A negative errno-style update, audit, or policy-publication error
+ * otherwise.
+ *
+ * @thread_safety Calls require the same external serialization as management
+ * requests and policy reloads.
+ */
+int jg_daemon_runtime_update_blocklists(struct jg_daemon_runtime *runtime,
+                                        uint64_t now,
+                                        size_t *attempts);
+
+/**
  * @brief Stop and release the complete packet runtime.
  *
  * @param[in,out] runtime Runtime to release; null is accepted.
