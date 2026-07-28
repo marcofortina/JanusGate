@@ -19,6 +19,7 @@ add_executable(
   unit/test_network.c
   unit/test_netd.c
   unit/test_nfqueue.c
+  unit/test_packet_output.c
   unit/test_packet.c
   unit/test_policy.c
   unit/test_policy_store.c

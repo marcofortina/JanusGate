@@ -22,6 +22,7 @@ int jg_test_ipc(void);
 int jg_test_network(void);
 int jg_test_netd(void);
 int jg_test_nfqueue(void);
+int jg_test_packet_output(void);
 int jg_test_packet(void);
 int jg_test_policy(void);
 int jg_test_policy_store(void);
@@ -45,6 +46,7 @@ int main(void)
     result |= jg_test_network();
     result |= jg_test_netd();
     result |= jg_test_nfqueue();
+    result |= jg_test_packet_output();
     result |= jg_test_packet();
     result |= jg_test_policy();
     result |= jg_test_policy_store();
