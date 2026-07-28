@@ -6244,6 +6244,77 @@ static int handle_user_password_reset(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Administratively remove one local user's TOTP credentials. */
+static int handle_user_totp_disable(struct jg_management *management,
+                                    const struct management_request *request,
+                                    const struct remote_address *remote,
+                                    uint64_t user_id,
+                                    uint64_t now,
+                                    uint8_t *output,
+                                    size_t output_size,
+                                    size_t *written)
+{
+    static const char *const fields[] = {
+        "revision",
+    };
+    struct authenticated_actor actor;
+    struct jg_account_user user;
+    uint64_t revision = 0U;
+    json_t *body = NULL;
+    json_t *user_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "revision", &revision)) {
+        return respond_error(400, "invalid_body",
+                             "The TOTP-reset request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_user_disable_totp(management->database, user_id,
+                                          revision, &user);
+    if (result == -ENOENT) {
+        return respond_error(404, "totp_not_found",
+                             "The user has no active TOTP credential.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -ESTALE) {
+        return respond_error(409, "revision_conflict",
+                             "The local user has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "totp_reset_failed",
+                             "The TOTP credential could not be removed.",
+                             request->request_id, output, output_size, written);
+    }
+    result = append_user_audit(management, request, remote, &actor,
+                               "user.totp_disable", true, revision, &user, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The TOTP credential was removed, but its audit record could not "
+            "be stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    user_body = user_json(&user);
+    if (body == NULL || user_body == NULL ||
+        json_object_set(body, "user", user_body) != 0) {
+        json_decref(user_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(user_body);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated stable page of API-token metadata. */
 static int handle_tokens_list(struct jg_management *management,
                               const struct management_request *request,
@@ -7186,6 +7257,12 @@ static int dispatch_request(struct jg_management *management,
                                            "/password", &user_id)) {
         return handle_user_password_reset(management, request, remote, user_id,
                                           now, output, output_size, written);
+    }
+    if (strcmp(request->method, "DELETE") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/users/", "/totp",
+                                   &user_id)) {
+        return handle_user_totp_disable(management, request, remote, user_id,
+                                        now, output, output_size, written);
     }
     if (strcmp(request->method, "PATCH") == 0 &&
         collection_path_identifier(request->path, "/api/v1/users/", "",

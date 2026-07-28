@@ -826,6 +826,10 @@ static void test_user_api(void **state)
     char request[4096U];
     char session[JG_AUTH_SECRET_TEXT_SIZE];
     char csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    uint8_t key[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE];
+    struct jg_account_totp_provisioning provisioning;
+    struct jg_account_recovery_codes recovery;
     struct jg_audit_verification verification;
     json_t *response = NULL;
     json_t *body = NULL;
@@ -834,6 +838,7 @@ static void test_user_api(void **state)
     const time_t now = time(NULL);
     uint64_t user_id = 0U;
     uint64_t revision = 0U;
+    uint32_t code = 0U;
     int written = 0;
 
     assert_true(now > 0);
@@ -947,8 +952,42 @@ static void test_user_api(void **state)
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      200);
     user = json_object_get(json_object_get(response, "body"), "user");
-    assert_int_equal(json_integer_value(json_object_get(user, "revision")), 3);
+    revision = (uint64_t)json_integer_value(json_object_get(user, "revision"));
+    assert_int_equal(revision, 3U);
     assert_false(json_is_true(json_object_get(user, "force_password_change")));
+    json_decref(response);
+
+    for (size_t index = 0U; index < sizeof(key); ++index) {
+        key[index] = (uint8_t)(index + 1U);
+    }
+    assert_int_equal(jg_account_totp_provision(fixture->database, user_id, key,
+                                               (uint64_t)now, &provisioning),
+                     0);
+    assert_int_equal(jg_auth_totp_secret_decode(provisioning.secret, secret),
+                     0);
+    assert_int_equal(jg_auth_totp_generate(secret, (uint64_t)now, &code), 0);
+    assert_int_equal(jg_account_totp_confirm(fixture->database, user_id, key,
+                                             code, (uint64_t)now, &recovery),
+                     0);
+    ++revision;
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"user-totp-disable\",\"method\":\"DELETE\","
+        "\"path\":\"/api/v1/users/%llu/totp\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{\"revision\":%llu}}",
+        (unsigned long long)user_id, session, csrf,
+        (unsigned long long)revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    user = json_object_get(json_object_get(response, "body"), "user");
+    assert_false(json_is_true(json_object_get(user, "totp_enabled")));
+    assert_int_equal(json_integer_value(json_object_get(user, "revision")),
+                     (json_int_t)(revision + 1U));
     json_decref(response);
 
     written =
@@ -979,11 +1018,11 @@ static void test_user_api(void **state)
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      200);
     body = json_object_get(response, "body");
-    assert_int_equal(json_integer_value(json_object_get(body, "total")), 3);
+    assert_int_equal(json_integer_value(json_object_get(body, "total")), 4);
     assert_int_equal(json_array_size(json_object_get(body, "events")), 2U);
     value = json_array_get(json_object_get(body, "events"), 0U);
     assert_string_equal(json_string_value(json_object_get(value, "action")),
-                        "user.password_reset");
+                        "user.totp_disable");
     assert_int_equal(json_string_length(json_object_get(value, "event_hash")),
                      JG_AUDIT_HASH_SIZE * 2U);
     json_decref(response);
@@ -1003,14 +1042,14 @@ static void test_user_api(void **state)
     body = json_object_get(response, "body");
     assert_true(json_is_true(json_object_get(body, "valid")));
     assert_int_equal(
-        json_integer_value(json_object_get(body, "records_inspected")), 3);
+        json_integer_value(json_object_get(body, "records_inspected")), 4);
     assert_true(json_is_null(json_object_get(body, "first_invalid_id")));
     json_decref(response);
 
     assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
                      0);
     assert_true(verification.valid);
-    assert_int_equal(verification.records_inspected, 3U);
+    assert_int_equal(verification.records_inspected, 4U);
 }
 
 /** @brief Verify one-time token issue, inventory, use, and revocation. */
