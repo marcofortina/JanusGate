@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -2418,12 +2419,20 @@ static int decode_blocklist_source(sqlite3_stmt *statement,
     if (result == 0 &&
         (id == 0U || revision == 0U || updated_at < created_at ||
          source->name[0U] == '\0' ||
+         !jg_utf8_text_valid((const uint8_t *)source->name,
+                             strlen(source->name), false) ||
          (source->url[0U] != '\0' &&
-          strncmp(source->url, "https://", 8U) != 0) ||
+          (source->url[8U] == '\0' ||
+           strncasecmp(source->url, "https://", 8U) != 0 ||
+           !jg_utf8_text_valid((const uint8_t *)source->url,
+                               strlen(source->url), false))) ||
          (source->url[0U] == '\0' && source->has_signature) ||
          ((source->signature_url[0U] != '\0') != source->has_signature) ||
          (source->signature_url[0U] != '\0' &&
-          strncmp(source->signature_url, "https://", 8U) != 0) ||
+          (source->signature_url[8U] == '\0' ||
+           strncasecmp(source->signature_url, "https://", 8U) != 0 ||
+           !jg_utf8_text_valid((const uint8_t *)source->signature_url,
+                               strlen(source->signature_url), false))) ||
          (strict_mode != 0U && strict_mode != 1U) ||
          (enabled != 0U && enabled != 1U) ||
          (!source->has_active_checksum && source->active_entries != 0U))) {
@@ -2507,6 +2516,301 @@ int jg_database_list_blocklist_sources(
     if (result == 0) {
         *count = index;
         *has_more = more;
+    }
+    return result;
+}
+
+/** @brief Return the persistent name of one blocklist input syntax. */
+static const char *blocklist_format_text(enum jg_blocklist_format format)
+{
+    switch (format) {
+    case JG_BLOCKLIST_FORMAT_DOMAIN:
+        return "domain";
+    case JG_BLOCKLIST_FORMAT_HOSTS:
+        return "hosts";
+    case JG_BLOCKLIST_FORMAT_CATEGORY:
+        return "category";
+    case JG_BLOCKLIST_FORMAT_RPZ:
+        return "rpz";
+    case JG_BLOCKLIST_FORMAT_JSON:
+        return "json";
+    }
+    return NULL;
+}
+
+/** @brief Validate and measure one bounded administrative string. */
+static int validate_source_text(const char *text,
+                                size_t maximum,
+                                size_t *length)
+{
+    size_t size = 0U;
+
+    if (text == NULL) {
+        return -EINVAL;
+    }
+    size = strnlen(text, maximum + 1U);
+    if (size == 0U || size > maximum) {
+        return -EINVAL;
+    }
+    if (!jg_utf8_text_valid((const uint8_t *)text, size, false)) {
+        return -EILSEQ;
+    }
+    if (length != NULL) {
+        *length = size;
+    }
+    return 0;
+}
+
+/** @brief Check that one bounded URL explicitly selects HTTPS. */
+static bool source_https_url(const char *url, size_t length)
+{
+    return length > 8U && strncasecmp(url, "https://", 8U) == 0;
+}
+
+/** @brief Validate one blocklist-source configuration before persistence. */
+static int validate_blocklist_source_config(
+    const struct jg_database_blocklist_source_config *config)
+{
+    size_t url_length = 0U;
+    size_t signature_url_length = 0U;
+    int result = 0;
+
+    if (config == NULL || blocklist_format_text(config->format) == NULL ||
+        (config->mode != JG_BLOCKLIST_STRICT &&
+         config->mode != JG_BLOCKLIST_TOLERANT) ||
+        config->update_interval_seconds < 300U ||
+        config->update_interval_seconds > 2592000U ||
+        config->max_download_bytes == 0U ||
+        config->max_download_bytes > (size_t)INT64_MAX ||
+        config->max_decompressed_bytes < config->max_download_bytes ||
+        config->max_decompressed_bytes > (size_t)INT64_MAX ||
+        config->connect_timeout_ms == 0U ||
+        config->connect_timeout_ms > (uint32_t)INT32_MAX ||
+        config->transfer_timeout_ms == 0U ||
+        config->transfer_timeout_ms > (uint32_t)INT32_MAX ||
+        config->redirect_limit > 20U || config->retry_base_seconds == 0U ||
+        config->retry_base_seconds > config->retry_max_seconds ||
+        config->retry_max_seconds > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    result = validate_source_text(config->name, JG_DATABASE_BLOCKLIST_NAME_MAX,
+                                  NULL);
+    if (result == 0 && config->url != NULL) {
+        result = validate_source_text(
+            config->url, JG_DATABASE_BLOCKLIST_URL_MAX, &url_length);
+        if (result == 0 && !source_https_url(config->url, url_length)) {
+            result = -EINVAL;
+        }
+    }
+    if (result == 0 && config->has_signature) {
+        result = validate_source_text(config->signature_url,
+                                      JG_DATABASE_BLOCKLIST_URL_MAX,
+                                      &signature_url_length);
+        if (result == 0 &&
+            (!source_https_url(config->signature_url, signature_url_length) ||
+             config->url == NULL)) {
+            result = -EINVAL;
+        }
+    } else if (result == 0 && config->signature_url != NULL) {
+        result = -EINVAL;
+    }
+    return result;
+}
+
+/** @brief Bind one validated blocklist-source configuration. */
+static int bind_blocklist_source_config(
+    sqlite3_stmt *statement,
+    const struct jg_database_blocklist_source_config *config)
+{
+    int status = sqlite3_reset(statement);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        result = jg_database_sqlite_result(sqlite3_clear_bindings(statement));
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_text(statement, 1, config->name, -1, SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = config->url == NULL
+                     ? sqlite3_bind_null(statement, 2)
+                     : sqlite3_bind_text(statement, 2, config->url, -1,
+                                         SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = config->signature_url == NULL
+                     ? sqlite3_bind_null(statement, 3)
+                     : sqlite3_bind_text(statement, 3, config->signature_url,
+                                         -1, SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 4,
+                                   blocklist_format_text(config->format), -1,
+                                   SQLITE_STATIC);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 5,
+                                  config->mode == JG_BLOCKLIST_STRICT ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 6, config->enabled ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(
+            statement, 7, (sqlite3_int64)config->update_interval_seconds);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 8,
+                                    (sqlite3_int64)config->max_download_bytes);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(
+            statement, 9, (sqlite3_int64)config->max_decompressed_bytes);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_int(statement, 10, (int)config->connect_timeout_ms);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_int(statement, 11, (int)config->transfer_timeout_ms);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 12, (int)config->redirect_limit);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 13,
+                                    (sqlite3_int64)config->retry_base_seconds);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 14,
+                                    (sqlite3_int64)config->retry_max_seconds);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = config->has_sha256_pin
+                     ? sqlite3_bind_blob(statement, 15, config->sha256_pin,
+                                         (int)sizeof(config->sha256_pin),
+                                         SQLITE_TRANSIENT)
+                     : sqlite3_bind_null(statement, 15);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            config->has_signature
+                ? sqlite3_bind_blob(statement, 16, config->ed25519_public_key,
+                                    (int)sizeof(config->ed25519_public_key),
+                                    SQLITE_TRANSIENT)
+                : sqlite3_bind_null(statement, 16);
+        result = jg_database_sqlite_result(status);
+    }
+    return result;
+}
+
+/** @brief Read one blocklist source by its exact identifier. */
+static int read_blocklist_source(struct jg_database *database,
+                                 uint64_t source_id,
+                                 struct jg_database_blocklist_source *source)
+{
+    size_t count = 0U;
+    bool has_more = false;
+    int result = jg_database_list_blocklist_sources(
+        database, source_id - 1U, 1U, source, &count, &has_more);
+
+    (void)has_more;
+    if (result == 0 && (count != 1U || source->id != source_id)) {
+        result = -ENOENT;
+    }
+    return result;
+}
+
+/** @brief Create one blocklist source and its empty update state. */
+int jg_database_create_blocklist_source(
+    struct jg_database *database,
+    const struct jg_database_blocklist_source_config *config,
+    struct jg_database_blocklist_source *created)
+{
+    static const char insert[] =
+        "INSERT INTO blocklist_sources("
+        "name,url,signature_url,format,strict_mode,enabled,update_interval,"
+        "max_download_bytes,max_decompressed_bytes,connect_timeout_ms,"
+        "transfer_timeout_ms,redirect_limit,retry_base_seconds,"
+        "retry_max_seconds,sha256_pin,ed25519_public_key,created_at,updated_at"
+        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,"
+        "unixepoch(),unixepoch());";
+    struct jg_database_blocklist_source source;
+    sqlite3_stmt *statement = NULL;
+    sqlite3_int64 identifier = 0;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || created == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(created, 0, sizeof(*created));
+    result = validate_blocklist_source_config(config);
+    if (result == 0) {
+        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, insert, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_blocklist_source_config(statement, config);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_CONSTRAINT_UNIQUE) {
+            result = -EEXIST;
+        } else {
+            result =
+                status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        identifier = sqlite3_last_insert_rowid(database->handle);
+        if (identifier <= 0) {
+            result = -EIO;
+        }
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle,
+                             "INSERT INTO blocklist_source_status(source_id)"
+                             " VALUES(last_insert_rowid());");
+    }
+    if (result == 0) {
+        result = read_blocklist_source(database, (uint64_t)identifier, &source);
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
+    }
+    if (result == 0) {
+        *created = source;
     }
     return result;
 }

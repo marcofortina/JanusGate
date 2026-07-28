@@ -1048,6 +1048,92 @@ static void test_blocklist_source_page(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Build one valid remote blocklist-source configuration. */
+static struct jg_database_blocklist_source_config make_blocklist_source(void)
+{
+    struct jg_database_blocklist_source_config config;
+    size_t index = 0U;
+
+    (void)memset(&config, 0, sizeof(config));
+    config.name = "Threat domains";
+    config.url = "https://lists.example/domains";
+    config.signature_url = "https://lists.example/domains.sig";
+    config.format = JG_BLOCKLIST_FORMAT_DOMAIN;
+    config.mode = JG_BLOCKLIST_TOLERANT;
+    config.enabled = true;
+    config.update_interval_seconds = 3600U;
+    config.max_download_bytes = 1024U * 1024U;
+    config.max_decompressed_bytes = 4U * 1024U * 1024U;
+    config.connect_timeout_ms = 5000U;
+    config.transfer_timeout_ms = 30000U;
+    config.redirect_limit = 3U;
+    config.retry_base_seconds = 60U;
+    config.retry_max_seconds = 3600U;
+    config.has_sha256_pin = true;
+    config.has_signature = true;
+    for (index = 0U; index < sizeof(config.sha256_pin); ++index) {
+        config.sha256_pin[index] = (uint8_t)index;
+        config.ed25519_public_key[index] = (uint8_t)(31U - index);
+    }
+    return config;
+}
+
+/** @brief Verify atomic blocklist-source creation and validation. */
+static void test_blocklist_source_creation(void **state)
+{
+    static const char invalid_utf8[] = {'b', 'a', 'd', (char)0xc0, '\0'};
+    char directory[64U];
+    char path[512U];
+    struct jg_database_blocklist_source_config config = make_blocklist_source();
+    struct jg_database_blocklist_source created;
+    struct jg_database_blocklist_source duplicate;
+    struct jg_database *database = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &created), 0);
+    assert_true(created.id > 0U);
+    assert_int_equal(created.revision, 1U);
+    assert_string_equal(created.name, config.name);
+    assert_string_equal(created.url, config.url);
+    assert_int_equal(created.mode, config.mode);
+    assert_true(created.enabled);
+    assert_true(created.has_sha256_pin);
+    assert_memory_equal(created.sha256_pin, config.sha256_pin,
+                        sizeof(created.sha256_pin));
+    assert_true(created.has_signature);
+    assert_memory_equal(created.ed25519_public_key, config.ed25519_public_key,
+                        sizeof(created.ed25519_public_key));
+    assert_int_equal(created.health, JG_DATABASE_BLOCKLIST_UNKNOWN);
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &duplicate),
+        -EEXIST);
+
+    config.name = invalid_utf8;
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &duplicate),
+        -EILSEQ);
+    config.name = "Invalid transport";
+    config.url = "http://lists.example/domains";
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &duplicate),
+        -EINVAL);
+    config.url = NULL;
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &duplicate),
+        -EINVAL);
+    config.signature_url = NULL;
+    config.has_signature = false;
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &duplicate), 0);
+    assert_string_equal(duplicate.url, "");
+    assert_false(duplicate.has_signature);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the SQLite lifecycle and migration test group. */
 int jg_test_database(void)
 {
@@ -1062,6 +1148,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_network_configuration),
         cmocka_unit_test(test_dns_response_configuration),
         cmocka_unit_test(test_blocklist_source_page),
+        cmocka_unit_test(test_blocklist_source_creation),
     };
 
     return cmocka_run_group_tests_name("database", tests, NULL, NULL);

@@ -589,6 +589,31 @@ JG_PUBLIC int jg_database_delete_destination_rule(struct jg_database *database,
                                                   uint64_t expected_revision);
 
 /**
+ * @brief Create one persistent blocklist source.
+ *
+ * An empty update-state record is created in the same transaction. The
+ * returned source has revision one and unknown health.
+ *
+ * @param[in] database Open database.
+ * @param[in] config Complete validated source configuration.
+ * @param[out] created Created self-contained source and state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments, bounds, or relationships.
+ * @return -EILSEQ for invalid UTF-8 administrative text.
+ * @return -EEXIST when the source name is already used.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts one source and its update state atomically.
+ */
+JG_PUBLIC int jg_database_create_blocklist_source(
+    struct jg_database *database,
+    const struct jg_database_blocklist_source_config *config,
+    struct jg_database_blocklist_source *created);
+
+/**
  * @brief Read one stable identifier-ordered page of blocklist sources.
  *
  * Pass the last identifier returned by the preceding page as @p after_id, or
