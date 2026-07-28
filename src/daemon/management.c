@@ -929,7 +929,7 @@ static int parse_collection_query(const char *query,
     int result = 0;
 
     *offset = 0U;
-    *limit = 50U;
+    *limit = maximum_limit < 50U ? maximum_limit : 50U;
     while (result == 0 && cursor != NULL && *cursor != '\0') {
         const char *end = strchr(cursor, '&');
         const char *equals = strchr(cursor, '=');
