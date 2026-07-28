@@ -297,9 +297,98 @@ static const char *const migration_1[] = {
     migration_1_identity,   migration_1_records,
 };
 
+/** Authentication and audit extensions for schema version two. */
+static const char migration_2_identity[] =
+    "ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL "
+    "DEFAULT 1 CHECK(force_password_change IN (0,1));"
+    "ALTER TABLE users ADD COLUMN last_login_at INTEGER "
+    "CHECK(last_login_at IS NULL OR last_login_at >= created_at);"
+    "ALTER TABLE users ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 "
+    "CHECK(revision > 0);"
+    "ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 1 "
+    "CHECK(session_epoch > 0);"
+    "ALTER TABLE api_tokens RENAME TO api_tokens_v1;"
+    "CREATE TABLE api_tokens ("
+    "id INTEGER PRIMARY KEY,"
+    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+    "name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 128),"
+    "token_hash BLOB NOT NULL UNIQUE CHECK(length(token_hash)=32),"
+    "scopes TEXT NOT NULL,"
+    "created_at INTEGER NOT NULL CHECK(created_at >= 0),"
+    "expires_at INTEGER CHECK(expires_at IS NULL OR expires_at >= created_at),"
+    "last_used_at INTEGER CHECK(last_used_at IS NULL OR last_used_at >= "
+    "created_at),"
+    "revoked_at INTEGER CHECK(revoked_at IS NULL OR revoked_at >= created_at),"
+    "source_family INTEGER CHECK(source_family IS NULL OR "
+    "source_family IN (4,6)),"
+    "source_address BLOB,"
+    "source_prefix INTEGER,"
+    "requests_per_minute INTEGER NOT NULL DEFAULT 60 "
+    "CHECK(requests_per_minute BETWEEN 1 AND 60000),"
+    "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),"
+    "CHECK((source_family IS NULL AND source_address IS NULL AND "
+    "source_prefix IS NULL) OR "
+    "(source_family=4 AND length(source_address)=4 AND "
+    "source_prefix BETWEEN 0 AND 32) OR "
+    "(source_family=6 AND length(source_address)=16 AND "
+    "source_prefix BETWEEN 0 AND 128))"
+    ") STRICT;"
+    "INSERT INTO api_tokens(id,user_id,name,token_hash,scopes,created_at,"
+    "expires_at,last_used_at,revoked_at) "
+    "SELECT id,user_id,name,token_hash,scopes,created_at,expires_at,"
+    "last_used_at,revoked_at FROM api_tokens_v1;"
+    "DROP TABLE api_tokens_v1;"
+    "CREATE TABLE totp_credentials ("
+    "user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,"
+    "secret_ciphertext BLOB NOT NULL CHECK(length(secret_ciphertext) >= 16),"
+    "nonce BLOB NOT NULL CHECK(length(nonce)=24),"
+    "enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),"
+    "created_at INTEGER NOT NULL CHECK(created_at >= 0)"
+    ") STRICT;"
+    "CREATE TABLE recovery_codes ("
+    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+    "code_hash BLOB NOT NULL CHECK(length(code_hash)=32),"
+    "created_at INTEGER NOT NULL CHECK(created_at >= 0),"
+    "used_at INTEGER CHECK(used_at IS NULL OR used_at >= created_at),"
+    "PRIMARY KEY(user_id,code_hash)"
+    ") STRICT;"
+    "CREATE TABLE mtls_mappings ("
+    "id INTEGER PRIMARY KEY,"
+    "fingerprint_sha256 BLOB NOT NULL UNIQUE "
+    "CHECK(length(fingerprint_sha256)=32),"
+    "user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,"
+    "role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,"
+    "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),"
+    "created_at INTEGER NOT NULL CHECK(created_at >= 0),"
+    "CHECK((user_id IS NULL) <> (role_id IS NULL))"
+    ") STRICT;";
+
+/** Administrative provenance fields for schema version two. */
+static const char migration_2_audit[] =
+    "ALTER TABLE audit_events ADD COLUMN source TEXT NOT NULL DEFAULT 'local' "
+    "CHECK(length(source) BETWEEN 1 AND 255);"
+    "ALTER TABLE audit_events ADD COLUMN previous_revision INTEGER "
+    "CHECK(previous_revision IS NULL OR previous_revision > 0);"
+    "ALTER TABLE audit_events ADD COLUMN new_revision INTEGER "
+    "CHECK(new_revision IS NULL OR new_revision > 0);"
+    "ALTER TABLE audit_events ADD COLUMN success INTEGER NOT NULL DEFAULT 1 "
+    "CHECK(success IN (0,1));"
+    "ALTER TABLE audit_events ADD COLUMN request_id TEXT NOT NULL DEFAULT '' "
+    "CHECK(length(request_id) <= 128);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(2,unixepoch());"
+    "PRAGMA user_version=2;";
+
+/** Ordered statement groups composing schema version two. */
+static const char *const migration_2[] = {
+    migration_2_identity,
+    migration_2_audit,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
+    {2U, migration_2, sizeof(migration_2) / sizeof(migration_2[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */

@@ -28,7 +28,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 1U
+#define JG_DATABASE_SCHEMA_VERSION 2U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U

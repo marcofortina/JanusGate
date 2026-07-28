@@ -81,17 +81,86 @@ static bool table_exists(sqlite3 *handle, const char *name)
     return exists;
 }
 
+/** @brief Check that one named column exists in a SQLite table. */
+static bool column_exists(sqlite3 *handle,
+                          const char *table,
+                          const char *column)
+{
+    static const char query[] =
+        "SELECT 1 FROM pragma_table_info(?1) WHERE name=?2;";
+    sqlite3_stmt *statement = NULL;
+    bool exists = false;
+
+    assert_int_equal(sqlite3_prepare_v2(handle, query, -1, &statement, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_bind_text(statement, 1, table, -1, SQLITE_STATIC),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_bind_text(statement, 2, column, -1, SQLITE_STATIC),
+                     SQLITE_OK);
+    exists = sqlite3_step(statement) == SQLITE_ROW;
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    return exists;
+}
+
 /** @brief Set user_version through a prepared SQLite statement. */
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
     sqlite3_stmt *statement = NULL;
-    const char *sql = version == 2U ? "PRAGMA user_version=2;" : NULL;
+    const char *sql = version == 3U ? "PRAGMA user_version=3;" : NULL;
 
     assert_non_null(sql);
     assert_int_equal(sqlite3_prepare_v2(handle, sql, -1, &statement, NULL),
                      SQLITE_OK);
     assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+}
+
+/** @brief Create the retained version-one identity schema fixture. */
+static void create_version_one_fixture(const char *path)
+{
+    static const char schema[] =
+        "CREATE TABLE schema_migrations ("
+        "version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT;"
+        "CREATE TABLE roles ("
+        "id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,"
+        "permissions TEXT NOT NULL) STRICT;"
+        "CREATE TABLE users ("
+        "id INTEGER PRIMARY KEY,username TEXT NOT NULL UNIQUE,"
+        "password_hash TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,"
+        "failed_logins INTEGER NOT NULL DEFAULT 0,locked_until INTEGER,"
+        "created_at INTEGER NOT NULL,password_changed_at INTEGER NOT NULL"
+        ") STRICT;"
+        "CREATE TABLE api_tokens ("
+        "id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),"
+        "name TEXT NOT NULL,token_hash BLOB NOT NULL UNIQUE,scopes TEXT NOT "
+        "NULL,created_at INTEGER NOT NULL,expires_at INTEGER,last_used_at "
+        "INTEGER,revoked_at INTEGER) STRICT;"
+        "CREATE TABLE web_sessions ("
+        "id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),"
+        "session_hash BLOB NOT NULL UNIQUE,csrf_hash BLOB NOT NULL,"
+        "created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,"
+        "last_seen_at INTEGER NOT NULL,remote_address BLOB) STRICT;"
+        "CREATE TABLE audit_events ("
+        "id INTEGER PRIMARY KEY,occurred_at INTEGER NOT NULL,"
+        "actor_type TEXT NOT NULL,actor_id INTEGER,action TEXT NOT NULL,"
+        "object_type TEXT NOT NULL,object_id TEXT,details TEXT NOT NULL,"
+        "previous_hash BLOB,event_hash BLOB NOT NULL UNIQUE) STRICT;"
+        "INSERT INTO roles(id,name,permissions) VALUES"
+        "(1,'administrator','all'),(2,'operator','operate'),"
+        "(3,'auditor','read');"
+        "INSERT INTO users(id,username,password_hash,created_at,"
+        "password_changed_at) VALUES(7,'legacy','hash',10,10);"
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(1,10);"
+        "PRAGMA user_version=1;";
+    sqlite3 *handle = NULL;
+
+    assert_int_equal(sqlite3_open_v2(path, &handle,
+                                     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                                     NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+    assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
 }
 
 /** @brief Construct a valid global rule for database round-trip tests. */
@@ -205,12 +274,65 @@ static void test_newer_schema_rejected(void **state)
 
     assert_int_equal(
         sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
-    set_schema_version(handle, 2U);
+    set_schema_version(handle, JG_DATABASE_SCHEMA_VERSION + 1U);
     assert_int_equal(sqlite3_close(handle), SQLITE_OK);
 
     database = NULL;
     assert_int_equal(jg_database_open(path, 1000U, &database), -ENOTSUP);
     assert_null(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify ordered upgrade and backup of a version-one database. */
+static void test_version_one_migration(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    char backup_path[520U];
+    struct jg_database *database = NULL;
+    sqlite3_stmt *statement = NULL;
+    sqlite3 *inspection = NULL;
+    struct stat metadata;
+    uint32_t version = 0U;
+    int written = 0;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    create_version_one_fixture(path);
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_schema_version(database, &version), 0);
+    assert_int_equal(version, JG_DATABASE_SCHEMA_VERSION);
+    jg_database_close(database);
+
+    written = snprintf(backup_path, sizeof(backup_path), "%s.lkg", path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(backup_path));
+    assert_int_equal(stat(backup_path, &metadata), 0);
+    assert_int_equal(metadata.st_mode & 0777U, S_IRUSR | S_IWUSR);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &inspection, SQLITE_OPEN_READONLY, NULL),
+        SQLITE_OK);
+    assert_true(column_exists(inspection, "users", "force_password_change"));
+    assert_true(column_exists(inspection, "users", "session_epoch"));
+    assert_true(column_exists(inspection, "api_tokens", "source_address"));
+    assert_true(column_exists(inspection, "audit_events", "request_id"));
+    assert_true(table_exists(inspection, "totp_credentials"));
+    assert_true(table_exists(inspection, "recovery_codes"));
+    assert_true(table_exists(inspection, "mtls_mappings"));
+    assert_int_equal(
+        sqlite3_prepare_v2(inspection,
+                           "SELECT force_password_change,last_login_at,"
+                           "revision,session_epoch FROM users WHERE id=7;",
+                           -1, &statement, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_int_equal(sqlite3_column_int(statement, 0), 1);
+    assert_int_equal(sqlite3_column_type(statement, 1), SQLITE_NULL);
+    assert_int_equal(sqlite3_column_int(statement, 2), 1);
+    assert_int_equal(sqlite3_column_int(statement, 3), 1);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
     remove_database(directory, path);
 }
 
@@ -349,6 +471,7 @@ int jg_test_database(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_initial_migration),
         cmocka_unit_test(test_newer_schema_rejected),
+        cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_network_configuration),
