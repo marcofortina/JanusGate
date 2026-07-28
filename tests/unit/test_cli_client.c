@@ -52,11 +52,62 @@ static void test_response_decoding(void **state)
     assert_null(response.body);
 }
 
+/** @brief Verify strict remote response media types and JSON syntax. */
+static void test_http_response_decoding(void **state)
+{
+    static const char json_response[] = "{\"ready\":true,\"count\":2}";
+    static const char malformed_response[] = "{\"ready\":true";
+    struct jg_cli_response response = {0};
+
+    (void)state;
+    assert_int_equal(
+        jg_cli_http_response_decode(200L, "application/json", json_response,
+                                    sizeof(json_response) - 1U, &response),
+        0);
+    assert_int_equal(response.status, 200);
+    assert_string_equal(response.body, "{\"count\":2,\"ready\":true}");
+    jg_cli_response_clear(&response);
+
+    assert_int_equal(
+        jg_cli_http_response_decode(200L, "text/html", json_response,
+                                    sizeof(json_response) - 1U, &response),
+        -EPROTO);
+    assert_int_equal(jg_cli_http_response_decode(
+                         200L, "application/json", malformed_response,
+                         sizeof(malformed_response) - 1U, &response),
+                     -EPROTO);
+}
+
+/** @brief Verify HTTPS origin, credential, and timeout validation. */
+static void test_remote_config_validation(void **state)
+{
+    static const char token[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    struct jg_cli_remote_config config;
+
+    (void)state;
+    jg_cli_remote_config_default(&config);
+    config.endpoint = "https://janusgate.example";
+    config.token = token;
+    assert_int_equal(jg_cli_remote_config_validate(&config), 0);
+    config.endpoint = "http://janusgate.example";
+    assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
+    config.endpoint = "https://user@janusgate.example";
+    assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
+    config.endpoint = "https://janusgate.example/api";
+    assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
+    config.endpoint = "https://janusgate.example/";
+    config.client_certificate = "/tmp/client.pem";
+    assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
+    config.client_key = "/tmp/client.key";
+    assert_int_equal(jg_cli_remote_config_validate(&config), 0);
+    config.timeout_seconds = JG_CLI_REMOTE_TIMEOUT_MAX + 1U;
+    assert_int_equal(jg_cli_remote_config_validate(&config), -ERANGE);
+}
+
 /** @brief Verify local request arguments fail before transport access. */
 static void test_request_validation(void **state)
 {
-    static const char token[] =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    static const char token[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     struct jg_cli_response response = {0};
     json_t *body = json_object();
 
@@ -86,6 +137,8 @@ int jg_test_cli_client(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_response_decoding),
+        cmocka_unit_test(test_http_response_decoding),
+        cmocka_unit_test(test_remote_config_validation),
         cmocka_unit_test(test_request_validation),
     };
 

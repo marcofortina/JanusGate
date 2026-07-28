@@ -146,7 +146,9 @@ target_include_directories(
   janusgate-cli-core
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/cli>")
 target_link_libraries(
-  janusgate-cli-core PUBLIC JanusGate::common PRIVATE PkgConfig::JANSSON)
+  janusgate-cli-core
+  PUBLIC JanusGate::common
+  PRIVATE PkgConfig::CURL PkgConfig::JANSSON)
 janusgate_apply_compiler_options(janusgate-cli-core)
 
 add_executable(janusgatectl src/cli/main.c)
