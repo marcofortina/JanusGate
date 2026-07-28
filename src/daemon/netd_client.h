@@ -42,6 +42,22 @@ int jg_netd_client_exchange(int socket_fd,
                             size_t body_size);
 
 /**
+ * @brief Validate one network configuration through the fixed helper socket.
+ *
+ * @param[in] config Complete proposed network configuration.
+ *
+ * @return 0 when both static and live-system validation succeed.
+ * @return A negative errno-style encoding, connection, protocol, or remote
+ * validation error otherwise.
+ *
+ * @thread_safety Calls use independent short-lived connections.
+ *
+ * @side_effects Connects to @ref JG_NETD_SOCKET_PATH without changing network
+ * state.
+ */
+int jg_netd_client_validate(const struct jg_network_config *config);
+
+/**
  * @brief Apply one network configuration through the fixed helper socket.
  *
  * @param[in] config Complete validated network configuration.

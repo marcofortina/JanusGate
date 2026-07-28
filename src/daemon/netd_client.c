@@ -21,8 +21,9 @@ int jg_netd_client_exchange(int socket_fd,
                                   0U, &response_size);
 }
 
-/** @brief Apply one configuration through a short-lived helper connection. */
-int jg_netd_client_apply(const struct jg_network_config *config)
+/** @brief Send one encoded configuration to the fixed helper socket. */
+static int call_network_operation(enum jg_ipc_operation operation,
+                                  const struct jg_network_config *config)
 {
     uint8_t body[JG_NETWORK_CONFIG_WIRE_SIZE];
     size_t body_size = 0U;
@@ -31,8 +32,20 @@ int jg_netd_client_apply(const struct jg_network_config *config)
         jg_network_config_encode(config, body, sizeof(body), &body_size);
 
     if (result == 0) {
-        result = jg_ipc_client_call(JG_NETD_SOCKET_PATH, JG_IPC_NETWORK_APPLY,
-                                    body, body_size, NULL, 0U, &response_size);
+        result = jg_ipc_client_call(JG_NETD_SOCKET_PATH, operation, body,
+                                    body_size, NULL, 0U, &response_size);
     }
     return result;
+}
+
+/** @brief Validate one configuration through a short-lived connection. */
+int jg_netd_client_validate(const struct jg_network_config *config)
+{
+    return call_network_operation(JG_IPC_NETWORK_VALIDATE, config);
+}
+
+/** @brief Apply one configuration through a short-lived helper connection. */
+int jg_netd_client_apply(const struct jg_network_config *config)
+{
+    return call_network_operation(JG_IPC_NETWORK_APPLY, config);
 }

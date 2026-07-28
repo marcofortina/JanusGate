@@ -79,6 +79,8 @@ static void test_arguments(void **state)
     assert_int_equal(jg_netd_client_exchange(0, JG_IPC_PING, NULL,
                                              JG_IPC_MAX_BODY_SIZE + 1U),
                      -EINVAL);
+    assert_int_equal(jg_netd_client_validate(&config), -EINVAL);
+    assert_int_equal(jg_netd_client_validate(NULL), -EINVAL);
     assert_int_equal(jg_netd_client_apply(&config), -EINVAL);
     assert_int_equal(jg_netd_client_apply(NULL), -EINVAL);
 }
