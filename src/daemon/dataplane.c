@@ -67,6 +67,37 @@ static int build_client(const struct jg_packet_view *packet,
     return 0;
 }
 
+/** @brief Evaluate packet destination properties before protocol inspection. */
+static int evaluate_destination(const struct jg_packet_view *packet,
+                                const struct jg_policy_client *client,
+                                const struct jg_policy_snapshot *snapshot,
+                                struct jg_dataplane_result *result)
+{
+    struct jg_policy_destination destination = {
+        .address_family = packet->ip_version == JG_IP_V4
+                              ? JG_POLICY_ADDRESS_IPV4
+                              : JG_POLICY_ADDRESS_IPV6,
+        .port = packet->destination_port,
+    };
+
+    if (packet->transport == JG_TRANSPORT_TCP) {
+        destination.transport = JG_POLICY_TRANSPORT_TCP;
+    } else if (packet->transport == JG_TRANSPORT_UDP) {
+        destination.transport = JG_POLICY_TRANSPORT_UDP;
+    }
+    (void)memcpy(destination.address, packet->destination_address,
+                 packet->address_size);
+    if (jg_policy_match_destination(snapshot, &destination, client,
+                                    &result->destination_policy) != 0) {
+        return -EINVAL;
+    }
+    if (result->destination_policy.effect == JG_POLICY_BLOCK) {
+        result->verdict = JG_NFQUEUE_DROP;
+        result->reason = JG_DATAPLANE_POLICY_BLOCK;
+    }
+    return 0;
+}
+
 /** @brief Evaluate every normalized question in one parsed DNS query. */
 static int evaluate_dns(const struct jg_dns_message *dns,
                         const struct jg_policy_client *client,
@@ -153,6 +184,12 @@ int jg_dataplane_evaluate(const uint8_t *frame,
     }
     if (result->packet_result != JG_PACKET_OK ||
         build_client(&result->packet, &client) != 0) {
+        return 0;
+    }
+    if (evaluate_destination(&result->packet, &client, snapshot, result) != 0) {
+        return -EINVAL;
+    }
+    if (result->reason == JG_DATAPLANE_POLICY_BLOCK) {
         return 0;
     }
     if (result->packet.fragmented) {

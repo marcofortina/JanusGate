@@ -4,7 +4,7 @@
 
 /**
  * @file dataplane.h
- * @brief Stateless packet classification against immutable domain policy.
+ * @brief Stateless packet classification against immutable network policy.
  */
 
 #ifndef JANUSGATE_DAEMON_DATAPLANE_H
@@ -21,7 +21,7 @@
  * @brief Explanation class for one stateless packet decision.
  */
 enum jg_dataplane_reason {
-    /** Packet is valid but does not require stateless domain policy. */
+    /** Packet is valid but does not require stateless policy. */
     JG_DATAPLANE_PASS = 1,
     /** Every selected domain is permitted by current policy. */
     JG_DATAPLANE_POLICY_ALLOW = 2,
@@ -56,15 +56,18 @@ struct jg_dataplane_result {
     size_t question_index;
     /** Domain-policy explanation, borrowing immutable snapshot storage. */
     struct jg_policy_match policy;
+    /** Destination-policy explanation, borrowing immutable snapshot storage. */
+    struct jg_policy_destination_match destination_policy;
 };
 
 /**
- * @brief Evaluate one complete Ethernet frame against immutable domain policy.
+ * @brief Evaluate one complete Ethernet frame against immutable network policy.
  *
- * Valid non-IP and non-DNS traffic is accepted. Complete UDP DNS queries are
- * blocked when any question has a blocking match. Malformed selected traffic
- * is dropped. Fragments and TCP policy traffic are accepted provisionally and
- * explicitly marked for the stateful layers which consume this result.
+ * Valid non-IP traffic is accepted. Destination rules apply to every parsed IP
+ * packet. Complete UDP DNS queries are additionally evaluated by name.
+ * Malformed selected traffic is dropped. Fragments and TCP policy traffic are
+ * accepted provisionally and explicitly marked for the stateful layers which
+ * consume this result.
  *
  * @param[in] frame Complete immutable Ethernet frame.
  * @param[in] frame_size Number of frame bytes.

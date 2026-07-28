@@ -61,6 +61,23 @@ static int build_sni_policy(struct jg_policy_snapshot **snapshot)
     return jg_policy_snapshot_build(&rule, 1U, 1U, snapshot);
 }
 
+/** @brief Build one immutable snapshot blocking UDP destination port 853. */
+static int build_destination_policy(struct jg_policy_snapshot **snapshot)
+{
+    const struct jg_policy_destination_rule_input rule = {
+        .id = 31U,
+        .effect = JG_POLICY_BLOCK,
+        .source = JG_POLICY_SOURCE_EXPLICIT,
+        .transport = JG_POLICY_TRANSPORT_UDP,
+        .has_port = true,
+        .port = 853U,
+        .scope = {.type = JG_POLICY_SCOPE_GLOBAL},
+        .attribution = "unit test",
+    };
+
+    return jg_policy_snapshot_build_complete(NULL, 0U, &rule, 1U, 1U, snapshot);
+}
+
 /** @brief Verify block, default allow, and malformed DNS decisions. */
 static void test_udp_dns_policy(void **state)
 {
@@ -188,6 +205,30 @@ static void test_visible_sni_policy(void **state)
     jg_policy_snapshot_destroy(snapshot);
 }
 
+/** @brief Verify destination policy is enforced before payload inspection. */
+static void test_destination_policy(void **state)
+{
+    uint8_t frame[sizeof(blocked_query)];
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_dataplane_result result;
+
+    (void)state;
+    assert_int_equal(build_destination_policy(&snapshot), 0);
+    (void)memcpy(frame, blocked_query, sizeof(frame));
+    frame[36U] = 0x03U;
+    frame[37U] = 0x55U;
+
+    assert_int_equal(
+        jg_dataplane_evaluate(frame, sizeof(frame), NULL, snapshot, &result),
+        0);
+    assert_int_equal(result.verdict, JG_NFQUEUE_DROP);
+    assert_int_equal(result.reason, JG_DATAPLANE_POLICY_BLOCK);
+    assert_true(result.destination_policy.matched);
+    assert_int_equal(result.destination_policy.rule_id, 31U);
+    assert_false(result.policy.matched);
+    jg_policy_snapshot_destroy(snapshot);
+}
+
 /** @brief Verify argument rejection leaves a conservative result. */
 static void test_arguments(void **state)
 {
@@ -225,6 +266,7 @@ int jg_test_dataplane(void)
         cmocka_unit_test(test_multiple_questions),
         cmocka_unit_test(test_deferred_and_pass),
         cmocka_unit_test(test_visible_sni_policy),
+        cmocka_unit_test(test_destination_policy),
         cmocka_unit_test(test_arguments),
     };
 

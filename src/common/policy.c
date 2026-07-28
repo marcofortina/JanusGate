@@ -1273,11 +1273,11 @@ int jg_policy_match_visible_sni(const struct jg_policy_snapshot *snapshot,
 static bool destination_valid(const struct jg_policy_destination *destination)
 {
     return destination != NULL &&
-           (destination->transport == JG_POLICY_TRANSPORT_TCP ||
+           (destination->transport == JG_POLICY_TRANSPORT_ANY ||
+            destination->transport == JG_POLICY_TRANSPORT_TCP ||
             destination->transport == JG_POLICY_TRANSPORT_UDP) &&
            (destination->address_family == JG_POLICY_ADDRESS_IPV4 ||
-            destination->address_family == JG_POLICY_ADDRESS_IPV6) &&
-           destination->port != 0U;
+            destination->address_family == JG_POLICY_ADDRESS_IPV6);
 }
 
 /** @brief Test one stored destination rule against packet properties. */

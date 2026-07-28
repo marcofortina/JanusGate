@@ -338,6 +338,13 @@ static void test_destination_policy(void **state)
     assert_int_equal(match.effect, JG_POLICY_BLOCK);
     assert_int_equal(match.rule_id, 30U);
 
+    destination.transport = JG_POLICY_TRANSPORT_ANY;
+    destination.port = 0U;
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.rule_id, 30U);
+
     destination.address[0U] = 192U;
     assert_int_equal(
         jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);

@@ -201,13 +201,13 @@ struct jg_policy_destination_rule_input {
  * @brief Destination properties supplied to immutable policy matching.
  */
 struct jg_policy_destination {
-    /** TCP or UDP transport. */
+    /** TCP, UDP, or any when no transport selector is available. */
     enum jg_policy_transport transport;
     /** IPv4 or IPv6 destination family. */
     enum jg_policy_address_family address_family;
     /** Network-order destination address. */
     uint8_t address[16U];
-    /** Nonzero destination transport port. */
+    /** Destination transport port, or zero when unavailable. */
     uint16_t port;
 };
 
