@@ -12,6 +12,9 @@
 
 #include <sodium.h>
 
+/** Alphabet used by canonical unpadded TOTP secret encoding. */
+static const char base32_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
 /** @brief Initialize the cryptographic provider. */
 static int initialize_crypto(void)
 {
@@ -188,4 +191,212 @@ bool jg_auth_secret_digest_equal(
 {
     return left != NULL && right != NULL &&
            sodium_memcmp(left, right, JG_AUTH_SECRET_DIGEST_SIZE) == 0;
+}
+
+/** @brief Encode a fixed-size TOTP secret as canonical unpadded Base32. */
+static void totp_secret_encode(const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+                               char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE])
+{
+    uint32_t bits = 0U;
+    unsigned int bit_count = 0U;
+    size_t output_index = 0U;
+
+    for (size_t index = 0U; index < JG_AUTH_TOTP_SECRET_SIZE; ++index) {
+        bits = (bits << 8U) | secret[index];
+        bit_count += 8U;
+        while (bit_count >= 5U) {
+            bit_count -= 5U;
+            encoded[output_index] =
+                base32_alphabet[(bits >> bit_count) & UINT32_C(0x1f)];
+            ++output_index;
+        }
+    }
+    if (bit_count != 0U) {
+        encoded[output_index] =
+            base32_alphabet[(bits << (5U - bit_count)) & UINT32_C(0x1f)];
+        ++output_index;
+    }
+    encoded[output_index] = '\0';
+}
+
+/** @brief Return one canonical Base32 symbol value or a negative error. */
+static int base32_value(char character)
+{
+    if (character >= 'A' && character <= 'Z') {
+        return character - 'A';
+    }
+    if (character >= '2' && character <= '7') {
+        return character - '2' + 26;
+    }
+    return -EINVAL;
+}
+
+/** @brief Generate one random TOTP secret and its provisioning text. */
+int jg_auth_totp_secret_issue(uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+                              char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE])
+{
+    int result = 0;
+
+    if (secret == NULL || encoded == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(secret, 0, JG_AUTH_TOTP_SECRET_SIZE);
+    (void)memset(encoded, 0, JG_AUTH_TOTP_SECRET_TEXT_SIZE);
+    result = initialize_crypto();
+    if (result == 0) {
+        randombytes_buf(secret, JG_AUTH_TOTP_SECRET_SIZE);
+        totp_secret_encode(secret, encoded);
+    }
+    return result;
+}
+
+/** @brief Decode one exact canonical unpadded Base32 TOTP secret. */
+int jg_auth_totp_secret_decode(
+    const char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE],
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE])
+{
+    uint32_t bits = 0U;
+    unsigned int bit_count = 0U;
+    size_t output_index = 0U;
+    size_t input_index = 0U;
+    int value = 0;
+    int result = 0;
+
+    if (encoded == NULL || secret == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(secret, 0, JG_AUTH_TOTP_SECRET_SIZE);
+    if (encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE - 1U] != '\0') {
+        return -EINVAL;
+    }
+    while (input_index < JG_AUTH_TOTP_SECRET_TEXT_SIZE - 1U &&
+           encoded[input_index] != '\0') {
+        value = base32_value(encoded[input_index]);
+        if (value < 0) {
+            result = value;
+            break;
+        }
+        bits = (bits << 5U) | (uint32_t)value;
+        bit_count += 5U;
+        if (bit_count >= 8U) {
+            bit_count -= 8U;
+            if (output_index >= JG_AUTH_TOTP_SECRET_SIZE) {
+                result = -EINVAL;
+                break;
+            }
+            secret[output_index] = (uint8_t)(bits >> bit_count);
+            ++output_index;
+        }
+        ++input_index;
+    }
+    if (result == 0 && (input_index != JG_AUTH_TOTP_SECRET_TEXT_SIZE - 1U ||
+                        output_index != JG_AUTH_TOTP_SECRET_SIZE ||
+                        (bits & ((UINT32_C(1) << bit_count) - 1U)) != 0U)) {
+        result = -EINVAL;
+    }
+    if (result != 0) {
+        sodium_memzero(secret, JG_AUTH_TOTP_SECRET_SIZE);
+    }
+    return result;
+}
+
+/** @brief Generate one HMAC-SHA-256 TOTP code for a moving counter. */
+static int totp_generate_counter(const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+                                 uint64_t counter,
+                                 uint32_t *code)
+{
+    crypto_auth_hmacsha256_state state;
+    uint8_t digest[crypto_auth_hmacsha256_BYTES];
+    uint8_t message[8U];
+    size_t offset = 0U;
+    uint32_t binary = 0U;
+    int result = initialize_crypto();
+
+    if (result != 0) {
+        return result;
+    }
+    for (size_t index = 0U; index < sizeof(message); ++index) {
+        message[sizeof(message) - index - 1U] =
+            (uint8_t)(counter >> (index * 8U));
+    }
+    if (crypto_auth_hmacsha256_init(&state, secret, JG_AUTH_TOTP_SECRET_SIZE) !=
+            0 ||
+        crypto_auth_hmacsha256_update(&state, message, sizeof(message)) != 0 ||
+        crypto_auth_hmacsha256_final(&state, digest) != 0) {
+        sodium_memzero(&state, sizeof(state));
+        sodium_memzero(digest, sizeof(digest));
+        return -EIO;
+    }
+    offset = digest[sizeof(digest) - 1U] & UINT8_C(0x0f);
+    binary = ((uint32_t)(digest[offset] & UINT8_C(0x7f)) << 24U) |
+             ((uint32_t)digest[offset + 1U] << 16U) |
+             ((uint32_t)digest[offset + 2U] << 8U) |
+             (uint32_t)digest[offset + 3U];
+    *code = binary % UINT32_C(1000000);
+    sodium_memzero(&state, sizeof(state));
+    sodium_memzero(digest, sizeof(digest));
+    return 0;
+}
+
+/** @brief Generate one TOTP code for a Unix timestamp. */
+int jg_auth_totp_generate(const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+                          uint64_t timestamp,
+                          uint32_t *code)
+{
+    if (secret == NULL || code == NULL) {
+        return -EINVAL;
+    }
+    *code = 0U;
+    return totp_generate_counter(secret, timestamp / JG_AUTH_TOTP_PERIOD, code);
+}
+
+/** @brief Format one TOTP code as six fixed decimal bytes. */
+static void format_totp_code(uint32_t code, uint8_t output[JG_AUTH_TOTP_DIGITS])
+{
+    for (size_t index = JG_AUTH_TOTP_DIGITS; index > 0U; --index) {
+        output[index - 1U] = (uint8_t)('0' + (code % 10U));
+        code /= 10U;
+    }
+}
+
+/** @brief Verify a TOTP code across one bounded counter window. */
+int jg_auth_totp_verify(const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+                        uint64_t timestamp,
+                        uint32_t code,
+                        uint32_t window,
+                        bool *valid)
+{
+    uint8_t candidate[JG_AUTH_TOTP_DIGITS];
+    uint8_t expected[JG_AUTH_TOTP_DIGITS];
+    const uint64_t counter = timestamp / JG_AUTH_TOTP_PERIOD;
+    uint64_t first = counter > window ? counter - window : 0U;
+    uint64_t last = counter;
+    uint32_t expected_code = 0U;
+    int result = 0;
+
+    if (valid == NULL) {
+        return -EINVAL;
+    }
+    *valid = false;
+    if (secret == NULL || code >= UINT32_C(1000000)) {
+        return -EINVAL;
+    }
+    if (window > JG_AUTH_TOTP_WINDOW_MAX) {
+        return -ERANGE;
+    }
+    last = window > UINT64_MAX - counter ? UINT64_MAX : counter + window;
+    format_totp_code(code, candidate);
+    for (uint64_t current = first; result == 0 && current <= last; ++current) {
+        result = totp_generate_counter(secret, current, &expected_code);
+        if (result == 0) {
+            format_totp_code(expected_code, expected);
+            *valid |=
+                sodium_memcmp(candidate, expected, sizeof(candidate)) == 0;
+        }
+        if (current == UINT64_MAX) {
+            break;
+        }
+    }
+    sodium_memzero(expected, sizeof(expected));
+    return result;
 }

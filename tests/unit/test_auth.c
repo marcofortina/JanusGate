@@ -110,6 +110,51 @@ static void test_opaque_secrets(void **state)
     assert_false(jg_auth_secret_digest_equal(NULL, repeated_digest));
 }
 
+/** @brief Verify canonical TOTP provisioning and RFC-compatible codes. */
+static void test_totp(void **state)
+{
+    static const uint8_t vector[JG_AUTH_TOTP_SECRET_SIZE] =
+        "12345678901234567890123456789012";
+    uint8_t issued[JG_AUTH_TOTP_SECRET_SIZE];
+    uint8_t decoded[JG_AUTH_TOTP_SECRET_SIZE];
+    char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE];
+    uint32_t code = 0U;
+    bool valid = false;
+
+    (void)state;
+    assert_int_equal(jg_auth_totp_secret_issue(issued, encoded), 0);
+    assert_int_equal(strlen(encoded), JG_AUTH_TOTP_SECRET_TEXT_SIZE - 1U);
+    assert_int_equal(jg_auth_totp_secret_decode(encoded, decoded), 0);
+    assert_memory_equal(decoded, issued, sizeof(decoded));
+
+    assert_int_equal(jg_auth_totp_generate(vector, 59U, &code), 0);
+    assert_int_equal(code, 119246U);
+    assert_int_equal(jg_auth_totp_verify(vector, 59U, code, 0U, &valid), 0);
+    assert_true(valid);
+    assert_int_equal(jg_auth_totp_verify(vector, 89U, code, 1U, &valid), 0);
+    assert_true(valid);
+    assert_int_equal(jg_auth_totp_verify(vector, 90U, code, 0U, &valid), 0);
+    assert_false(valid);
+}
+
+/** @brief Verify rejection of malformed TOTP inputs and unsafe windows. */
+static void test_totp_validation(void **state)
+{
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE] = {0};
+    char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE] = {0};
+    bool valid = false;
+
+    (void)state;
+    (void)memset(encoded, 'A', sizeof(encoded) - 1U);
+    encoded[0U] = 'a';
+    assert_int_equal(jg_auth_totp_secret_decode(encoded, secret), -EINVAL);
+    assert_int_equal(jg_auth_totp_verify(secret, 0U, 1000000U, 0U, &valid),
+                     -EINVAL);
+    assert_int_equal(jg_auth_totp_verify(secret, 0U, 0U,
+                                         JG_AUTH_TOTP_WINDOW_MAX + 1U, &valid),
+                     -ERANGE);
+}
+
 /** @brief Run the authentication primitive test group. */
 int jg_test_auth(void)
 {
@@ -117,6 +162,8 @@ int jg_test_auth(void)
         cmocka_unit_test(test_password_hashing),
         cmocka_unit_test(test_password_validation),
         cmocka_unit_test(test_opaque_secrets),
+        cmocka_unit_test(test_totp),
+        cmocka_unit_test(test_totp_validation),
     };
 
     return cmocka_run_group_tests_name("auth", tests, NULL, NULL);

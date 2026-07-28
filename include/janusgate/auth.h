@@ -42,6 +42,21 @@
 /** Bytes in the persistent digest of an opaque secret. */
 #define JG_AUTH_SECRET_DIGEST_SIZE 32U
 
+/** Raw random bytes in one TOTP secret. */
+#define JG_AUTH_TOTP_SECRET_SIZE 32U
+
+/** Canonical unpadded Base32 bytes for one TOTP secret, including null. */
+#define JG_AUTH_TOTP_SECRET_TEXT_SIZE 53U
+
+/** Seconds in one TOTP counter period. */
+#define JG_AUTH_TOTP_PERIOD 30U
+
+/** Decimal digits in one JanusGate TOTP code. */
+#define JG_AUTH_TOTP_DIGITS 6U
+
+/** Largest accepted verification window on either side of the current step. */
+#define JG_AUTH_TOTP_WINDOW_MAX 10U
+
 /** Minimum accepted Argon2id memory cost. */
 #define JG_AUTH_MEMORY_MIN (8U * 1024U * 1024U)
 
@@ -172,5 +187,87 @@ JG_PUBLIC int jg_auth_secret_digest(const uint8_t *secret,
 JG_PUBLIC bool jg_auth_secret_digest_equal(
     const uint8_t left[JG_AUTH_SECRET_DIGEST_SIZE],
     const uint8_t right[JG_AUTH_SECRET_DIGEST_SIZE]);
+
+/**
+ * @brief Generate one TOTP secret and its canonical Base32 representation.
+ *
+ * The text form is unpadded uppercase Base32 suitable for an `otpauth` URI.
+ * The caller must encrypt the raw secret before persistent storage and clear
+ * both representations as soon as provisioning finishes.
+ *
+ * @param[out] secret Receives 256 random secret bits.
+ * @param[out] encoded Receives the null-terminated Base32 representation.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null output.
+ * @return -EIO when the cryptographic provider cannot initialize.
+ *
+ * @thread_safety This function is reentrant.
+ *
+ * @side_effects Obtains random bytes from the operating system.
+ */
+JG_PUBLIC int jg_auth_totp_secret_issue(
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+    char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE]);
+
+/**
+ * @brief Decode one exact canonical JanusGate TOTP secret.
+ *
+ * @param[in] encoded Null-terminated uppercase unpadded Base32 text.
+ * @param[out] secret Receives the decoded secret.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null, malformed, noncanonical, or incorrectly sized
+ * representation.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_auth_totp_secret_decode(
+    const char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE],
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE]);
+
+/**
+ * @brief Generate the six-digit TOTP code for one Unix timestamp.
+ *
+ * Codes use a 30-second moving counter and HMAC-SHA-256.
+ *
+ * @param[in] secret Exact raw TOTP secret.
+ * @param[in] timestamp Unix timestamp in seconds.
+ * @param[out] code Receives a value from 0 through 999999.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EIO when the cryptographic provider cannot initialize.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_auth_totp_generate(
+    const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+    uint64_t timestamp,
+    uint32_t *code);
+
+/**
+ * @brief Verify one TOTP code within a bounded symmetric time window.
+ *
+ * @param[in] secret Exact raw TOTP secret.
+ * @param[in] timestamp Current Unix timestamp in seconds.
+ * @param[in] code Candidate value from 0 through 999999.
+ * @param[in] window Accepted counter steps before and after the current step,
+ * at most @ref JG_AUTH_TOTP_WINDOW_MAX.
+ * @param[out] valid Receives whether one counter in the window matched.
+ *
+ * @return 0 when verification was performed.
+ * @return -EINVAL for a null argument or invalid code.
+ * @return -ERANGE when @p window exceeds the supported bound.
+ * @return -EIO when the cryptographic provider cannot initialize.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_auth_totp_verify(
+    const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+    uint64_t timestamp,
+    uint32_t code,
+    uint32_t window,
+    bool *valid);
 
 #endif
