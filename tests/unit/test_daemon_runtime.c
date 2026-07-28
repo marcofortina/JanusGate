@@ -49,6 +49,7 @@ static void test_operations(void **state)
 {
     struct jg_daemon_runtime_config config;
     struct jg_daemon_runtime *runtime = NULL;
+    struct jg_daemon_runtime_stats stats;
     uint64_t generation = 0U;
 
     (void)state;
@@ -64,6 +65,8 @@ static void test_operations(void **state)
                      -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_policy_generation(runtime, NULL),
                      -EINVAL);
+    assert_int_equal(jg_daemon_runtime_get_stats(NULL, &stats), -EINVAL);
+    assert_int_equal(jg_daemon_runtime_get_stats(runtime, NULL), -EINVAL);
     jg_daemon_runtime_destroy(NULL);
 }
 

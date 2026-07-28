@@ -13,6 +13,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "dataplane_worker.h"
+#include "nfqueue.h"
+#include "packet_output.h"
+
 /** Default persistent database used by the production daemon. */
 #define JG_DAEMON_DATABASE_PATH "/var/lib/janusgate/janusgate.db"
 
@@ -36,6 +40,24 @@ struct jg_daemon_runtime_config {
 
 /** Opaque owner of one running or stopped packet runtime. */
 struct jg_daemon_runtime;
+
+/**
+ * @brief Lock-efficient aggregate health counters for one packet runtime.
+ */
+struct jg_daemon_runtime_stats {
+    /** Current immutable policy generation. */
+    uint64_t policy_generation;
+    /** Aggregate kernel queue transport counters. */
+    struct jg_nfqueue_stats queues;
+    /** Aggregate packet classification counters. */
+    struct jg_dataplane_stats dataplane;
+    /** Aggregate fragment reconstruction counters. */
+    struct jg_fragment_stats fragments;
+    /** Aggregate DNS-over-TCP stream counters. */
+    struct jg_tcp_stream_stats tcp_streams;
+    /** Aggregate raw frame output counters. */
+    struct jg_packet_output_stats output;
+};
 
 /**
  * @brief Initialize conservative production runtime defaults.
@@ -154,6 +176,23 @@ int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime);
 int jg_daemon_runtime_get_policy_generation(
     const struct jg_daemon_runtime *runtime,
     uint64_t *generation);
+
+/**
+ * @brief Aggregate current queue and packet-path counters.
+ *
+ * Counter sums saturate at UINT64_MAX.
+ *
+ * @param[in] runtime Running packet runtime.
+ * @param[out] stats Receives one relaxed aggregate snapshot.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return A negative worker-counter error otherwise.
+ *
+ * @thread_safety Safe while packet workers run and policy reloads.
+ */
+int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
+                                struct jg_daemon_runtime_stats *stats);
 
 /**
  * @brief Stop and release the complete packet runtime.

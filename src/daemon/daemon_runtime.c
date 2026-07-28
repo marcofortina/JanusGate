@@ -32,6 +32,71 @@ struct jg_daemon_runtime {
     size_t worker_count;
 };
 
+/** @brief Add one counter with saturation at its largest representation. */
+static void saturating_add(uint64_t value, uint64_t *total)
+{
+    *total = value > UINT64_MAX - *total ? UINT64_MAX : *total + value;
+}
+
+/** @brief Add one worker's packet-path counters to an aggregate snapshot. */
+static int aggregate_worker(const struct jg_daemon_runtime *runtime,
+                            size_t index,
+                            struct jg_daemon_runtime_stats *stats)
+{
+    struct jg_dataplane_stats dataplane;
+    struct jg_fragment_stats fragments;
+    struct jg_tcp_stream_stats tcp_streams;
+    struct jg_packet_output_stats output;
+    int result =
+        jg_dataplane_worker_get_stats(runtime->workers[index], &dataplane);
+
+    if (result == 0) {
+        result = jg_dataplane_worker_get_fragment_stats(runtime->workers[index],
+                                                        &fragments);
+    }
+    if (result == 0) {
+        result = jg_dataplane_worker_get_stream_stats(runtime->workers[index],
+                                                      &tcp_streams);
+    }
+    if (result == 0) {
+        result = jg_packet_output_get_stats(runtime->outputs[index], &output);
+    }
+    if (result != 0) {
+        return result;
+    }
+
+    saturating_add(dataplane.packets, &stats->dataplane.packets);
+    saturating_add(dataplane.accepted, &stats->dataplane.accepted);
+    saturating_add(dataplane.blocked, &stats->dataplane.blocked);
+    saturating_add(dataplane.malformed, &stats->dataplane.malformed);
+    saturating_add(dataplane.fragments, &stats->dataplane.fragments);
+    saturating_add(dataplane.streams, &stats->dataplane.streams);
+    saturating_add(dataplane.tcp_resets, &stats->dataplane.tcp_resets);
+    saturating_add(dataplane.internal_errors,
+                   &stats->dataplane.internal_errors);
+
+    saturating_add(fragments.stored, &stats->fragments.stored);
+    saturating_add(fragments.duplicates, &stats->fragments.duplicates);
+    saturating_add(fragments.completed, &stats->fragments.completed);
+    saturating_add(fragments.malformed, &stats->fragments.malformed);
+    saturating_add(fragments.overlaps, &stats->fragments.overlaps);
+    saturating_add(fragments.exhausted, &stats->fragments.exhausted);
+    saturating_add(fragments.timeouts, &stats->fragments.timeouts);
+
+    saturating_add(tcp_streams.buffered, &stats->tcp_streams.buffered);
+    saturating_add(tcp_streams.duplicates, &stats->tcp_streams.duplicates);
+    saturating_add(tcp_streams.messages, &stats->tcp_streams.messages);
+    saturating_add(tcp_streams.closed, &stats->tcp_streams.closed);
+    saturating_add(tcp_streams.malformed, &stats->tcp_streams.malformed);
+    saturating_add(tcp_streams.conflicts, &stats->tcp_streams.conflicts);
+    saturating_add(tcp_streams.exhausted, &stats->tcp_streams.exhausted);
+    saturating_add(tcp_streams.timeouts, &stats->tcp_streams.timeouts);
+
+    saturating_add(output.sent, &stats->output.sent);
+    saturating_add(output.errors, &stats->output.errors);
+    return 0;
+}
+
 /** @brief Resolve one configured Linux interface to its stable index. */
 static int resolve_interface(const char *name, uint32_t *index)
 {
@@ -264,6 +329,29 @@ int jg_daemon_runtime_get_policy_generation(
     *generation =
         atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
     return 0;
+}
+
+/** @brief Aggregate relaxed queue and packet-path counter snapshots. */
+int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
+                                struct jg_daemon_runtime_stats *stats)
+{
+    struct jg_daemon_runtime_stats aggregate = {0};
+    size_t index = 0U;
+    int result = 0;
+
+    if (runtime == NULL || stats == NULL) {
+        return -EINVAL;
+    }
+    aggregate.policy_generation =
+        atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
+    result = jg_nfqueue_group_get_stats(runtime->queues, &aggregate.queues);
+    for (index = 0U; result == 0 && index < runtime->worker_count; ++index) {
+        result = aggregate_worker(runtime, index, &aggregate);
+    }
+    if (result == 0) {
+        *stats = aggregate;
+    }
+    return result;
 }
 
 /** @brief Release the packet runtime in reverse ownership order. */
