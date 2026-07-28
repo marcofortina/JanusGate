@@ -11,7 +11,9 @@
 #define JANUSGATE_DAEMON_POLICY_STORE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
+#include "janusgate/database.h"
 #include "janusgate/policy.h"
 
 /** Largest supported number of independent policy readers. */
@@ -87,6 +89,30 @@ void jg_policy_store_release(struct jg_policy_store *store,
  */
 int jg_policy_store_replace(struct jg_policy_store *store,
                             struct jg_policy_snapshot *replacement);
+
+/**
+ * @brief Build and atomically publish policy from one database view.
+ *
+ * A load or validation failure leaves the current snapshot unchanged.
+ *
+ * @param[in,out] store Policy store receiving the replacement.
+ * @param[in,out] database Open persistent database.
+ * @param[in] generation Nonzero generation assigned to the replacement.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument or zero generation.
+ * @return A negative errno-style database, allocation, validation, or
+ * replacement error otherwise.
+ *
+ * @thread_safety Calls require one externally serialized writer. Readers
+ * remain lock-free.
+ *
+ * @side_effects Reads persistent rules and reclaims the previous snapshot
+ * after its readers become quiescent.
+ */
+int jg_policy_store_reload_from_database(struct jg_policy_store *store,
+                                         struct jg_database *database,
+                                         uint64_t generation);
 
 /**
  * @brief Destroy a policy store and its current snapshot.

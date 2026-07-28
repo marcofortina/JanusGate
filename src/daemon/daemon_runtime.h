@@ -123,6 +123,39 @@ int jg_daemon_runtime_wait(struct jg_daemon_runtime *runtime);
 int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime);
 
 /**
+ * @brief Reload persistent domain policy into a new immutable generation.
+ *
+ * A failed database read or snapshot build leaves the active policy and
+ * generation unchanged.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null runtime.
+ * @return -EOVERFLOW when the generation counter is exhausted.
+ * @return A negative errno-style database, allocation, validation, or
+ * replacement error otherwise.
+ *
+ * @thread_safety Calls require one externally serialized control writer.
+ */
+int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime);
+
+/**
+ * @brief Read the current immutable policy generation.
+ *
+ * @param[in] runtime Packet runtime.
+ * @param[out] generation Receives the current nonzero generation.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ *
+ * @thread_safety Safe while one control writer reloads policy.
+ */
+int jg_daemon_runtime_get_policy_generation(
+    const struct jg_daemon_runtime *runtime,
+    uint64_t *generation);
+
+/**
  * @brief Stop and release the complete packet runtime.
  *
  * @param[in,out] runtime Runtime to release; null is accepted.

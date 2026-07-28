@@ -5,6 +5,7 @@
 #include "daemon_runtime.h"
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@ struct jg_daemon_runtime {
     struct jg_dataplane_worker *workers[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_packet_output *outputs[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_nfqueue_group *queues;
+    atomic_uint_fast64_t policy_generation;
     size_t worker_count;
 };
 
@@ -164,6 +166,7 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
         }
     }
     if (result == 0) {
+        atomic_init(&started->policy_generation, 1U);
         result = jg_database_open(config->database_path,
                                   config->database_busy_timeout_ms,
                                   &started->database);
@@ -224,6 +227,43 @@ int jg_daemon_runtime_wait(struct jg_daemon_runtime *runtime)
 int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime)
 {
     return runtime == NULL ? -EINVAL : jg_nfqueue_group_join(runtime->queues);
+}
+
+/** @brief Load and publish the next persistent policy generation. */
+int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime)
+{
+    uint64_t generation = 0U;
+    int result = 0;
+
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    generation =
+        atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
+    if (generation == UINT64_MAX) {
+        return -EOVERFLOW;
+    }
+    ++generation;
+    result = jg_policy_store_reload_from_database(
+        runtime->policies, runtime->database, generation);
+    if (result == 0) {
+        atomic_store_explicit(&runtime->policy_generation, generation,
+                              memory_order_release);
+    }
+    return result;
+}
+
+/** @brief Read the current published policy generation. */
+int jg_daemon_runtime_get_policy_generation(
+    const struct jg_daemon_runtime *runtime,
+    uint64_t *generation)
+{
+    if (runtime == NULL || generation == NULL) {
+        return -EINVAL;
+    }
+    *generation =
+        atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
+    return 0;
 }
 
 /** @brief Release the packet runtime in reverse ownership order. */

@@ -130,6 +130,29 @@ int jg_policy_store_replace(struct jg_policy_store *store,
     return 0;
 }
 
+/** @brief Load, validate, and atomically publish one persistent policy view. */
+int jg_policy_store_reload_from_database(struct jg_policy_store *store,
+                                         struct jg_database *database,
+                                         uint64_t generation)
+{
+    struct jg_policy_snapshot *replacement = NULL;
+    int result = 0;
+
+    if (store == NULL || database == NULL || generation == 0U) {
+        return -EINVAL;
+    }
+    result =
+        jg_database_load_policy_snapshot(database, generation, &replacement);
+    if (result == 0) {
+        result = jg_policy_store_replace(store, replacement);
+        if (result == 0) {
+            replacement = NULL;
+        }
+    }
+    jg_policy_snapshot_destroy(replacement);
+    return result;
+}
+
 /** @brief Release the current snapshot and policy store allocation. */
 void jg_policy_store_destroy(struct jg_policy_store *store)
 {
