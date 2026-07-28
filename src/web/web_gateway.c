@@ -139,13 +139,14 @@ static int read_json_body(struct mg_connection *connection,
     const bool body_required = strcmp(request->request_method, "POST") == 0 ||
                                strcmp(request->request_method, "PUT") == 0 ||
                                strcmp(request->request_method, "PATCH") == 0;
+    const bool body_optional = strcmp(request->request_method, "DELETE") == 0;
     uint8_t *data = NULL;
     size_t offset = 0U;
     json_error_t error;
     int result = 0;
 
     *body = NULL;
-    if (!body_required) {
+    if (!body_required && (!body_optional || request->content_length == 0)) {
         if (request->content_length > 0) {
             return -EINVAL;
         }
