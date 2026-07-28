@@ -79,6 +79,7 @@ add_library(
   src/daemon/nfqueue.c
   src/daemon/nfqueue_group.c
   src/daemon/policy_store.c
+  src/daemon/tcp_reset.c
   src/daemon/tcp_stream.c)
 target_include_directories(
   janusgate-daemon-core

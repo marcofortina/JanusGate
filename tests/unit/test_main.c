@@ -25,6 +25,7 @@ int jg_test_nfqueue(void);
 int jg_test_packet(void);
 int jg_test_policy(void);
 int jg_test_policy_store(void);
+int jg_test_tcp_reset(void);
 int jg_test_tcp_stream(void);
 
 /** @brief Run every unit-test group and combine their exit status. */
@@ -47,6 +48,7 @@ int main(void)
     result |= jg_test_packet();
     result |= jg_test_policy();
     result |= jg_test_policy_store();
+    result |= jg_test_tcp_reset();
     result |= jg_test_tcp_stream();
     return result;
 }
