@@ -124,6 +124,9 @@ static void print_usage(FILE *output)
                 "       janusgatectl [OPTIONS] token list\n"
                 "       janusgatectl [OPTIONS] token create FILE\n"
                 "       janusgatectl [OPTIONS] token revoke ID\n"
+                "       janusgatectl [OPTIONS] certificate show\n"
+                "       janusgatectl [OPTIONS] certificate install FILE\n"
+                "       janusgatectl [OPTIONS] certificate csr FILE\n"
                 "       janusgatectl [--socket PATH] [--json] ping\n"
                 "       janusgatectl [--socket PATH] [--json] policy reload\n"
                 "       janusgatectl --version\n"
@@ -1923,6 +1926,114 @@ static int run_token_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Inspect current public server-certificate metadata. */
+static int run_certificate_show(const struct cli_options *options,
+                                const char *token)
+{
+    json_t *body = NULL;
+    int result =
+        fetch_api_object(options, token, "/api/v1/certificates", NULL, &body);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Install one certificate document against the current fingerprint. */
+static int run_certificate_install(const struct cli_options *options,
+                                   const char *token,
+                                   const char *file)
+{
+    json_t *current = NULL;
+    json_t *certificate = NULL;
+    json_t *fingerprint = NULL;
+    json_t *body = NULL;
+    int read_result = 0;
+    int result = fetch_api_object(options, token, "/api/v1/certificates", NULL,
+                                  &current);
+
+    if (result == CLI_EXIT_SUCCESS &&
+        !destructive_operation_confirmed(options,
+                                         "Replace the server certificate")) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        body = read_json_object(file, &read_result);
+        if (body == NULL) {
+            (void)fprintf(stderr, "janusgatectl: certificate document: %s\n",
+                          strerror(-read_result));
+            result = read_result == -EINVAL || read_result == -EMSGSIZE
+                         ? CLI_EXIT_USAGE
+                         : CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        certificate = json_object_get(current, "certificate");
+        fingerprint = json_object_get(certificate, "fingerprint_sha256");
+        if (!json_is_string(fingerprint) ||
+            json_object_set(body, "expected_fingerprint", fingerprint) != 0 ||
+            (json_object_get(body, "private_key") == NULL &&
+             json_object_set_new(body, "private_key", json_null()) != 0)) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "certificate install", "POST",
+                                  "/api/v1/certificates/install", body);
+    }
+    json_decref(body);
+    json_decref(current);
+    return result;
+}
+
+/** @brief Create one CSR from a bounded local JSON document. */
+static int run_certificate_csr(const struct cli_options *options,
+                               const char *token,
+                               const char *file)
+{
+    json_t *body = NULL;
+    int read_result = 0;
+    int result = CLI_EXIT_SUCCESS;
+
+    body = read_json_object(file, &read_result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: CSR document: %s\n",
+                      strerror(-read_result));
+        return read_result == -EINVAL || read_result == -EMSGSIZE
+                   ? CLI_EXIT_USAGE
+                   : CLI_EXIT_FAILURE;
+    }
+    result = send_api_request(options, token, "certificate csr", "POST",
+                              "/api/v1/certificates/csr", body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Run one recognized server-certificate administration command. */
+static int run_certificate_command(const struct cli_options *options,
+                                   int argc,
+                                   char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "show") == 0) {
+        result = run_certificate_show(options, token);
+    } else if (strcmp(argv[1], "install") == 0) {
+        result = run_certificate_install(options, token, argv[2]);
+    } else {
+        result = run_certificate_csr(options, token, argv[2]);
+    }
+    (void)argc;
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Query operational events or immutable audit records. */
 static int run_record_command(const struct cli_options *options,
                               int argc,
@@ -2018,6 +2129,12 @@ static int run_command(const struct cli_options *options,
          (argc == 3 && (strcmp(argv[1], "create") == 0 ||
                         strcmp(argv[1], "revoke") == 0)))) {
         return run_token_command(options, argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "certificate") == 0 &&
+        ((argc == 2 && strcmp(argv[1], "show") == 0) ||
+         (argc == 3 &&
+          (strcmp(argv[1], "install") == 0 || strcmp(argv[1], "csr") == 0)))) {
+        return run_certificate_command(options, argc, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
