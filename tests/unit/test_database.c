@@ -137,6 +137,24 @@ static sqlite3_int64 row_count(sqlite3 *handle, const char *table)
     return count;
 }
 
+/** @brief Assert one trusted scalar query returns the expected text. */
+static void assert_text_value(sqlite3 *handle,
+                              const char *query,
+                              const char *expected)
+{
+    sqlite3_stmt *statement = NULL;
+    const unsigned char *actual = NULL;
+
+    assert_int_equal(sqlite3_prepare_v2(handle, query, -1, &statement, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    actual = sqlite3_column_text(statement, 0);
+    assert_non_null(actual);
+    assert_string_equal((const char *)actual, expected);
+    assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+}
+
 /** @brief Find whether one byte sequence occurs inside another. */
 static bool snapshot_contains(const uint8_t *data,
                               size_t data_size,
@@ -478,10 +496,15 @@ static void test_database_export(void **state)
     char directory[64U];
     char path[512U];
     struct jg_database *database = NULL;
+    struct jg_database_restore_report report;
     sqlite3 *writer = NULL;
     sqlite3 *snapshot = NULL;
     uint8_t *data = NULL;
+    uint8_t *full_data = NULL;
+    uint8_t *inspection_data = NULL;
     size_t data_size = 0U;
+    size_t full_data_size = 0U;
+    size_t inspection_data_size = 0U;
     size_t index = 0U;
 
     (void)state;
@@ -520,13 +543,94 @@ static void test_database_export(void **state)
     assert_false(snapshot_contains(data, data_size,
                                    (const uint8_t *)"secret-hash",
                                    sizeof("secret-hash") - 1U));
+
+    assert_int_equal(sqlite3_open(path, &writer), SQLITE_OK);
+    assert_int_equal(
+        sqlite3_exec(writer,
+                     "UPDATE system_settings SET value='changed';"
+                     "UPDATE users SET password_hash='current-hash';",
+                     NULL, NULL, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_close(writer), SQLITE_OK);
+    writer = NULL;
+    assert_int_equal(
+        jg_database_restore(database, data, data_size, false, true, &report),
+        0);
+    assert_true(report.changes);
+    assert_int_equal(report.schema_version, JG_DATABASE_SCHEMA_VERSION);
+    assert_int_equal(jg_database_export(database, true, &inspection_data,
+                                        &inspection_data_size),
+                     0);
+    snapshot = open_snapshot(inspection_data, inspection_data_size);
+    assert_text_value(snapshot,
+                      "SELECT value FROM system_settings"
+                      " WHERE key='appliance.name';",
+                      "changed");
+    assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
+    snapshot = NULL;
+    jg_database_export_clear(inspection_data, inspection_data_size);
+    inspection_data = NULL;
+    inspection_data_size = 0U;
+
+    assert_int_equal(
+        jg_database_restore(database, data, data_size, false, false, &report),
+        0);
+    assert_true(report.changes);
+    assert_int_equal(
+        jg_database_export(database, true, &full_data, &full_data_size), 0);
+    snapshot = open_snapshot(full_data, full_data_size);
+    assert_text_value(snapshot,
+                      "SELECT value FROM system_settings"
+                      " WHERE key='appliance.name';",
+                      "gateway");
+    assert_text_value(snapshot, "SELECT password_hash FROM users WHERE id=1;",
+                      "current-hash");
+    assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
+    snapshot = NULL;
     jg_database_export_clear(data, data_size);
+    data = NULL;
+    data_size = 0U;
+
+    assert_int_equal(sqlite3_open(path, &writer), SQLITE_OK);
+    assert_int_equal(
+        sqlite3_exec(writer,
+                     "UPDATE system_settings SET value='changed-again';"
+                     "UPDATE users SET password_hash='replacement-hash';",
+                     NULL, NULL, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_close(writer), SQLITE_OK);
+    writer = NULL;
+    assert_int_equal(jg_database_restore(database, full_data, full_data_size,
+                                         true, false, &report),
+                     0);
+    assert_true(report.changes);
+    jg_database_export_clear(full_data, full_data_size);
+    full_data = NULL;
+    full_data_size = 0U;
+    assert_int_equal(jg_database_export(database, true, &inspection_data,
+                                        &inspection_data_size),
+                     0);
+    snapshot = open_snapshot(inspection_data, inspection_data_size);
+    assert_text_value(snapshot,
+                      "SELECT value FROM system_settings"
+                      " WHERE key='appliance.name';",
+                      "gateway");
+    assert_text_value(snapshot, "SELECT password_hash FROM users WHERE id=1;",
+                      "current-hash");
+    assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
+    jg_database_export_clear(inspection_data, inspection_data_size);
 
     assert_int_equal(jg_database_export(NULL, false, &data, &data_size),
                      -EINVAL);
     assert_int_equal(jg_database_export(database, false, NULL, &data_size),
                      -EINVAL);
     assert_int_equal(jg_database_export(database, false, &data, NULL), -EINVAL);
+    assert_int_equal(
+        jg_database_restore(NULL, data, data_size, false, false, &report),
+        -EINVAL);
+    assert_int_equal(
+        jg_database_restore(database, NULL, 0U, false, false, &report),
+        -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
 }

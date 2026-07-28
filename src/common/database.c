@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include "database_internal.h"
@@ -31,6 +32,46 @@ struct database_migration {
     const char *const *sql;
     size_t sql_count;
 };
+
+/** Sensitive tables excluded from configuration-only snapshots. */
+static const char scrub_sensitive_data[] = "DELETE FROM web_sessions;"
+                                           "DELETE FROM api_tokens;"
+                                           "DELETE FROM recovery_codes;"
+                                           "DELETE FROM totp_credentials;"
+                                           "DELETE FROM mtls_mappings;"
+                                           "DELETE FROM user_roles;"
+                                           "DELETE FROM users;"
+                                           "DELETE FROM bootstrap_credentials;"
+                                           "DELETE FROM audit_events;"
+                                           "DELETE FROM operational_events;"
+                                           "DELETE FROM backup_metadata;";
+
+/** Sensitive tables preserved across a configuration restore. */
+static const char preserve_sensitive_data[] =
+    "DELETE FROM main.web_sessions;"
+    "DELETE FROM main.api_tokens;"
+    "DELETE FROM main.recovery_codes;"
+    "DELETE FROM main.totp_credentials;"
+    "DELETE FROM main.mtls_mappings;"
+    "DELETE FROM main.user_roles;"
+    "DELETE FROM main.users;"
+    "DELETE FROM main.bootstrap_credentials;"
+    "DELETE FROM main.audit_events;"
+    "DELETE FROM main.operational_events;"
+    "DELETE FROM main.backup_metadata;"
+    "INSERT INTO main.users SELECT * FROM retained.users;"
+    "INSERT INTO main.user_roles SELECT * FROM retained.user_roles;"
+    "INSERT INTO main.api_tokens SELECT * FROM retained.api_tokens;"
+    "INSERT INTO main.web_sessions SELECT * FROM retained.web_sessions;"
+    "INSERT INTO main.totp_credentials SELECT * FROM retained.totp_credentials;"
+    "INSERT INTO main.recovery_codes SELECT * FROM retained.recovery_codes;"
+    "INSERT INTO main.mtls_mappings SELECT * FROM retained.mtls_mappings;"
+    "INSERT INTO main.bootstrap_credentials "
+    "SELECT * FROM retained.bootstrap_credentials;"
+    "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
+    "INSERT INTO main.operational_events "
+    "SELECT * FROM retained.operational_events;"
+    "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;";
 
 /** Foundation tables for schema version one. */
 static const char migration_1_foundation[] =
@@ -797,11 +838,14 @@ static char *path_with_suffix(const char *path, const char *suffix)
     return combined;
 }
 
-/** @brief Copy one complete SQLite database into another connection. */
-static int copy_database(sqlite3 *target, sqlite3 *source)
+/** @brief Copy one complete SQLite schema into another connection. */
+static int copy_database(sqlite3 *target,
+                         const char *target_schema,
+                         sqlite3 *source,
+                         const char *source_schema)
 {
     sqlite3_backup *backup =
-        sqlite3_backup_init(target, "main", source, "main");
+        sqlite3_backup_init(target, target_schema, source, source_schema);
     int result = 0;
     int status;
 
@@ -854,7 +898,7 @@ static int backup_database(const struct jg_database *database)
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        result = copy_database(target, database->handle);
+        result = copy_database(target, "main", database->handle, "main");
     }
     if (target != NULL) {
         status = sqlite3_close(target);
@@ -911,18 +955,15 @@ static int migrate_database(struct jg_database *database,
     return result;
 }
 
-/** @brief Run SQLite's full integrity check on an open database. */
-int jg_database_check_integrity(struct jg_database *database)
+/** @brief Run SQLite's full integrity check on one connection. */
+static int check_database_integrity(sqlite3 *handle)
 {
     sqlite3_stmt *statement = NULL;
     int status;
     int result = 0;
 
-    if (database == NULL) {
-        return -EINVAL;
-    }
-    status = sqlite3_prepare_v3(database->handle, "PRAGMA integrity_check;", -1,
-                                0U, &statement, NULL);
+    status = sqlite3_prepare_v3(handle, "PRAGMA integrity_check;", -1, 0U,
+                                &statement, NULL);
     result = jg_database_sqlite_result(status);
     if (result == 0) {
         status = sqlite3_step(statement);
@@ -949,71 +990,42 @@ int jg_database_check_integrity(struct jg_database *database)
     return result;
 }
 
-/** @brief Export a consistent full or configuration-only SQLite snapshot. */
-int jg_database_export(struct jg_database *database,
-                       bool include_sensitive,
-                       uint8_t **data,
-                       size_t *data_size)
+/** @brief Remove sensitive records and residual bytes from one snapshot. */
+static int scrub_database(sqlite3 *handle)
 {
-    static const char scrub_sensitive_data[] =
-        "DELETE FROM web_sessions;"
-        "DELETE FROM api_tokens;"
-        "DELETE FROM recovery_codes;"
-        "DELETE FROM totp_credentials;"
-        "DELETE FROM mtls_mappings;"
-        "DELETE FROM user_roles;"
-        "DELETE FROM users;"
-        "DELETE FROM bootstrap_credentials;"
-        "DELETE FROM audit_events;"
-        "DELETE FROM operational_events;"
-        "DELETE FROM backup_metadata;";
-    sqlite3 *snapshot = NULL;
+    int result = execute_sql(handle, "PRAGMA secure_delete=ON;");
+
+    if (result == 0) {
+        result = execute_sql(handle, scrub_sensitive_data);
+    }
+    if (result == 0) {
+        result = execute_sql(handle, "VACUUM;");
+    }
+    return result;
+}
+
+/** @brief Serialize one standalone SQLite connection image. */
+static int serialize_database(sqlite3 *handle,
+                              uint8_t **data,
+                              size_t *data_size)
+{
     sqlite3_int64 serialized_size = 0;
     unsigned char *serialized = NULL;
-    int status;
     int result = 0;
 
-    if (database == NULL || data == NULL || data_size == NULL) {
-        return -EINVAL;
-    }
     *data = NULL;
     *data_size = 0U;
-    status = sqlite3_open_v2(":memory:", &snapshot,
-                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
-                                 SQLITE_OPEN_FULLMUTEX,
-                             NULL);
-    result = jg_database_sqlite_result(status);
-    if (result == 0) {
-        result = copy_database(snapshot, database->handle);
-    }
-    if (result == 0 && !include_sensitive) {
-        result = execute_sql(snapshot, "PRAGMA secure_delete=ON;");
-    }
-    if (result == 0 && !include_sensitive) {
-        result = execute_sql(snapshot, scrub_sensitive_data);
-    }
-    if (result == 0 && !include_sensitive) {
-        result = execute_sql(snapshot, "VACUUM;");
-    }
-    if (result == 0) {
-        serialized = sqlite3_serialize(snapshot, "main", &serialized_size, 0U);
-        if (serialized == NULL) {
-            result = -ENOMEM;
-        } else if (serialized_size < 100) {
-            result = -EILSEQ;
-        } else if ((uint64_t)serialized_size > (uint64_t)SIZE_MAX) {
-            result = -EOVERFLOW;
-        } else {
-            /* Mark the snapshot as independent from an external WAL file. */
-            serialized[18U] = 1U;
-            serialized[19U] = 1U;
-        }
-    }
-    if (snapshot != NULL) {
-        status = sqlite3_close(snapshot);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
+    serialized = sqlite3_serialize(handle, "main", &serialized_size, 0U);
+    if (serialized == NULL) {
+        result = -ENOMEM;
+    } else if (serialized_size < 100) {
+        result = -EILSEQ;
+    } else if ((uint64_t)serialized_size > (uint64_t)SIZE_MAX) {
+        result = -EOVERFLOW;
+    } else {
+        /* Mark the snapshot as independent from an external WAL file. */
+        serialized[18U] = 1U;
+        serialized[19U] = 1U;
     }
     if (result == 0) {
         *data = serialized;
@@ -1028,6 +1040,181 @@ int jg_database_export(struct jg_database *database,
     return result;
 }
 
+/** @brief Open one owned, resizable SQLite image in memory. */
+static int open_database_image(const uint8_t *data,
+                               size_t data_size,
+                               sqlite3 **handle)
+{
+    static const uint8_t sqlite_magic[16U] = "SQLite format 3";
+    unsigned char *owned = NULL;
+    sqlite3 *opened = NULL;
+    int status;
+    int result = 0;
+
+    *handle = NULL;
+    if (data_size < 100U ||
+        memcmp(data, sqlite_magic, sizeof(sqlite_magic)) != 0 ||
+        data[18U] != 1U || data[19U] != 1U || data_size > (size_t)INT64_MAX) {
+        return -EILSEQ;
+    }
+    owned = sqlite3_malloc64((sqlite3_uint64)data_size);
+    if (owned == NULL) {
+        return -ENOMEM;
+    }
+    (void)memcpy(owned, data, data_size);
+    status = sqlite3_open_v2(":memory:", &opened,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                                 SQLITE_OPEN_FULLMUTEX,
+                             NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_deserialize(
+            opened, "main", owned, (sqlite3_int64)data_size,
+            (sqlite3_int64)data_size,
+            SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
+        result = jg_database_sqlite_result(status);
+        if (result == 0) {
+            owned = NULL;
+        }
+    }
+    if (result != 0 && opened != NULL) {
+        (void)sqlite3_close(opened);
+        opened = NULL;
+    }
+    if (owned != NULL) {
+        sqlite3_free(owned);
+    }
+    *handle = opened;
+    return result;
+}
+
+/** @brief Retain current sensitive tables inside a configuration snapshot. */
+static int preserve_sensitive_tables(sqlite3 *replacement, sqlite3 *current)
+{
+    int result = execute_sql(replacement, "ATTACH ':memory:' AS retained;");
+
+    if (result == 0) {
+        result = copy_database(replacement, "retained", current, "main");
+    }
+    if (result == 0) {
+        result = execute_sql(replacement, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        result = execute_sql(replacement, preserve_sensitive_data);
+    }
+    if (result == 0) {
+        result = execute_sql(replacement, "COMMIT;");
+    } else {
+        (void)execute_sql(replacement, "ROLLBACK;");
+    }
+    if (execute_sql(replacement, "DETACH retained;") != 0 && result == 0) {
+        result = -EIO;
+    }
+    return result;
+}
+
+/** @brief Apply one replacement with an automatic in-memory rollback. */
+static int replace_database(sqlite3 *current, sqlite3 *replacement)
+{
+    sqlite3 *checkpoint = NULL;
+    uint32_t version = 0U;
+    bool replacement_started = false;
+    int status;
+    int result;
+
+    status = sqlite3_open_v2(":memory:", &checkpoint,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                                 SQLITE_OPEN_FULLMUTEX,
+                             NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        result = copy_database(checkpoint, "main", current, "main");
+    }
+    if (result == 0) {
+        replacement_started = true;
+        result = copy_database(current, "main", replacement, "main");
+    }
+    if (result == 0) {
+        result = check_database_integrity(current);
+    }
+    if (result == 0) {
+        result = read_version(current, &version);
+    }
+    if (result == 0 && version != JG_DATABASE_SCHEMA_VERSION) {
+        result = -EILSEQ;
+    }
+    if (result != 0 && replacement_started) {
+        int rollback_result =
+            copy_database(current, "main", checkpoint, "main");
+
+        if (rollback_result == 0) {
+            rollback_result = check_database_integrity(current);
+        }
+        if (rollback_result != 0) {
+            result = -EIO;
+        }
+    }
+    if (checkpoint != NULL) {
+        status = sqlite3_close(checkpoint);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Run SQLite's full integrity check on an open database. */
+int jg_database_check_integrity(struct jg_database *database)
+{
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    return check_database_integrity(database->handle);
+}
+
+/** @brief Export a consistent full or configuration-only SQLite snapshot. */
+int jg_database_export(struct jg_database *database,
+                       bool include_sensitive,
+                       uint8_t **data,
+                       size_t *data_size)
+{
+    sqlite3 *snapshot = NULL;
+    int status;
+    int result = 0;
+
+    if (database == NULL || data == NULL || data_size == NULL) {
+        return -EINVAL;
+    }
+    *data = NULL;
+    *data_size = 0U;
+    status = sqlite3_open_v2(":memory:", &snapshot,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                                 SQLITE_OPEN_FULLMUTEX,
+                             NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        result = copy_database(snapshot, "main", database->handle, "main");
+    }
+    if (result == 0 && !include_sensitive) {
+        result = scrub_database(snapshot);
+    }
+    if (result == 0) {
+        result = serialize_database(snapshot, data, data_size);
+    }
+    if (snapshot != NULL) {
+        status = sqlite3_close(snapshot);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result != 0 && *data != NULL) {
+        jg_database_export_clear(*data, *data_size);
+        *data = NULL;
+        *data_size = 0U;
+    }
+    return result;
+}
+
 /** @brief Securely erase and release an exported database snapshot. */
 void jg_database_export_clear(uint8_t *data, size_t data_size)
 {
@@ -1035,6 +1222,84 @@ void jg_database_export_clear(uint8_t *data, size_t data_size)
         jg_secure_clear(data, data_size);
         sqlite3_free(data);
     }
+}
+
+/** @brief Validate, compare, and optionally restore one SQLite snapshot. */
+int jg_database_restore(struct jg_database *database,
+                        const uint8_t *data,
+                        size_t data_size,
+                        bool include_sensitive,
+                        bool dry_run,
+                        struct jg_database_restore_report *report)
+{
+    sqlite3 *replacement = NULL;
+    uint8_t *current_data = NULL;
+    uint8_t *replacement_data = NULL;
+    size_t current_size = 0U;
+    size_t replacement_size = 0U;
+    uint32_t version = 0U;
+    int result = 0;
+
+    if (database == NULL || data == NULL || report == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(report, 0, sizeof(*report));
+    if (sodium_init() < 0) {
+        return -EIO;
+    }
+    result = open_database_image(data, data_size, &replacement);
+    if (result == 0) {
+        result = check_database_integrity(replacement);
+    }
+    if (result == 0) {
+        result = read_version(replacement, &version);
+    }
+    if (result == 0 && version != JG_DATABASE_SCHEMA_VERSION) {
+        result = -ENOTSUP;
+    }
+    if (result == 0 && !include_sensitive) {
+        result = scrub_database(replacement);
+    }
+    if (result == 0) {
+        result = jg_database_export(database, include_sensitive, &current_data,
+                                    &current_size);
+    }
+    if (result == 0) {
+        result = serialize_database(replacement, &replacement_data,
+                                    &replacement_size);
+    }
+    if (result == 0) {
+        report->schema_version = version;
+        report->current_size = current_size;
+        report->replacement_size = replacement_size;
+        (void)crypto_hash_sha256(report->current_checksum, current_data,
+                                 (unsigned long long)current_size);
+        (void)crypto_hash_sha256(report->replacement_checksum, replacement_data,
+                                 (unsigned long long)replacement_size);
+        report->changes = current_size != replacement_size ||
+                          sodium_memcmp(report->current_checksum,
+                                        report->replacement_checksum,
+                                        sizeof(report->current_checksum)) != 0;
+    }
+    if (result == 0 && report->changes && !dry_run && !include_sensitive) {
+        result = preserve_sensitive_tables(replacement, database->handle);
+    }
+    if (result == 0 && report->changes && !dry_run) {
+        result = replace_database(database->handle, replacement);
+    }
+    jg_database_export_clear(replacement_data, replacement_size);
+    jg_database_export_clear(current_data, current_size);
+    if (replacement != NULL) {
+        const int status = sqlite3_close(replacement);
+
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result != 0) {
+        (void)memset(report, 0, sizeof(*report));
+    }
+    return result;
 }
 
 /** @brief Open, secure, configure, and migrate a persistent database. */

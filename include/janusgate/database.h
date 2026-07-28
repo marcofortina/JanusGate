@@ -69,6 +69,22 @@ enum jg_database_blocklist_health {
 /** Opaque owned database connection. */
 struct jg_database;
 
+/** Summary of a validated database restore or dry run. */
+struct jg_database_restore_report {
+    /** Restored database schema version. */
+    uint32_t schema_version;
+    /** Current comparison snapshot bytes. */
+    size_t current_size;
+    /** Replacement comparison snapshot bytes. */
+    size_t replacement_size;
+    /** SHA-256 digest of the current comparison snapshot. */
+    uint8_t current_checksum[32U];
+    /** SHA-256 digest of the replacement comparison snapshot. */
+    uint8_t replacement_checksum[32U];
+    /** Whether the selected backup would change persistent state. */
+    bool changes;
+};
+
 /**
  * @brief Self-contained persistent network-configuration record.
  */
@@ -366,6 +382,41 @@ JG_PUBLIC int jg_database_export(struct jg_database *database,
  * @param[in] data_size Snapshot size in bytes.
  */
 JG_PUBLIC void jg_database_export_clear(uint8_t *data, size_t data_size);
+
+/**
+ * @brief Validate and transactionally restore an in-memory SQLite snapshot.
+ *
+ * A configuration restore preserves current users, credentials, sessions,
+ * tokens, client-certificate mappings, events, and backup history. A full
+ * restore replaces every table. Both modes validate schema and integrity,
+ * create an in-memory rollback checkpoint, and restore that checkpoint if
+ * replacement fails.
+ *
+ * @param[in] database Open destination database.
+ * @param[in] data SQLite replacement snapshot.
+ * @param[in] data_size Replacement snapshot bytes.
+ * @param[in] include_sensitive Whether to replace sensitive state.
+ * @param[in] dry_run Whether to validate and compare without applying.
+ * @param[out] report Receives comparison hashes and sizes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -EILSEQ when integrity validation fails.
+ * @return -ENOTSUP for an incompatible schema version.
+ * @return -ENOMEM when allocation fails.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must exclude every concurrent database user.
+ *
+ * @side_effects Replaces persistent database content unless @p dry_run is
+ * true. No plaintext temporary file is created.
+ */
+JG_PUBLIC int jg_database_restore(struct jg_database *database,
+                                  const uint8_t *data,
+                                  size_t data_size,
+                                  bool include_sensitive,
+                                  bool dry_run,
+                                  struct jg_database_restore_report *report);
 
 /**
  * @brief Atomically persist the complete inline-network configuration.
