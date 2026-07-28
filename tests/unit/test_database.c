@@ -148,6 +148,29 @@ static void add_legacy_policy_rules(sqlite3 *handle)
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
 }
 
+/** @brief Add retained blocklist tables predating current migrations. */
+static void add_legacy_blocklist_sources(sqlite3 *handle)
+{
+    static const char schema[] =
+        "CREATE TABLE blocklist_sources ("
+        "id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,url TEXT,"
+        "format TEXT NOT NULL,strict_mode INTEGER NOT NULL DEFAULT 1,"
+        "enabled INTEGER NOT NULL DEFAULT 1,update_interval INTEGER NOT NULL,"
+        "max_download_bytes INTEGER NOT NULL,"
+        "max_decompressed_bytes INTEGER NOT NULL,sha256_pin BLOB,"
+        "ed25519_public_key BLOB,created_at INTEGER NOT NULL,"
+        "updated_at INTEGER NOT NULL) STRICT;"
+        "CREATE TABLE blocklist_source_status ("
+        "source_id INTEGER PRIMARY KEY REFERENCES blocklist_sources(id),"
+        "etag TEXT,last_modified TEXT,last_attempt_at INTEGER,"
+        "last_success_at INTEGER,next_attempt_at INTEGER,"
+        "consecutive_failures INTEGER NOT NULL DEFAULT 0,"
+        "active_checksum BLOB,active_entries INTEGER NOT NULL DEFAULT 0,"
+        "health TEXT NOT NULL DEFAULT 'unknown',last_error TEXT) STRICT;";
+
+    assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
+}
+
 /** @brief Create the retained version-one identity schema fixture. */
 static void create_version_one_fixture(const char *path)
 {
@@ -193,6 +216,7 @@ static void create_version_one_fixture(const char *path)
                      SQLITE_OK);
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
     add_legacy_policy_rules(handle);
+    add_legacy_blocklist_sources(handle);
     assert_int_equal(sqlite3_close(handle), SQLITE_OK);
     assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
 }
@@ -224,6 +248,7 @@ static void create_version_two_fixture(const char *path)
                      SQLITE_OK);
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
     add_legacy_policy_rules(handle);
+    add_legacy_blocklist_sources(handle);
     assert_int_equal(sqlite3_close(handle), SQLITE_OK);
     assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
 }
@@ -336,6 +361,11 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "bootstrap_credentials"));
     assert_true(column_exists(inspection, "domain_rules", "revision"));
     assert_true(column_exists(inspection, "destination_rules", "revision"));
+    assert_true(column_exists(inspection, "blocklist_sources", "revision"));
+    assert_true(
+        column_exists(inspection, "blocklist_sources", "signature_url"));
+    assert_true(column_exists(inspection, "blocklist_source_status",
+                              "rejected_entries"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -408,6 +438,11 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "destination_rules", "source"));
     assert_true(column_exists(inspection, "destination_rules", "scope_type"));
     assert_true(column_exists(inspection, "destination_rules", "revision"));
+    assert_true(column_exists(inspection, "blocklist_sources", "revision"));
+    assert_true(
+        column_exists(inspection, "blocklist_sources", "signature_url"));
+    assert_true(column_exists(inspection, "blocklist_source_status",
+                              "rejected_entries"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));

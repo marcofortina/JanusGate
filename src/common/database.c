@@ -485,6 +485,33 @@ static const char *const migration_6[] = {
     migration_6_policy,
 };
 
+/** Complete remote blocklist scheduling and concurrency metadata. */
+static const char migration_7_blocklists[] =
+    "ALTER TABLE blocklist_sources ADD COLUMN signature_url TEXT "
+    "CHECK(signature_url IS NULL OR length(signature_url) BETWEEN 1 AND 2048);"
+    "ALTER TABLE blocklist_sources ADD COLUMN connect_timeout_ms INTEGER NOT "
+    "NULL DEFAULT 5000 CHECK(connect_timeout_ms BETWEEN 1 AND 2147483647);"
+    "ALTER TABLE blocklist_sources ADD COLUMN transfer_timeout_ms INTEGER NOT "
+    "NULL DEFAULT 30000 CHECK(transfer_timeout_ms BETWEEN 1 AND 2147483647);"
+    "ALTER TABLE blocklist_sources ADD COLUMN redirect_limit INTEGER NOT NULL "
+    "DEFAULT 5 CHECK(redirect_limit BETWEEN 0 AND 20);"
+    "ALTER TABLE blocklist_sources ADD COLUMN retry_base_seconds INTEGER NOT "
+    "NULL DEFAULT 60 CHECK(retry_base_seconds > 0);"
+    "ALTER TABLE blocklist_sources ADD COLUMN retry_max_seconds INTEGER NOT "
+    "NULL DEFAULT 3600 CHECK(retry_max_seconds >= retry_base_seconds);"
+    "ALTER TABLE blocklist_sources ADD COLUMN revision INTEGER NOT NULL "
+    "DEFAULT 1 CHECK(revision > 0);"
+    "ALTER TABLE blocklist_source_status ADD COLUMN rejected_entries INTEGER "
+    "NOT NULL DEFAULT 0 CHECK(rejected_entries >= 0);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(7,unixepoch());"
+    "PRAGMA user_version=7;";
+
+/** Ordered statement groups composing schema version seven. */
+static const char *const migration_7[] = {
+    migration_7_blocklists,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -493,6 +520,7 @@ static const struct database_migration migrations[] = {
     {4U, migration_4, sizeof(migration_4) / sizeof(migration_4[0])},
     {5U, migration_5, sizeof(migration_5) / sizeof(migration_5[0])},
     {6U, migration_6, sizeof(migration_6) / sizeof(migration_6[0])},
+    {7U, migration_7, sizeof(migration_7) / sizeof(migration_7[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
