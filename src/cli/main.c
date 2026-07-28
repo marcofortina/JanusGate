@@ -115,6 +115,12 @@ static void print_usage(FILE *output)
                 "       janusgatectl [OPTIONS] events [QUERY]\n"
                 "       janusgatectl [OPTIONS] audit [QUERY]\n"
                 "       janusgatectl [OPTIONS] audit verify\n"
+                "       janusgatectl [OPTIONS] user list\n"
+                "       janusgatectl [OPTIONS] user add FILE\n"
+                "       janusgatectl [OPTIONS] user update ID FILE\n"
+                "       janusgatectl [OPTIONS] user disable ID\n"
+                "       janusgatectl [OPTIONS] user password ID FILE\n"
+                "       janusgatectl [OPTIONS] user totp ID\n"
                 "       janusgatectl [--socket PATH] [--json] ping\n"
                 "       janusgatectl [--socket PATH] [--json] policy reload\n"
                 "       janusgatectl --version\n"
@@ -1571,6 +1577,261 @@ static int run_blocklist_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Fetch one exact local user from stable paginated API results. */
+static int fetch_user(const struct cli_options *options,
+                      const char *token,
+                      uint64_t identifier,
+                      json_t **user)
+{
+    uint64_t offset = 0U;
+    bool more = true;
+    int result = CLI_EXIT_SUCCESS;
+
+    *user = NULL;
+    while (result == CLI_EXIT_SUCCESS && more && *user == NULL) {
+        char query[96U];
+        json_t *page = NULL;
+        json_t *users = NULL;
+        json_t *next = NULL;
+
+        (void)snprintf(query, sizeof(query), "offset=%llu&limit=100",
+                       (unsigned long long)offset);
+        result =
+            fetch_api_object(options, token, "/api/v1/users", query, &page);
+        if (result == CLI_EXIT_SUCCESS) {
+            users = json_object_get(page, "users");
+            if (!json_is_array(users)) {
+                result = CLI_EXIT_FAILURE;
+            }
+        }
+        for (size_t index = 0U;
+             result == CLI_EXIT_SUCCESS && index < json_array_size(users);
+             ++index) {
+            json_t *candidate = json_array_get(users, index);
+            json_t *value = json_object_get(candidate, "id");
+
+            if (json_is_integer(value) &&
+                (uint64_t)json_integer_value(value) == identifier) {
+                *user = json_deep_copy(candidate);
+                if (*user == NULL) {
+                    result = CLI_EXIT_FAILURE;
+                }
+            }
+        }
+        if (result == CLI_EXIT_SUCCESS && *user == NULL) {
+            next = json_object_get(page, "next_offset");
+            more = !json_is_null(next);
+            if (more && (!json_is_integer(next) ||
+                         json_integer_value(next) <= (json_int_t)offset)) {
+                result = CLI_EXIT_FAILURE;
+            } else if (more) {
+                offset = (uint64_t)json_integer_value(next);
+            }
+        }
+        json_decref(page);
+    }
+    if (result == CLI_EXIT_SUCCESS && *user == NULL) {
+        (void)fprintf(stderr, "janusgatectl: local user not found\n");
+        result = CLI_EXIT_FAILURE;
+    }
+    return result;
+}
+
+/** @brief List the first stable page of local-user administration state. */
+static int run_user_list(const struct cli_options *options, const char *token)
+{
+    json_t *body = NULL;
+    int result =
+        fetch_api_object(options, token, "/api/v1/users", "limit=100", &body);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Add or update one local user from an exact JSON document. */
+static int run_user_write(const struct cli_options *options,
+                          const char *token,
+                          const char *operation,
+                          const char *identifier_text,
+                          const char *file)
+{
+    const bool add = strcmp(operation, "add") == 0;
+    const bool password = strcmp(operation, "password") == 0;
+    char path[128U];
+    json_t *body = NULL;
+    json_t *user = NULL;
+    json_t *revision = NULL;
+    uint64_t identifier = 0U;
+    int result = CLI_EXIT_SUCCESS;
+    int read_result = 0;
+
+    if (!add && parse_identifier(identifier_text, &identifier) != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    if (!add) {
+        result = fetch_user(options, token, identifier, &user);
+    }
+    if (result == CLI_EXIT_SUCCESS && password &&
+        !destructive_operation_confirmed(options,
+                                         "Replace the user's password")) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        body = read_json_object(file, &read_result);
+        if (body == NULL) {
+            (void)fprintf(stderr, "janusgatectl: user document: %s\n",
+                          strerror(-read_result));
+            result = read_result == -EINVAL || read_result == -EMSGSIZE
+                         ? CLI_EXIT_USAGE
+                         : CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS && !add) {
+        revision = json_object_get(user, "revision");
+        if (!json_is_integer(revision) ||
+            json_object_set(body, "revision", revision) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (add) {
+        (void)snprintf(path, sizeof(path), "/api/v1/users");
+    } else if (password) {
+        (void)snprintf(path, sizeof(path), "/api/v1/users/%llu/password",
+                       (unsigned long long)identifier);
+    } else {
+        (void)snprintf(path, sizeof(path), "/api/v1/users/%llu",
+                       (unsigned long long)identifier);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(
+            options, token,
+            add ? "user add" : (password ? "user password" : "user update"),
+            add || password ? "POST" : "PATCH", path, body);
+    }
+    json_decref(user);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Disable one local user while preserving its remaining state. */
+static int run_user_disable(const struct cli_options *options,
+                            const char *token,
+                            const char *identifier_text)
+{
+    char path[96U];
+    json_t *user = NULL;
+    json_t *body = NULL;
+    json_t *revision = NULL;
+    json_t *role = NULL;
+    json_t *force_password_change = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    result = fetch_user(options, token, identifier, &user);
+    if (result == CLI_EXIT_SUCCESS &&
+        !destructive_operation_confirmed(options, "Disable the local user")) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        revision = json_object_get(user, "revision");
+        role = json_object_get(user, "role");
+        force_password_change = json_object_get(user, "force_password_change");
+        body = json_object();
+        if (!json_is_integer(revision) || !json_is_string(role) ||
+            !json_is_boolean(force_password_change) || body == NULL ||
+            json_object_set(body, "revision", revision) != 0 ||
+            json_object_set(body, "role", role) != 0 ||
+            json_object_set_new(body, "enabled", json_false()) != 0 ||
+            json_object_set(body, "force_password_change",
+                            force_password_change) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        (void)snprintf(path, sizeof(path), "/api/v1/users/%llu",
+                       (unsigned long long)identifier);
+        result = send_api_request(options, token, "user disable", "PATCH", path,
+                                  body);
+    }
+    json_decref(body);
+    json_decref(user);
+    return result;
+}
+
+/** @brief Remove one local user's TOTP and recovery credentials. */
+static int run_user_totp_disable(const struct cli_options *options,
+                                 const char *token,
+                                 const char *identifier_text)
+{
+    char path[sizeof("/api/v1/users/18446744073709551615/totp")];
+    json_t *user = NULL;
+    json_t *body = NULL;
+    json_t *revision = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    result = fetch_user(options, token, identifier, &user);
+    if (result == CLI_EXIT_SUCCESS &&
+        !destructive_operation_confirmed(
+            options, "Remove the user's TOTP credentials")) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        revision = json_object_get(user, "revision");
+        body = json_object();
+        if (!json_is_integer(revision) || body == NULL ||
+            json_object_set(body, "revision", revision) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        (void)snprintf(path, sizeof(path), "/api/v1/users/%llu/totp",
+                       (unsigned long long)identifier);
+        result =
+            send_api_request(options, token, "user totp", "DELETE", path, body);
+    }
+    json_decref(body);
+    json_decref(user);
+    return result;
+}
+
+/** @brief Run one recognized local-user administration command. */
+static int run_user_command(const struct cli_options *options,
+                            int argc,
+                            char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "list") == 0) {
+        result = run_user_list(options, token);
+    } else if (strcmp(argv[1], "add") == 0) {
+        result = run_user_write(options, token, "add", NULL, argv[2]);
+    } else if (strcmp(argv[1], "update") == 0 ||
+               strcmp(argv[1], "password") == 0) {
+        result = run_user_write(options, token, argv[1], argv[2], argv[3]);
+    } else if (strcmp(argv[1], "disable") == 0) {
+        result = run_user_disable(options, token, argv[2]);
+    } else {
+        result = run_user_totp_disable(options, token, argv[2]);
+    }
+    (void)argc;
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Query operational events or immutable audit records. */
 static int run_record_command(const struct cli_options *options,
                               int argc,
@@ -1651,6 +1912,15 @@ static int run_command(const struct cli_options *options,
     if ((argc == 1 || argc == 2) &&
         (strcmp(argv[0], "events") == 0 || strcmp(argv[0], "audit") == 0)) {
         return run_record_command(options, argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "user") == 0 &&
+        ((argc == 2 && strcmp(argv[1], "list") == 0) ||
+         (argc == 3 &&
+          (strcmp(argv[1], "add") == 0 || strcmp(argv[1], "disable") == 0 ||
+           strcmp(argv[1], "totp") == 0)) ||
+         (argc == 4 && (strcmp(argv[1], "update") == 0 ||
+                        strcmp(argv[1], "password") == 0)))) {
+        return run_user_command(options, argc, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
