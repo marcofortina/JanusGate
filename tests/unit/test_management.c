@@ -150,6 +150,7 @@ static void test_browser_authentication(void **state)
     };
     struct jg_account_api_token api_token;
     struct jg_policy_rule_input domain_rules[2U];
+    struct jg_policy_destination_rule_input destination_rules[2U];
     json_t *response = NULL;
     json_t *body = NULL;
     json_t *value = NULL;
@@ -244,6 +245,34 @@ static void test_browser_authentication(void **state)
                          fixture->database, domain_rules,
                          sizeof(domain_rules) / sizeof(domain_rules[0U])),
                      0);
+    (void)memset(destination_rules, 0, sizeof(destination_rules));
+    destination_rules[0U].id = 5U;
+    destination_rules[0U].effect = JG_POLICY_BLOCK;
+    destination_rules[0U].source = JG_POLICY_SOURCE_EXPLICIT;
+    destination_rules[0U].transport = JG_POLICY_TRANSPORT_ANY;
+    destination_rules[0U].has_port = true;
+    destination_rules[0U].port = 853U;
+    destination_rules[0U].scope.type = JG_POLICY_SCOPE_GLOBAL;
+    destination_rules[0U].attribution = "encrypted DNS";
+    destination_rules[1U].id = 3U;
+    destination_rules[1U].effect = JG_POLICY_ALLOW;
+    destination_rules[1U].source = JG_POLICY_SOURCE_EXPLICIT;
+    destination_rules[1U].transport = JG_POLICY_TRANSPORT_TCP;
+    destination_rules[1U].has_address = true;
+    destination_rules[1U].address_family = JG_POLICY_ADDRESS_IPV4;
+    destination_rules[1U].address[0U] = 203U;
+    destination_rules[1U].address[1U] = 0U;
+    destination_rules[1U].address[2U] = 113U;
+    destination_rules[1U].address[3U] = 99U;
+    destination_rules[1U].prefix_length = 24U;
+    destination_rules[1U].scope.type = JG_POLICY_SCOPE_VLAN;
+    destination_rules[1U].scope.value.vlan_id = 20U;
+    destination_rules[1U].attribution = "resolver exception";
+    assert_int_equal(
+        jg_database_replace_destination_rules(
+            fixture->database, destination_rules,
+            sizeof(destination_rules) / sizeof(destination_rules[0U])),
+        0);
     written =
         snprintf(request, sizeof(request),
                  "{\"request_id\":\"domains-1\",\"method\":\"GET\","
@@ -289,6 +318,48 @@ static void test_browser_authentication(void **state)
     assert_string_equal(json_string_value(json_object_get(value, "domain")),
                         "blocked.example");
     assert_true(json_is_true(json_object_get(value, "include_subdomains")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"destinations-1\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/policies/destinations\","
+        "\"query\":\"limit=1\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\",\"body\":{}}",
+        session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "has_more")));
+    value = json_array_get(json_object_get(body, "destination_rules"), 0U);
+    assert_int_equal(json_integer_value(json_object_get(value, "id")), 3);
+    assert_string_equal(json_string_value(json_object_get(value, "address")),
+                        "203.0.113.0");
+    assert_int_equal(
+        json_integer_value(json_object_get(value, "prefix_length")), 24);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"destinations-2\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/policies/destinations\","
+        "\"query\":\"after_id=3&limit=1\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\",\"body\":{}}",
+        session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "has_more")));
+    value = json_array_get(json_object_get(body, "destination_rules"), 0U);
+    assert_int_equal(json_integer_value(json_object_get(value, "id")), 5);
+    assert_int_equal(json_integer_value(json_object_get(value, "port")), 853);
+    assert_true(json_is_null(json_object_get(value, "address")));
     json_decref(response);
 
     written = snprintf(

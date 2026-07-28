@@ -1109,6 +1109,77 @@ static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
     return body;
 }
 
+/** @brief Return the stable external name for one transport selector. */
+static const char *policy_transport_name(enum jg_policy_transport transport)
+{
+    switch (transport) {
+    case JG_POLICY_TRANSPORT_ANY:
+        return "any";
+    case JG_POLICY_TRANSPORT_TCP:
+        return "tcp";
+    case JG_POLICY_TRANSPORT_UDP:
+        return "udp";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Convert one persistent destination rule to public JSON. */
+static json_t *destination_rule_json(
+    const struct jg_database_destination_rule *rule)
+{
+    char address[INET6_ADDRSTRLEN];
+    const char *effect = policy_effect_name(rule->effect);
+    const char *source = policy_source_name(rule->source);
+    const char *transport = policy_transport_name(rule->transport);
+    json_t *body = json_object();
+    json_t *scope = policy_scope_json(&rule->scope);
+    int result = 0;
+
+    if (rule->has_address) {
+        const int family =
+            rule->address_family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6;
+
+        if (inet_ntop(family, rule->address, address, sizeof(address)) ==
+            NULL) {
+            result = -EINVAL;
+        }
+    }
+    if (result != 0 || effect == NULL || source == NULL || transport == NULL ||
+        body == NULL || scope == NULL ||
+        json_object_set_new(body, "id", json_integer((json_int_t)rule->id)) !=
+            0 ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)rule->revision)) != 0 ||
+        json_object_set_new(body, "updated_at",
+                            json_integer((json_int_t)rule->updated_at)) != 0 ||
+        json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(body, "source", json_string(source)) != 0 ||
+        json_object_set_new(body, "transport", json_string(transport)) != 0 ||
+        json_object_set_new(body, "address",
+                            rule->has_address ? json_string(address)
+                                              : json_null()) != 0 ||
+        json_object_set_new(body, "prefix_length",
+                            rule->has_address
+                                ? json_integer((json_int_t)rule->prefix_length)
+                                : json_null()) != 0 ||
+        json_object_set_new(body, "port",
+                            rule->has_port
+                                ? json_integer((json_int_t)rule->port)
+                                : json_null()) != 0 ||
+        json_object_set_new(body, "attribution",
+                            json_string(rule->attribution)) != 0 ||
+        json_object_set_new(body, "enabled", json_boolean(rule->enabled)) !=
+            0 ||
+        json_object_set(body, "scope", scope) != 0) {
+        json_decref(scope);
+        json_decref(body);
+        return NULL;
+    }
+    json_decref(scope);
+    return body;
+}
+
 /** @brief Parse one optional external domain policy target. */
 static bool parse_policy_target(const char *text,
                                 enum jg_policy_domain_target *target)
@@ -2639,6 +2710,91 @@ static int handle_domain_rules_list(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one authenticated stable page of destination rules. */
+static int handle_destination_rules_list(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_destination_rule *rules = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t after_id = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_POLICY_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_page_query(request->query, "after_id",
+                         JG_DATABASE_POLICY_PAGE_MAX, &after_id, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The destination-rule pagination is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    rules = calloc(limit, sizeof(*rules));
+    if (rules == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_database_list_destination_rules(
+        management->database, after_id, limit, rules, &count, &has_more);
+    if (result != 0) {
+        free(rules);
+        return respond_error(500, "destinations_unavailable",
+                             "The destination rules could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = destination_rule_json(&rules[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "after_id",
+                             json_integer((json_int_t)after_id)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "has_more", json_boolean(has_more)) != 0 ||
+         json_object_set(body, "destination_rules", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        json_t *next = has_more && count > 0U
+                           ? json_integer((json_int_t)rules[count - 1U].id)
+                           : json_null();
+
+        if (json_object_set_new(body, "next_after_id", next) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(rules);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Publish persistent policy and audit one domain-rule change. */
 static int publish_domain_rule_change(
     struct jg_management *management,
@@ -3981,6 +4137,11 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_domain_rules_list(management, request, remote, now,
                                         output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/destinations") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_destination_rules_list(management, request, remote, now,
+                                             output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/domains") == 0 && post) {
         return handle_domain_rule_create(management, request, remote, now,
