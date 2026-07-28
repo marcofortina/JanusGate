@@ -40,6 +40,7 @@ int jg_test_policy_store(void);
 int jg_test_tcp_reset(void);
 int jg_test_tcp_stream(void);
 int jg_test_tls_client_hello(void);
+int jg_test_web_server(void);
 
 /** @brief Run every unit-test group and combine their exit status. */
 int main(void)
@@ -76,5 +77,6 @@ int main(void)
     result |= jg_test_tcp_reset();
     result |= jg_test_tcp_stream();
     result |= jg_test_tls_client_hello();
+    result |= jg_test_web_server();
     return result;
 }

@@ -1,0 +1,261 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+ */
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: #0c131a;
+  color: #e7eef3;
+  --panel: #131e27;
+  --panel-border: #263744;
+  --muted: #9eb0bd;
+  --accent: #4ed4a8;
+  --accent-strong: #8ce8cb;
+  --focus: #ffd166;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 75% -20%, #173a3c 0, transparent 38rem),
+    #0c131a;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 10;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0.75rem 1rem;
+  transform: translateY(-150%);
+  background: var(--focus);
+  color: #111;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.masthead {
+  display: flex;
+  min-height: 5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgb(12 19 26 / 88%);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.brand h1,
+.page-heading h2 {
+  margin: 0;
+  letter-spacing: -0.03em;
+}
+
+.eyebrow {
+  margin: 0 0 0.2rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+}
+
+.service-state {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.state-marker {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--focus);
+}
+
+.service-state.ready .state-marker {
+  background: var(--accent);
+  box-shadow: 0 0 0 0.22rem rgb(78 212 168 / 15%);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  min-height: calc(100vh - 5rem);
+}
+
+nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1.5rem 1rem;
+  border-right: 1px solid var(--panel-border);
+}
+
+nav a {
+  padding: 0.72rem 0.9rem;
+  border-radius: 0.45rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+nav a:hover,
+nav a:focus-visible,
+nav a.active {
+  background: #182832;
+  color: #fff;
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+main {
+  width: min(80rem, 100%);
+  padding: 2.5rem clamp(1.2rem, 4vw, 4rem);
+}
+
+.page-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.page-heading h2 {
+  font-size: clamp(2rem, 5vw, 3.4rem);
+}
+
+.page-heading p:not(.eyebrow),
+.metric-detail,
+.notice p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+button {
+  min-height: 2.7rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid #4c6b78;
+  border-radius: 0.45rem;
+  background: #1a2b35;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.status-grid article,
+.notice {
+  padding: 1.3rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.7rem;
+  background: linear-gradient(145deg, #15222c, var(--panel));
+}
+
+.metric-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metric-value {
+  margin: 1.2rem 0 0.35rem;
+  color: var(--accent-strong);
+  font-size: 1.35rem;
+  font-weight: 720;
+}
+
+.metric-detail {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.notice {
+  margin-top: 1rem;
+  border-left: 4px solid var(--accent);
+}
+
+.notice h3,
+.notice p {
+  margin-top: 0;
+}
+
+.notice p {
+  margin-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .masthead {
+    align-items: flex-start;
+    padding: 1rem;
+  }
+
+  .layout {
+    display: block;
+  }
+
+  nav {
+    flex-flow: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--panel-border);
+  }
+
+  nav a {
+    flex: 0 0 auto;
+  }
+
+  main {
+    padding: 2rem 1rem;
+  }
+
+  .page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

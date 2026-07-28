@@ -37,12 +37,15 @@ add_executable(
   unit/test_tcp_reset.c
   unit/test_tcp_stream.c
   unit/test_tls_client_hello.c)
+target_sources(janusgate-unit-tests PRIVATE unit/test_web_server.c)
 target_link_libraries(
   janusgate-unit-tests
   PRIVATE JanusGate::common janusgate-daemon-core janusgate-netd-core
+          janusgate-web-core
           PkgConfig::CMOCKA PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)
 add_test(NAME cli-version COMMAND janusgatectl --version)
+add_test(NAME web-version COMMAND janusgate-web --version)
 set_tests_properties(unit PROPERTIES TIMEOUT 30)

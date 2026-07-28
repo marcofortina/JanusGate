@@ -1,0 +1,10 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 72" role="img">
+  <title>JanusGate shield</title>
+  <path fill="#4ed4a8" d="M32 2 59 12v20c0 18-10 31-27 38C15 63 5 50 5 32V12L32 2Z"/>
+  <path fill="#102129" d="M32 10 51 17v15c0 13-6 23-19 29-13-6-19-16-19-29V17l19-7Z"/>
+  <path fill="#8ce8cb" d="M19 25h26v7H19zm0 14h26v7H19z"/>
+</svg>

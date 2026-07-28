@@ -1,0 +1,82 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#101820">
+    <title>JanusGate Administration</title>
+    <link rel="icon" href="/icons/shield.svg" type="image/svg+xml">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/css/app.css">
+    <script src="/js/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <header class="masthead">
+      <div class="brand">
+        <img src="/icons/shield.svg" alt="" width="34" height="40">
+        <div>
+          <p class="eyebrow">INLINE POLICY APPLIANCE</p>
+          <h1>JanusGate</h1>
+        </div>
+      </div>
+      <div class="service-state" role="status" aria-live="polite">
+        <span class="state-marker" aria-hidden="true"></span>
+        <span id="service-state">Checking management service</span>
+      </div>
+    </header>
+    <div class="layout">
+      <nav aria-label="Administration">
+        <a class="active" href="#dashboard" aria-current="page">Dashboard</a>
+        <a href="#network">Network</a>
+        <a href="#policies">Policies</a>
+        <a href="#blocklists">Blocklists</a>
+        <a href="#events">Events</a>
+        <a href="#access">Users and access</a>
+        <a href="#certificates">Certificates</a>
+        <a href="#backups">Backup and restore</a>
+        <a href="#system">System</a>
+      </nav>
+      <main id="main" tabindex="-1">
+        <section class="page-heading" id="dashboard">
+          <div>
+            <p class="eyebrow">ENFORCEMENT OVERVIEW</p>
+            <h2>Dashboard</h2>
+            <p>Management service readiness and inline enforcement context.</p>
+          </div>
+          <button id="refresh" type="button">Refresh status</button>
+        </section>
+        <section class="status-grid" aria-label="Current status">
+          <article>
+            <p class="metric-label">Management HTTPS</p>
+            <p class="metric-value" id="https-status">Checking</p>
+            <p class="metric-detail">TLS-only listener on the management address</p>
+          </article>
+          <article>
+            <p class="metric-label">Policy service</p>
+            <p class="metric-value">Protected</p>
+            <p class="metric-detail">Separate local control socket</p>
+          </article>
+          <article>
+            <p class="metric-label">Packet path</p>
+            <p class="metric-value">Kernel fast path</p>
+            <p class="metric-detail">Only selected policy traffic enters NFQUEUE</p>
+          </article>
+        </section>
+        <section class="notice" aria-labelledby="scope-title">
+          <h3 id="scope-title">Inspection boundary</h3>
+          <p>
+            JanusGate filters classic DNS and configured visible destinations.
+            Full-tunnel VPN traffic and names protected by ECH remain encrypted
+            unless their outer endpoint is explicitly covered by policy.
+          </p>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

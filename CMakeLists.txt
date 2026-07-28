@@ -19,6 +19,8 @@ include(ProjectMetadata)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_path(CIVETWEB_INCLUDE_DIR NAMES civetweb.h REQUIRED)
+find_library(CIVETWEB_LIBRARY NAMES civetweb REQUIRED)
 pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
@@ -141,6 +143,22 @@ target_link_libraries(
   janusgatectl PRIVATE JanusGate::common janusgate-control-protocol)
 janusgate_apply_compiler_options(janusgatectl)
 
+add_library(janusgate-web-core STATIC src/web/web_server.c)
+target_include_directories(
+  janusgate-web-core
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/web>"
+  PRIVATE "${CIVETWEB_INCLUDE_DIR}")
+target_link_libraries(
+  janusgate-web-core PUBLIC JanusGate::common
+  PRIVATE "${CIVETWEB_LIBRARY}")
+janusgate_apply_compiler_options(janusgate-web-core)
+
+add_executable(janusgate-web src/web/main.c)
+target_include_directories(janusgate-web PRIVATE "${CIVETWEB_INCLUDE_DIR}")
+target_link_libraries(
+  janusgate-web PRIVATE janusgate-web-core "${CIVETWEB_LIBRARY}")
+janusgate_apply_compiler_options(janusgate-web)
+
 install(
   TARGETS janusgate-common
   EXPORT JanusGateTargets
@@ -168,12 +186,16 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)
 install(
-  TARGETS janusgate-netd janusgated
+  TARGETS janusgate-netd janusgated janusgate-web
   RUNTIME DESTINATION "${CMAKE_INSTALL_SBINDIR}"
   COMPONENT runtime)
 install(
   TARGETS janusgatectl
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  COMPONENT runtime)
+install(
+  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/web/"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/web"
   COMPONENT runtime)
 install(
   EXPORT JanusGateTargets
@@ -190,7 +212,8 @@ add_custom_target(
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-netd janusgated janusgatectl janusgate-unit-tests
+  DEPENDS janusgate-netd janusgated janusgate-web janusgatectl
+          janusgate-unit-tests
   USES_TERMINAL)
 
 if(BUILD_TESTING)

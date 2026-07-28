@@ -1,0 +1,17 @@
+{
+  "spdx": "AGPL-3.0-or-later",
+  "copyright": "Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>",
+  "name": "JanusGate Administration",
+  "short_name": "JanusGate",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c131a",
+  "theme_color": "#101820",
+  "icons": [
+    {
+      "src": "/icons/shield.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
