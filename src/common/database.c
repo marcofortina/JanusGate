@@ -4085,8 +4085,12 @@ static int read_policy_size(sqlite3 *handle,
 {
     static const char query[] =
         "SELECT count(*),coalesce(sum("
-        "length(CAST(domain AS BLOB))+length(CAST(attribution AS BLOB))+2),0)"
-        " FROM domain_rules WHERE enabled=1;";
+        "length(CAST(r.domain AS BLOB))+"
+        "length(CAST(r.attribution AS BLOB))+2),0)"
+        " FROM domain_rules AS r LEFT JOIN blocklist_sources AS s"
+        " ON s.id=r.blocklist_source_id WHERE r.enabled=1"
+        " AND (r.source!='blocklist' OR r.blocklist_source_id IS NULL"
+        " OR s.enabled=1);";
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(handle, query, -1, 0U, &statement, NULL);
     int result = jg_database_sqlite_result(status);
@@ -4206,9 +4210,12 @@ static int read_domain_rules(sqlite3 *handle,
                              size_t strings_size)
 {
     static const char query[] =
-        "SELECT id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution,target FROM domain_rules "
-        "WHERE enabled=1 ORDER BY id;";
+        "SELECT r.id,r.domain,r.match_type,r.effect,r.source,r.scope_type,"
+        "r.scope_value,r.prefix_length,r.vlan_id,r.attribution,r.target"
+        " FROM domain_rules AS r LEFT JOIN blocklist_sources AS s"
+        " ON s.id=r.blocklist_source_id WHERE r.enabled=1"
+        " AND (r.source!='blocklist' OR r.blocklist_source_id IS NULL"
+        " OR s.enabled=1) ORDER BY r.id;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     size_t cursor = 0U;

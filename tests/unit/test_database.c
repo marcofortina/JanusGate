@@ -1184,6 +1184,8 @@ static void test_blocklist_activation(void **state)
     struct jg_blocklist_report report;
     struct jg_blocklist_limits limits;
     struct jg_blocklist *blocklist = NULL;
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_match match;
     struct jg_database *database = NULL;
     size_t count = 0U;
     bool has_more = false;
@@ -1261,12 +1263,28 @@ static void test_blocklist_activation(void **state)
                      0);
     assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_HEALTHY);
     assert_string_equal(updated.last_error, "");
+    assert_int_equal(jg_database_load_policy_snapshot(database, 50U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "www.alpha.example", NULL, &match), 0);
+    assert_true(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
 
     config.enabled = false;
     assert_int_equal(
         jg_database_update_blocklist_source(database, source.id, &config,
                                             source.revision, &updated),
         0);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 51U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "www.alpha.example", NULL, &match), 0);
+    assert_false(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
     assert_int_equal(jg_database_activate_blocklist(database, source.id,
                                                     source.revision, blocklist,
                                                     &remote, &report),
