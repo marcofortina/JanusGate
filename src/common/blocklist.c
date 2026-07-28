@@ -705,24 +705,19 @@ static int finalize_blocklist(const struct blocklist_stage *stage,
     if (stage->entry_count != 0U) {
         if (!jg_size_multiply(stage->entry_count, sizeof(*sorted),
                               &sorted_size)) {
-            result = -EOVERFLOW;
-        } else {
-            sorted = malloc(sorted_size);
-            if (sorted == NULL) {
-                result = -ENOMEM;
-            }
+            return -EOVERFLOW;
         }
-        for (size_t index = 0U; result == 0 && index < stage->entry_count;
-             ++index) {
+        sorted = malloc(sorted_size);
+        if (sorted == NULL) {
+            return -ENOMEM;
+        }
+        for (size_t index = 0U; index < stage->entry_count; ++index) {
             sorted[index].domain =
                 stage->strings + stage->entries[index].domain_offset;
             sorted[index].category =
                 stage->strings + stage->entries[index].category_offset;
         }
-        if (result == 0) {
-            qsort(sorted, stage->entry_count, sizeof(*sorted),
-                  sort_entry_compare);
-        }
+        qsort(sorted, stage->entry_count, sizeof(*sorted), sort_entry_compare);
         for (size_t index = 0U; result == 0 && index < stage->entry_count;
              ++index) {
             if (index == 0U ||
