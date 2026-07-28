@@ -1128,13 +1128,16 @@ static void test_network_api(void **state)
         .queue_cpu_fanout = true,
     };
     struct jg_account_api_token token;
+    struct jg_audit_record audit;
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
     char request[2048U];
     json_t *response = NULL;
     json_t *body = NULL;
     json_t *configuration = NULL;
     const time_t now = time(NULL);
+    uint64_t total = 0U;
     uint64_t user_id = 0U;
+    size_t count = 0U;
     int written = 0;
 
     assert_true(now > 0);
@@ -1178,6 +1181,8 @@ static void test_network_api(void **state)
         json_integer_value(json_object_get(configuration, "queue_count")), 4);
     assert_true(
         json_is_true(json_object_get(configuration, "queue_cpu_fanout")));
+    assert_false(json_is_true(json_object_get(body, "runtime_available")));
+    assert_true(json_is_null(json_object_get(body, "runtime")));
     json_decref(response);
 
     written = snprintf(
@@ -1202,6 +1207,39 @@ static void test_network_api(void **state)
             "code")),
         "invalid_network");
     json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"network-stale\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/network/apply\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
+        "\"revision\":2,\"configuration\":{"
+        "\"bridge\":\"br-data\",\"ingress\":\"eth0\",\"egress\":\"eth1\","
+        "\"management\":\"eth2\",\"bridge_mtu\":0,\"queue_first\":100,"
+        "\"queue_count\":4,\"queue_length\":8192,"
+        "\"failure_mode\":\"fail_open\",\"stp\":false,"
+        "\"multicast_snooping\":true,\"queue_cpu_fanout\":true}}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     409);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "revision_conflict");
+    json_decref(response);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, &audit, 1U,
+                                            &count, &total),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(total, 1U);
+    assert_string_equal(audit.action, "network.apply");
+    assert_int_equal(audit.previous_revision, 1U);
+    assert_false(audit.has_new_revision);
+    assert_false(audit.success);
 }
 
 /** @brief Verify authenticated blocklist-source paging and state JSON. */

@@ -1198,6 +1198,36 @@ static json_t *network_config_json(const struct jg_network_config *config)
     return body;
 }
 
+/** @brief Convert one helper transaction snapshot to public JSON. */
+static json_t *network_state_json(const struct jg_network_state *state)
+{
+    json_t *body = json_object();
+    json_t *confirmed = state->has_confirmed
+                            ? network_config_json(&state->confirmed)
+                            : json_null();
+    json_t *pending = state->pending
+                          ? network_config_json(&state->pending_config)
+                          : json_null();
+    int result = 0;
+
+    if (body == NULL || confirmed == NULL || pending == NULL ||
+        json_object_set(body, "confirmed", confirmed) != 0 ||
+        json_object_set(body, "pending", pending) != 0 ||
+        json_object_set_new(
+            body, "confirmation_seconds_remaining",
+            json_integer((json_int_t)state->confirmation_seconds_remaining)) !=
+            0) {
+        result = -ENOMEM;
+    }
+    json_decref(pending);
+    json_decref(confirmed);
+    if (result != 0) {
+        json_decref(body);
+        body = NULL;
+    }
+    return body;
+}
+
 /** @brief Return the stable external name for one policy action. */
 static const char *policy_effect_name(enum jg_policy_effect effect)
 {
@@ -1659,6 +1689,25 @@ static int parse_network_config_request(json_t *body,
     config->queue_length = (uint32_t)queue_length;
     config->failure_mode = parse_network_failure_mode(failure_mode);
     return jg_network_config_validate(config);
+}
+
+/** @brief Parse one revision-bound network staging request. */
+static int parse_network_apply_request(json_t *body,
+                                       uint64_t *revision,
+                                       struct jg_network_config *config)
+{
+    static const char *const fields[] = {
+        "revision",
+        "configuration",
+    };
+    json_t *configuration = json_object_get(body, "configuration");
+
+    if (!fields_allowed(body, fields, sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(body, "revision", revision) ||
+        !json_is_object(configuration)) {
+        return -EINVAL;
+    }
+    return parse_network_config_request(configuration, config);
 }
 
 /** @brief Parse one external blocklist syntax name. */
@@ -2388,6 +2437,68 @@ static bool collection_path_identifier(const char *path,
     return parse_decimal(identifier, identifier_size, (uint64_t)INT64_MAX,
                          identifier_value) == 0 &&
            *identifier_value > 0U;
+}
+
+/** @brief Append one authenticated network transaction outcome. */
+static int append_network_audit(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                const struct authenticated_actor *actor,
+                                const char *action,
+                                const struct jg_network_config *config,
+                                int operation_result,
+                                uint64_t previous_revision,
+                                bool has_new_revision,
+                                uint64_t new_revision,
+                                uint64_t now)
+{
+    char source_address[INET6_ADDRSTRLEN];
+    json_t *details = network_config_json(config);
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int result = 0;
+
+    if (inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source_address,
+                  sizeof(source_address)) == NULL) {
+        result = -EINVAL;
+    }
+    if (result == 0 &&
+        (details == NULL ||
+         json_object_set_new(details, "operation_result",
+                             json_integer(operation_result)) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source_address,
+            .action = action,
+            .object_type = "network_configuration",
+            .object_id = "active",
+            .details = encoded,
+            .has_previous_revision = true,
+            .previous_revision = previous_revision,
+            .has_new_revision = has_new_revision,
+            .new_revision = new_revision,
+            .success = operation_result == 0,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
 }
 
 /** @brief Append one domain-rule mutation and publication outcome. */
@@ -3349,8 +3460,11 @@ static int handle_network_get(struct jg_management *management,
 {
     struct authenticated_actor actor;
     struct jg_database_network_config record;
+    struct jg_network_state state;
     json_t *body = NULL;
     json_t *configuration = NULL;
+    json_t *runtime = NULL;
+    int state_result = 0;
     int result = authenticate_actor(management, request, remote, false,
                                     JG_ACCESS_STATUS_READ, now, &actor);
 
@@ -3377,17 +3491,25 @@ static int handle_network_get(struct jg_management *management,
     }
     body = json_object();
     configuration = network_config_json(&record.config);
-    if (body == NULL || configuration == NULL ||
+    state_result = jg_netd_client_state(&state);
+    runtime = state_result == 0 ? network_state_json(&state) : json_null();
+    if (body == NULL || configuration == NULL || runtime == NULL ||
         json_object_set_new(body, "revision",
                             json_integer((json_int_t)record.revision)) != 0 ||
         json_object_set_new(body, "updated_at",
                             json_integer((json_int_t)record.updated_at)) != 0 ||
-        json_object_set(body, "configuration", configuration) != 0) {
-        json_decref(configuration);
-        json_decref(body);
-        return -ENOMEM;
+        json_object_set_new(body, "runtime_available",
+                            json_boolean(state_result == 0)) != 0 ||
+        json_object_set(body, "configuration", configuration) != 0 ||
+        json_object_set(body, "runtime", runtime) != 0) {
+        result = -ENOMEM;
     }
+    json_decref(runtime);
     json_decref(configuration);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
@@ -3443,6 +3565,143 @@ static int handle_network_validate(struct jg_management *management,
     }
     json_decref(configuration);
     return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Stage one revision-bound network change for confirmation. */
+static int handle_network_apply(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                uint64_t now,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_network_config record;
+    struct jg_network_config config;
+    struct jg_network_state state;
+    json_t *body = NULL;
+    json_t *runtime = NULL;
+    uint64_t revision = 0U;
+    int audit_result = 0;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_NETWORK_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result =
+        request->query[0U] == '\0'
+            ? parse_network_apply_request(request->body, &revision, &config)
+            : -EINVAL;
+    if (result != 0) {
+        return respond_error(400, "invalid_network",
+                             "The network staging request is invalid.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        jg_database_load_network_config_record(management->database, &record);
+    if (result != 0) {
+        return respond_error(
+            result == -ENOENT ? 404 : 500,
+            result == -ENOENT ? "network_unconfigured" : "network_unavailable",
+            result == -ENOENT
+                ? "Network configuration has not been initialized."
+                : "Network configuration could not be read.",
+            request->request_id, output, output_size, written);
+    }
+    if (record.revision != revision) {
+        audit_result = append_network_audit(management, request, remote, &actor,
+                                            "network.apply", &config, -EAGAIN,
+                                            record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(409, "revision_conflict",
+                             "The network configuration revision has changed.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_apply(&config);
+    if (result != 0) {
+        audit_result = append_network_audit(management, request, remote, &actor,
+                                            "network.apply", &config, result,
+                                            record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        if (result == -EBUSY) {
+            return respond_error(
+                409, "network_transaction_pending",
+                "Another network transaction is awaiting confirmation.",
+                request->request_id, output, output_size, written);
+        }
+        if (result == -EINVAL || result == -ERANGE) {
+            return respond_error(
+                422, "network_apply_rejected",
+                "The proposed configuration is not valid on this system.",
+                request->request_id, output, output_size, written);
+        }
+        return respond_error(503, "network_apply_unavailable",
+                             "The network change could not be staged.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_state(&state);
+    if (result != 0 || !state.pending) {
+        (void)jg_netd_client_rollback();
+        if (result == 0) {
+            result = -EPROTO;
+        }
+        audit_result = append_network_audit(management, request, remote, &actor,
+                                            "network.apply", &config, result,
+                                            record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(503, "network_state_unavailable",
+                             "The pending network state could not be verified.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    runtime = network_state_json(&state);
+    if (body == NULL || runtime == NULL ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)record.revision)) != 0 ||
+        json_object_set(body, "runtime", runtime) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(runtime);
+    if (result == 0) {
+        audit_result = append_network_audit(management, request, remote, &actor,
+                                            "network.apply", &config, 0,
+                                            record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            (void)jg_netd_client_rollback();
+            result = audit_result;
+        }
+    }
+    if (result != 0) {
+        if (result == -ENOMEM) {
+            (void)jg_netd_client_rollback();
+        }
+        json_decref(body);
+        return respond_error(
+            500, result == -ENOMEM ? "serialization_failure" : "audit_failure",
+            result == -ENOMEM
+                ? "The pending network state could not be encoded."
+                : "The network change could not be audited.",
+            request->request_id, output, output_size, written);
+    }
+    return encode_response(202, body, NULL, output, output_size, written);
 }
 
 /** @brief Add one nonnegative runtime counter to a JSON object. */
@@ -6389,6 +6648,10 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/network/validate") == 0 && post) {
         return handle_network_validate(management, request, remote, now, output,
                                        output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/network/apply") == 0 && post) {
+        return handle_network_apply(management, request, remote, now, output,
+                                    output_size, written);
     }
     if (strcmp(request->path, "/api/v1/blocklists") == 0 && post) {
         return handle_blocklist_import(management, request, remote, now, output,
