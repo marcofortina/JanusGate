@@ -1,0 +1,84 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+ */
+
+/**
+ * @file version.h
+ * @brief Build and release identity for JanusGate components.
+ *
+ * Returned strings have static lifetime and must not be modified or freed.
+ * Every function is thread-safe and cannot fail.
+ */
+
+#ifndef JANUSGATE_VERSION_H
+#define JANUSGATE_VERSION_H
+
+#if defined(__GNUC__) || defined(__clang__)
+#define JG_PUBLIC __attribute__((visibility("default")))
+#else
+#define JG_PUBLIC
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief Return the semantic project version.
+ *
+ * @return A read-only, null-terminated string with static lifetime.
+ *
+ * @thread_safety This function is reentrant and accesses immutable storage.
+ */
+JG_PUBLIC const char *jg_version_string(void);
+
+/**
+ * @brief Return the source revision recorded at configure time.
+ *
+ * @return A read-only, null-terminated string with static lifetime.
+ *
+ * @thread_safety This function is reentrant and accesses immutable storage.
+ */
+JG_PUBLIC const char *jg_build_commit(void);
+
+/**
+ * @brief Return the UTC build timestamp.
+ *
+ * The value honors `SOURCE_DATE_EPOCH` when supported by the active CMake
+ * release.
+ *
+ * @return A read-only ISO 8601 string with static lifetime.
+ *
+ * @thread_safety This function is reentrant and accesses immutable storage.
+ */
+JG_PUBLIC const char *jg_build_timestamp(void);
+
+/**
+ * @brief Return the compiler identity recorded at configure time.
+ *
+ * @return A read-only, null-terminated string with static lifetime.
+ *
+ * @thread_safety This function is reentrant and accesses immutable storage.
+ */
+JG_PUBLIC const char *jg_build_compiler(void);
+
+/**
+ * @brief Return the build target identity.
+ *
+ * @return A read-only, null-terminated string with static lifetime.
+ *
+ * @thread_safety This function is reentrant and accesses immutable storage.
+ */
+JG_PUBLIC const char *jg_build_target(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#define JANUSGATE_VERSION "@PROJECT_VERSION@"
+#define JANUSGATE_BUILD_COMMIT "@JANUSGATE_BUILD_COMMIT@"
+#define JANUSGATE_BUILD_TIMESTAMP "@JANUSGATE_BUILD_TIMESTAMP@"
+#define JANUSGATE_BUILD_COMPILER "@JANUSGATE_BUILD_COMPILER@"
+#define JANUSGATE_BUILD_TARGET "@JANUSGATE_BUILD_TARGET@"
+
+#endif

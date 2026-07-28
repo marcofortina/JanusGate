@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h}]
+indent_style = space
+indent_size = 4
+
+[{CMakeLists.txt,*.cmake,*.json,*.md,*.toml,*.yaml,*.yml}]
+indent_style = space
+indent_size = 2
+
+[{*.sh,APKBUILD}]
+indent_style = space
+indent_size = 4
+

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 80
+PointerAlignment: Right
+AlignAfterOpenBracket: Align
+BinPackParameters: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+BreakBeforeBraces: Linux
+PenaltyReturnTypeOnItsOwnLine: 1000
+SortIncludes: CaseSensitive

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+/build/
+/build-*/
+/out/
+/Testing/
+/compile_commands.json
+/.cache/
+/.idea/
+/.vscode/
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+*.swp
+*~
+
