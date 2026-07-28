@@ -422,6 +422,48 @@ static int parse_remote_address(const char *text, struct remote_address *remote)
     return -EINVAL;
 }
 
+/** @brief Decode one ASCII hexadecimal digit. */
+static int hexadecimal_value(char character, uint8_t *value)
+{
+    if (character >= '0' && character <= '9') {
+        *value = (uint8_t)(character - '0');
+        return 0;
+    }
+    if (character >= 'a' && character <= 'f') {
+        *value = (uint8_t)(character - 'a' + 10);
+        return 0;
+    }
+    if (character >= 'A' && character <= 'F') {
+        *value = (uint8_t)(character - 'A' + 10);
+        return 0;
+    }
+    return -EINVAL;
+}
+
+/** @brief Parse one exact colon-separated 48-bit MAC address. */
+static int parse_mac_address(const char *text, uint8_t address[6U])
+{
+    uint8_t parsed[6U];
+
+    if (text == NULL || strlen(text) != 17U) {
+        return -EINVAL;
+    }
+    for (size_t index = 0U; index < sizeof(parsed); ++index) {
+        uint8_t high = 0U;
+        uint8_t low = 0U;
+        const size_t offset = index * 3U;
+
+        if (hexadecimal_value(text[offset], &high) != 0 ||
+            hexadecimal_value(text[offset + 1U], &low) != 0 ||
+            (index + 1U < sizeof(parsed) && text[offset + 2U] != ':')) {
+            return -EINVAL;
+        }
+        parsed[index] = (uint8_t)((high << 4U) | low);
+    }
+    (void)memcpy(address, parsed, sizeof(parsed));
+    return 0;
+}
+
 /** @brief Read a trusted wall-clock timestamp for persistent operations. */
 static int current_time(uint64_t *now)
 {
@@ -911,6 +953,228 @@ static json_t *audit_json(const struct jg_audit_record *record)
                             record->first ? json_null()
                                           : json_string(previous_hash)) != 0 ||
         json_object_set_new(body, "event_hash", json_string(event_hash)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Return the stable external name for one policy action. */
+static const char *policy_effect_name(enum jg_policy_effect effect)
+{
+    switch (effect) {
+    case JG_POLICY_ALLOW:
+        return "allow";
+    case JG_POLICY_BLOCK:
+        return "block";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Return the stable external name for one policy source. */
+static const char *policy_source_name(enum jg_policy_source source)
+{
+    switch (source) {
+    case JG_POLICY_SOURCE_DEFAULT:
+        return "default";
+    case JG_POLICY_SOURCE_BLOCKLIST:
+        return "blocklist";
+    case JG_POLICY_SOURCE_EXPLICIT:
+        return "explicit";
+    case JG_POLICY_SOURCE_EMERGENCY:
+        return "emergency";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Return the stable external name for one domain policy target. */
+static const char *policy_target_name(enum jg_policy_domain_target target)
+{
+    switch (target) {
+    case JG_POLICY_DOMAIN_DNS:
+        return "dns";
+    case JG_POLICY_DOMAIN_TLS_SNI:
+        return "tls_sni";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Parse one optional external domain policy target. */
+static bool parse_policy_target(const char *text,
+                                enum jg_policy_domain_target *target)
+{
+    if (text == NULL || target == NULL) {
+        return false;
+    }
+    if (text[0U] == '\0' || strcmp(text, "dns") == 0) {
+        *target = JG_POLICY_DOMAIN_DNS;
+        return true;
+    }
+    if (strcmp(text, "tls_sni") == 0) {
+        *target = JG_POLICY_DOMAIN_TLS_SNI;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Parse one external TCP or UDP policy transport. */
+static bool parse_policy_transport(const char *text,
+                                   enum jg_policy_transport *transport)
+{
+    if (text == NULL || transport == NULL) {
+        return false;
+    }
+    if (strcmp(text, "tcp") == 0) {
+        *transport = JG_POLICY_TRANSPORT_TCP;
+        return true;
+    }
+    if (strcmp(text, "udp") == 0) {
+        *transport = JG_POLICY_TRANSPORT_UDP;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Return the stable external name for a selected policy dimension. */
+static const char *policy_dimension_name(
+    enum jg_policy_match_dimension dimension)
+{
+    switch (dimension) {
+    case JG_POLICY_MATCH_DEFAULT:
+        return "default";
+    case JG_POLICY_MATCH_DOMAIN:
+        return "domain";
+    case JG_POLICY_MATCH_DESTINATION:
+        return "destination";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Convert one self-contained simulated rule match to JSON. */
+static json_t *policy_simulation_match_json(
+    const struct jg_policy_simulation_match *match,
+    enum jg_policy_match_dimension dimension)
+{
+    const char *effect = policy_effect_name(match->effect);
+    const char *source = policy_source_name(match->source);
+    const char *dimension_name = policy_dimension_name(dimension);
+    json_t *body = json_object();
+
+    if (effect == NULL || source == NULL || dimension_name == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "dimension", json_string(dimension_name)) !=
+            0 ||
+        json_object_set_new(body, "matched", json_boolean(match->matched)) !=
+            0 ||
+        json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(body, "rule_id",
+                            match->matched
+                                ? json_integer((json_int_t)match->rule_id)
+                                : json_null()) != 0 ||
+        json_object_set_new(body, "source", json_string(source)) != 0 ||
+        json_object_set_new(body, "domain",
+                            match->domain[0U] == '\0'
+                                ? json_null()
+                                : json_string(match->domain)) != 0 ||
+        json_object_set_new(body, "attribution",
+                            match->attribution[0U] == '\0'
+                                ? json_null()
+                                : json_string(match->attribution)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Serialize one complete policy simulation explanation. */
+static json_t *policy_simulation_json(
+    const struct jg_policy_simulation *simulation)
+{
+    const char *effect = policy_effect_name(simulation->effect);
+    const char *target = policy_target_name(simulation->target);
+    const char *selected = policy_dimension_name(simulation->selected);
+    const struct jg_policy_simulation_match *selected_match = NULL;
+    json_t *body = json_object();
+    json_t *domain = policy_simulation_match_json(&simulation->domain,
+                                                  JG_POLICY_MATCH_DOMAIN);
+    json_t *destination =
+        simulation->destination_evaluated
+            ? policy_simulation_match_json(&simulation->destination,
+                                           JG_POLICY_MATCH_DESTINATION)
+            : json_null();
+    json_t *matching_rule = NULL;
+    json_t *path = json_array();
+    json_t *sources = json_array();
+    int result = 0;
+
+    if (simulation->selected == JG_POLICY_MATCH_DOMAIN) {
+        selected_match = &simulation->domain;
+    } else if (simulation->selected == JG_POLICY_MATCH_DESTINATION) {
+        selected_match = &simulation->destination;
+    }
+    matching_rule = selected_match == NULL
+                        ? json_null()
+                        : policy_simulation_match_json(selected_match,
+                                                       simulation->selected);
+    if (effect == NULL || target == NULL || selected == NULL || body == NULL ||
+        domain == NULL || destination == NULL || matching_rule == NULL ||
+        path == NULL || sources == NULL ||
+        simulation->generation > (uint64_t)INT64_MAX) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && simulation->destination_evaluated &&
+        json_array_append_new(path, json_string("destination")) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        !(simulation->selected == JG_POLICY_MATCH_DESTINATION &&
+          simulation->effect == JG_POLICY_BLOCK) &&
+        json_array_append_new(path, json_string("domain")) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && simulation->selected == JG_POLICY_MATCH_DEFAULT &&
+        json_array_append_new(path, json_string("default")) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && simulation->destination.attribution[0U] != '\0' &&
+        json_array_append_new(
+            sources, json_string(simulation->destination.attribution)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && simulation->domain.attribution[0U] != '\0' &&
+        (simulation->destination.attribution[0U] == '\0' ||
+         strcmp(simulation->domain.attribution,
+                simulation->destination.attribution) != 0) &&
+        json_array_append_new(
+            sources, json_string(simulation->domain.attribution)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "normalized_domain",
+                             json_string(simulation->normalized_domain)) != 0 ||
+         json_object_set_new(body, "target", json_string(target)) != 0 ||
+         json_object_set_new(body, "action", json_string(effect)) != 0 ||
+         json_object_set_new(body, "selected", json_string(selected)) != 0 ||
+         json_object_set_new(
+             body, "policy_generation",
+             json_integer((json_int_t)simulation->generation)) != 0 ||
+         json_object_set(body, "domain_match", domain) != 0 ||
+         json_object_set(body, "destination_match", destination) != 0 ||
+         json_object_set(body, "matching_rule", matching_rule) != 0 ||
+         json_object_set(body, "precedence_path", path) != 0 ||
+         json_object_set(body, "sources", sources) != 0)) {
+        result = -ENOMEM;
+    }
+    json_decref(domain);
+    json_decref(destination);
+    json_decref(matching_rule);
+    json_decref(path);
+    json_decref(sources);
+    if (result != 0) {
         json_decref(body);
         return NULL;
     }
@@ -1797,6 +2061,159 @@ static int handle_metrics(struct jg_management *management,
     }
     free(metrics);
     return result;
+}
+
+/** @brief Simulate one authenticated decision on the active policy snapshot. */
+static int handle_policy_simulation(struct jg_management *management,
+                                    const struct management_request *request,
+                                    const struct remote_address *remote,
+                                    uint64_t now,
+                                    uint8_t *output,
+                                    size_t output_size,
+                                    size_t *written)
+{
+    static const char *const fields[] = {
+        "domain", "target",         "source_ip",        "source_mac",
+        "vlan",   "destination_ip", "destination_port", "transport",
+    };
+    struct authenticated_actor actor;
+    struct jg_policy_client client;
+    struct jg_policy_destination destination;
+    struct jg_policy_simulation simulation;
+    struct remote_address parsed_address;
+    const char *domain = NULL;
+    const char *target_text = NULL;
+    const char *source_ip = NULL;
+    const char *source_mac = NULL;
+    const char *destination_ip = NULL;
+    const char *transport_text = NULL;
+    json_t *target_value = json_object_get(request->body, "target");
+    json_t *source_ip_value = json_object_get(request->body, "source_ip");
+    json_t *source_mac_value = json_object_get(request->body, "source_mac");
+    json_t *vlan_value = json_object_get(request->body, "vlan");
+    json_t *destination_ip_value =
+        json_object_get(request->body, "destination_ip");
+    json_t *destination_port_value =
+        json_object_get(request->body, "destination_port");
+    json_t *transport_value = json_object_get(request->body, "transport");
+    enum jg_policy_domain_target target = JG_POLICY_DOMAIN_DNS;
+    bool has_client = false;
+    bool has_destination = false;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_POLICY_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    (void)memset(&client, 0, sizeof(client));
+    (void)memset(&destination, 0, sizeof(destination));
+    domain = required_string(request->body, "domain", 1U, 1024U);
+    target_text = optional_string(request->body, "target", 7U);
+    source_ip =
+        optional_string(request->body, "source_ip", INET6_ADDRSTRLEN - 1U);
+    source_mac = optional_string(request->body, "source_mac", 17U);
+    destination_ip =
+        optional_string(request->body, "destination_ip", INET6_ADDRSTRLEN - 1U);
+    transport_text = optional_string(request->body, "transport", 3U);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        domain == NULL || target_text == NULL || source_ip == NULL ||
+        source_mac == NULL || destination_ip == NULL ||
+        transport_text == NULL ||
+        (target_value != NULL && target_text[0U] == '\0') ||
+        (source_ip_value != NULL && source_ip[0U] == '\0') ||
+        (source_mac_value != NULL && source_mac[0U] == '\0') ||
+        (destination_ip_value != NULL && destination_ip[0U] == '\0') ||
+        (transport_value != NULL && transport_text[0U] == '\0') ||
+        !parse_policy_target(target_text, &target)) {
+        return respond_error(400, "invalid_body",
+                             "The policy-simulation request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (source_ip[0U] != '\0') {
+        result = parse_remote_address(source_ip, &parsed_address);
+        if (result == 0) {
+            client.address_family = parsed_address.family;
+            (void)memcpy(client.address, parsed_address.address,
+                         parsed_address.family == JG_POLICY_ADDRESS_IPV4 ? 4U
+                                                                         : 16U);
+            has_client = true;
+        }
+    }
+    if (result == 0 && source_mac[0U] != '\0') {
+        result = parse_mac_address(source_mac, client.mac);
+        if (result == 0) {
+            client.has_mac = true;
+            has_client = true;
+        }
+    }
+    if (result == 0 && vlan_value != NULL) {
+        const json_int_t vlan =
+            json_is_integer(vlan_value) ? json_integer_value(vlan_value) : -1;
+
+        if (vlan < 0 || vlan > 4094) {
+            result = -EINVAL;
+        } else {
+            client.has_vlan = true;
+            client.vlan_id = (uint16_t)vlan;
+            has_client = true;
+        }
+    }
+    has_destination = destination_ip[0U] != '\0';
+    if (result == 0 && has_destination) {
+        const json_int_t port = json_is_integer(destination_port_value)
+                                    ? json_integer_value(destination_port_value)
+                                    : -1;
+
+        result = parse_remote_address(destination_ip, &parsed_address);
+        if (result == 0 &&
+            (!parse_policy_transport(transport_text, &destination.transport) ||
+             port <= 0 || port > 65535)) {
+            result = -EINVAL;
+        }
+        if (result == 0) {
+            destination.address_family = parsed_address.family;
+            (void)memcpy(destination.address, parsed_address.address,
+                         parsed_address.family == JG_POLICY_ADDRESS_IPV4 ? 4U
+                                                                         : 16U);
+            destination.port = (uint16_t)port;
+        }
+    } else if (result == 0 &&
+               (destination_port_value != NULL || transport_value != NULL)) {
+        result = -EINVAL;
+    }
+    if (result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The policy-simulation request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_daemon_runtime_simulate_policy(
+        management->runtime, target, domain, has_client ? &client : NULL,
+        has_destination ? &destination : NULL, &simulation);
+    if (result == -EINVAL || result == -ENOSPC) {
+        return respond_error(
+            400, "invalid_simulation",
+            "The simulation input is not a valid policy query.",
+            request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    body = policy_simulation_json(&simulation);
+    if (body == NULL) {
+        return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
 }
 
 /** @brief Return one authenticated stable page of local users. */
@@ -2837,6 +3254,10 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/simulate") == 0 && post) {
+        return handle_policy_simulation(management, request, remote, now,
+                                        output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/audit/verify") == 0 &&
         strcmp(request->method, "GET") == 0) {

@@ -224,6 +224,40 @@ static void test_browser_authentication(void **state)
     assert_string_equal(json_string_value(value), "administrator");
     json_decref(response);
 
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"policy-simulate\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/policies/simulate\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"body\":{\"domain\":\"Example.ORG.\",\"source_ip\":\"192.0.2.50\","
+        "\"source_mac\":\"02:00:00:00:00:01\",\"vlan\":20,"
+        "\"destination_ip\":\"203.0.113.53\","
+        "\"destination_port\":53,\"transport\":\"udp\"}}",
+        session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"policy-simulate-invalid\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/policies/simulate\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"body\":{\"domain\":\"example.org\","
+        "\"source_mac\":\"not-a-mac\"}}",
+        session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+
     written =
         snprintf(request, sizeof(request),
                  "{\"request_id\":\"metrics-1\",\"method\":\"GET\","
