@@ -141,9 +141,18 @@ add_executable(janusgated src/daemon/main.c)
 target_link_libraries(janusgated PRIVATE janusgate-daemon-core)
 janusgate_apply_compiler_options(janusgated)
 
+add_library(janusgate-cli-core STATIC src/cli/client.c)
+target_include_directories(
+  janusgate-cli-core
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/cli>")
+target_link_libraries(
+  janusgate-cli-core PUBLIC JanusGate::common PRIVATE PkgConfig::JANSSON)
+janusgate_apply_compiler_options(janusgate-cli-core)
+
 add_executable(janusgatectl src/cli/main.c)
 target_link_libraries(
-  janusgatectl PRIVATE JanusGate::common janusgate-control-protocol)
+  janusgatectl
+  PRIVATE JanusGate::common janusgate-cli-core janusgate-control-protocol)
 janusgate_apply_compiler_options(janusgatectl)
 
 add_library(

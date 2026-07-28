@@ -14,6 +14,7 @@ add_executable(
   unit/test_blocklist_update.c
   unit/test_main.c
   unit/test_checked.c
+  unit/test_cli_client.c
   unit/test_control_protocol.c
   unit/test_control_server.c
   unit/test_database.c
@@ -44,7 +45,7 @@ target_sources(janusgate-unit-tests PRIVATE unit/test_web_server.c)
 target_link_libraries(
   janusgate-unit-tests
   PRIVATE JanusGate::common janusgate-daemon-core janusgate-netd-core
-          janusgate-web-core
+          janusgate-cli-core janusgate-web-core
           PkgConfig::CMOCKA PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
