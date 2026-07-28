@@ -63,9 +63,14 @@ function(janusgate_apply_compiler_options target)
   endif()
 
   if(JANUSGATE_ENABLE_SANITIZERS)
-    janusgate_add_supported_compile_options(
-      "${target}" -fsanitize=address,undefined -fno-omit-frame-pointer)
-    janusgate_add_supported_link_options("${target}" -fsanitize=address,undefined)
+    check_linker_flag(
+      C "-fsanitize=address,undefined" JANUSGATE_SANITIZER_LINK_SUPPORTED)
+    if(NOT JANUSGATE_SANITIZER_LINK_SUPPORTED)
+      message(FATAL_ERROR "The selected C compiler cannot build with the required sanitizers")
+    endif()
+    target_compile_options(
+      "${target}" PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options("${target}" PRIVATE -fsanitize=address,undefined)
   endif()
 
   if(JANUSGATE_ENABLE_COVERAGE)
@@ -77,4 +82,3 @@ function(janusgate_apply_compiler_options target)
     target_link_options("${target}" PRIVATE --coverage)
   endif()
 endfunction()
-
