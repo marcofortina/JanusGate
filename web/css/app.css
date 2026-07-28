@@ -20,6 +20,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -82,6 +86,14 @@ body {
   font-size: 0.9rem;
 }
 
+.account-state {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .state-marker {
   width: 0.65rem;
   height: 0.65rem;
@@ -123,14 +135,128 @@ nav a.active {
 }
 
 a:focus-visible,
-button:focus-visible {
+button:focus-visible,
+input:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
-main {
+.page-content {
   width: min(80rem, 100%);
   padding: 2.5rem clamp(1.2rem, 4vw, 4rem);
+}
+
+.auth-shell {
+  display: grid;
+  width: min(70rem, calc(100% - 2rem));
+  min-height: calc(100vh - 5rem);
+  grid-template-columns: minmax(0, 1.15fr) minmax(22rem, 0.85fr);
+  align-items: center;
+  gap: clamp(2rem, 8vw, 7rem);
+  margin: 0 auto;
+  padding: 4rem 1rem;
+}
+
+.auth-context h2 {
+  max-width: 12ch;
+  margin: 0;
+  font-size: clamp(2.6rem, 6vw, 5.5rem);
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.auth-context > p:not(.eyebrow) {
+  max-width: 38rem;
+  color: var(--muted);
+  font-size: 1.08rem;
+  line-height: 1.65;
+}
+
+.trust-note {
+  display: grid;
+  max-width: 34rem;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 1rem;
+  margin-top: 2rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--panel-border);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.trust-note strong {
+  color: var(--accent-strong);
+}
+
+.auth-card {
+  padding: clamp(1.5rem, 4vw, 2.4rem);
+  border: 1px solid var(--panel-border);
+  border-radius: 0.85rem;
+  background: linear-gradient(145deg, #172630, #111b23);
+  box-shadow: 0 2rem 5rem rgb(0 0 0 / 22%);
+}
+
+.auth-card form {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.form-heading {
+  margin-bottom: 0.8rem;
+}
+
+.form-heading h3 {
+  margin: 0;
+  font-size: 1.7rem;
+}
+
+.form-heading p:not(.eyebrow) {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+}
+
+label {
+  margin-top: 0.45rem;
+  color: #dce7ed;
+  font-size: 0.88rem;
+  font-weight: 680;
+}
+
+input {
+  width: 100%;
+  min-height: 2.85rem;
+  padding: 0.68rem 0.75rem;
+  border: 1px solid #3a5260;
+  border-radius: 0.45rem;
+  background: #0c161d;
+  color: #fff;
+  font: inherit;
+}
+
+input:focus-visible {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+#second-factor {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.6rem;
+  padding: 1rem;
+  border: 1px solid #365263;
+  border-radius: 0.5rem;
+  background: #101c24;
+}
+
+.error-summary {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #a94f59;
+  border-left-width: 4px;
+  border-radius: 0.4rem;
+  background: #321a20;
+  color: #ffdce0;
+  line-height: 1.45;
 }
 
 .page-heading {
@@ -166,9 +292,37 @@ button:hover {
   border-color: var(--accent);
 }
 
+.primary-button {
+  width: 100%;
+  margin-top: 0.9rem;
+  border-color: #45b995;
+  background: #19785f;
+  font-weight: 720;
+}
+
+.primary-button:hover {
+  background: #218b70;
+}
+
+.text-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.quiet-button {
+  min-height: 2.25rem;
+  padding: 0.4rem 0.75rem;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
   gap: 1rem;
   margin-top: 2rem;
 }
@@ -219,7 +373,40 @@ button:hover {
 @media (max-width: 760px) {
   .masthead {
     align-items: flex-start;
+    flex-wrap: wrap;
     padding: 1rem;
+  }
+
+  .service-state {
+    margin-left: auto;
+  }
+
+  .account-state {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .auth-shell {
+    display: block;
+    width: 100%;
+    padding: 2.5rem 1rem;
+  }
+
+  .auth-context {
+    margin-bottom: 2rem;
+  }
+
+  .auth-context h2 {
+    font-size: clamp(2.5rem, 14vw, 4rem);
+  }
+
+  .trust-note {
+    display: block;
+  }
+
+  .trust-note span {
+    display: block;
+    margin-top: 0.35rem;
   }
 
   .layout {
@@ -237,17 +424,13 @@ button:hover {
     flex: 0 0 auto;
   }
 
-  main {
+  .page-content {
     padding: 2rem 1rem;
   }
 
   .page-heading {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .status-grid {
-    grid-template-columns: 1fr;
   }
 }
 

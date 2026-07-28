@@ -29,54 +29,153 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
         <span class="state-marker" aria-hidden="true"></span>
         <span id="service-state">Checking management service</span>
       </div>
+      <div class="account-state" id="account-state" hidden>
+        <span id="current-user"></span>
+        <button id="logout" class="quiet-button" type="button">Sign out</button>
+      </div>
     </header>
-    <div class="layout">
-      <nav aria-label="Administration">
-        <a class="active" href="#dashboard" aria-current="page">Dashboard</a>
-        <a href="#network">Network</a>
-        <a href="#policies">Policies</a>
-        <a href="#blocklists">Blocklists</a>
-        <a href="#events">Events</a>
-        <a href="#access">Users and access</a>
-        <a href="#certificates">Certificates</a>
-        <a href="#backups">Backup and restore</a>
-        <a href="#system">System</a>
-      </nav>
-      <main id="main" tabindex="-1">
-        <section class="page-heading" id="dashboard">
-          <div>
-            <p class="eyebrow">ENFORCEMENT OVERVIEW</p>
-            <h2>Dashboard</h2>
-            <p>Management service readiness and inline enforcement context.</p>
-          </div>
-          <button id="refresh" type="button">Refresh status</button>
-        </section>
-        <section class="status-grid" aria-label="Current status">
-          <article>
-            <p class="metric-label">Management HTTPS</p>
-            <p class="metric-value" id="https-status">Checking</p>
-            <p class="metric-detail">TLS-only listener on the management address</p>
-          </article>
-          <article>
-            <p class="metric-label">Policy service</p>
-            <p class="metric-value">Protected</p>
-            <p class="metric-detail">Separate local control socket</p>
-          </article>
-          <article>
-            <p class="metric-label">Packet path</p>
-            <p class="metric-value">Kernel fast path</p>
-            <p class="metric-detail">Only selected policy traffic enters NFQUEUE</p>
-          </article>
-        </section>
-        <section class="notice" aria-labelledby="scope-title">
-          <h3 id="scope-title">Inspection boundary</h3>
+    <main id="main" tabindex="-1">
+      <section class="auth-shell" id="auth-view" aria-labelledby="auth-title">
+        <div class="auth-context">
+          <p class="eyebrow">LOCAL MANAGEMENT</p>
+          <h2 id="auth-title">Control the gate with confidence.</h2>
           <p>
-            JanusGate filters classic DNS and configured visible destinations.
-            Full-tunnel VPN traffic and names protected by ECH remain encrypted
-            unless their outer endpoint is explicitly covered by policy.
+            Administration stays on the dedicated management interface.
+            Credentials are sent only over this appliance's HTTPS connection.
           </p>
-        </section>
-      </main>
-    </div>
+          <div class="trust-note">
+            <strong>Protected by design</strong>
+            <span>Opaque sessions, strict same-origin requests, and backend authorization.</span>
+          </div>
+        </div>
+        <div class="auth-card">
+          <form id="login-form">
+            <div class="form-heading">
+              <p class="eyebrow">AUTHENTICATION</p>
+              <h3>Sign in</h3>
+              <p>Use a local JanusGate account.</p>
+            </div>
+            <div class="error-summary" id="login-error" role="alert" hidden></div>
+            <label for="login-username">Username</label>
+            <input id="login-username" name="username" type="text"
+                   autocomplete="username" maxlength="128" required>
+            <label for="login-password">Password</label>
+            <input id="login-password" name="password" type="password"
+                   autocomplete="current-password" maxlength="256" required>
+            <div id="second-factor" hidden>
+              <label for="login-totp">Six-digit code</label>
+              <input id="login-totp" name="totp" type="text"
+                     inputmode="numeric" autocomplete="one-time-code"
+                     pattern="[0-9]{6}" maxlength="6">
+              <label for="login-recovery">Or recovery code</label>
+              <input id="login-recovery" name="recovery" type="text"
+                     autocomplete="off" maxlength="43">
+            </div>
+            <button class="primary-button" type="submit">Sign in securely</button>
+            <button class="text-button" id="show-bootstrap" type="button">
+              Configure a new appliance
+            </button>
+          </form>
+          <form id="bootstrap-form" hidden>
+            <div class="form-heading">
+              <p class="eyebrow">FIRST BOOT</p>
+              <h3>Create the administrator</h3>
+              <p>Enter the one-time token shown on the local console.</p>
+            </div>
+            <div class="error-summary" id="bootstrap-error" role="alert" hidden></div>
+            <label for="bootstrap-token">Bootstrap token</label>
+            <input id="bootstrap-token" name="token" type="password"
+                   autocomplete="off" minlength="43" maxlength="43" required>
+            <label for="bootstrap-username">Administrator username</label>
+            <input id="bootstrap-username" name="username" type="text"
+                   autocomplete="username" maxlength="128" required>
+            <label for="bootstrap-password">Password</label>
+            <input id="bootstrap-password" name="password" type="password"
+                   autocomplete="new-password" minlength="12" maxlength="256" required>
+            <label for="bootstrap-confirm">Confirm password</label>
+            <input id="bootstrap-confirm" name="confirm" type="password"
+                   autocomplete="new-password" minlength="12" maxlength="256" required>
+            <button class="primary-button" type="submit">Create administrator</button>
+            <button class="text-button" id="show-login" type="button">
+              Return to sign in
+            </button>
+          </form>
+        </div>
+      </section>
+      <div class="layout" id="app-view" hidden>
+        <nav aria-label="Administration">
+          <a class="active" href="#dashboard" aria-current="page">Dashboard</a>
+          <a href="#network">Network</a>
+          <a href="#policies">Policies</a>
+          <a href="#blocklists">Blocklists</a>
+          <a href="#events">Events</a>
+          <a href="#access">Users and access</a>
+          <a href="#certificates">Certificates</a>
+          <a href="#backups">Backup and restore</a>
+          <a href="#system">System</a>
+        </nav>
+        <div class="page-content">
+          <section class="page-heading" id="dashboard">
+            <div>
+              <p class="eyebrow">ENFORCEMENT OVERVIEW</p>
+              <h2>Dashboard</h2>
+              <p>Live packet-path state from the policy daemon.</p>
+            </div>
+            <button id="refresh" type="button">Refresh status</button>
+          </section>
+          <div class="error-summary" id="dashboard-error" role="alert" hidden></div>
+          <section class="status-grid" aria-label="Current enforcement status">
+            <article>
+              <p class="metric-label">Enforcement</p>
+              <p class="metric-value" id="enforcement-status">Checking</p>
+              <p class="metric-detail">Authenticated daemon readiness</p>
+            </article>
+            <article>
+              <p class="metric-label">Policy generation</p>
+              <p class="metric-value" id="policy-generation">—</p>
+              <p class="metric-detail">Current immutable policy snapshot</p>
+            </article>
+            <article>
+              <p class="metric-label">Allowed packets</p>
+              <p class="metric-value" id="allowed-count">—</p>
+              <p class="metric-detail">Accepted after policy evaluation</p>
+            </article>
+            <article>
+              <p class="metric-label">Blocked packets</p>
+              <p class="metric-value" id="blocked-count">—</p>
+              <p class="metric-detail">Denied by active policy</p>
+            </article>
+            <article>
+              <p class="metric-label">Malformed packets</p>
+              <p class="metric-value" id="malformed-count">—</p>
+              <p class="metric-detail">Rejected parser input</p>
+            </article>
+            <article>
+              <p class="metric-label">Queue drops</p>
+              <p class="metric-value" id="queue-drop-count">—</p>
+              <p class="metric-detail">Kernel queue drops and overflows</p>
+            </article>
+            <article>
+              <p class="metric-label">TCP resets</p>
+              <p class="metric-value" id="tcp-reset-count">—</p>
+              <p class="metric-detail">Blocked TCP flows terminated</p>
+            </article>
+            <article>
+              <p class="metric-label">Visible SNI</p>
+              <p class="metric-value" id="sni-count">—</p>
+              <p class="metric-detail">TLS ClientHello names inspected</p>
+            </article>
+          </section>
+          <section class="notice" aria-labelledby="scope-title">
+            <h3 id="scope-title">Inspection boundary</h3>
+            <p>
+              JanusGate filters classic DNS and configured visible destinations.
+              Full-tunnel VPN traffic and names protected by ECH remain encrypted
+              unless their outer endpoint is explicitly covered by policy.
+            </p>
+          </section>
+        </div>
+      </div>
+    </main>
   </body>
 </html>
