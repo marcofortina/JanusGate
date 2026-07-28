@@ -37,4 +37,5 @@ target_link_libraries(
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)
+add_test(NAME cli-version COMMAND janusgatectl --version)
 set_tests_properties(unit PROPERTIES TIMEOUT 30)

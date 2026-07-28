@@ -72,12 +72,18 @@ target_link_libraries(
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
 
+add_library(janusgate-control-protocol STATIC src/daemon/control_protocol.c)
+target_include_directories(
+  janusgate-control-protocol
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")
+target_link_libraries(janusgate-control-protocol PUBLIC JanusGate::common)
+janusgate_apply_compiler_options(janusgate-control-protocol)
+
 add_library(
   janusgate-daemon-core STATIC
   src/daemon/control_server.c
   src/daemon/dataplane.c
   src/daemon/dataplane_worker.c
-  src/daemon/control_protocol.c
   src/daemon/daemon_runtime.c
   src/daemon/fragment.c
   src/daemon/netd_client.c
@@ -92,7 +98,7 @@ target_include_directories(
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")
 target_link_libraries(
   janusgate-daemon-core
-  PUBLIC JanusGate::common Threads::Threads
+  PUBLIC JanusGate::common janusgate-control-protocol Threads::Threads
   PRIVATE PkgConfig::NETFILTER_QUEUE)
 janusgate_apply_compiler_options(janusgate-daemon-core)
 
@@ -120,6 +126,11 @@ add_executable(janusgated src/daemon/main.c)
 target_link_libraries(janusgated PRIVATE janusgate-daemon-core)
 janusgate_apply_compiler_options(janusgated)
 
+add_executable(janusgatectl src/cli/main.c)
+target_link_libraries(
+  janusgatectl PRIVATE JanusGate::common janusgate-control-protocol)
+janusgate_apply_compiler_options(janusgatectl)
+
 install(
   TARGETS janusgate-common
   EXPORT JanusGateTargets
@@ -145,6 +156,10 @@ install(
   RUNTIME DESTINATION "${CMAKE_INSTALL_SBINDIR}"
   COMPONENT runtime)
 install(
+  TARGETS janusgatectl
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  COMPONENT runtime)
+install(
   EXPORT JanusGateTargets
   NAMESPACE JanusGate::
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/JanusGate"
@@ -159,7 +174,7 @@ add_custom_target(
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-netd janusgated janusgate-unit-tests
+  DEPENDS janusgate-netd janusgated janusgatectl janusgate-unit-tests
   USES_TERMINAL)
 
 if(BUILD_TESTING)
