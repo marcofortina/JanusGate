@@ -1360,6 +1360,119 @@ static int authenticate_session(struct jg_management *management,
         identity);
 }
 
+/** @brief Change the current user's password and rotate its web session. */
+static int handle_password_change(struct jg_management *management,
+                                  const struct management_request *request,
+                                  const struct remote_address *remote,
+                                  uint64_t now,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  size_t *written)
+{
+    static const char *const fields[] = {
+        "current_password",
+        "new_password",
+    };
+    struct jg_account_identity session_identity;
+    struct jg_account_identity password_identity;
+    struct jg_account_identity renewed_identity;
+    struct jg_account_user user;
+    struct authenticated_actor actor;
+    const char *current_password = NULL;
+    const char *new_password = NULL;
+    int result = authenticate_session(management, request, remote, true, now,
+                                      &session_identity);
+
+    if (result != 0) {
+        return respond_error(401, "authentication_required",
+                             "A valid authenticated session is required.",
+                             request->request_id, output, output_size, written);
+    }
+    current_password = required_string(request->body, "current_password", 1U,
+                                       JG_AUTH_PASSWORD_MAX);
+    new_password = required_string(request->body, "new_password",
+                                   JG_AUTH_PASSWORD_MIN, JG_AUTH_PASSWORD_MAX);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        current_password == NULL || new_password == NULL ||
+        strcmp(current_password, new_password) == 0) {
+        return respond_error(400, "invalid_body",
+                             "The password-change request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_authenticate(
+        management->database, session_identity.username,
+        (const uint8_t *)current_password, strlen(current_password),
+        &management->password_policy, now, &password_identity);
+    if (result == -EAGAIN) {
+        return respond_error(429, "authentication_limited",
+                             "Authentication is temporarily limited.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(401, "invalid_credentials",
+                             "The current password is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (password_identity.user_id != session_identity.user_id ||
+        password_identity.revision != session_identity.revision ||
+        password_identity.session_epoch != session_identity.session_epoch ||
+        strcmp(password_identity.username, session_identity.username) != 0) {
+        return respond_error(409, "session_changed",
+                             "The account changed; sign in and try again.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_user_reset_password(
+        management->database, session_identity.user_id,
+        session_identity.revision, (const uint8_t *)new_password,
+        strlen(new_password), &management->password_policy, false, now, &user);
+    if (result == -ESTALE) {
+        return respond_error(409, "session_changed",
+                             "The account changed; sign in and try again.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -ERANGE) {
+        return respond_error(400, "invalid_password",
+                             "The replacement password is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "password_change_failed",
+                             "The password could not be changed.",
+                             request->request_id, output, output_size, written);
+    }
+    actor = (struct authenticated_actor){
+        .identity = session_identity,
+        .actor_id = session_identity.user_id,
+        .token = false,
+    };
+    result = append_user_audit(management, request, remote, &actor,
+                               "user.password_change", true,
+                               session_identity.revision, &user, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The password was changed, but its audit record could not be "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_account_authenticate(
+        management->database, session_identity.username,
+        (const uint8_t *)new_password, strlen(new_password),
+        &management->password_policy, now, &renewed_identity);
+    if (result != 0 || renewed_identity.user_id != session_identity.user_id ||
+        renewed_identity.revision != user.revision ||
+        renewed_identity.totp_enabled != session_identity.totp_enabled) {
+        return respond_error(500, "session_failure",
+                             "The password was changed; sign in again.",
+                             request->request_id, output, output_size, written);
+    }
+    renewed_identity.mfa_complete = session_identity.mfa_complete;
+    return issue_session(management, request, remote, &renewed_identity, now,
+                         output, output_size, written);
+}
+
 /** @brief Enforce one bounded fixed-window API-token request limit. */
 static int token_rate_accept(struct jg_management *management,
                              uint64_t token_id,
@@ -2777,6 +2890,10 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/auth/login") == 0 && post) {
         return handle_login(management, request, remote, now, output,
                             output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/auth/password") == 0 && post) {
+        return handle_password_change(management, request, remote, now, output,
+                                      output_size, written);
     }
     if (strcmp(request->path, "/api/v1/auth/session") == 0 &&
         strcmp(request->method, "GET") == 0) {

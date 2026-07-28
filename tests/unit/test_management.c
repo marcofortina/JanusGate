@@ -269,6 +269,192 @@ static void test_browser_authentication(void **state)
     json_decref(response);
 }
 
+/** @brief Verify forced password change and authenticated session rotation. */
+static void test_password_change(void **state)
+{
+    static const char administrator_password[] = "correct horse battery staple";
+    static const char initial_password[] = "initial operator password is long";
+    static const char replacement_password[] =
+        "replacement operator password is long";
+    struct management_fixture *fixture = *state;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[4096U];
+    char administrator_session[JG_AUTH_SECRET_TEXT_SIZE];
+    char administrator_csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    char operator_session[JG_AUTH_SECRET_TEXT_SIZE];
+    char operator_csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    char renewed_session[JG_AUTH_SECRET_TEXT_SIZE];
+    char renewed_csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    const time_t now = time(NULL);
+    int written = 0;
+
+    assert_true(now > 0);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"password-bootstrap\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/auth/bootstrap\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"body\":{"
+        "\"token\":\"%s\",\"username\":\"administrator\","
+        "\"password\":\"%s\"}}",
+        bootstrap, administrator_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    value = json_object_get(response, "set_session");
+    assert_true(json_is_string(value));
+    (void)snprintf(administrator_session, sizeof(administrator_session), "%s",
+                   json_string_value(value));
+    value = json_object_get(json_object_get(response, "body"), "csrf");
+    assert_true(json_is_string(value));
+    (void)snprintf(administrator_csrf, sizeof(administrator_csrf), "%s",
+                   json_string_value(value));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"password-user-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/users\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{"
+        "\"username\":\"operator\",\"password\":\"%s\","
+        "\"role\":\"operator\",\"force_password_change\":true}}",
+        administrator_session, administrator_csrf, initial_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"password-login\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/auth/login\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.20\",\"body\":{"
+        "\"username\":\"operator\",\"password\":\"%s\"}}",
+        initial_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    value = json_object_get(response, "set_session");
+    assert_true(json_is_string(value));
+    (void)snprintf(operator_session, sizeof(operator_session), "%s",
+                   json_string_value(value));
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(json_object_get(body, "user"),
+                                             "force_password_change")));
+    value = json_object_get(body, "csrf");
+    assert_true(json_is_string(value));
+    (void)snprintf(operator_csrf, sizeof(operator_csrf), "%s",
+                   json_string_value(value));
+    json_decref(response);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"password-status\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.20\",\"session\":\"%s\","
+                       "\"body\":{}}",
+                       operator_session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     403);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"password-change\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/auth/password\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.20\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{"
+        "\"current_password\":\"%s\",\"new_password\":\"%s\"}}",
+        operator_session, operator_csrf, initial_password,
+        replacement_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    value = json_object_get(response, "set_session");
+    assert_true(json_is_string(value));
+    (void)snprintf(renewed_session, sizeof(renewed_session), "%s",
+                   json_string_value(value));
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(json_object_get(body, "user"),
+                                              "force_password_change")));
+    value = json_object_get(body, "csrf");
+    assert_true(json_is_string(value));
+    (void)snprintf(renewed_csrf, sizeof(renewed_csrf), "%s",
+                   json_string_value(value));
+    assert_string_not_equal(renewed_session, operator_session);
+    assert_string_not_equal(renewed_csrf, operator_csrf);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"password-old-session\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/auth/session\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.20\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 operator_session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     401);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"password-new-session\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/auth/session\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.20\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 renewed_session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(json_object_get(body, "user"),
+                                              "force_password_change")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"password-audit\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/audit\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\",\"body\":{}}",
+        administrator_session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "total")), 2);
+    value = json_array_get(json_object_get(body, "events"), 0U);
+    assert_string_equal(json_string_value(json_object_get(value, "action")),
+                        "user.password_change");
+    json_decref(response);
+}
+
 /** @brief Verify authorized user CRUD, pagination, and audit chaining. */
 static void test_user_api(void **state)
 {
@@ -631,6 +817,8 @@ int jg_test_management(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_browser_authentication,
                                         setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_password_change, setup_management,
+                                        teardown_management),
         cmocka_unit_test_setup_teardown(test_user_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_token_api, setup_management,
