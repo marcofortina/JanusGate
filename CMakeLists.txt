@@ -73,6 +73,7 @@ janusgate_apply_compiler_options(janusgate-common)
 
 add_library(
   janusgate-daemon-core STATIC
+  src/daemon/control_server.c
   src/daemon/dataplane.c
   src/daemon/dataplane_worker.c
   src/daemon/control_protocol.c
