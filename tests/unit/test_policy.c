@@ -36,6 +36,24 @@ static struct jg_policy_rule_input make_rule(uint64_t id,
     return rule;
 }
 
+/** @brief Construct one valid global destination rule. */
+static struct jg_policy_destination_rule_input make_destination_rule(
+    uint64_t id,
+    enum jg_policy_effect effect,
+    enum jg_policy_source source)
+{
+    struct jg_policy_destination_rule_input rule;
+
+    (void)memset(&rule, 0, sizeof(rule));
+    rule.id = id;
+    rule.effect = effect;
+    rule.source = source;
+    rule.transport = JG_POLICY_TRANSPORT_ANY;
+    rule.scope.type = JG_POLICY_SCOPE_GLOBAL;
+    rule.attribution = "unit test";
+    return rule;
+}
+
 /** @brief Verify mandated rule precedence and client-scope selection. */
 static void test_precedence_and_scopes(void **state)
 {
@@ -252,6 +270,89 @@ static void test_domain_target_isolation(void **state)
     assert_null(snapshot);
 }
 
+/** @brief Verify destination prefixes, ports, precedence, and deduplication. */
+static void test_destination_policy(void **state)
+{
+    struct jg_policy_destination_rule_input rules[4U];
+    struct jg_policy_destination destination = {
+        .transport = JG_POLICY_TRANSPORT_TCP,
+        .address_family = JG_POLICY_ADDRESS_IPV4,
+        .address = {203U, 0U, 113U, 53U},
+        .port = 853U,
+    };
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_snapshot_info info;
+    struct jg_policy_destination_match match;
+
+    (void)state;
+    rules[0] =
+        make_destination_rule(10U, JG_POLICY_BLOCK, JG_POLICY_SOURCE_EXPLICIT);
+    rules[0].has_port = true;
+    rules[0].port = 853U;
+    rules[1] =
+        make_destination_rule(20U, JG_POLICY_ALLOW, JG_POLICY_SOURCE_EXPLICIT);
+    rules[1].transport = JG_POLICY_TRANSPORT_TCP;
+    rules[1].has_address = true;
+    rules[1].address_family = JG_POLICY_ADDRESS_IPV4;
+    (void)memcpy(rules[1].address, destination.address, 4U);
+    rules[1].prefix_length = 32U;
+    rules[1].has_port = true;
+    rules[1].port = 853U;
+    rules[2] =
+        make_destination_rule(30U, JG_POLICY_BLOCK, JG_POLICY_SOURCE_BLOCKLIST);
+    rules[2].has_address = true;
+    rules[2].address_family = JG_POLICY_ADDRESS_IPV4;
+    rules[2].address[0U] = 198U;
+    rules[2].address[1U] = 51U;
+    rules[2].address[2U] = 100U;
+    rules[2].address[3U] = 99U;
+    rules[2].prefix_length = 24U;
+    rules[3] = rules[2];
+    rules[3].id = 31U;
+    rules[3].address[3U] = 7U;
+
+    assert_int_equal(
+        jg_policy_snapshot_build_complete(NULL, 0U, rules, 4U, 1U, &snapshot),
+        0);
+    assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
+    assert_int_equal(info.rule_count, 0U);
+    assert_int_equal(info.destination_rule_count, 3U);
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(match.rule_id, 20U);
+
+    destination.address[3U] = 54U;
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.rule_id, 10U);
+
+    destination.address[0U] = 198U;
+    destination.address[1U] = 51U;
+    destination.address[2U] = 100U;
+    destination.address[3U] = 8U;
+    destination.port = 443U;
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.rule_id, 30U);
+
+    destination.address[0U] = 192U;
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_false(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+
+    rules[0].has_port = false;
+    snapshot = NULL;
+    assert_int_equal(
+        jg_policy_snapshot_build_complete(NULL, 0U, rules, 1U, 1U, &snapshot),
+        -EINVAL);
+    assert_null(snapshot);
+}
+
 /** @brief Run the immutable policy snapshot and matcher test group. */
 int jg_test_policy(void)
 {
@@ -260,6 +361,7 @@ int jg_test_policy(void)
         cmocka_unit_test(test_deduplication_and_canonical_checksum),
         cmocka_unit_test(test_empty_snapshot_and_invalid_rules),
         cmocka_unit_test(test_domain_target_isolation),
+        cmocka_unit_test(test_destination_policy),
     };
 
     return cmocka_run_group_tests_name("policy", tests, NULL, NULL);

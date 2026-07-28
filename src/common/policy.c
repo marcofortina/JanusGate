@@ -27,6 +27,22 @@ struct build_rule {
     struct jg_policy_scope scope;
 };
 
+/** Destination-rule representation used while constructing a snapshot. */
+struct build_destination_rule {
+    uint64_t id;
+    char *attribution;
+    enum jg_policy_effect effect;
+    enum jg_policy_source source;
+    enum jg_policy_transport transport;
+    bool has_address;
+    enum jg_policy_address_family address_family;
+    uint8_t address[16U];
+    uint8_t prefix_length;
+    bool has_port;
+    uint16_t port;
+    struct jg_policy_scope scope;
+};
+
 /** Compact rule representation retained by an immutable snapshot. */
 struct stored_rule {
     uint64_t id;
@@ -37,6 +53,23 @@ struct stored_rule {
     enum jg_policy_effect effect;
     enum jg_policy_source source;
     enum jg_policy_domain_target target;
+    struct jg_policy_scope scope;
+};
+
+/** Compact destination rule retained by an immutable snapshot. */
+struct stored_destination_rule {
+    uint64_t id;
+    uint32_t attribution_offset;
+    uint8_t priority;
+    enum jg_policy_effect effect;
+    enum jg_policy_source source;
+    enum jg_policy_transport transport;
+    bool has_address;
+    enum jg_policy_address_family address_family;
+    uint8_t address[16U];
+    uint8_t prefix_length;
+    bool has_port;
+    uint16_t port;
     struct jg_policy_scope scope;
 };
 
@@ -53,6 +86,8 @@ struct jg_policy_snapshot {
     struct jg_policy_snapshot_info info;
     struct stored_rule *rules;
     char *strings;
+    struct stored_destination_rule *destination_rules;
+    char *destination_strings;
     struct policy_slot *table;
     size_t table_capacity;
     uint8_t hash_key[crypto_shorthash_KEYBYTES];
@@ -88,14 +123,30 @@ static int attribution_length(const char *value, size_t *length)
     return -EINVAL;
 }
 
-/**
- * @brief Validate a rule action against its declared source.
- *
- * Blocklist sources may only block, and emergency rules may only allow.
- */
+/** @brief Validate one rule action against its declared source. */
+static bool effect_source_valid(enum jg_policy_effect effect,
+                                enum jg_policy_source source)
+{
+    if (effect != JG_POLICY_ALLOW && effect != JG_POLICY_BLOCK) {
+        return false;
+    }
+    switch (source) {
+    case JG_POLICY_SOURCE_BLOCKLIST:
+        return effect == JG_POLICY_BLOCK;
+    case JG_POLICY_SOURCE_EXPLICIT:
+        return true;
+    case JG_POLICY_SOURCE_EMERGENCY:
+        return effect == JG_POLICY_ALLOW;
+    case JG_POLICY_SOURCE_DEFAULT:
+    default:
+        return false;
+    }
+}
+
+/** @brief Validate a domain rule class and matching target. */
 static bool rule_class_valid(const struct jg_policy_rule_input *rule)
 {
-    if (rule->effect != JG_POLICY_ALLOW && rule->effect != JG_POLICY_BLOCK) {
+    if (!effect_source_valid(rule->effect, rule->source)) {
         return false;
     }
     if (rule->target != JG_POLICY_DOMAIN_DNS &&
@@ -106,17 +157,7 @@ static bool rule_class_valid(const struct jg_policy_rule_input *rule)
         rule->source != JG_POLICY_SOURCE_EXPLICIT) {
         return false;
     }
-    switch (rule->source) {
-    case JG_POLICY_SOURCE_BLOCKLIST:
-        return rule->effect == JG_POLICY_BLOCK;
-    case JG_POLICY_SOURCE_EXPLICIT:
-        return true;
-    case JG_POLICY_SOURCE_EMERGENCY:
-        return rule->effect == JG_POLICY_ALLOW;
-    case JG_POLICY_SOURCE_DEFAULT:
-    default:
-        return false;
-    }
+    return true;
 }
 
 /**
@@ -179,6 +220,57 @@ static int scope_normalize(const struct jg_policy_scope *input,
     }
     if (first_clear_byte < address_size) {
         (void)memset(output->value.network.address + first_clear_byte, 0,
+                     address_size - first_clear_byte);
+    }
+    return 0;
+}
+
+/** @brief Copy one network prefix while clearing every host bit. */
+static int destination_address_normalize(
+    const struct jg_policy_destination_rule_input *input,
+    struct build_destination_rule *output)
+{
+    size_t address_size = 0U;
+    size_t complete_bytes = 0U;
+    size_t first_clear_byte = 0U;
+    uint8_t remaining_bits = 0U;
+
+    if (!input->has_address) {
+        if (input->address_family != JG_POLICY_ADDRESS_NONE ||
+            input->prefix_length != 0U) {
+            return -EINVAL;
+        }
+        return 0;
+    }
+    if (input->address_family == JG_POLICY_ADDRESS_IPV4) {
+        address_size = 4U;
+        if (input->prefix_length > 32U) {
+            return -EINVAL;
+        }
+    } else if (input->address_family == JG_POLICY_ADDRESS_IPV6) {
+        address_size = 16U;
+        if (input->prefix_length > 128U) {
+            return -EINVAL;
+        }
+    } else {
+        return -EINVAL;
+    }
+
+    output->has_address = true;
+    output->address_family = input->address_family;
+    output->prefix_length = input->prefix_length;
+    (void)memcpy(output->address, input->address, address_size);
+    complete_bytes = (size_t)input->prefix_length / 8U;
+    remaining_bits = (uint8_t)(input->prefix_length % 8U);
+    first_clear_byte = complete_bytes;
+    if (remaining_bits != 0U) {
+        const uint8_t mask = (uint8_t)(UINT8_C(0xff) << (8U - remaining_bits));
+
+        output->address[complete_bytes] &= mask;
+        first_clear_byte = complete_bytes + 1U;
+    }
+    if (first_clear_byte < address_size) {
+        (void)memset(output->address + first_clear_byte, 0,
                      address_size - first_clear_byte);
     }
     return 0;
@@ -371,19 +463,166 @@ static int prepare_rules(const struct jg_policy_rule_input *input,
     return 0;
 }
 
-/** Return the precedence rank mandated by the policy model. */
-static uint8_t rule_priority(const struct build_rule *rule)
+/** @brief Compare canonical destination rules for deterministic packing. */
+static int destination_rule_compare(const void *left_value,
+                                    const void *right_value)
 {
-    if (rule->source == JG_POLICY_SOURCE_EMERGENCY) {
+    const struct build_destination_rule *left = left_value;
+    const struct build_destination_rule *right = right_value;
+    int result = 0;
+
+    if (left->has_address != right->has_address) {
+        return left->has_address ? 1 : -1;
+    }
+    if (left->address_family != right->address_family) {
+        return left->address_family < right->address_family ? -1 : 1;
+    }
+    if (left->prefix_length != right->prefix_length) {
+        return left->prefix_length < right->prefix_length ? -1 : 1;
+    }
+    result = memcmp(left->address, right->address, sizeof(left->address));
+    if (result != 0) {
+        return result;
+    }
+    if (left->has_port != right->has_port) {
+        return left->has_port ? 1 : -1;
+    }
+    if (left->port != right->port) {
+        return left->port < right->port ? -1 : 1;
+    }
+    if (left->transport != right->transport) {
+        return left->transport < right->transport ? -1 : 1;
+    }
+    if (left->source != right->source) {
+        return left->source < right->source ? -1 : 1;
+    }
+    if (left->effect != right->effect) {
+        return left->effect < right->effect ? -1 : 1;
+    }
+    result = scope_compare(&left->scope, &right->scope);
+    if (result != 0) {
+        return result;
+    }
+    result = strcmp(left->attribution, right->attribution);
+    if (result != 0) {
+        return result;
+    }
+    if (left->id < right->id) {
+        return -1;
+    }
+    return left->id > right->id ? 1 : 0;
+}
+
+/** @brief Test whether sorted destination rules differ only by identifier. */
+static bool destination_rule_same_content(
+    const struct build_destination_rule *left,
+    const struct build_destination_rule *right)
+{
+    return left->has_address == right->has_address &&
+           left->address_family == right->address_family &&
+           left->prefix_length == right->prefix_length &&
+           memcmp(left->address, right->address, sizeof(left->address)) == 0 &&
+           left->has_port == right->has_port && left->port == right->port &&
+           left->transport == right->transport &&
+           left->source == right->source && left->effect == right->effect &&
+           scope_compare(&left->scope, &right->scope) == 0 &&
+           strcmp(left->attribution, right->attribution) == 0;
+}
+
+/** @brief Validate and pack temporary destination-rule construction data. */
+static int prepare_destination_rules(
+    const struct jg_policy_destination_rule_input *input,
+    size_t input_count,
+    struct build_destination_rule **prepared,
+    char **strings)
+{
+    struct build_destination_rule *build = NULL;
+    char *packed = NULL;
+    size_t allocation_size = 0U;
+    size_t packed_size = 0U;
+    size_t cursor = 0U;
+    size_t index = 0U;
+
+    if (prepared == NULL || strings == NULL ||
+        (input_count != 0U && input == NULL)) {
+        return -EINVAL;
+    }
+    *prepared = NULL;
+    *strings = NULL;
+    if (input_count == 0U) {
+        return 0;
+    }
+    if (input_count > (size_t)UINT32_MAX ||
+        !jg_size_multiply(input_count, sizeof(*build), &allocation_size)) {
+        return -EOVERFLOW;
+    }
+
+    for (index = 0U; index < input_count; ++index) {
+        struct build_destination_rule normalized = {0};
+        size_t attribution_size = 0U;
+
+        if (input[index].id == 0U ||
+            !effect_source_valid(input[index].effect, input[index].source) ||
+            (input[index].transport != JG_POLICY_TRANSPORT_ANY &&
+             input[index].transport != JG_POLICY_TRANSPORT_TCP &&
+             input[index].transport != JG_POLICY_TRANSPORT_UDP) ||
+            (!input[index].has_address && !input[index].has_port) ||
+            (input[index].has_port && input[index].port == 0U) ||
+            (!input[index].has_port && input[index].port != 0U) ||
+            destination_address_normalize(&input[index], &normalized) != 0 ||
+            scope_normalize(&input[index].scope, &normalized.scope) != 0 ||
+            attribution_length(input[index].attribution, &attribution_size) !=
+                0) {
+            return -EINVAL;
+        }
+        if (!jg_size_add(packed_size, attribution_size + 1U, &packed_size) ||
+            packed_size > (size_t)UINT32_MAX) {
+            return -EOVERFLOW;
+        }
+    }
+
+    build = malloc(allocation_size);
+    packed = malloc(packed_size);
+    if (build == NULL || packed == NULL) {
+        free(build);
+        free(packed);
+        return -ENOMEM;
+    }
+    (void)memset(build, 0, allocation_size);
+    for (index = 0U; index < input_count; ++index) {
+        const size_t attribution_size = strlen(input[index].attribution) + 1U;
+
+        build[index].id = input[index].id;
+        build[index].effect = input[index].effect;
+        build[index].source = input[index].source;
+        build[index].transport = input[index].transport;
+        build[index].has_port = input[index].has_port;
+        build[index].port = input[index].port;
+        build[index].attribution = packed + cursor;
+        (void)memcpy(build[index].attribution, input[index].attribution,
+                     attribution_size);
+        cursor += attribution_size;
+        (void)destination_address_normalize(&input[index], &build[index]);
+        (void)scope_normalize(&input[index].scope, &build[index].scope);
+    }
+    *prepared = build;
+    *strings = packed;
+    return 0;
+}
+
+/** Return the precedence rank mandated by the policy model. */
+static uint8_t policy_priority(enum jg_policy_effect effect,
+                               enum jg_policy_source source,
+                               enum jg_policy_scope_type scope)
+{
+    if (source == JG_POLICY_SOURCE_EMERGENCY) {
         return 6U;
     }
-    if (rule->source == JG_POLICY_SOURCE_EXPLICIT &&
-        rule->effect == JG_POLICY_ALLOW) {
-        return rule->scope.type == JG_POLICY_SCOPE_GLOBAL ? 4U : 5U;
+    if (source == JG_POLICY_SOURCE_EXPLICIT && effect == JG_POLICY_ALLOW) {
+        return scope == JG_POLICY_SCOPE_GLOBAL ? 4U : 5U;
     }
-    if (rule->source == JG_POLICY_SOURCE_EXPLICIT &&
-        rule->effect == JG_POLICY_BLOCK) {
-        return rule->scope.type == JG_POLICY_SCOPE_GLOBAL ? 2U : 3U;
+    if (source == JG_POLICY_SOURCE_EXPLICIT && effect == JG_POLICY_BLOCK) {
+        return scope == JG_POLICY_SCOPE_GLOBAL ? 2U : 3U;
     }
     return 1U;
 }
@@ -496,13 +735,14 @@ static void checksum_scope(crypto_hash_sha256_state *state,
 /** Compute the canonical digest independently of random table placement. */
 static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
 {
-    static const uint8_t format[] = "JanusGate policy snapshot 2";
+    static const uint8_t format[] = "JanusGate policy snapshot 3";
     crypto_hash_sha256_state state;
     size_t index = 0U;
 
     (void)crypto_hash_sha256_init(&state);
     (void)crypto_hash_sha256_update(&state, format, sizeof(format) - 1U);
     checksum_u64(&state, (uint64_t)snapshot->info.rule_count);
+    checksum_u64(&state, (uint64_t)snapshot->info.destination_rule_count);
     for (index = 0U; index < snapshot->info.rule_count; ++index) {
         const struct stored_rule *rule = &snapshot->rules[index];
         const uint8_t include_subdomains = rule->include_subdomains ? 1U : 0U;
@@ -518,6 +758,37 @@ static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
         (void)crypto_hash_sha256_update(&state, &target, 1U);
         checksum_scope(&state, &rule->scope);
         checksum_string(&state, snapshot->strings + rule->attribution_offset);
+    }
+    for (index = 0U; index < snapshot->info.destination_rule_count; ++index) {
+        const struct stored_destination_rule *rule =
+            &snapshot->destination_rules[index];
+        const uint8_t effect = (uint8_t)rule->effect;
+        const uint8_t source = (uint8_t)rule->source;
+        const uint8_t transport = (uint8_t)rule->transport;
+        const uint8_t has_address = rule->has_address ? 1U : 0U;
+        const uint8_t family = (uint8_t)rule->address_family;
+        const uint8_t has_port = rule->has_port ? 1U : 0U;
+        const size_t address_size =
+            rule->address_family == JG_POLICY_ADDRESS_IPV4 ? 4U : 16U;
+
+        checksum_u64(&state, rule->id);
+        (void)crypto_hash_sha256_update(&state, &effect, 1U);
+        (void)crypto_hash_sha256_update(&state, &source, 1U);
+        (void)crypto_hash_sha256_update(&state, &transport, 1U);
+        (void)crypto_hash_sha256_update(&state, &has_address, 1U);
+        if (rule->has_address) {
+            (void)crypto_hash_sha256_update(&state, &family, 1U);
+            (void)crypto_hash_sha256_update(&state, &rule->prefix_length, 1U);
+            (void)crypto_hash_sha256_update(&state, rule->address,
+                                            address_size);
+        }
+        (void)crypto_hash_sha256_update(&state, &has_port, 1U);
+        if (rule->has_port) {
+            checksum_u64(&state, rule->port);
+        }
+        checksum_scope(&state, &rule->scope);
+        checksum_string(&state, snapshot->destination_strings +
+                                    rule->attribution_offset);
     }
     (void)crypto_hash_sha256_final(&state, snapshot->info.checksum);
 }
@@ -577,7 +848,8 @@ static int snapshot_populate(struct jg_policy_snapshot *snapshot,
         (void)memcpy(snapshot->strings + cursor, rules[index].attribution,
                      attribution_size);
         cursor += attribution_size;
-        stored->priority = rule_priority(&rules[index]);
+        stored->priority = policy_priority(
+            rules[index].effect, rules[index].source, rules[index].scope.type);
         stored->include_subdomains = rules[index].include_subdomains;
         stored->effect = rules[index].effect;
         stored->source = rules[index].source;
@@ -635,16 +907,92 @@ static int snapshot_populate(struct jg_policy_snapshot *snapshot,
     return 0;
 }
 
+/** @brief Allocate and fill final packed destination rules. */
+static int snapshot_populate_destinations(
+    struct jg_policy_snapshot *snapshot,
+    const struct build_destination_rule *rules,
+    size_t rule_count)
+{
+    size_t rules_size = 0U;
+    size_t strings_size = 0U;
+    size_t cursor = 0U;
+    size_t index = 0U;
+
+    if (rule_count == 0U) {
+        return 0;
+    }
+    if (!jg_size_multiply(rule_count, sizeof(*snapshot->destination_rules),
+                          &rules_size)) {
+        return -EOVERFLOW;
+    }
+    for (index = 0U; index < rule_count; ++index) {
+        if (!jg_size_add(strings_size, strlen(rules[index].attribution) + 1U,
+                         &strings_size) ||
+            strings_size > (size_t)UINT32_MAX) {
+            return -EOVERFLOW;
+        }
+    }
+    snapshot->destination_rules = malloc(rules_size);
+    snapshot->destination_strings = malloc(strings_size);
+    if (snapshot->destination_rules == NULL ||
+        snapshot->destination_strings == NULL) {
+        return -ENOMEM;
+    }
+    (void)memset(snapshot->destination_rules, 0, rules_size);
+    for (index = 0U; index < rule_count; ++index) {
+        struct stored_destination_rule *stored =
+            &snapshot->destination_rules[index];
+        const size_t attribution_size = strlen(rules[index].attribution) + 1U;
+
+        stored->id = rules[index].id;
+        stored->attribution_offset = (uint32_t)cursor;
+        (void)memcpy(snapshot->destination_strings + cursor,
+                     rules[index].attribution, attribution_size);
+        cursor += attribution_size;
+        stored->priority = policy_priority(
+            rules[index].effect, rules[index].source, rules[index].scope.type);
+        stored->effect = rules[index].effect;
+        stored->source = rules[index].source;
+        stored->transport = rules[index].transport;
+        stored->has_address = rules[index].has_address;
+        stored->address_family = rules[index].address_family;
+        (void)memcpy(stored->address, rules[index].address,
+                     sizeof(stored->address));
+        stored->prefix_length = rules[index].prefix_length;
+        stored->has_port = rules[index].has_port;
+        stored->port = rules[index].port;
+        stored->scope = rules[index].scope;
+    }
+    snapshot->info.destination_rule_count = rule_count;
+    return 0;
+}
+
 /** @brief Build a normalized, deduplicated immutable policy snapshot. */
 int jg_policy_snapshot_build(const struct jg_policy_rule_input *rules,
                              size_t rule_count,
                              uint64_t generation,
                              struct jg_policy_snapshot **snapshot)
 {
+    return jg_policy_snapshot_build_complete(rules, rule_count, NULL, 0U,
+                                             generation, snapshot);
+}
+
+/** @brief Build complete normalized immutable domain and destination policy. */
+int jg_policy_snapshot_build_complete(
+    const struct jg_policy_rule_input *rules,
+    size_t rule_count,
+    const struct jg_policy_destination_rule_input *destination_rules,
+    size_t destination_rule_count,
+    uint64_t generation,
+    struct jg_policy_snapshot **snapshot)
+{
     struct jg_policy_snapshot *created = NULL;
     struct build_rule *prepared = NULL;
+    struct build_destination_rule *prepared_destinations = NULL;
     char *temporary_strings = NULL;
+    char *temporary_destination_strings = NULL;
     size_t retained_count = 0U;
+    size_t retained_destination_count = 0U;
     size_t index = 0U;
     time_t build_time = 0;
     int result = 0;
@@ -653,7 +1001,8 @@ int jg_policy_snapshot_build(const struct jg_policy_rule_input *rules,
         return -EINVAL;
     }
     *snapshot = NULL;
-    if (generation == 0U || (rule_count != 0U && rules == NULL)) {
+    if (generation == 0U || (rule_count != 0U && rules == NULL) ||
+        (destination_rule_count != 0U && destination_rules == NULL)) {
         return -EINVAL;
     }
     if (sodium_init() < 0) {
@@ -661,6 +1010,14 @@ int jg_policy_snapshot_build(const struct jg_policy_rule_input *rules,
     }
     result = prepare_rules(rules, rule_count, &prepared, &temporary_strings);
     if (result != 0) {
+        return result;
+    }
+    result = prepare_destination_rules(
+        destination_rules, destination_rule_count, &prepared_destinations,
+        &temporary_destination_strings);
+    if (result != 0) {
+        free(temporary_strings);
+        free(prepared);
         return result;
     }
 
@@ -675,15 +1032,37 @@ int jg_policy_snapshot_build(const struct jg_policy_rule_input *rules,
             ++retained_count;
         }
     }
+    if (destination_rule_count > 1U) {
+        qsort(prepared_destinations, destination_rule_count,
+              sizeof(*prepared_destinations), destination_rule_compare);
+    }
+    for (index = 0U; index < destination_rule_count; ++index) {
+        if (retained_destination_count == 0U ||
+            !destination_rule_same_content(
+                &prepared_destinations[retained_destination_count - 1U],
+                &prepared_destinations[index])) {
+            prepared_destinations[retained_destination_count] =
+                prepared_destinations[index];
+            ++retained_destination_count;
+        }
+    }
 
     created = calloc(1U, sizeof(*created));
     if (created == NULL) {
+        free(temporary_destination_strings);
+        free(prepared_destinations);
         free(temporary_strings);
         free(prepared);
         return -ENOMEM;
     }
     randombytes_buf(created->hash_key, sizeof(created->hash_key));
     result = snapshot_populate(created, prepared, retained_count);
+    if (result == 0) {
+        result = snapshot_populate_destinations(created, prepared_destinations,
+                                                retained_destination_count);
+    }
+    free(temporary_destination_strings);
+    free(prepared_destinations);
     free(temporary_strings);
     free(prepared);
     if (result != 0) {
@@ -712,6 +1091,8 @@ void jg_policy_snapshot_destroy(struct jg_policy_snapshot *snapshot)
     }
     jg_secure_clear(snapshot->hash_key, sizeof(snapshot->hash_key));
     free(snapshot->table);
+    free(snapshot->destination_strings);
+    free(snapshot->destination_rules);
     free(snapshot->strings);
     free(snapshot->rules);
     free(snapshot);
@@ -886,4 +1267,99 @@ int jg_policy_match_visible_sni(const struct jg_policy_snapshot *snapshot,
 {
     return match_domain_target(snapshot, server_name, client,
                                JG_POLICY_DOMAIN_TLS_SNI, match);
+}
+
+/** @brief Validate destination properties supplied to packet-path matching. */
+static bool destination_valid(const struct jg_policy_destination *destination)
+{
+    return destination != NULL &&
+           (destination->transport == JG_POLICY_TRANSPORT_TCP ||
+            destination->transport == JG_POLICY_TRANSPORT_UDP) &&
+           (destination->address_family == JG_POLICY_ADDRESS_IPV4 ||
+            destination->address_family == JG_POLICY_ADDRESS_IPV6) &&
+           destination->port != 0U;
+}
+
+/** @brief Test one stored destination rule against packet properties. */
+static bool destination_rule_matches(
+    const struct stored_destination_rule *rule,
+    const struct jg_policy_destination *destination,
+    const struct jg_policy_client *client)
+{
+    if (rule->transport != JG_POLICY_TRANSPORT_ANY &&
+        rule->transport != destination->transport) {
+        return false;
+    }
+    if (rule->has_port && rule->port != destination->port) {
+        return false;
+    }
+    if (rule->has_address &&
+        (rule->address_family != destination->address_family ||
+         !address_matches(destination->address, rule->address,
+                          rule->prefix_length))) {
+        return false;
+    }
+    return scope_matches(&rule->scope, client);
+}
+
+/** @brief Rank equally privileged destination rules by specificity. */
+static uint16_t destination_rule_specificity(
+    const struct stored_destination_rule *rule)
+{
+    uint16_t specificity = 0U;
+
+    if (rule->has_address) {
+        specificity = (uint16_t)rule->prefix_length + 1U;
+    }
+    if (rule->has_port) {
+        specificity += 256U;
+    }
+    if (rule->transport != JG_POLICY_TRANSPORT_ANY) {
+        specificity += 512U;
+    }
+    return specificity;
+}
+
+/** @brief Match immutable destination rules using policy precedence. */
+int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
+                                const struct jg_policy_destination *destination,
+                                const struct jg_policy_client *client,
+                                struct jg_policy_destination_match *match)
+{
+    const struct stored_destination_rule *best = NULL;
+    size_t index = 0U;
+
+    if (snapshot == NULL || !destination_valid(destination) ||
+        !client_valid(client) || match == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(match, 0, sizeof(*match));
+    match->effect = JG_POLICY_ALLOW;
+    for (index = 0U; index < snapshot->info.destination_rule_count; ++index) {
+        const struct stored_destination_rule *current =
+            &snapshot->destination_rules[index];
+
+        if (!destination_rule_matches(current, destination, client)) {
+            continue;
+        }
+        if (best == NULL || current->priority > best->priority ||
+            (current->priority == best->priority &&
+             destination_rule_specificity(current) >
+                 destination_rule_specificity(best)) ||
+            (current->priority == best->priority &&
+             destination_rule_specificity(current) ==
+                 destination_rule_specificity(best) &&
+             current->id < best->id)) {
+            best = current;
+        }
+    }
+    if (best != NULL) {
+        match->effect = best->effect;
+        match->matched = true;
+        match->rule_id = best->id;
+        match->source = best->source;
+        match->attribution =
+            snapshot->destination_strings + best->attribution_offset;
+    }
+    return 0;
 }

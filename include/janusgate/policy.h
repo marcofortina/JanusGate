@@ -78,6 +78,18 @@ enum jg_policy_address_family {
 };
 
 /**
+ * @brief Transport selector used by destination policy.
+ */
+enum jg_policy_transport {
+    /** Match either TCP or UDP. */
+    JG_POLICY_TRANSPORT_ANY = 0,
+    /** Match TCP traffic only. */
+    JG_POLICY_TRANSPORT_TCP = 6,
+    /** Match UDP traffic only. */
+    JG_POLICY_TRANSPORT_UDP = 17
+};
+
+/**
  * @brief Optional client constraint attached to a rule.
  */
 enum jg_policy_scope_type {
@@ -156,6 +168,50 @@ struct jg_policy_rule_input {
 };
 
 /**
+ * @brief Administrator or source rule for a destination network or port.
+ */
+struct jg_policy_destination_rule_input {
+    /** Stable nonzero identifier used to explain a verdict. */
+    uint64_t id;
+    /** Allow or block action. */
+    enum jg_policy_effect effect;
+    /** Rule origin and precedence class. */
+    enum jg_policy_source source;
+    /** Any, TCP, or UDP transport selector. */
+    enum jg_policy_transport transport;
+    /** Whether an address prefix participates in matching. */
+    bool has_address;
+    /** Address family when @ref has_address is true. */
+    enum jg_policy_address_family address_family;
+    /** Network-order prefix address; IPv4 uses the first four bytes. */
+    uint8_t address[16U];
+    /** Significant leading bits in @ref address. */
+    uint8_t prefix_length;
+    /** Whether @ref port participates in matching. */
+    bool has_port;
+    /** Destination port when @ref has_port is true. */
+    uint16_t port;
+    /** Global or client-specific applicability. */
+    struct jg_policy_scope scope;
+    /** Nonempty source description copied into the snapshot. */
+    const char *attribution;
+};
+
+/**
+ * @brief Destination properties supplied to immutable policy matching.
+ */
+struct jg_policy_destination {
+    /** TCP or UDP transport. */
+    enum jg_policy_transport transport;
+    /** IPv4 or IPv6 destination family. */
+    enum jg_policy_address_family address_family;
+    /** Network-order destination address. */
+    uint8_t address[16U];
+    /** Nonzero destination transport port. */
+    uint16_t port;
+};
+
+/**
  * @brief Stable snapshot metadata.
  */
 struct jg_policy_snapshot_info {
@@ -165,6 +221,8 @@ struct jg_policy_snapshot_info {
     uint64_t built_at;
     /** Number of rules retained after normalization and deduplication. */
     size_t rule_count;
+    /** Number of destination rules retained after deduplication. */
+    size_t destination_rule_count;
     /** Canonical SHA-256 digest independent of hash-table layout. */
     uint8_t checksum[JG_POLICY_CHECKSUM_SIZE];
 };
@@ -187,6 +245,25 @@ struct jg_policy_match {
     /** Matched normalized rule domain, or null for the default action. */
     const char *domain;
     /** Matching rule attribution, or null for the default action. */
+    const char *attribution;
+};
+
+/**
+ * @brief Explanation of a destination-policy verdict.
+ *
+ * Attribution refers to immutable snapshot storage and remains valid until
+ * that snapshot is destroyed.
+ */
+struct jg_policy_destination_match {
+    /** Final policy action. */
+    enum jg_policy_effect effect;
+    /** Whether a rule, rather than default policy, selected the action. */
+    bool matched;
+    /** Matching rule identifier, or zero for default policy. */
+    uint64_t rule_id;
+    /** Matching rule origin, or JG_POLICY_SOURCE_DEFAULT. */
+    enum jg_policy_source source;
+    /** Matching rule attribution, or null for default policy. */
     const char *attribution;
 };
 
@@ -221,6 +298,33 @@ JG_PUBLIC int jg_policy_snapshot_build(const struct jg_policy_rule_input *rules,
                                        size_t rule_count,
                                        uint64_t generation,
                                        struct jg_policy_snapshot **snapshot);
+
+/**
+ * @brief Build one snapshot containing domain and destination policy.
+ *
+ * @param[in] rules Domain rules, or null when @p rule_count is zero.
+ * @param[in] rule_count Number of domain rules.
+ * @param[in] destination_rules Destination rules, or null when
+ * @p destination_rule_count is zero.
+ * @param[in] destination_rule_count Number of destination rules.
+ * @param[in] generation Nonzero configuration generation.
+ * @param[out] snapshot Receives the owned snapshot on success.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid rules or arguments.
+ * @return -EOVERFLOW when the packed representation is too large.
+ * @return -ENOMEM when allocation fails.
+ * @return -EIO when cryptographic initialization fails.
+ *
+ * @thread_safety Concurrent builds are safe.
+ */
+JG_PUBLIC int jg_policy_snapshot_build_complete(
+    const struct jg_policy_rule_input *rules,
+    size_t rule_count,
+    const struct jg_policy_destination_rule_input *destination_rules,
+    size_t destination_rule_count,
+    uint64_t generation,
+    struct jg_policy_snapshot **snapshot);
 
 /**
  * @brief Destroy a policy snapshot.
@@ -289,5 +393,24 @@ JG_PUBLIC int jg_policy_match_visible_sni(
     const char *server_name,
     const struct jg_policy_client *client,
     struct jg_policy_match *match);
+
+/**
+ * @brief Evaluate one destination address, transport, and port.
+ *
+ * @param[in] snapshot Immutable policy snapshot.
+ * @param[in] destination Valid destination properties.
+ * @param[in] client Client properties, or null when unavailable.
+ * @param[out] match Verdict and its explanation.
+ *
+ * @return 0 on success, including a default-allow verdict.
+ * @return -EINVAL for a null argument or invalid destination or client.
+ *
+ * @thread_safety Safe for concurrent calls on the same snapshot.
+ */
+JG_PUBLIC int jg_policy_match_destination(
+    const struct jg_policy_snapshot *snapshot,
+    const struct jg_policy_destination *destination,
+    const struct jg_policy_client *client,
+    struct jg_policy_destination_match *match);
 
 #endif
