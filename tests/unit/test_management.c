@@ -1130,6 +1130,7 @@ static void test_source_api(void **state)
         .retry_max_seconds = 3600U,
     };
     struct jg_database_blocklist_source source;
+    struct jg_database_domain_rule rules[2U];
     struct jg_account_api_token api_token;
     struct jg_audit_verification verification;
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
@@ -1141,6 +1142,8 @@ static void test_source_api(void **state)
     uint64_t user_id = 0U;
     uint64_t source_id = 0U;
     uint64_t source_revision = 0U;
+    size_t count = 0U;
+    bool has_more = false;
     int written = 0;
 
     assert_true(now > 0);
@@ -1298,10 +1301,94 @@ static void test_source_api(void **state)
     assert_int_equal(json_integer_value(json_object_get(body, "id")),
                      (json_int_t)source_id);
     json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"local-source-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/sources\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
+        "\"name\":\"Local upload\",\"url\":null,\"signature_url\":null,"
+        "\"format\":\"domain\",\"mode\":\"strict\",\"enabled\":true,"
+        "\"update_interval_seconds\":7200,\"max_download_bytes\":2048,"
+        "\"max_decompressed_bytes\":8192,\"connect_timeout_ms\":100,"
+        "\"transfer_timeout_ms\":100,\"redirect_limit\":2,"
+        "\"retry_base_seconds\":60,\"retry_max_seconds\":600,"
+        "\"sha256_pin\":null,\"ed25519_public_key\":null}}",
+        api_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    value = json_object_get(json_object_get(response, "body"), "source");
+    source_id = (uint64_t)json_integer_value(json_object_get(value, "id"));
+    source_revision =
+        (uint64_t)json_integer_value(json_object_get(value, "revision"));
+    json_decref(response);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"local-blocklist-import\","
+                       "\"method\":\"POST\",\"path\":\"/api/v1/blocklists\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{\"source_id\":%llu,\"revision\":%llu,"
+                       "\"content\":\"ads.example\\ntracking.example\\n\"}}",
+                       api_token.secret, (unsigned long long)source_id,
+                       (unsigned long long)source_revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "published")));
+    value = json_object_get(body, "source");
+    assert_string_equal(json_string_value(json_object_get(value, "health")),
+                        "healthy");
+    assert_int_equal(
+        json_integer_value(json_object_get(value, "active_entries")), 2);
+    value = json_object_get(body, "attempt");
+    assert_true(json_is_true(json_object_get(value, "success")));
+    assert_string_equal(json_string_value(json_object_get(value, "outcome")),
+                        "updated");
+    json_decref(response);
+    assert_int_equal(jg_database_list_domain_rules(fixture->database, 0U, 2U,
+                                                   rules, &count, &has_more),
+                     0);
+    assert_int_equal(count, 2U);
+    assert_false(has_more);
+    assert_string_equal(rules[0U].domain, "ads.example");
+    assert_string_equal(rules[1U].domain, "tracking.example");
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"local-blocklist-invalid\","
+                       "\"method\":\"POST\",\"path\":\"/api/v1/blocklists\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{\"source_id\":%llu,\"revision\":%llu,"
+                       "\"content\":\"not a domain\\n\"}}",
+                       api_token.secret, (unsigned long long)source_id,
+                       (unsigned long long)source_revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     422);
+    body = json_object_get(response, "body");
+    assert_string_equal(json_string_value(json_object_get(
+                            json_object_get(body, "error"), "code")),
+                        "blocklist_import_failed");
+    value = json_object_get(body, "source");
+    assert_string_equal(json_string_value(json_object_get(value, "health")),
+                        "degraded");
+    assert_int_equal(
+        json_integer_value(json_object_get(value, "active_entries")), 2);
+    json_decref(response);
+
     assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
                      0);
     assert_true(verification.valid);
-    assert_int_equal(verification.records_inspected, 4U);
+    assert_int_equal(verification.records_inspected, 7U);
 }
 
 /** @brief Verify due remote sources retain health and system audit state. */

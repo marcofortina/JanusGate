@@ -2306,6 +2306,7 @@ static int append_blocklist_update_audit(
     const struct management_request *request,
     const struct remote_address *remote,
     const struct authenticated_actor *actor,
+    const char *action,
     const struct jg_blocklist_update_result *update,
     int operation_result,
     bool published,
@@ -2352,7 +2353,7 @@ static int append_blocklist_update_audit(
          json_object_set_new(details, "http_status",
                              json_integer(update->report.http_status)) != 0 ||
          json_object_set_new(
-             details, "download_bytes",
+             details, "input_bytes",
              json_integer((json_int_t)update->report.body_size)) != 0 ||
          json_object_set_new(
              details, "entries_parsed",
@@ -2383,7 +2384,7 @@ static int append_blocklist_update_audit(
             .has_actor_id = !system_actor,
             .actor_id = system_actor ? 0U : actor->actor_id,
             .source = source_address,
-            .action = "blocklist.source.refresh",
+            .action = action,
             .object_type = "blocklist_source",
             .object_id = object_id,
             .details = encoded,
@@ -3717,6 +3718,9 @@ static int handle_blocklist_source_delete(
 static int respond_blocklist_update(
     const struct management_request *request,
     const struct jg_blocklist_update_result *update,
+    const char *failure_code,
+    const char *failure_message,
+    int failure_status,
     bool published,
     uint64_t generation,
     uint8_t *output,
@@ -3727,12 +3731,9 @@ static int respond_blocklist_update(
     const char *outcome = successful
                               ? (update->activated ? "updated" : "not_modified")
                               : "failed";
-    json_t *body =
-        successful
-            ? json_object()
-            : error_body("blocklist_update_failed",
-                         jg_blocklist_update_error(update->attempt_result),
-                         request->request_id);
+    json_t *body = successful ? json_object()
+                              : error_body(failure_code, failure_message,
+                                           request->request_id);
     json_t *source = blocklist_source_json(&update->source);
     json_t *attempt = json_object();
     int result = 0;
@@ -3747,7 +3748,7 @@ static int respond_blocklist_update(
                 ? json_null()
                 : json_integer((json_int_t)update->report.http_status)) != 0 ||
         json_object_set_new(
-            attempt, "download_bytes",
+            attempt, "input_bytes",
             json_integer((json_int_t)update->report.body_size)) != 0 ||
         json_object_set_new(
             attempt, "records_seen",
@@ -3778,9 +3779,10 @@ static int respond_blocklist_update(
         json_decref(body);
         return result;
     }
-    return encode_response(
-        successful ? (update->activated && !published ? 202 : 200) : 502, body,
-        NULL, output, output_size, written);
+    return encode_response(successful
+                               ? (update->activated && !published ? 202 : 200)
+                               : failure_status,
+                           body, NULL, output, output_size, written);
 }
 
 /** @brief Refresh one remote blocklist source through an authorized request. */
@@ -3822,8 +3824,8 @@ static int handle_blocklist_source_refresh(
     }
     if (update.source.id != 0U) {
         const int audit_result = append_blocklist_update_audit(
-            management, request, remote, &actor, &update, result, published,
-            generation, now);
+            management, request, remote, &actor, "blocklist.source.refresh",
+            &update, result, published, generation, now);
 
         if (audit_result != 0) {
             return respond_error(
@@ -3853,8 +3855,97 @@ static int handle_blocklist_source_refresh(
             "The blocklist update state could not be persisted.",
             request->request_id, output, output_size, written);
     }
-    return respond_blocklist_update(request, &update, published, generation,
-                                    output, output_size, written);
+    return respond_blocklist_update(
+        request, &update, "blocklist_update_failed",
+        jg_blocklist_update_error(update.attempt_result), 502, published,
+        generation, output, output_size, written);
+}
+
+/** @brief Import one uploaded blocklist into an authorized local source. */
+static int handle_blocklist_import(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written)
+{
+    static const char *const fields[] = {
+        "source_id",
+        "revision",
+        "content",
+    };
+    struct authenticated_actor actor;
+    struct jg_blocklist_update_result update;
+    json_t *content_value = json_object_get(request->body, "content");
+    const char *content =
+        json_is_string(content_value) ? json_string_value(content_value) : NULL;
+    size_t content_size =
+        json_is_string(content_value) ? json_string_length(content_value) : 0U;
+    uint64_t source_id = 0U;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "source_id", &source_id) ||
+        !required_identifier(request->body, "revision", &revision) ||
+        content == NULL) {
+        return respond_error(400, "invalid_body",
+                             "The local blocklist import is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_blocklist_import_local(management->database, source_id,
+                                       revision, (const uint8_t *)content,
+                                       content_size, now, &update);
+    if (result == 0 && update.activated) {
+        publish_blocklist_source_change(management, &published, &generation);
+    }
+    if (update.source.id != 0U) {
+        const int audit_result = append_blocklist_update_audit(
+            management, request, remote, &actor, "blocklist.source.import",
+            &update, result, published, generation, now);
+
+        if (audit_result != 0) {
+            return respond_error(
+                500, "audit_failure",
+                "The import completed, but its audit record was not stored.",
+                request->request_id, output, output_size, written);
+        }
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "source_not_found",
+                             "The blocklist source was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The source has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL) {
+        return respond_error(409, "remote_source",
+                             "Remote sources cannot receive local imports.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(
+            500, "source_import_state_failed",
+            "The local blocklist state could not be persisted.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_blocklist_update(
+        request, &update, "blocklist_import_failed",
+        jg_blocklist_import_error(update.attempt_result), 422, published,
+        generation, output, output_size, written);
 }
 
 /** @brief Process and audit every enabled remote source currently due. */
@@ -3909,8 +4000,8 @@ int jg_management_update_due_blocklists(struct jg_management *management,
             }
             if (update.source.id != 0U) {
                 const int audit_result = append_blocklist_update_audit(
-                    management, NULL, NULL, NULL, &update, result, published,
-                    generation, now);
+                    management, NULL, NULL, NULL, "blocklist.source.refresh",
+                    &update, result, published, generation, now);
 
                 if (audit_result != 0) {
                     result = audit_result;
@@ -5740,6 +5831,10 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/blocklists") == 0 && post) {
+        return handle_blocklist_import(management, request, remote, now, output,
+                                       output_size, written);
     }
     if (strcmp(request->path, "/api/v1/sources") == 0 &&
         strcmp(request->method, "GET") == 0) {
