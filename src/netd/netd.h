@@ -13,6 +13,7 @@
 #include <sys/types.h>
 
 #include "janusgate/ipc.h"
+#include "janusgate/network.h"
 
 /** Fixed local socket exposed by the privileged network helper. */
 #define JG_NETD_SOCKET_PATH "/run/janusgate/netd.sock"
@@ -53,6 +54,25 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
  * @thread_safety Distinct connected sockets may be serviced concurrently.
  */
 int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid);
+
+/**
+ * @brief Apply bridge and nftables state as one network transaction.
+ *
+ * The nftables replacement is the final step. If it fails atomically, the
+ * bridge checkpoint is restored before returning.
+ *
+ * @param[in] config Validated complete inline-network configuration.
+ *
+ * @return 0 on success.
+ * @return -EUCLEAN when bridge restoration fails.
+ * @return A negative errno-style validation, rtnetlink, or nftables error
+ * otherwise.
+ *
+ * @thread_safety State-changing calls require external serialization.
+ *
+ * @side_effects Updates and, on failure, restores owned kernel network state.
+ */
+int jg_netd_apply_network(const struct jg_network_config *config);
 
 /**
  * @brief Run the fixed-path privileged network-helper server.

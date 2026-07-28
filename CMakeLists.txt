@@ -22,6 +22,7 @@ pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
 pkg_check_modules(MNL REQUIRED IMPORTED_TARGET libmnl)
+pkg_check_modules(NFTABLES REQUIRED IMPORTED_TARGET libnftables)
 pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 
@@ -71,15 +72,17 @@ janusgate_apply_compiler_options(janusgate-common)
 add_library(
   janusgate-netd-core STATIC
   src/netd/bridge.c
+  src/netd/nftables.c
   src/netd/rtnetlink.c
-  src/netd/server.c)
+  src/netd/server.c
+  src/netd/transaction.c)
 target_include_directories(
   janusgate-netd-core
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/netd>")
 target_link_libraries(
   janusgate-netd-core
   PUBLIC JanusGate::common
-  PRIVATE PkgConfig::MNL)
+  PRIVATE PkgConfig::MNL PkgConfig::NFTABLES)
 janusgate_apply_compiler_options(janusgate-netd-core)
 
 add_executable(janusgate-netd src/netd/main.c)

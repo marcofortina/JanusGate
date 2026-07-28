@@ -55,7 +55,7 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
                             struct jg_ipc_message *response)
 {
     struct jg_network_config config;
-    int result = 0;
+    int result;
 
     if (request == NULL || response == NULL || request->request_id == 0U ||
         request->operation < JG_IPC_PING ||
@@ -79,11 +79,14 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
         if (request->body_size != 0U) {
             response->error = JG_IPC_ERROR_MALFORMED;
         }
-    } else if (request->operation == JG_IPC_NETWORK_VALIDATE) {
+    } else if (request->operation == JG_IPC_NETWORK_VALIDATE ||
+               request->operation == JG_IPC_NETWORK_APPLY) {
         result = jg_network_config_decode(request->body, request->body_size,
                                           &config);
-        if (result == 0) {
+        if (result == 0 && request->operation == JG_IPC_NETWORK_VALIDATE) {
             result = jg_netd_validate_live_config(&config, NULL);
+        } else if (result == 0) {
+            result = jg_netd_apply_network(&config);
         }
         if (result != 0) {
             response->error = body_error(result);

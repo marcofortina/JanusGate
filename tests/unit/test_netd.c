@@ -18,6 +18,7 @@
 #include "janusgate/ipc.h"
 #include "janusgate/network.h"
 #include "netd.h"
+#include "nftables.h"
 #include "rtnetlink.h"
 
 int jg_test_netd(void);
@@ -64,8 +65,7 @@ static size_t encode_request(enum jg_ipc_operation operation,
     return encoded_size;
 }
 
-/** @brief Verify ping, typed validation, and unsupported-operation responses.
- */
+/** @brief Verify ping, typed network, and unsupported-operation responses. */
 static void test_request_dispatch(void **state)
 {
     const struct jg_network_config config = test_config();
@@ -97,14 +97,42 @@ static void test_request_dispatch(void **state)
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
     assert_int_equal(response.error, JG_IPC_ERROR_INVALID);
 
+    request.operation = JG_IPC_NETWORK_APPLY;
+    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(response.error, JG_IPC_ERROR_INVALID);
+
+    request.operation = JG_IPC_NETWORK_VALIDATE;
     body[1] = 2U;
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
     assert_int_equal(response.error, JG_IPC_ERROR_VERSION);
-    body[1] = 1U;
 
-    request.operation = JG_IPC_NETWORK_APPLY;
+    request.operation = JG_IPC_NETWORK_STATE;
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
     assert_int_equal(response.error, JG_IPC_ERROR_UNSUPPORTED);
+}
+
+/** @brief Verify bounded ruleset generation and failure-mode queue flags. */
+static void test_nft_rules(void **state)
+{
+    struct jg_network_config config = test_config();
+    char rules[JG_NETD_NFT_RULESET_MAX];
+
+    (void)state;
+    assert_int_equal(
+        jg_netd_build_nft_rules(&config, false, rules, sizeof(rules)), 0);
+    assert_non_null(strstr(rules, "table bridge janusgate"));
+    assert_non_null(strstr(rules, "queue flags bypass,fanout to 100-101"));
+    assert_non_null(strstr(rules, "elements = { \"jg-test-in\" }"));
+    assert_null(strstr(rules, "\"jg-test-out\""));
+    assert_null(strstr(rules, "flush ruleset"));
+
+    config.failure_mode = JG_NETWORK_FAIL_CLOSED;
+    config.queue_cpu_fanout = false;
+    assert_int_equal(
+        jg_netd_build_nft_rules(&config, true, rules, sizeof(rules)), 0);
+    assert_non_null(strstr(rules, "flush table bridge janusgate"));
+    assert_non_null(strstr(rules, "queue to 100-101"));
+    assert_null(strstr(rules, "flags bypass"));
 }
 
 /** @brief Verify bounded rtnetlink lookup and missing-link reporting. */
@@ -223,6 +251,7 @@ int jg_test_netd(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_request_dispatch),
+        cmocka_unit_test(test_nft_rules),
         cmocka_unit_test(test_link_query),
         cmocka_unit_test(test_authenticated_connection),
         cmocka_unit_test(test_unauthorized_connection),
