@@ -51,6 +51,7 @@ add_library(
   src/common/dns.c
   src/common/domain.c
   src/common/ipc.c
+  src/common/network.c
   src/common/packet.c
   src/common/policy.c
   src/common/version.c)
@@ -78,6 +79,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/dns.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/domain.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/ipc.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/network.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/policy.h"
         "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
