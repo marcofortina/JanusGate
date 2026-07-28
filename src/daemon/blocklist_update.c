@@ -102,6 +102,27 @@ const char *jg_blocklist_update_error(int result)
     }
 }
 
+/** @brief Return a stable description for rejected local blocklist content. */
+const char *jg_blocklist_import_error(int result)
+{
+    switch (result) {
+    case -EINVAL:
+        return "The uploaded blocklist contains an invalid record.";
+    case -EILSEQ:
+        return "The uploaded blocklist contains invalid text.";
+    case -EFBIG:
+        return "The uploaded blocklist exceeds its configured size limit.";
+    case -EMSGSIZE:
+        return "An uploaded blocklist record exceeds its line limit.";
+    case -E2BIG:
+        return "The uploaded blocklist exceeds its entry limit.";
+    case -ENOMEM:
+        return "The blocklist import exhausted available memory.";
+    default:
+        return "The uploaded blocklist could not be imported.";
+    }
+}
+
 /** @brief Fetch one source and persist its complete resulting state. */
 int jg_blocklist_update(struct jg_database *database,
                         uint64_t source_id,
@@ -148,6 +169,71 @@ int jg_blocklist_update(struct jg_database *database,
         persist_result = jg_database_record_blocklist_attempt(
             database, source_id, expected_revision, &state, false,
             jg_blocklist_update_error(result->attempt_result));
+    }
+    jg_blocklist_destroy(blocklist);
+    if (persist_result == 0) {
+        persist_result = load_source(database, source_id, &result->source);
+    }
+    return persist_result;
+}
+
+/** @brief Parse one local source and persist its complete resulting state. */
+int jg_blocklist_import_local(struct jg_database *database,
+                              uint64_t source_id,
+                              uint64_t expected_revision,
+                              const uint8_t *data,
+                              size_t data_size,
+                              uint64_t now,
+                              struct jg_blocklist_update_result *result)
+{
+    struct jg_blocklist_remote_state state;
+    struct jg_blocklist_limits limits;
+    struct jg_blocklist *blocklist = NULL;
+    int persist_result = 0;
+
+    if (database == NULL || source_id == 0U || expected_revision == 0U ||
+        data == NULL || now == 0U || result == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(result, 0, sizeof(*result));
+    persist_result = load_source(database, source_id, &result->source);
+    if (persist_result != 0) {
+        return persist_result;
+    }
+    if (result->source.revision != expected_revision) {
+        return -EAGAIN;
+    }
+    if (result->source.url[0U] != '\0') {
+        return -EINVAL;
+    }
+
+    jg_blocklist_limits_default(&limits);
+    limits.max_file_bytes = result->source.max_decompressed_bytes;
+    limits.max_entries = JG_DATABASE_POLICY_RULE_LIMIT;
+    result->attempted = true;
+    result->report.body_size = data_size;
+    result->attempt_result = jg_blocklist_import(
+        data, data_size, result->source.format, result->source.mode,
+        result->source.name, &limits, &blocklist, &result->report.import);
+
+    jg_blocklist_remote_state_init(&state);
+    state.last_attempt_at = now;
+    state.next_attempt_at = now;
+    if (result->attempt_result == 0) {
+        state.last_success_at = now;
+        persist_result = jg_database_activate_blocklist(
+            database, source_id, expected_revision, blocklist, &state,
+            &result->report.import);
+        result->activated = persist_result == 0;
+    } else {
+        state.last_success_at = result->source.last_success_at;
+        state.consecutive_failures =
+            result->source.consecutive_failures == UINT32_MAX
+                ? UINT32_MAX
+                : result->source.consecutive_failures + 1U;
+        persist_result = jg_database_record_blocklist_attempt(
+            database, source_id, expected_revision, &state, false,
+            jg_blocklist_import_error(result->attempt_result));
     }
     jg_blocklist_destroy(blocklist);
     if (persist_result == 0) {

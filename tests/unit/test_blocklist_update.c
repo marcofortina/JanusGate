@@ -147,6 +147,56 @@ static void test_precondition_failures(void **state)
                      -ENOENT);
 }
 
+/** @brief Verify local imports activate atomically and retain a good list. */
+static void test_local_import(void **state)
+{
+    static const uint8_t valid[] = "alpha.example\nbeta.example\n";
+    static const uint8_t invalid[] = "not a domain\n";
+    struct blocklist_update_fixture *fixture = *state;
+    const struct jg_database_blocklist_source_config config =
+        source_config(NULL);
+    struct jg_database_blocklist_source source;
+    struct jg_database_domain_rule rules[2U];
+    struct jg_blocklist_update_result update;
+    size_t count = 0U;
+    bool has_more = false;
+
+    assert_int_equal(jg_database_create_blocklist_source(fixture->database,
+                                                         &config, &source),
+                     0);
+    assert_int_equal(
+        jg_blocklist_import_local(fixture->database, source.id, source.revision,
+                                  valid, sizeof(valid) - 1U, 100U, &update),
+        0);
+    assert_true(update.attempted);
+    assert_int_equal(update.attempt_result, 0);
+    assert_true(update.activated);
+    assert_int_equal(update.source.health, JG_DATABASE_BLOCKLIST_HEALTHY);
+    assert_int_equal(update.source.active_entries, 2U);
+    assert_int_equal(update.source.last_success_at, 100U);
+    assert_int_equal(jg_database_list_domain_rules(fixture->database, 0U, 2U,
+                                                   rules, &count, &has_more),
+                     0);
+    assert_int_equal(count, 2U);
+    assert_false(has_more);
+    assert_string_equal(rules[0U].domain, "alpha.example");
+    assert_string_equal(rules[1U].domain, "beta.example");
+
+    assert_int_equal(
+        jg_blocklist_import_local(fixture->database, source.id, source.revision,
+                                  invalid, sizeof(invalid) - 1U, 101U, &update),
+        0);
+    assert_true(update.attempted);
+    assert_true(update.attempt_result < 0);
+    assert_false(update.activated);
+    assert_int_equal(update.source.health, JG_DATABASE_BLOCKLIST_DEGRADED);
+    assert_int_equal(update.source.active_entries, 2U);
+    assert_int_equal(update.source.last_success_at, 100U);
+    assert_int_equal(update.source.last_attempt_at, 101U);
+    assert_string_equal(update.source.last_error,
+                        jg_blocklist_import_error(update.attempt_result));
+}
+
 /** @brief Run the persistent remote-blocklist update test group. */
 int jg_test_blocklist_update(void)
 {
@@ -155,6 +205,9 @@ int jg_test_blocklist_update(void)
                                         setup_blocklist_update,
                                         teardown_blocklist_update),
         cmocka_unit_test_setup_teardown(test_precondition_failures,
+                                        setup_blocklist_update,
+                                        teardown_blocklist_update),
+        cmocka_unit_test_setup_teardown(test_local_import,
                                         setup_blocklist_update,
                                         teardown_blocklist_update),
     };
