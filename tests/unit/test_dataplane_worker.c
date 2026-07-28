@@ -145,12 +145,15 @@ static struct jg_policy_store *build_sni_blocking_store(void)
     return store;
 }
 
-/** @brief Build one Ethernet and IPv4 fragment of the test UDP query. */
-static size_t build_fragment(uint8_t *frame,
-                             size_t frame_size,
-                             size_t fragment_offset,
-                             size_t fragment_size,
-                             bool more_fragments)
+/** @brief Build one Ethernet and IPv4 fragment over caller-owned payload. */
+static size_t build_payload_fragment(uint8_t *frame,
+                                     size_t frame_size,
+                                     const uint8_t *payload,
+                                     size_t payload_size,
+                                     uint8_t protocol,
+                                     size_t fragment_offset,
+                                     size_t fragment_size,
+                                     bool more_fragments)
 {
     const size_t complete_size = 34U + fragment_size;
     const uint16_t ip_size = (uint16_t)(20U + fragment_size);
@@ -158,7 +161,7 @@ static size_t build_fragment(uint8_t *frame,
                                     (more_fragments ? UINT16_C(0x2000) : 0U);
 
     assert_true(complete_size <= frame_size);
-    assert_true(fragment_offset + fragment_size <= sizeof(fragmented_query));
+    assert_true(fragment_offset + fragment_size <= payload_size);
     (void)memset(frame, 0, complete_size);
     (void)memcpy(frame, arp_frame, 12U);
     frame[12U] = 0x08U;
@@ -171,16 +174,28 @@ static size_t build_fragment(uint8_t *frame,
     frame[20U] = (uint8_t)(fragment_field >> 8U);
     frame[21U] = (uint8_t)fragment_field;
     frame[22U] = 64U;
-    frame[23U] = (uint8_t)JG_TRANSPORT_UDP;
+    frame[23U] = protocol;
     frame[26U] = 192U;
     frame[28U] = 2U;
     frame[29U] = 10U;
     frame[30U] = 192U;
     frame[32U] = 2U;
     frame[33U] = 53U;
-    (void)memcpy(frame + 34U, fragmented_query + fragment_offset,
-                 fragment_size);
+    (void)memcpy(frame + 34U, payload + fragment_offset, fragment_size);
     return complete_size;
+}
+
+/** @brief Build one Ethernet and IPv4 fragment of the test UDP query. */
+static size_t build_fragment(uint8_t *frame,
+                             size_t frame_size,
+                             size_t fragment_offset,
+                             size_t fragment_size,
+                             bool more_fragments)
+{
+    return build_payload_fragment(frame, frame_size, fragmented_query,
+                                  sizeof(fragmented_query),
+                                  (uint8_t)JG_TRANSPORT_UDP, fragment_offset,
+                                  fragment_size, more_fragments);
 }
 
 /** @brief Build one Ethernet, IPv4, and TCP segment of the test query. */
@@ -350,6 +365,60 @@ static void test_udp_dns_response(void **state)
     assert_int_equal(capture.calls, 1U);
     assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
     assert_int_equal(stats.dns_dropped, 1U);
+    jg_dataplane_worker_destroy(worker);
+    jg_policy_store_destroy(store);
+}
+
+/** @brief Verify fragmented DNS-over-TCP reaches stream policy and resets. */
+static void test_fragmented_tcp_dns(void **state)
+{
+    uint8_t segment[20U + sizeof(tcp_query)] = {0U};
+    uint8_t first_frame[66U];
+    uint8_t last_frame[66U];
+    struct jg_nfqueue_packet packet = {
+        .queue_number = 100U,
+        .ingress_index = 2U,
+    };
+    struct jg_policy_store *store = build_blocking_store();
+    struct jg_dataplane_worker *worker = NULL;
+    struct jg_dataplane_stats stats;
+    struct reset_capture capture = {0};
+
+    (void)state;
+    segment[0U] = 0x30U;
+    segment[1U] = 0x39U;
+    segment[2U] = 0x00U;
+    segment[3U] = 0x35U;
+    segment[6U] = 0x03U;
+    segment[7U] = 0xe8U;
+    segment[12U] = 0x50U;
+    segment[13U] = 0x18U;
+    (void)memcpy(segment + 20U, tcp_query, sizeof(tcp_query));
+
+    assert_int_equal(
+        jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    assert_int_equal(
+        jg_dataplane_worker_set_reset_sender(worker, capture_resets, &capture),
+        0);
+    packet.data = first_frame;
+    packet.size = build_payload_fragment(
+        first_frame, sizeof(first_frame), segment, sizeof(segment),
+        (uint8_t)JG_TRANSPORT_TCP, 0U, 32U, true);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_ACCEPT);
+
+    packet.data = last_frame;
+    packet.size = build_payload_fragment(
+        last_frame, sizeof(last_frame), segment, sizeof(segment),
+        (uint8_t)JG_TRANSPORT_TCP, 32U, sizeof(segment) - 32U, false);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
+    assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
+    assert_int_equal(stats.packets, 2U);
+    assert_int_equal(stats.fragments, 1U);
+    assert_int_equal(stats.tcp_resets, 1U);
+    assert_int_equal(stats.internal_errors, 0U);
     jg_dataplane_worker_destroy(worker);
     jg_policy_store_destroy(store);
 }
@@ -556,6 +625,7 @@ int jg_test_dataplane_worker(void)
         cmocka_unit_test(test_processing),
         cmocka_unit_test(test_fragmented_dns),
         cmocka_unit_test(test_udp_dns_response),
+        cmocka_unit_test(test_fragmented_tcp_dns),
         cmocka_unit_test(test_tcp_dns),
         cmocka_unit_test(test_tls_sni),
         cmocka_unit_test(test_unavailable_sni),

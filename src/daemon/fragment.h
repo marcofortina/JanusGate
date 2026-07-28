@@ -24,6 +24,9 @@
 /** Largest configurable reconstructed IP payload. */
 #define JG_FRAGMENT_BYTES_LIMIT 65535U
 
+/** Maximum link and normalized IP header bytes added after reconstruction. */
+#define JG_FRAGMENT_FRAME_OVERHEAD_MAX 128U
+
 /** Largest configurable idle timeout in milliseconds. */
 #define JG_FRAGMENT_TIMEOUT_MAX 120000U
 
@@ -155,6 +158,33 @@ int jg_fragment_tracker_add(struct jg_fragment_tracker *tracker,
                             size_t output_size,
                             size_t *reassembled_size,
                             enum jg_fragment_result *result);
+
+/**
+ * @brief Wrap one reconstructed fragmentable payload in a normalized frame.
+ *
+ * The original Ethernet and VLAN envelope is preserved. A minimal
+ * non-fragmented IPv4 or IPv6 header is built from validated packet metadata.
+ *
+ * @param[in] packet Any parsed fragment from the completed datagram.
+ * @param[in] payload Complete reconstructed fragmentable IP payload.
+ * @param[in] payload_size Number of reconstructed payload bytes.
+ * @param[out] output Destination for the normalized Ethernet frame.
+ * @param[in] output_size Available destination bytes.
+ * @param[out] frame_size Receives the complete normalized frame size.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid fragment metadata or arguments.
+ * @return -ENOSPC when @p output is too small.
+ * @return -EMSGSIZE when the payload cannot fit the selected IP version.
+ *
+ * @thread_safety This function is reentrant.
+ */
+int jg_fragment_build_frame(const struct jg_packet_view *packet,
+                            const uint8_t *payload,
+                            size_t payload_size,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *frame_size);
 
 /**
  * @brief Read a relaxed snapshot of fragment counters.

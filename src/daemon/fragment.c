@@ -14,6 +14,10 @@
 
 #include "janusgate/checked.h"
 
+/** Fixed normalized network-header sizes. */
+#define IPV4_HEADER_SIZE 20U
+#define IPV6_HEADER_SIZE 40U
+
 /** Canonical key for one fragmented IPv4 or IPv6 datagram. */
 struct fragment_key {
     uint8_t source[JG_PACKET_ADDRESS_SIZE];
@@ -63,6 +67,31 @@ struct jg_fragment_tracker {
     uint8_t *payloads;
     struct atomic_fragment_stats stats;
 };
+
+/** @brief Add bounded bytes to one IPv4 checksum accumulator. */
+static uint32_t checksum_add(const uint8_t *data,
+                             size_t data_size,
+                             uint32_t sum)
+{
+    size_t index = 0U;
+
+    for (index = 0U; index + 1U < data_size; index += 2U) {
+        sum += ((uint32_t)data[index] << 8U) | (uint32_t)data[index + 1U];
+    }
+    if (index < data_size) {
+        sum += (uint32_t)data[index] << 8U;
+    }
+    return sum;
+}
+
+/** @brief Fold and complement one IPv4 checksum accumulator. */
+static uint16_t checksum_finish(uint32_t sum)
+{
+    while ((sum >> 16U) != 0U) {
+        sum = (sum & UINT32_C(0xffff)) + (sum >> 16U);
+    }
+    return (uint16_t)~sum;
+}
 
 /** @brief Increment one relaxed fragment counter. */
 static void increment(atomic_uint_fast64_t *counter)
@@ -535,6 +564,75 @@ int jg_fragment_tracker_add(struct jg_fragment_tracker *tracker,
     clear_entry(tracker, entry_index);
     increment(&tracker->stats.completed);
     *result = JG_FRAGMENT_COMPLETE;
+    return 0;
+}
+
+/** @brief Build a normalized frame around one reconstructed IP payload. */
+int jg_fragment_build_frame(const struct jg_packet_view *packet,
+                            const uint8_t *payload,
+                            size_t payload_size,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *frame_size)
+{
+    size_t network_size = 0U;
+    size_t complete_size = 0U;
+    uint8_t *network = NULL;
+
+    if (frame_size == NULL) {
+        return -EINVAL;
+    }
+    *frame_size = 0U;
+    if (packet == NULL || payload == NULL || output == NULL ||
+        packet->frame == NULL || !packet->fragmented ||
+        packet->network_offset < 14U ||
+        !jg_range_valid(0U, packet->network_offset, packet->frame_size) ||
+        ((packet->ip_version == JG_IP_V4 && packet->address_size != 4U) ||
+         (packet->ip_version == JG_IP_V6 &&
+          packet->address_size != JG_PACKET_ADDRESS_SIZE) ||
+         (packet->ip_version != JG_IP_V4 && packet->ip_version != JG_IP_V6))) {
+        return -EINVAL;
+    }
+    network_size =
+        packet->ip_version == JG_IP_V4 ? IPV4_HEADER_SIZE : IPV6_HEADER_SIZE;
+    if ((packet->ip_version == JG_IP_V4 &&
+         payload_size > UINT16_MAX - IPV4_HEADER_SIZE) ||
+        (packet->ip_version == JG_IP_V6 && payload_size > UINT16_MAX)) {
+        return -EMSGSIZE;
+    }
+    if (!jg_size_add(packet->network_offset, network_size, &complete_size) ||
+        !jg_size_add(complete_size, payload_size, &complete_size) ||
+        complete_size > output_size) {
+        return -ENOSPC;
+    }
+
+    (void)memcpy(output, packet->frame, packet->network_offset);
+    network = output + packet->network_offset;
+    (void)memset(network, 0, network_size);
+    if (packet->ip_version == JG_IP_V4) {
+        network[0U] = UINT8_C(0x45);
+        (void)jg_write_u16_be(network, network_size, 2U,
+                              (uint16_t)(IPV4_HEADER_SIZE + payload_size));
+        (void)jg_write_u16_be(network, network_size, 4U,
+                              (uint16_t)packet->fragment_id);
+        network[8U] = 64U;
+        network[9U] = packet->ip_protocol;
+        (void)memcpy(network + 12U, packet->source_address, 4U);
+        (void)memcpy(network + 16U, packet->destination_address, 4U);
+        (void)jg_write_u16_be(
+            network, network_size, 10U,
+            checksum_finish(checksum_add(network, network_size, 0U)));
+    } else {
+        network[0U] = UINT8_C(0x60);
+        (void)jg_write_u16_be(network, network_size, 4U,
+                              (uint16_t)payload_size);
+        network[6U] = packet->ip_protocol;
+        network[7U] = 64U;
+        (void)memcpy(network + 8U, packet->source_address, 16U);
+        (void)memcpy(network + 24U, packet->destination_address, 16U);
+    }
+    (void)memcpy(network + network_size, payload, payload_size);
+    *frame_size = complete_size;
     return 0;
 }
 

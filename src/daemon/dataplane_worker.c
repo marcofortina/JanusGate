@@ -19,6 +19,7 @@
 
 #include "dataplane.h"
 #include "dns_response.h"
+#include "janusgate/checked.h"
 #include "janusgate/tls_client_hello.h"
 
 /** Independently updated counters for one data-plane worker. */
@@ -48,12 +49,14 @@ struct jg_dataplane_worker {
     struct jg_packet_limits limits;
     struct atomic_dataplane_stats stats;
     uint8_t *fragment_payload;
+    uint8_t *fragment_frame;
     uint8_t *dns_response;
     uint8_t *stream_output;
     uint8_t *tls_output;
     struct jg_tcp_stream_message *stream_messages;
     struct jg_tls_client_hello_parser *tls_parsers;
     size_t fragment_payload_size;
+    size_t fragment_frame_size;
     size_t stream_output_size;
     size_t stream_message_capacity;
     size_t tls_output_size;
@@ -174,6 +177,7 @@ static int process_fragment(struct jg_dataplane_worker *worker,
 {
     enum jg_fragment_result fragment_result = JG_FRAGMENT_MALFORMED;
     size_t reassembled_size = 0U;
+    size_t frame_size = 0U;
     uint64_t now_ms = 0U;
     int operation_result = monotonic_milliseconds(&now_ms);
 
@@ -186,30 +190,20 @@ static int process_fragment(struct jg_dataplane_worker *worker,
     if (operation_result != 0) {
         return operation_result;
     }
-    if (fragment_result == JG_FRAGMENT_COMPLETE &&
-        result->packet.ip_protocol == (uint8_t)JG_TRANSPORT_UDP) {
-        operation_result = jg_dataplane_evaluate_reassembled_udp(
+    if (fragment_result == JG_FRAGMENT_COMPLETE) {
+        operation_result = jg_fragment_build_frame(
             &result->packet, worker->fragment_payload, reassembled_size,
-            snapshot, result);
-        if (operation_result == 0 && reassembled_size >= 8U &&
-            result->reason == JG_DATAPLANE_POLICY_BLOCK &&
-            result->question_index != SIZE_MAX) {
-            operation_result = respond_blocked_udp(
-                worker, result, worker->fragment_payload + 8U,
-                reassembled_size - 8U);
+            worker->fragment_frame, worker->fragment_frame_size, &frame_size);
+        if (operation_result == 0) {
+            operation_result =
+                jg_dataplane_evaluate(worker->fragment_frame, frame_size,
+                                      &worker->limits, snapshot, result);
         }
         return operation_result;
     }
-    if (fragment_result == JG_FRAGMENT_COMPLETE &&
-        result->packet.ip_protocol == (uint8_t)JG_TRANSPORT_TCP) {
-        result->verdict = JG_NFQUEUE_ACCEPT;
-        result->reason = JG_DATAPLANE_STREAM_PENDING;
-    } else if (fragment_result == JG_FRAGMENT_COMPLETE) {
-        result->verdict = JG_NFQUEUE_ACCEPT;
-        result->reason = JG_DATAPLANE_PASS;
-    } else if (fragment_result == JG_FRAGMENT_MALFORMED ||
-               fragment_result == JG_FRAGMENT_OVERLAP ||
-               fragment_result == JG_FRAGMENT_EXHAUSTED) {
+    if (fragment_result == JG_FRAGMENT_MALFORMED ||
+        fragment_result == JG_FRAGMENT_OVERLAP ||
+        fragment_result == JG_FRAGMENT_EXHAUSTED) {
         result->verdict = JG_NFQUEUE_DROP;
         result->reason = JG_DATAPLANE_MALFORMED;
     }
@@ -449,12 +443,19 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
     }
     created->fragment_payload_size =
         active_fragment_limits->max_bytes_per_datagram;
+    if (!jg_size_add(created->fragment_payload_size,
+                     JG_FRAGMENT_FRAME_OVERHEAD_MAX,
+                     &created->fragment_frame_size)) {
+        jg_dataplane_worker_destroy(created);
+        return -EOVERFLOW;
+    }
     created->fragment_payload = malloc(created->fragment_payload_size);
+    created->fragment_frame = malloc(created->fragment_frame_size);
     created->dns_response = malloc(JG_DNS_RESPONSE_FRAME_MAX);
     result =
         jg_fragment_tracker_create(active_fragment_limits, &created->fragments);
-    if (created->fragment_payload == NULL || created->dns_response == NULL ||
-        result != 0) {
+    if (created->fragment_payload == NULL || created->fragment_frame == NULL ||
+        created->dns_response == NULL || result != 0) {
         jg_dataplane_worker_destroy(created);
         return result != 0 ? result : -ENOMEM;
     }
@@ -558,6 +559,10 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
     }
     evaluation_result = jg_dataplane_evaluate(
         packet->data, packet->size, &worker->limits, snapshot, &result);
+    if (evaluation_result == 0 &&
+        result.reason == JG_DATAPLANE_FRAGMENT_PENDING) {
+        evaluation_result = process_fragment(worker, snapshot, &result);
+    }
     if (evaluation_result == 0 && result.reason == JG_DATAPLANE_POLICY_BLOCK &&
         result.packet.transport == JG_TRANSPORT_UDP &&
         result.packet.destination_port == 53U &&
@@ -565,13 +570,11 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
         evaluation_result = respond_blocked_udp(
             worker, &result, result.packet.frame + result.packet.payload_offset,
             result.packet.payload_size);
-    } else if (evaluation_result == 0 &&
-               result.reason == JG_DATAPLANE_FRAGMENT_PENDING) {
-        evaluation_result = process_fragment(worker, snapshot, &result);
-    } else if (evaluation_result == 0 &&
-               result.reason == JG_DATAPLANE_STREAM_PENDING &&
-               result.packet.transport == JG_TRANSPORT_TCP &&
-               result.packet.destination_port == 53U) {
+    }
+    if (evaluation_result == 0 &&
+        result.reason == JG_DATAPLANE_STREAM_PENDING &&
+        result.packet.transport == JG_TRANSPORT_TCP &&
+        result.packet.destination_port == 53U) {
         evaluation_result = process_stream(worker, snapshot, &result);
     } else if (evaluation_result == 0 &&
                result.reason == JG_DATAPLANE_STREAM_PENDING &&
@@ -662,6 +665,7 @@ void jg_dataplane_worker_destroy(struct jg_dataplane_worker *worker)
     free(worker->stream_messages);
     free(worker->stream_output);
     free(worker->dns_response);
+    free(worker->fragment_frame);
     free(worker->fragment_payload);
     free(worker);
 }

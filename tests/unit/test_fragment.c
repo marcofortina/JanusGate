@@ -236,6 +236,58 @@ static void test_configuration(void **state)
     jg_fragment_tracker_destroy(NULL);
 }
 
+/** @brief Verify normalized frames produced from reconstructed payloads. */
+static void test_normalized_frame(void **state)
+{
+    uint8_t envelope[14U] = {
+        0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U,
+        0x77U, 0x88U, 0x99U, 0xaaU, 0xbbU, 0x08U, 0x00U,
+    };
+    uint8_t tcp[20U] = {0U};
+    uint8_t frame[128U];
+    struct jg_packet_view fragment = {
+        .frame = envelope,
+        .frame_size = sizeof(envelope),
+        .network_offset = 14U,
+        .ip_version = JG_IP_V4,
+        .source_address = {192U, 0U, 2U, 10U},
+        .destination_address = {192U, 0U, 2U, 53U},
+        .address_size = 4U,
+        .fragment_id = 19U,
+        .fragmented = true,
+        .ip_protocol = (uint8_t)JG_TRANSPORT_TCP,
+    };
+    struct jg_packet_view parsed;
+    size_t frame_size = 0U;
+
+    (void)state;
+    tcp[0U] = 0x30U;
+    tcp[1U] = 0x39U;
+    tcp[2U] = 0x00U;
+    tcp[3U] = 0x35U;
+    tcp[12U] = 0x50U;
+    assert_int_equal(jg_fragment_build_frame(&fragment, tcp, sizeof(tcp), frame,
+                                             sizeof(frame), &frame_size),
+                     0);
+    assert_int_equal(frame_size, 54U);
+    assert_memory_equal(frame, envelope, sizeof(envelope));
+    assert_int_equal(jg_packet_parse(frame, frame_size, NULL, &parsed),
+                     JG_PACKET_OK);
+    assert_false(parsed.fragmented);
+    assert_int_equal(parsed.transport, JG_TRANSPORT_TCP);
+    assert_int_equal(parsed.source_port, 12345U);
+    assert_int_equal(parsed.destination_port, 53U);
+
+    assert_int_equal(jg_fragment_build_frame(&fragment, tcp, sizeof(tcp), frame,
+                                             53U, &frame_size),
+                     -ENOSPC);
+    assert_int_equal(frame_size, 0U);
+    fragment.fragmented = false;
+    assert_int_equal(jg_fragment_build_frame(&fragment, tcp, sizeof(tcp), frame,
+                                             sizeof(frame), &frame_size),
+                     -EINVAL);
+}
+
 /** @brief Run the bounded fragment-tracker test group. */
 int jg_test_fragment(void)
 {
@@ -244,6 +296,7 @@ int jg_test_fragment(void)
         cmocka_unit_test(test_rejections),
         cmocka_unit_test(test_limits_and_timeout),
         cmocka_unit_test(test_configuration),
+        cmocka_unit_test(test_normalized_frame),
     };
 
     return cmocka_run_group_tests_name("fragment", tests, NULL, NULL);
