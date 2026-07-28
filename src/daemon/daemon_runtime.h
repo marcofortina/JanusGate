@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "dataplane_worker.h"
+#include "janusgate/certificate.h"
 #include "janusgate/policy.h"
 #include "nfqueue.h"
 #include "packet_output.h"
@@ -33,6 +34,8 @@ struct jg_daemon_runtime_config {
     const char *database_path;
     /** Absolute path to the appliance-local TOTP protection key. */
     const char *totp_key_path;
+    /** Absolute combined server certificate PEM path. */
+    const char *certificate_path;
     /** SQLite busy timeout in milliseconds. */
     uint32_t database_busy_timeout_ms;
     /** Requested netlink receive-buffer bytes for every queue. */

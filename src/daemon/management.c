@@ -72,6 +72,7 @@ struct jg_management {
     struct jg_daemon_runtime *runtime;
     struct jg_auth_password_policy password_policy;
     struct token_rate_slot token_rates[MANAGEMENT_TOKEN_RATE_SLOT_COUNT];
+    char certificate_path[PATH_MAX];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
 };
 
@@ -200,6 +201,7 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
 /** @brief Create management state and load the appliance-local TOTP key. */
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
+                         const char *certificate_path,
                          struct jg_daemon_runtime *runtime,
                          struct jg_management **management)
 {
@@ -210,7 +212,8 @@ int jg_management_create(struct jg_database *database,
         return -EINVAL;
     }
     *management = NULL;
-    if (database == NULL || totp_key_path == NULL) {
+    if (database == NULL || totp_key_path == NULL ||
+        !key_path_valid(certificate_path)) {
         return -EINVAL;
     }
     created = calloc(1U, sizeof(*created));
@@ -219,6 +222,8 @@ int jg_management_create(struct jg_database *database,
     }
     created->database = database;
     created->runtime = runtime;
+    (void)memcpy(created->certificate_path, certificate_path,
+                 strlen(certificate_path) + 1U);
     jg_auth_password_policy_default(&created->password_policy);
     result = load_totp_key(totp_key_path, created->totp_key);
     if (result != 0) {

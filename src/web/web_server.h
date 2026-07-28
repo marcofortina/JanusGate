@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/certificate.h"
 #include "janusgate/ipc.h"
 
 /** Default first-boot management address. */
@@ -23,7 +24,7 @@
 #define JG_WEB_DEFAULT_PORT 443U
 
 /** Default combined certificate and private-key PEM. */
-#define JG_WEB_DEFAULT_CERTIFICATE "/etc/janusgate/certs/server.pem"
+#define JG_WEB_DEFAULT_CERTIFICATE JG_CERTIFICATE_DEFAULT_PATH
 
 /** Default installed local web assets. */
 #define JG_WEB_DEFAULT_ROOT "/usr/share/janusgate/web"

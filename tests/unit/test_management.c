@@ -32,6 +32,7 @@ struct management_fixture {
     char directory[64U];
     char database_path[128U];
     char key_path[128U];
+    char certificate_path[128U];
     struct jg_database *database;
     struct jg_management *management;
 };
@@ -75,6 +76,11 @@ static int setup_management(void **state)
                        "%s/totp.key", fixture->directory);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(fixture->key_path));
+    written =
+        snprintf(fixture->certificate_path, sizeof(fixture->certificate_path),
+                 "%s/server.pem", fixture->directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(fixture->certificate_path));
     for (size_t index = 0U; index < sizeof(key); ++index) {
         key[index] = (uint8_t)(index + 1U);
     }
@@ -82,7 +88,8 @@ static int setup_management(void **state)
     assert_int_equal(
         jg_database_open(fixture->database_path, 1000U, &fixture->database), 0);
     assert_int_equal(jg_management_create(fixture->database, fixture->key_path,
-                                          NULL, &fixture->management),
+                                          fixture->certificate_path, NULL,
+                                          &fixture->management),
                      0);
     *state = fixture;
     return 0;
@@ -109,6 +116,7 @@ static int teardown_management(void **state)
     }
     (void)unlink(fixture->database_path);
     (void)unlink(fixture->key_path);
+    (void)unlink(fixture->certificate_path);
     (void)rmdir(fixture->directory);
     free(fixture);
     return 0;
