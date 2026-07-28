@@ -1127,6 +1127,159 @@ static bool parse_policy_target(const char *text,
     return false;
 }
 
+/** @brief Parse one external allow or block action. */
+static bool parse_policy_effect(const char *text, enum jg_policy_effect *effect)
+{
+    if (text == NULL || effect == NULL) {
+        return false;
+    }
+    if (strcmp(text, "allow") == 0) {
+        *effect = JG_POLICY_ALLOW;
+        return true;
+    }
+    if (strcmp(text, "block") == 0) {
+        *effect = JG_POLICY_BLOCK;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Parse one strict domain-rule client scope object. */
+static int parse_policy_scope(json_t *object, struct jg_policy_scope *scope)
+{
+    static const char *const global_fields[] = {"type"};
+    static const char *const address_fields[] = {"type", "address"};
+    static const char *const network_fields[] = {
+        "type",
+        "address",
+        "prefix_length",
+    };
+    static const char *const vlan_fields[] = {"type", "vlan"};
+    const char *type = NULL;
+    const char *address = NULL;
+    json_t *prefix_value = NULL;
+    json_t *vlan_value = NULL;
+    json_int_t number = -1;
+    int family = AF_UNSPEC;
+
+    (void)memset(scope, 0, sizeof(*scope));
+    if (!json_is_object(object)) {
+        return -EINVAL;
+    }
+    type = required_string(object, "type", 3U, 6U);
+    if (type == NULL) {
+        return -EINVAL;
+    }
+    if (strcmp(type, "global") == 0) {
+        if (!fields_allowed(object, global_fields,
+                            sizeof(global_fields) /
+                                sizeof(global_fields[0U]))) {
+            return -EINVAL;
+        }
+        scope->type = JG_POLICY_SCOPE_GLOBAL;
+        return 0;
+    }
+    if (strcmp(type, "mac") == 0) {
+        address = required_string(object, "address", 17U, 17U);
+        if (!fields_allowed(object, address_fields,
+                            sizeof(address_fields) /
+                                sizeof(address_fields[0U])) ||
+            parse_mac_address(address, scope->value.mac) != 0) {
+            return -EINVAL;
+        }
+        scope->type = JG_POLICY_SCOPE_MAC;
+        return 0;
+    }
+    if (strcmp(type, "ipv4") == 0 || strcmp(type, "ipv6") == 0) {
+        address = required_string(object, "address", 2U, INET6_ADDRSTRLEN - 1U);
+        prefix_value = json_object_get(object, "prefix_length");
+        number = json_is_integer(prefix_value)
+                     ? json_integer_value(prefix_value)
+                     : -1;
+        family = strcmp(type, "ipv4") == 0 ? AF_INET : AF_INET6;
+        if (!fields_allowed(object, network_fields,
+                            sizeof(network_fields) /
+                                sizeof(network_fields[0U])) ||
+            address == NULL || number < 0 ||
+            number > (family == AF_INET ? 32 : 128) ||
+            inet_pton(family, address, scope->value.network.address) != 1) {
+            return -EINVAL;
+        }
+        scope->type =
+            family == AF_INET ? JG_POLICY_SCOPE_IPV4 : JG_POLICY_SCOPE_IPV6;
+        scope->value.network.prefix_length = (uint8_t)number;
+        return 0;
+    }
+    if (strcmp(type, "vlan") == 0) {
+        vlan_value = json_object_get(object, "vlan");
+        number =
+            json_is_integer(vlan_value) ? json_integer_value(vlan_value) : -1;
+        if (!fields_allowed(object, vlan_fields,
+                            sizeof(vlan_fields) / sizeof(vlan_fields[0U])) ||
+            number < 0 || number > 4094) {
+            return -EINVAL;
+        }
+        scope->type = JG_POLICY_SCOPE_VLAN;
+        scope->value.vlan_id = (uint16_t)number;
+        return 0;
+    }
+    return -EINVAL;
+}
+
+/** @brief Parse one complete explicit domain-rule request body. */
+static int parse_domain_rule_request(json_t *body,
+                                     uint64_t rule_id,
+                                     bool updating,
+                                     struct jg_policy_rule_input *rule,
+                                     bool *enabled,
+                                     uint64_t *revision)
+{
+    static const char *const create_fields[] = {
+        "domain", "include_subdomains", "action",  "target",
+        "scope",  "attribution",        "enabled",
+    };
+    static const char *const update_fields[] = {
+        "revision", "domain", "include_subdomains", "action",
+        "target",   "scope",  "attribution",        "enabled",
+    };
+    const char *domain = required_string(body, "domain", 1U, 1024U);
+    const char *action = required_string(body, "action", 5U, 5U);
+    const char *target = required_string(body, "target", 3U, 7U);
+    const char *attribution =
+        required_string(body, "attribution", 1U, JG_POLICY_ATTRIBUTION_MAX);
+    json_t *scope = json_object_get(body, "scope");
+    int result = 0;
+
+    (void)memset(rule, 0, sizeof(*rule));
+    *revision = 0U;
+    if ((updating &&
+         !fields_allowed(body, update_fields,
+                         sizeof(update_fields) / sizeof(update_fields[0U]))) ||
+        (!updating &&
+         !fields_allowed(body, create_fields,
+                         sizeof(create_fields) / sizeof(create_fields[0U]))) ||
+        domain == NULL || action == NULL || target == NULL ||
+        attribution == NULL ||
+        !required_boolean(body, "include_subdomains",
+                          &rule->include_subdomains) ||
+        !required_boolean(body, "enabled", enabled) ||
+        !parse_policy_effect(action, &rule->effect) ||
+        !parse_policy_target(target, &rule->target)) {
+        return -EINVAL;
+    }
+    if (updating && !required_identifier(body, "revision", revision)) {
+        return -EINVAL;
+    }
+    result = parse_policy_scope(scope, &rule->scope);
+    if (result == 0) {
+        rule->id = rule_id;
+        rule->domain = domain;
+        rule->source = JG_POLICY_SOURCE_EXPLICIT;
+        rule->attribution = attribution;
+    }
+    return result;
+}
+
 /** @brief Parse one external TCP or UDP policy transport. */
 static bool parse_policy_transport(const char *text,
                                    enum jg_policy_transport *transport)
@@ -1368,6 +1521,83 @@ static bool collection_path_identifier(const char *path,
     return parse_decimal(identifier, identifier_size, (uint64_t)INT64_MAX,
                          identifier_value) == 0 &&
            *identifier_value > 0U;
+}
+
+/** @brief Append one domain-rule mutation and publication outcome. */
+static int append_domain_rule_audit(struct jg_management *management,
+                                    const struct management_request *request,
+                                    const struct remote_address *remote,
+                                    const struct authenticated_actor *actor,
+                                    const char *action,
+                                    bool has_previous_revision,
+                                    uint64_t previous_revision,
+                                    bool has_new_revision,
+                                    const struct jg_database_domain_rule *rule,
+                                    bool published,
+                                    uint64_t generation,
+                                    uint64_t now)
+{
+    char object_id[32U];
+    char source_address[INET6_ADDRSTRLEN];
+    const char *effect = policy_effect_name(rule->effect);
+    const char *target = policy_target_name(rule->target);
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = snprintf(object_id, sizeof(object_id), "%llu",
+                           (unsigned long long)rule->id);
+    int result = 0;
+
+    if (written <= 0 || (size_t)written >= sizeof(object_id) ||
+        effect == NULL || target == NULL ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source_address,
+                  sizeof(source_address)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "domain", json_string(rule->domain)) !=
+            0 ||
+        json_object_set_new(details, "action", json_string(effect)) != 0 ||
+        json_object_set_new(details, "target", json_string(target)) != 0 ||
+        json_object_set_new(details, "include_subdomains",
+                            json_boolean(rule->include_subdomains)) != 0 ||
+        json_object_set_new(details, "enabled", json_boolean(rule->enabled)) !=
+            0 ||
+        json_object_set_new(details, "published", json_boolean(published)) !=
+            0 ||
+        json_object_set_new(details, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source_address,
+            .action = action,
+            .object_type = "domain_rule",
+            .object_id = object_id,
+            .details = encoded,
+            .has_previous_revision = has_previous_revision,
+            .previous_revision = previous_revision,
+            .has_new_revision = has_new_revision,
+            .new_revision = rule->revision,
+            .success = published,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
 }
 
 /** @brief Append one successful user lifecycle event without credentials. */
@@ -2409,6 +2639,304 @@ static int handle_domain_rules_list(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Publish persistent policy and audit one domain-rule change. */
+static int publish_domain_rule_change(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    bool has_previous_revision,
+    uint64_t previous_revision,
+    bool has_new_revision,
+    const struct jg_database_domain_rule *rule,
+    uint64_t now,
+    bool *published,
+    uint64_t *generation)
+{
+    int result = jg_daemon_runtime_reload_policy(management->runtime);
+    int audit_result = 0;
+
+    *published = result == 0;
+    audit_result = jg_daemon_runtime_get_policy_generation(management->runtime,
+                                                           generation);
+    if (audit_result == 0) {
+        audit_result = append_domain_rule_audit(
+            management, request, remote, actor, action, has_previous_revision,
+            previous_revision, has_new_revision, rule, *published, *generation,
+            now);
+    }
+    return audit_result;
+}
+
+/** @brief Encode one created or updated domain-rule result. */
+static int respond_domain_rule(int status,
+                               const struct jg_database_domain_rule *rule,
+                               bool published,
+                               uint64_t generation,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written)
+{
+    json_t *body = json_object();
+    json_t *item = domain_rule_json(rule);
+
+    if (body == NULL || item == NULL ||
+        json_object_set(body, "domain", item) != 0 ||
+        json_object_set_new(body, "published", json_boolean(published)) != 0 ||
+        json_object_set_new(body, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        json_decref(item);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(item);
+    return encode_response(status, body, NULL, output, output_size, written);
+}
+
+/** @brief Create one explicit domain rule and publish a new snapshot. */
+static int handle_domain_rule_create(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_policy_rule_input rule;
+    struct jg_database_domain_rule created;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool enabled = false;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = parse_domain_rule_request(request->body, 0U, false, &rule,
+                                       &enabled, &revision);
+    if (request->query[0U] != '\0' || result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The domain-rule request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_database_create_domain_rule(management->database, &rule,
+                                            enabled, &created);
+    if (result == -EINVAL || result == -ERANGE || result == -ENOSPC) {
+        return respond_error(400, "invalid_domain_rule",
+                             "The domain-rule properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "domain_create_failed",
+                             "The domain rule could not be created.",
+                             request->request_id, output, output_size, written);
+    }
+    result = publish_domain_rule_change(management, request, remote, &actor,
+                                        "policy.domain.create", false, 0U, true,
+                                        &created, now, &published, &generation);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The domain rule changed, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_domain_rule(published ? 201 : 202, &created, published,
+                               generation, output, output_size, written);
+}
+
+/** @brief Read one exact domain rule for guarded mutation. */
+static int get_domain_rule(struct jg_database *database,
+                           uint64_t rule_id,
+                           struct jg_database_domain_rule *rule)
+{
+    size_t count = 0U;
+    bool has_more = false;
+    int result = jg_database_list_domain_rules(database, rule_id - 1U, 1U, rule,
+                                               &count, &has_more);
+
+    (void)has_more;
+    return result == 0 && (count != 1U || rule->id != rule_id) ? -ENOENT
+                                                               : result;
+}
+
+/** @brief Update one explicit domain rule and publish a new snapshot. */
+static int handle_domain_rule_update(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t rule_id,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_policy_rule_input rule;
+    struct jg_database_domain_rule previous;
+    struct jg_database_domain_rule updated;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool enabled = false;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = parse_domain_rule_request(request->body, rule_id, true, &rule,
+                                       &enabled, &revision);
+    if (request->query[0U] != '\0' || result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The domain-rule update is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = get_domain_rule(management->database, rule_id, &previous);
+    if (result == 0 && previous.source != JG_POLICY_SOURCE_EXPLICIT) {
+        return respond_error(
+            409, "managed_domain_rule",
+            "This rule is managed by its policy source and cannot be edited.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_database_update_domain_rule(management->database, &rule,
+                                                enabled, revision, &updated);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "domain_not_found",
+                             "The domain rule was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The domain rule has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -ERANGE || result == -ENOSPC) {
+        return respond_error(400, "invalid_domain_rule",
+                             "The domain-rule properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "domain_update_failed",
+                             "The domain rule could not be updated.",
+                             request->request_id, output, output_size, written);
+    }
+    result = publish_domain_rule_change(
+        management, request, remote, &actor, "policy.domain.update", true,
+        revision, true, &updated, now, &published, &generation);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The domain rule changed, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_domain_rule(published ? 200 : 202, &updated, published,
+                               generation, output, output_size, written);
+}
+
+/** @brief Delete one explicit domain rule and publish a new snapshot. */
+static int handle_domain_rule_delete(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t rule_id,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    static const char *const fields[] = {"revision"};
+    struct authenticated_actor actor;
+    struct jg_database_domain_rule removed;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool published = false;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "revision", &revision)) {
+        return respond_error(400, "invalid_body",
+                             "The domain-rule deletion is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = get_domain_rule(management->database, rule_id, &removed);
+    if (result == 0 && removed.source != JG_POLICY_SOURCE_EXPLICIT) {
+        return respond_error(
+            409, "managed_domain_rule",
+            "This rule is managed by its policy source and cannot be deleted.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_database_delete_domain_rule(management->database, rule_id,
+                                                revision);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "domain_not_found",
+                             "The domain rule was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The domain rule has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "domain_delete_failed",
+                             "The domain rule could not be deleted.",
+                             request->request_id, output, output_size, written);
+    }
+    result = publish_domain_rule_change(
+        management, request, remote, &actor, "policy.domain.delete", true,
+        revision, false, &removed, now, &published, &generation);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The domain rule changed, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "id", json_integer((json_int_t)rule_id)) !=
+            0 ||
+        json_object_set_new(body, "deleted", json_true()) != 0 ||
+        json_object_set_new(body, "published", json_boolean(published)) != 0 ||
+        json_object_set_new(body, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    return encode_response(published ? 200 : 202, body, NULL, output,
+                           output_size, written);
+}
+
 /** @brief Return one authenticated stable page of local users. */
 static int handle_users_list(struct jg_management *management,
                              const struct management_request *request,
@@ -3429,6 +3957,7 @@ static int dispatch_request(struct jg_management *management,
     const bool state_change = strcmp(request->method, "GET") != 0;
     const bool authentication_path = strncmp(request->path, "/api/v1/auth/",
                                              sizeof("/api/v1/auth/") - 1U) == 0;
+    uint64_t domain_rule_id = 0U;
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
 
@@ -3452,6 +3981,24 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_domain_rules_list(management, request, remote, now,
                                         output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/domains") == 0 && post) {
+        return handle_domain_rule_create(management, request, remote, now,
+                                         output, output_size, written);
+    }
+    if (strcmp(request->method, "PATCH") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/domains/", "",
+                                   &domain_rule_id)) {
+        return handle_domain_rule_update(management, request, remote,
+                                         domain_rule_id, now, output,
+                                         output_size, written);
+    }
+    if (strcmp(request->method, "DELETE") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/domains/", "",
+                                   &domain_rule_id)) {
+        return handle_domain_rule_delete(management, request, remote,
+                                         domain_rule_id, now, output,
+                                         output_size, written);
     }
     if (strcmp(request->path, "/api/v1/policies/simulate") == 0 && post) {
         return handle_policy_simulation(management, request, remote, now,

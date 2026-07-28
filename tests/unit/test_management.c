@@ -293,6 +293,77 @@ static void test_browser_authentication(void **state)
 
     written = snprintf(
         request, sizeof(request),
+        "{\"request_id\":\"domain-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/domains\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{\"domain\":\"new.example\","
+        "\"include_subdomains\":true,\"action\":\"block\","
+        "\"target\":\"dns\",\"scope\":{\"type\":\"global\"},"
+        "\"attribution\":\"local policy\",\"enabled\":true}}",
+        session, csrf);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"domain-invalid\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/domains\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{\"domain\":\"new.example\","
+        "\"include_subdomains\":true,\"action\":\"block\","
+        "\"target\":\"dns\",\"scope\":{\"type\":\"mac\","
+        "\"address\":\"invalid\"},\"attribution\":\"local policy\","
+        "\"enabled\":true}}",
+        session, csrf);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"domain-update\",\"method\":\"PATCH\","
+        "\"path\":\"/api/v1/domains/1\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{\"revision\":1,"
+        "\"domain\":\"safe.example\",\"include_subdomains\":false,"
+        "\"action\":\"allow\",\"target\":\"dns\","
+        "\"scope\":{\"type\":\"vlan\",\"vlan\":20},"
+        "\"attribution\":\"local exception\",\"enabled\":true}}",
+        session, csrf);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"domain-delete\",\"method\":\"DELETE\","
+        "\"path\":\"/api/v1/domains/1\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{\"revision\":1}}",
+        session, csrf);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
         "{\"request_id\":\"policy-simulate\",\"method\":\"POST\","
         "\"path\":\"/api/v1/policies/simulate\","
         "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
