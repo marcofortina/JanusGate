@@ -32,6 +32,7 @@
 #include "janusgate/access.h"
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
+#include "janusgate/event.h"
 #include "janusgate/ipc.h"
 #include "metrics.h"
 
@@ -1028,6 +1029,101 @@ static json_t *audit_json(const struct jg_audit_record *record)
         json_decref(body);
         return NULL;
     }
+    return body;
+}
+
+/** @brief Return the stable external name for one event severity. */
+static const char *event_severity_name(enum jg_event_severity severity)
+{
+    switch (severity) {
+    case JG_EVENT_SEVERITY_DEBUG:
+        return "debug";
+    case JG_EVENT_SEVERITY_INFO:
+        return "info";
+    case JG_EVENT_SEVERITY_WARNING:
+        return "warning";
+    case JG_EVENT_SEVERITY_ERROR:
+        return "error";
+    case JG_EVENT_SEVERITY_CRITICAL:
+        return "critical";
+    case JG_EVENT_SEVERITY_ANY:
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Parse one optional external event severity. */
+static bool parse_event_severity(const char *text,
+                                 size_t text_size,
+                                 enum jg_event_severity *severity)
+{
+    static const struct {
+        const char *name;
+        enum jg_event_severity severity;
+    } values[] = {
+        {"debug", JG_EVENT_SEVERITY_DEBUG},
+        {"info", JG_EVENT_SEVERITY_INFO},
+        {"warning", JG_EVENT_SEVERITY_WARNING},
+        {"error", JG_EVENT_SEVERITY_ERROR},
+        {"critical", JG_EVENT_SEVERITY_CRITICAL},
+    };
+
+    for (size_t index = 0U; index < sizeof(values) / sizeof(values[0U]);
+         ++index) {
+        if (strlen(values[index].name) == text_size &&
+            memcmp(values[index].name, text, text_size) == 0) {
+            *severity = values[index].severity;
+            return true;
+        }
+    }
+    return false;
+}
+
+/** @brief Validate one bounded external event identifier. */
+static bool event_identifier_valid(const char *text, size_t text_size)
+{
+    if (text == NULL || text_size == 0U || text_size > JG_EVENT_COMPONENT_MAX) {
+        return false;
+    }
+    for (size_t index = 0U; index < text_size; ++index) {
+        const char character = text[index];
+
+        if (!((character >= 'a' && character <= 'z') ||
+              (character >= '0' && character <= '9') || character == '_' ||
+              character == '-' || character == '.')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Convert one immutable operational event to public JSON. */
+static json_t *event_json(const struct jg_event_record *record)
+{
+    const char *severity = event_severity_name(record->severity);
+    json_error_t error;
+    json_t *body = json_object();
+    json_t *details =
+        json_loads(record->details, JSON_REJECT_DUPLICATES, &error);
+
+    if (severity == NULL || body == NULL || !json_is_object(details) ||
+        json_object_set_new(body, "id", json_integer((json_int_t)record->id)) !=
+            0 ||
+        json_object_set_new(body, "occurred_at",
+                            json_integer((json_int_t)record->occurred_at)) !=
+            0 ||
+        json_object_set_new(body, "severity", json_string(severity)) != 0 ||
+        json_object_set_new(body, "component",
+                            json_string(record->component)) != 0 ||
+        json_object_set_new(body, "code", json_string(record->code)) != 0 ||
+        json_object_set_new(body, "message", json_string(record->message)) !=
+            0 ||
+        json_object_set(body, "details", details) != 0) {
+        json_decref(details);
+        json_decref(body);
+        return NULL;
+    }
+    json_decref(details);
     return body;
 }
 
@@ -2064,6 +2160,80 @@ static int parse_page_query(const char *query,
     return result;
 }
 
+/** @brief Parse stable operational-event pagination and exact filters. */
+static int parse_event_query(const char *query,
+                             struct jg_event_filter *filter,
+                             char component[JG_EVENT_COMPONENT_MAX + 1U],
+                             size_t *limit)
+{
+    const char *cursor = query;
+    bool have_after_id = false;
+    bool have_limit = false;
+    bool have_severity = false;
+    bool have_component = false;
+    int result = 0;
+
+    *filter = (struct jg_event_filter){
+        .severity = JG_EVENT_SEVERITY_ANY,
+    };
+    component[0U] = '\0';
+    *limit = JG_EVENT_PAGE_MAX < 50U ? JG_EVENT_PAGE_MAX : 50U;
+    while (result == 0 && cursor != NULL && *cursor != '\0') {
+        const char *end = strchr(cursor, '&');
+        const char *equals = strchr(cursor, '=');
+        const size_t field_size =
+            end == NULL ? strlen(cursor) : (size_t)(end - cursor);
+        const size_t name_size =
+            equals == NULL ? field_size : (size_t)(equals - cursor);
+        const char *value =
+            equals == NULL || name_size >= field_size ? NULL : equals + 1;
+        const size_t value_size =
+            value == NULL ? 0U : field_size - name_size - 1U;
+        uint64_t parsed = 0U;
+
+        if (equals == NULL || name_size == 0U || value_size == 0U ||
+            name_size >= field_size) {
+            result = -EINVAL;
+        } else if (name_size == sizeof("after_id") - 1U &&
+                   memcmp(cursor, "after_id", name_size) == 0 &&
+                   !have_after_id) {
+            result = parse_decimal(value, value_size, (uint64_t)INT64_MAX,
+                                   &filter->after_id);
+            have_after_id = result == 0;
+        } else if (name_size == sizeof("limit") - 1U &&
+                   memcmp(cursor, "limit", name_size) == 0 && !have_limit) {
+            result =
+                parse_decimal(value, value_size, JG_EVENT_PAGE_MAX, &parsed);
+            if (result == 0 && parsed > 0U) {
+                *limit = (size_t)parsed;
+                have_limit = true;
+            } else {
+                result = -EINVAL;
+            }
+        } else if (name_size == sizeof("severity") - 1U &&
+                   memcmp(cursor, "severity", name_size) == 0 &&
+                   !have_severity &&
+                   parse_event_severity(value, value_size, &filter->severity)) {
+            have_severity = true;
+        } else if (name_size == sizeof("component") - 1U &&
+                   memcmp(cursor, "component", name_size) == 0 &&
+                   !have_component &&
+                   event_identifier_valid(value, value_size)) {
+            (void)memcpy(component, value, value_size);
+            component[value_size] = '\0';
+            filter->component = component;
+            have_component = true;
+        } else {
+            result = -EINVAL;
+        }
+        cursor = end == NULL ? NULL : end + 1;
+        if (end != NULL && end[1] == '\0') {
+            result = -EINVAL;
+        }
+    }
+    return result;
+}
+
 /** @brief Parse one identifier from an exact collection subpath. */
 static bool collection_path_identifier(const char *path,
                                        const char *prefix,
@@ -2401,6 +2571,50 @@ static int append_blocklist_update_audit(
     free(encoded);
     json_decref(details);
     return result;
+}
+
+/** @brief Append one scheduler outcome to the operational event stream. */
+static int append_blocklist_update_event(
+    struct jg_management *management,
+    const struct jg_blocklist_update_result *update,
+    int operation_result,
+    uint64_t now)
+{
+    char details[128U];
+    const char *code = "source.not_modified";
+    const char *message = "The scheduled source remains current.";
+    enum jg_event_severity severity = JG_EVENT_SEVERITY_DEBUG;
+    struct jg_event event;
+    int written = 0;
+
+    if (operation_result != 0) {
+        code = "source.state_failed";
+        message = "The scheduled source state could not be committed.";
+        severity = JG_EVENT_SEVERITY_ERROR;
+    } else if (update->attempt_result != 0) {
+        code = "source.update_failed";
+        message = "The scheduled source update failed.";
+        severity = JG_EVENT_SEVERITY_WARNING;
+    } else if (update->activated) {
+        code = "source.updated";
+        message = "The scheduled source activated a new blocklist.";
+        severity = JG_EVENT_SEVERITY_INFO;
+    }
+    written = snprintf(
+        details, sizeof(details), "{\"attempt_result\":%d,\"source_id\":%llu}",
+        update->attempt_result, (unsigned long long)update->source.id);
+    if (written <= 0 || (size_t)written >= sizeof(details)) {
+        return -EOVERFLOW;
+    }
+    event = (struct jg_event){
+        .occurred_at = now,
+        .severity = severity,
+        .component = "blocklist",
+        .code = code,
+        .message = message,
+        .details = details,
+    };
+    return jg_database_event_append(management->database, &event, NULL);
 }
 
 /** @brief Append one successful user lifecycle event without credentials. */
@@ -4002,9 +4216,13 @@ int jg_management_update_due_blocklists(struct jg_management *management,
                 const int audit_result = append_blocklist_update_audit(
                     management, NULL, NULL, NULL, "blocklist.source.refresh",
                     &update, result, published, generation, now);
+                const int event_result = append_blocklist_update_event(
+                    management, &update, result, now);
 
                 if (audit_result != 0) {
                     result = audit_result;
+                } else if (event_result != 0) {
+                    result = event_result;
                 }
             }
         }
@@ -5394,6 +5612,99 @@ static int handle_token_revoke(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one authenticated filtered page of operational events. */
+static int handle_events_list(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_event_filter filter;
+    struct jg_event_record *records = NULL;
+    char component[JG_EVENT_COMPONENT_MAX + 1U];
+    json_t *body = NULL;
+    json_t *items = NULL;
+    size_t limit = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_EVENTS_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_event_query(request->query, &filter, component, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The event filters or pagination are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    records = calloc(limit, sizeof(*records));
+    if (records == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_database_event_list(management->database, &filter, records,
+                                    limit, &count, &has_more);
+    if (result != 0) {
+        free(records);
+        return respond_error(500, "events_unavailable",
+                             "The operational events could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = event_json(&records[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "after_id",
+                             json_integer((json_int_t)filter.after_id)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "has_more", json_boolean(has_more)) != 0 ||
+         json_object_set_new(
+             body, "severity",
+             filter.severity == JG_EVENT_SEVERITY_ANY
+                 ? json_null()
+                 : json_string(event_severity_name(filter.severity))) != 0 ||
+         json_object_set_new(body, "component",
+                             filter.component == NULL
+                                 ? json_null()
+                                 : json_string(filter.component)) != 0 ||
+         json_object_set(body, "events", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        json_t *next = has_more && count > 0U
+                           ? json_integer((json_int_t)records[count - 1U].id)
+                           : json_null();
+
+        if (json_object_set_new(body, "next_after_id", next) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(records);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated page of immutable audit records. */
 static int handle_audit_list(struct jg_management *management,
                              const struct management_request *request,
@@ -5916,6 +6227,11 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/policies/simulate") == 0 && post) {
         return handle_policy_simulation(management, request, remote, now,
                                         output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/events") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_events_list(management, request, remote, now, output,
+                                  output_size, written);
     }
     if (strcmp(request->path, "/api/v1/audit/verify") == 0 &&
         strcmp(request->method, "GET") == 0) {

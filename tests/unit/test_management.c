@@ -21,6 +21,7 @@
 
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
+#include "janusgate/event.h"
 #include "janusgate/ipc.h"
 #include "management.h"
 
@@ -1413,6 +1414,10 @@ static void test_scheduled_source_update(void **state)
     struct jg_database_blocklist_source source;
     struct jg_database_blocklist_source updated;
     struct jg_audit_record audit;
+    struct jg_event_record event;
+    struct jg_event_filter event_filter = {
+        .severity = JG_EVENT_SEVERITY_ANY,
+    };
     uint64_t total = 0U;
     size_t attempts = 0U;
     size_t count = 0U;
@@ -1444,12 +1449,132 @@ static void test_scheduled_source_update(void **state)
     assert_false(audit.success);
     assert_string_equal(audit.source, "scheduler");
     assert_string_equal(audit.action, "blocklist.source.refresh");
+    assert_int_equal(jg_database_event_list(fixture->database, &event_filter,
+                                            &event, 1U, &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(event.severity, JG_EVENT_SEVERITY_WARNING);
+    assert_string_equal(event.component, "blocklist");
+    assert_string_equal(event.code, "source.update_failed");
 
     attempts = 1U;
     assert_int_equal(jg_management_update_due_blocklists(fixture->management,
                                                          101U, &attempts),
                      0);
     assert_int_equal(attempts, 0U);
+}
+
+/** @brief Verify authenticated operational-event filters and public JSON. */
+static void test_event_api(void **state)
+{
+    static const char password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    const struct jg_account_token_config token_config = {
+        .name = "event reader",
+        .permissions = JG_ACCESS_EVENTS_READ,
+        .requests_per_minute = 100U,
+    };
+    const struct jg_event first = {
+        .occurred_at = 100U,
+        .severity = JG_EVENT_SEVERITY_INFO,
+        .component = "daemon",
+        .code = "startup.complete",
+        .message = "Packet enforcement started.",
+        .details = "{}",
+    };
+    const struct jg_event second = {
+        .occurred_at = 101U,
+        .severity = JG_EVENT_SEVERITY_WARNING,
+        .component = "daemon",
+        .code = "queue.pressure",
+        .message = "Queue pressure crossed its warning threshold.",
+        .details = "{\"depth\":42}",
+    };
+    const struct jg_event third = {
+        .occurred_at = 102U,
+        .severity = JG_EVENT_SEVERITY_WARNING,
+        .component = "blocklist",
+        .code = "source.update_failed",
+        .message = "The scheduled source update failed.",
+        .details = "{\"source_id\":3}",
+    };
+    struct jg_account_api_token token;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[2048U];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *event = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+    assert_int_equal(jg_database_event_append(fixture->database, &first, NULL),
+                     0);
+    assert_int_equal(jg_database_event_append(fixture->database, &second, NULL),
+                     0);
+    assert_int_equal(jg_database_event_append(fixture->database, &third, NULL),
+                     0);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"events-filtered\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/events\","
+                 "\"query\":\"limit=1&severity=warning&component=daemon\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "count")), 1);
+    assert_false(json_is_true(json_object_get(body, "has_more")));
+    assert_true(json_is_null(json_object_get(body, "next_after_id")));
+    assert_string_equal(json_string_value(json_object_get(body, "severity")),
+                        "warning");
+    assert_string_equal(json_string_value(json_object_get(body, "component")),
+                        "daemon");
+    event = json_array_get(json_object_get(body, "events"), 0U);
+    assert_string_equal(json_string_value(json_object_get(event, "code")),
+                        "queue.pressure");
+    assert_int_equal(json_integer_value(json_object_get(
+                         json_object_get(event, "details"), "depth")),
+                     42);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"events-invalid\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/events\","
+                 "\"query\":\"severity=warning&severity=error\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
 }
 
 /** @brief Verify malformed and cross-origin requests fail closed. */
@@ -1489,6 +1614,8 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_scheduled_source_update,
                                         setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_event_api, setup_management,
+                                        teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
     };
