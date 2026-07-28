@@ -198,6 +198,25 @@ static void test_no_server_name(void **state)
     assert_false(hello.encrypted_client_hello);
 }
 
+/** @brief Verify that excessive TLS record fragmentation is bounded. */
+static void test_record_limit(void **state)
+{
+    const struct byte_builder handshake = build_handshake("example.org", false);
+    struct byte_builder wire = {0};
+    struct jg_tls_client_hello_parser parser;
+    struct jg_tls_client_hello hello;
+    size_t index = 0U;
+
+    (void)state;
+    for (index = 0U; index <= JG_TLS_RECORD_COUNT_MAX; ++index) {
+        append_record(&wire, &handshake, index, 1U);
+    }
+    jg_tls_client_hello_parser_init(&parser);
+    assert_int_equal(
+        jg_tls_client_hello_parser_feed(&parser, wire.data, wire.size, &hello),
+        JG_TLS_CLIENT_HELLO_TOO_LARGE);
+}
+
 /** @brief Verify malformed, unsupported, and oversized framing outcomes. */
 static void test_rejections(void **state)
 {
@@ -237,6 +256,7 @@ int jg_test_tls_client_hello(void)
         cmocka_unit_test(test_single_record),
         cmocka_unit_test(test_fragmented_records),
         cmocka_unit_test(test_no_server_name),
+        cmocka_unit_test(test_record_limit),
         cmocka_unit_test(test_rejections),
     };
 

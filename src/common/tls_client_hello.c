@@ -190,6 +190,9 @@ static enum jg_tls_client_hello_result activate_record(
 {
     uint16_t record_size = 0U;
 
+    if (parser->record_count >= JG_TLS_RECORD_COUNT_MAX) {
+        return terminal_result(parser, JG_TLS_CLIENT_HELLO_TOO_LARGE);
+    }
     if (parser->record_header[0U] != TLS_CONTENT_HANDSHAKE ||
         parser->record_header[1U] != UINT8_C(0x03) ||
         parser->record_header[2U] < UINT8_C(0x01) ||
@@ -201,6 +204,7 @@ static enum jg_tls_client_hello_result activate_record(
     }
     parser->record_header_size = 0U;
     parser->record_remaining = record_size;
+    ++parser->record_count;
     return JG_TLS_CLIENT_HELLO_MORE;
 }
 

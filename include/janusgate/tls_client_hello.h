@@ -29,6 +29,9 @@
 /** Largest accepted encrypted TLS record payload. */
 #define JG_TLS_RECORD_PAYLOAD_MAX 18432U
 
+/** Largest number of TLS records accepted for one ClientHello. */
+#define JG_TLS_RECORD_COUNT_MAX 64U
+
 /** Semantic outcome of incremental ClientHello parsing. */
 enum jg_tls_client_hello_result {
     /** More client-to-server record bytes are required. */
@@ -71,6 +74,8 @@ struct jg_tls_client_hello_parser {
     size_t record_header_size;
     /** Payload bytes remaining in the current record. */
     size_t record_remaining;
+    /** TLS records activated for this ClientHello. */
+    size_t record_count;
     /** Bytes collected in handshake_header. */
     size_t handshake_header_size;
     /** Declared ClientHello body bytes. */
