@@ -382,13 +382,14 @@ static enum jg_tcp_stream_result emit_messages(
     return count == 0U ? JG_TCP_STREAM_BUFFERED : JG_TCP_STREAM_MESSAGES;
 }
 
-/** @brief Validate metadata required to identify and read one DNS flow. */
-static bool packet_valid(const struct jg_packet_view *packet)
+/** @brief Validate metadata for one selected client-to-server TCP flow. */
+static bool packet_valid_for_port(const struct jg_packet_view *packet,
+                                  uint16_t destination_port)
 {
     return packet != NULL && packet->frame != NULL && !packet->fragmented &&
            packet->transport == JG_TRANSPORT_TCP &&
            packet->ip_protocol == (uint8_t)JG_TRANSPORT_TCP &&
-           packet->destination_port == 53U &&
+           packet->destination_port == destination_port &&
            (packet->ip_version == JG_IP_V4 || packet->ip_version == JG_IP_V6) &&
            packet->address_size != 0U &&
            packet->address_size <= JG_PACKET_ADDRESS_SIZE &&
@@ -517,7 +518,8 @@ int jg_tcp_stream_tracker_add(struct jg_tcp_stream_tracker *tracker,
         packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_RST) != 0U;
 
     if (tracker == NULL || output == NULL || messages == NULL ||
-        message_count == NULL || result == NULL || !packet_valid(packet)) {
+        message_count == NULL || result == NULL ||
+        !packet_valid_for_port(packet, 53U)) {
         return -EINVAL;
     }
     *message_count = 0U;
@@ -674,6 +676,192 @@ int jg_tcp_stream_tracker_add(struct jg_tcp_stream_tracker *tracker,
     return 0;
 }
 
+/** @brief Reconstruct generic ordered bytes for TLS protocol parsing. */
+int jg_tcp_stream_tracker_add_raw(struct jg_tcp_stream_tracker *tracker,
+                                  const struct jg_packet_view *packet,
+                                  uint64_t now_ms,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  struct jg_tcp_raw_stream_chunk *chunk,
+                                  enum jg_tcp_raw_stream_result *result)
+{
+    struct stream_key key;
+    struct stream_entry *entry = NULL;
+    const uint8_t *payload = NULL;
+    uint32_t payload_sequence = 0U;
+    uint32_t distance = 0U;
+    size_t free_index = SIZE_MAX;
+    size_t flow_index = SIZE_MAX;
+    size_t payload_offset = 0U;
+    size_t payload_size = 0U;
+    size_t contiguous = 0U;
+    enum jg_tcp_stream_result insertion = JG_TCP_STREAM_BUFFERED;
+    bool changed = false;
+    const bool syn =
+        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_SYN) != 0U;
+    const bool fin =
+        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_FIN) != 0U;
+    const bool rst =
+        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_RST) != 0U;
+
+    if (tracker == NULL || output == NULL || chunk == NULL || result == NULL ||
+        !(packet_valid_for_port(packet, 443U) ||
+          packet_valid_for_port(packet, 853U))) {
+        return -EINVAL;
+    }
+    *chunk = (struct jg_tcp_raw_stream_chunk){
+        .flow_index = SIZE_MAX,
+    };
+    if (output_size < tracker->limits.max_buffered_bytes) {
+        return -ENOSPC;
+    }
+
+    build_key(packet, &key);
+    expire_flows(tracker, now_ms);
+    flow_index = find_flow(tracker, &key, &free_index);
+    if (rst) {
+        if (flow_index != SIZE_MAX) {
+            chunk->flow_index = flow_index;
+            clear_flow(tracker, flow_index);
+        }
+        increment(&tracker->stats.closed);
+        *result = JG_TCP_RAW_STREAM_CLOSED;
+        return 0;
+    }
+    payload_sequence = packet->tcp_sequence + (syn ? 1U : 0U);
+    if (syn && flow_index != SIZE_MAX) {
+        clear_flow(tracker, flow_index);
+        free_index = flow_index;
+        flow_index = SIZE_MAX;
+    }
+    if (flow_index != SIZE_MAX && tracker->entries[flow_index].rejected) {
+        increment(&tracker->stats.conflicts);
+        *result = JG_TCP_RAW_STREAM_CONFLICT;
+        return 0;
+    }
+    if (flow_index == SIZE_MAX && (packet->payload_size != 0U || syn)) {
+        if (free_index == SIZE_MAX ||
+            source_flow_count(tracker, &key) >=
+                tracker->limits.max_flows_per_source) {
+            increment(&tracker->stats.exhausted);
+            *result = JG_TCP_RAW_STREAM_EXHAUSTED;
+            return 0;
+        }
+        flow_index = free_index;
+        initialize_flow(tracker, flow_index, &key, payload_sequence, now_ms);
+        chunk->new_flow = true;
+    }
+    if (flow_index == SIZE_MAX) {
+        if (fin) {
+            increment(&tracker->stats.closed);
+            *result = JG_TCP_RAW_STREAM_CLOSED;
+        } else {
+            increment(&tracker->stats.duplicates);
+            *result = JG_TCP_RAW_STREAM_DUPLICATE;
+        }
+        return 0;
+    }
+
+    chunk->flow_index = flow_index;
+    entry = &tracker->entries[flow_index];
+    entry->idle_deadline = deadline(now_ms, tracker->limits.idle_timeout_ms);
+    if (packet->payload_size == 0U) {
+        if (fin) {
+            if (flow_has_bytes(tracker, flow_index)) {
+                reject_flow(tracker, flow_index, now_ms);
+            } else {
+                clear_flow(tracker, flow_index);
+            }
+            chunk->closed = true;
+            increment(&tracker->stats.closed);
+            *result = JG_TCP_RAW_STREAM_CLOSED;
+        } else {
+            *result = JG_TCP_RAW_STREAM_BUFFERED;
+        }
+        return 0;
+    }
+
+    payload = packet->frame + packet->payload_offset;
+    payload_size = packet->payload_size;
+    distance = payload_sequence - entry->base_sequence;
+    if (distance <= UINT32_C(0x7fffffff)) {
+        payload_offset = (size_t)distance;
+    } else {
+        const uint32_t consumed_prefix =
+            entry->base_sequence - payload_sequence;
+
+        if ((size_t)consumed_prefix >= payload_size) {
+            if (fin) {
+                if (flow_has_bytes(tracker, flow_index)) {
+                    reject_flow(tracker, flow_index, now_ms);
+                } else {
+                    clear_flow(tracker, flow_index);
+                }
+                chunk->closed = true;
+                increment(&tracker->stats.closed);
+                *result = JG_TCP_RAW_STREAM_CLOSED;
+            } else {
+                increment(&tracker->stats.duplicates);
+                *result = JG_TCP_RAW_STREAM_DUPLICATE;
+            }
+            return 0;
+        }
+        payload += consumed_prefix;
+        payload_size -= consumed_prefix;
+    }
+    if (!jg_range_valid(payload_offset, payload_size,
+                        tracker->limits.max_buffered_bytes)) {
+        reject_flow(tracker, flow_index, now_ms);
+        increment(&tracker->stats.exhausted);
+        *result = JG_TCP_RAW_STREAM_EXHAUSTED;
+        return 0;
+    }
+
+    insertion = insert_payload(tracker, flow_index, payload_offset, payload,
+                               payload_size, &changed);
+    if (insertion == JG_TCP_STREAM_CONFLICT) {
+        reject_flow(tracker, flow_index, now_ms);
+        increment(&tracker->stats.conflicts);
+        *result = JG_TCP_RAW_STREAM_CONFLICT;
+        return 0;
+    }
+    if (range_count(tracker, flow_index) >
+        tracker->limits.max_out_of_order_segments) {
+        reject_flow(tracker, flow_index, now_ms);
+        increment(&tracker->stats.exhausted);
+        *result = JG_TCP_RAW_STREAM_EXHAUSTED;
+        return 0;
+    }
+
+    contiguous = contiguous_size(tracker, flow_index);
+    if (contiguous > 0U) {
+        (void)memcpy(output, flow_buffer(tracker, flow_index), contiguous);
+        consume_prefix(tracker, flow_index, contiguous);
+        chunk->size = contiguous;
+        add_count(&tracker->stats.messages, contiguous);
+        *result = JG_TCP_RAW_STREAM_BYTES;
+    } else if (changed) {
+        increment(&tracker->stats.buffered);
+        *result = JG_TCP_RAW_STREAM_BUFFERED;
+    } else {
+        increment(&tracker->stats.duplicates);
+        *result = JG_TCP_RAW_STREAM_DUPLICATE;
+    }
+    if (fin) {
+        if (flow_has_bytes(tracker, flow_index)) {
+            reject_flow(tracker, flow_index, now_ms);
+        } else {
+            clear_flow(tracker, flow_index);
+        }
+        chunk->closed = true;
+        increment(&tracker->stats.closed);
+        if (*result != JG_TCP_RAW_STREAM_BYTES) {
+            *result = JG_TCP_RAW_STREAM_CLOSED;
+        }
+    }
+    return 0;
+}
+
 /** @brief Replace one existing flow with a compact rejection entry. */
 int jg_tcp_stream_tracker_reject_flow(struct jg_tcp_stream_tracker *tracker,
                                       const struct jg_packet_view *packet,
@@ -683,7 +871,9 @@ int jg_tcp_stream_tracker_reject_flow(struct jg_tcp_stream_tracker *tracker,
     size_t free_index = SIZE_MAX;
     size_t flow_index = SIZE_MAX;
 
-    if (tracker == NULL || !packet_valid(packet)) {
+    if (tracker == NULL || !(packet_valid_for_port(packet, 53U) ||
+                             packet_valid_for_port(packet, 443U) ||
+                             packet_valid_for_port(packet, 853U))) {
         return -EINVAL;
     }
     build_key(packet, &key);

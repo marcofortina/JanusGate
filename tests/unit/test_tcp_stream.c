@@ -108,6 +108,22 @@ static enum jg_tcp_stream_result add_packet(
     return result;
 }
 
+/** @brief Add one packet through generic ordered-byte reconstruction. */
+static enum jg_tcp_raw_stream_result add_raw_packet(
+    struct jg_tcp_stream_tracker *tracker,
+    const struct jg_packet_view *packet,
+    uint64_t now_ms,
+    uint8_t *output,
+    struct jg_tcp_raw_stream_chunk *chunk)
+{
+    enum jg_tcp_raw_stream_result result = JG_TCP_RAW_STREAM_EXHAUSTED;
+
+    assert_int_equal(jg_tcp_stream_tracker_add_raw(tracker, packet, now_ms,
+                                                   output, 64U, chunk, &result),
+                     0);
+    return result;
+}
+
 /** @brief Verify partial framing, message batches, and blocked retransmission.
  */
 static void test_message_reassembly(void **state)
@@ -379,6 +395,61 @@ static void test_configuration(void **state)
     jg_tcp_stream_tracker_destroy(tracker);
 }
 
+/** @brief Verify generic out-of-order byte reconstruction and isolation. */
+static void test_raw_reassembly(void **state)
+{
+    static const uint8_t bytes[] = "0123456789abcdefghij";
+    uint8_t conflict[10U];
+    uint8_t output[64U];
+    struct jg_tcp_stream_tracker *tracker = create_tracker(4U);
+    struct jg_packet_view packet =
+        tcp_view(&empty_payload, 0U, 100U, JG_TCP_FLAG_SYN, 13000U);
+    struct jg_tcp_raw_stream_chunk chunk;
+    enum jg_tcp_raw_stream_result raw_result;
+
+    (void)state;
+    packet.destination_port = 443U;
+    assert_int_equal(add_raw_packet(tracker, &packet, 100U, output, &chunk),
+                     JG_TCP_RAW_STREAM_BUFFERED);
+    assert_true(chunk.new_flow);
+
+    packet = tcp_view(bytes + 10U, 10U, 111U, 0U, 13000U);
+    packet.destination_port = 443U;
+    assert_int_equal(add_raw_packet(tracker, &packet, 101U, output, &chunk),
+                     JG_TCP_RAW_STREAM_BUFFERED);
+    assert_int_equal(chunk.size, 0U);
+    packet = tcp_view(bytes, 10U, 101U, 0U, 13000U);
+    packet.destination_port = 443U;
+    assert_int_equal(add_raw_packet(tracker, &packet, 102U, output, &chunk),
+                     JG_TCP_RAW_STREAM_BYTES);
+    assert_int_equal(chunk.size, sizeof(bytes) - 1U);
+    assert_memory_equal(output, bytes, sizeof(bytes) - 1U);
+
+    assert_int_equal(add_raw_packet(tracker, &packet, 103U, output, &chunk),
+                     JG_TCP_RAW_STREAM_DUPLICATE);
+    packet.destination_port = 53U;
+    assert_int_equal(jg_tcp_stream_tracker_add_raw(tracker, &packet, 104U,
+                                                   output, sizeof(output),
+                                                   &chunk, &raw_result),
+                     -EINVAL);
+
+    packet = tcp_view(&empty_payload, 0U, 200U, JG_TCP_FLAG_SYN, 13001U);
+    packet.destination_port = 853U;
+    assert_int_equal(add_raw_packet(tracker, &packet, 200U, output, &chunk),
+                     JG_TCP_RAW_STREAM_BUFFERED);
+    packet = tcp_view(bytes, 10U, 206U, 0U, 13001U);
+    packet.destination_port = 853U;
+    assert_int_equal(add_raw_packet(tracker, &packet, 201U, output, &chunk),
+                     JG_TCP_RAW_STREAM_BUFFERED);
+    (void)memcpy(conflict, bytes, sizeof(conflict));
+    conflict[0U] ^= UINT8_C(0xff);
+    packet = tcp_view(conflict, sizeof(conflict), 206U, 0U, 13001U);
+    packet.destination_port = 853U;
+    assert_int_equal(add_raw_packet(tracker, &packet, 202U, output, &chunk),
+                     JG_TCP_RAW_STREAM_CONFLICT);
+    jg_tcp_stream_tracker_destroy(tracker);
+}
+
 /** @brief Run the DNS-over-TCP stream-tracker test group. */
 int jg_test_tcp_stream(void)
 {
@@ -388,6 +459,7 @@ int jg_test_tcp_stream(void)
         cmocka_unit_test(test_rejections),
         cmocka_unit_test(test_limits_and_lifetime),
         cmocka_unit_test(test_configuration),
+        cmocka_unit_test(test_raw_reassembly),
     };
 
     return cmocka_run_group_tests_name("TCP stream", tests, NULL, NULL);

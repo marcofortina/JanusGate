@@ -10,6 +10,7 @@
 #ifndef JANUSGATE_DAEMON_TCP_STREAM_H
 #define JANUSGATE_DAEMON_TCP_STREAM_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -72,6 +73,34 @@ struct jg_tcp_stream_message {
     size_t offset;
     /** Message bytes, excluding the two-byte TCP length prefix. */
     size_t size;
+};
+
+/** Outcome from generic ordered-byte stream reconstruction. */
+enum jg_tcp_raw_stream_result {
+    /** One or more newly contiguous bytes were copied to caller storage. */
+    JG_TCP_RAW_STREAM_BYTES = 1,
+    /** New bytes were retained behind a sequence gap. */
+    JG_TCP_RAW_STREAM_BUFFERED = 2,
+    /** The packet contributed no new bytes. */
+    JG_TCP_RAW_STREAM_DUPLICATE = 3,
+    /** FIN or RST closed the tracked flow. */
+    JG_TCP_RAW_STREAM_CLOSED = 4,
+    /** A retransmission conflicted with retained bytes. */
+    JG_TCP_RAW_STREAM_CONFLICT = 5,
+    /** A configured flow, byte, source, or segment bound was reached. */
+    JG_TCP_RAW_STREAM_EXHAUSTED = 6
+};
+
+/** Newly contiguous bytes and flow identity returned to a protocol parser. */
+struct jg_tcp_raw_stream_chunk {
+    /** Stable preallocated flow slot, or SIZE_MAX when no flow exists. */
+    size_t flow_index;
+    /** Bytes copied to caller output. */
+    size_t size;
+    /** Whether the slot began a new flow and its parser must be reset. */
+    bool new_flow;
+    /** Whether FIN closed the flow after these bytes. */
+    bool closed;
 };
 
 /**
@@ -197,6 +226,37 @@ int jg_tcp_stream_tracker_add(struct jg_tcp_stream_tracker *tracker,
                               size_t message_capacity,
                               size_t *message_count,
                               enum jg_tcp_stream_result *result);
+
+/**
+ * @brief Reconstruct newly contiguous bytes for a selected TLS port.
+ *
+ * This generic mode uses a tracker instance exclusively from DNS framing.
+ * It supports destination port 443 or 853 and consumes each returned prefix
+ * after copying it to @p output.
+ *
+ * @param[in,out] tracker Exclusive stream tracker.
+ * @param[in] packet Parsed client-to-server TCP packet.
+ * @param[in] now_ms Current monotonic milliseconds.
+ * @param[out] output Destination for newly contiguous bytes.
+ * @param[in] output_size Available output bytes.
+ * @param[out] chunk Receives output size, flow slot, and lifecycle flags.
+ * @param[out] result Receives the packet-level reconstruction outcome.
+ *
+ * @return 0 when @p result was produced.
+ * @return -EINVAL for invalid arguments or an unsupported destination port.
+ * @return -ENOSPC when output is below the configured receive-window size.
+ *
+ * @thread_safety Exactly one packet thread may use a tracker.
+ *
+ * @side_effects Updates bounded stream state and counters.
+ */
+int jg_tcp_stream_tracker_add_raw(struct jg_tcp_stream_tracker *tracker,
+                                  const struct jg_packet_view *packet,
+                                  uint64_t now_ms,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  struct jg_tcp_raw_stream_chunk *chunk,
+                                  enum jg_tcp_raw_stream_result *result);
 
 /**
  * @brief Reject an existing flow after one emitted message is blocked.
