@@ -11,6 +11,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,10 +106,14 @@ static bool column_exists(sqlite3 *handle,
 /** @brief Set user_version through a prepared SQLite statement. */
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
+    char sql[64U];
     sqlite3_stmt *statement = NULL;
-    const char *sql = version == 6U ? "PRAGMA user_version=6;" : NULL;
+    int written = 0;
 
-    assert_non_null(sql);
+    written =
+        snprintf(sql, sizeof(sql), "PRAGMA user_version=%" PRIu32 ";", version);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(sql));
     assert_int_equal(sqlite3_prepare_v2(handle, sql, -1, &statement, NULL),
                      SQLITE_OK);
     assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
@@ -329,6 +334,8 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "audit_events"));
     assert_true(table_exists(inspection, "certificate_metadata"));
     assert_true(table_exists(inspection, "bootstrap_credentials"));
+    assert_true(column_exists(inspection, "domain_rules", "revision"));
+    assert_true(column_exists(inspection, "destination_rules", "revision"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -397,8 +404,10 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "web_sessions", "session_epoch"));
     assert_true(column_exists(inspection, "audit_events", "request_id"));
     assert_true(column_exists(inspection, "domain_rules", "target"));
+    assert_true(column_exists(inspection, "domain_rules", "revision"));
     assert_true(column_exists(inspection, "destination_rules", "source"));
     assert_true(column_exists(inspection, "destination_rules", "scope_type"));
+    assert_true(column_exists(inspection, "destination_rules", "revision"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));

@@ -470,6 +470,21 @@ static const char *const migration_5[] = {
     migration_5_identity,
 };
 
+/** Add optimistic-concurrency revisions to mutable policy rules. */
+static const char migration_6_policy[] =
+    "ALTER TABLE domain_rules ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 "
+    "CHECK(revision > 0);"
+    "ALTER TABLE destination_rules ADD COLUMN revision INTEGER NOT NULL "
+    "DEFAULT 1 CHECK(revision > 0);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(6,unixepoch());"
+    "PRAGMA user_version=6;";
+
+/** Ordered statement groups composing schema version six. */
+static const char *const migration_6[] = {
+    migration_6_policy,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -477,6 +492,7 @@ static const struct database_migration migrations[] = {
     {3U, migration_3, sizeof(migration_3) / sizeof(migration_3[0])},
     {4U, migration_4, sizeof(migration_4) / sizeof(migration_4[0])},
     {5U, migration_5, sizeof(migration_5) / sizeof(migration_5[0])},
+    {6U, migration_6, sizeof(migration_6) / sizeof(migration_6[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
