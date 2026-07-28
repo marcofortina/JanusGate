@@ -31,6 +31,8 @@
 #include "janusgate/access.h"
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
+#include "janusgate/ipc.h"
+#include "metrics.h"
 
 /** Absolute authenticated web-session lifetime. */
 #define MANAGEMENT_SESSION_LIFETIME 43200U
@@ -458,7 +460,30 @@ static json_t *error_body(const char *code,
     return body;
 }
 
-/** @brief Encode one complete internal management response envelope. */
+/** @brief Serialize one complete internal response envelope. */
+static int dump_response(json_t *response,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written)
+{
+    const size_t required =
+        json_dumpb(response, NULL, 0U, JSON_COMPACT | JSON_SORT_KEYS);
+
+    if (required == 0U) {
+        return -EIO;
+    }
+    if (required > output_size) {
+        return -ENOSPC;
+    }
+    if (json_dumpb(response, (char *)output, output_size,
+                   JSON_COMPACT | JSON_SORT_KEYS) != required) {
+        return -EIO;
+    }
+    *written = required;
+    return 0;
+}
+
+/** @brief Encode one complete JSON management response envelope. */
 static int encode_response(int status,
                            json_t *body,
                            const struct session_result *session,
@@ -467,7 +492,6 @@ static int encode_response(int status,
                            size_t *written)
 {
     json_t *response = json_object();
-    size_t required = 0U;
     int result = 0;
 
     if (response == NULL || body == NULL ||
@@ -487,21 +511,37 @@ static int encode_response(int status,
         result = -ENOMEM;
     }
     if (result == 0) {
-        required =
-            json_dumpb(response, NULL, 0U, JSON_COMPACT | JSON_SORT_KEYS);
-        if (required == 0U) {
-            result = -EIO;
-        } else if (required > output_size) {
-            result = -ENOSPC;
-        } else if (json_dumpb(response, (char *)output, output_size,
-                              JSON_COMPACT | JSON_SORT_KEYS) != required) {
-            result = -EIO;
-        } else {
-            *written = required;
-        }
+        result = dump_response(response, output, output_size, written);
     }
     json_decref(response);
     json_decref(body);
+    return result;
+}
+
+/** @brief Encode one complete plain-text management response envelope. */
+static int encode_text_response(int status,
+                                const char *content_type,
+                                const char *text,
+                                size_t text_size,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written)
+{
+    json_t *response = json_object();
+    int result = 0;
+
+    if (response == NULL ||
+        json_object_set_new(response, "status", json_integer(status)) != 0 ||
+        json_object_set_new(response, "content_type",
+                            json_string(content_type)) != 0 ||
+        json_object_set_new(response, "text", json_stringn(text, text_size)) !=
+            0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        result = dump_response(response, output, output_size, written);
+    }
+    json_decref(response);
     return result;
 }
 
@@ -1514,6 +1554,61 @@ static int handle_status(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return authenticated Prometheus text for the current runtime. */
+static int handle_metrics(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written)
+{
+    static const char content_type[] =
+        "text/plain; version=0.0.4; charset=utf-8";
+    struct authenticated_actor actor;
+    struct jg_daemon_runtime_stats stats;
+    char placeholder = '\0';
+    char *metrics = NULL;
+    size_t metrics_size = 0U;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_METRICS_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The metrics request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL ||
+        jg_daemon_runtime_get_stats(management->runtime, &stats) != 0) {
+        return respond_error(503, "metrics_unavailable",
+                             "Runtime metrics are temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_metrics_render(&stats, &placeholder, 0U, &metrics_size);
+    if (result != -ENOSPC || metrics_size == 0U ||
+        metrics_size >= JG_IPC_MAX_BODY_SIZE / 2U) {
+        return respond_error(500, "metrics_failure",
+                             "Runtime metrics could not be rendered.",
+                             request->request_id, output, output_size, written);
+    }
+    metrics = malloc(metrics_size + 1U);
+    if (metrics == NULL) {
+        return -ENOMEM;
+    }
+    result =
+        jg_metrics_render(&stats, metrics, metrics_size + 1U, &metrics_size);
+    if (result == 0) {
+        result = encode_text_response(200, content_type, metrics, metrics_size,
+                                      output, output_size, written);
+    }
+    free(metrics);
+    return result;
+}
+
 /** @brief Return one authenticated stable page of local users. */
 static int handle_users_list(struct jg_management *management,
                              const struct management_request *request,
@@ -2412,6 +2507,11 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_status(management, request, remote, now, output,
                              output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/metrics") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_metrics(management, request, remote, now, output,
+                              output_size, written);
     }
     if (strcmp(request->path, "/api/v1/users") == 0 &&
         strcmp(request->method, "GET") == 0) {

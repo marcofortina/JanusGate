@@ -455,10 +455,10 @@ static int send_gateway_response(struct mg_connection *connection,
     }
     if (result == 0) {
         status = response.status;
-        result = send_header(
-            connection, response.status, status_reason(response.status),
-            "application/json; charset=utf-8", response.body_size, true,
-            server->config.hsts, headers);
+        result =
+            send_header(connection, response.status,
+                        status_reason(response.status), response.content_type,
+                        response.body_size, true, server->config.hsts, headers);
     }
     if (result == 0 && response.body_size != 0U &&
         mg_write(connection, response.body, response.body_size) !=

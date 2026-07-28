@@ -12,6 +12,7 @@
 
 #include <cmocka.h>
 
+#include "web_gateway.h"
 #include "web_server.h"
 
 int jg_test_web_server(void);
@@ -59,12 +60,56 @@ static void test_web_listener(void **state)
     assert_string_equal(listener, "[20");
 }
 
+/** @brief Verify strict JSON and Prometheus daemon response decoding. */
+static void test_gateway_response_formats(void **state)
+{
+    static const uint8_t json_response[] =
+        "{\"status\":200,\"body\":{\"ready\":true}}";
+    static const uint8_t metrics_response[] =
+        "{\"status\":200,"
+        "\"content_type\":\"text/plain; version=0.0.4; charset=utf-8\","
+        "\"text\":\"# TYPE janusgate_ready gauge\\n"
+        "janusgate_ready 1\\n\"}";
+    static const uint8_t invalid_response[] =
+        "{\"status\":200,\"content_type\":\"text/html\","
+        "\"text\":\"invalid\"}";
+    struct jg_web_gateway_response response = {0};
+
+    (void)state;
+    assert_int_equal(jg_web_gateway_decode_response(
+                         json_response, sizeof(json_response) - 1U, &response),
+                     0);
+    assert_int_equal(response.status, 200);
+    assert_string_equal(response.content_type,
+                        "application/json; charset=utf-8");
+    assert_string_equal(response.body, "{\"ready\":true}");
+    jg_web_gateway_response_clear(&response);
+
+    assert_int_equal(
+        jg_web_gateway_decode_response(
+            metrics_response, sizeof(metrics_response) - 1U, &response),
+        0);
+    assert_int_equal(response.status, 200);
+    assert_string_equal(response.content_type,
+                        "text/plain; version=0.0.4; charset=utf-8");
+    assert_string_equal(response.body, "# TYPE janusgate_ready gauge\n"
+                                       "janusgate_ready 1\n");
+    jg_web_gateway_response_clear(&response);
+
+    assert_int_equal(
+        jg_web_gateway_decode_response(
+            invalid_response, sizeof(invalid_response) - 1U, &response),
+        -EPROTO);
+    jg_web_gateway_response_clear(&response);
+}
+
 /** @brief Run the HTTPS server configuration unit-test group. */
 int jg_test_web_server(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_web_config_validation),
         cmocka_unit_test(test_web_listener),
+        cmocka_unit_test(test_gateway_response_formats),
     };
 
     return cmocka_run_group_tests_name("web_server", tests, NULL, NULL);

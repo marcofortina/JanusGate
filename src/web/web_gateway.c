@@ -112,6 +112,9 @@ static int set_error_response(struct jg_web_gateway_response *response,
         } else {
             response->body_size = strlen(response->body);
             response->status = status;
+            (void)memcpy(response->content_type,
+                         "application/json; charset=utf-8",
+                         sizeof("application/json; charset=utf-8"));
         }
     }
     json_decref(error);
@@ -373,6 +376,7 @@ static bool response_fields_valid(json_t *response)
     {
         (void)value;
         if (strcmp(name, "status") != 0 && strcmp(name, "body") != 0 &&
+            strcmp(name, "content_type") != 0 && strcmp(name, "text") != 0 &&
             strcmp(name, "set_session") != 0 &&
             strcmp(name, "clear_session") != 0) {
             return false;
@@ -382,32 +386,45 @@ static bool response_fields_valid(json_t *response)
 }
 
 /** @brief Validate and copy one complete daemon management response. */
-static int parse_daemon_response(const uint8_t *data,
-                                 size_t data_size,
-                                 struct jg_web_gateway_response *response)
+int jg_web_gateway_decode_response(const uint8_t *data,
+                                   size_t data_size,
+                                   struct jg_web_gateway_response *response)
 {
     json_error_t error;
-    json_t *root = json_loadb((const char *)data, data_size,
-                              JSON_REJECT_DUPLICATES, &error);
+    json_t *root = NULL;
     json_t *status = NULL;
     json_t *body = NULL;
+    json_t *content_type = NULL;
+    json_t *text = NULL;
     json_t *set_session = NULL;
     json_t *clear_session = NULL;
     json_int_t status_value = 0;
     int result = 0;
 
+    if (data == NULL || data_size == 0U || response == NULL ||
+        response->body != NULL) {
+        return -EINVAL;
+    }
+    root = json_loadb((const char *)data, data_size, JSON_REJECT_DUPLICATES,
+                      &error);
     if (!response_fields_valid(root)) {
         result = -EPROTO;
     }
     if (result == 0) {
         status = json_object_get(root, "status");
         body = json_object_get(root, "body");
+        content_type = json_object_get(root, "content_type");
+        text = json_object_get(root, "text");
         set_session = json_object_get(root, "set_session");
         clear_session = json_object_get(root, "clear_session");
-        if (!json_is_integer(status) || !json_is_object(body) ||
+        if (!json_is_integer(status) ||
+            !((json_is_object(body) && content_type == NULL && text == NULL) ||
+              (body == NULL && json_is_string(content_type) &&
+               json_is_string(text))) ||
             (set_session != NULL && !json_is_string(set_session)) ||
             (clear_session != NULL && !json_is_true(clear_session)) ||
-            (set_session != NULL && clear_session != NULL)) {
+            (set_session != NULL && clear_session != NULL) ||
+            (body == NULL && (set_session != NULL || clear_session != NULL))) {
             result = -EPROTO;
         }
     }
@@ -430,13 +447,40 @@ static int parse_daemon_response(const uint8_t *data,
     if (result == 0 && clear_session != NULL) {
         response->cookie_action = JG_WEB_COOKIE_CLEAR;
     }
-    if (result == 0) {
+    if (result == 0 && body != NULL) {
         response->body = json_dumps(body, JSON_COMPACT | JSON_SORT_KEYS);
         if (response->body == NULL) {
             result = -ENOMEM;
         } else {
             response->body_size = strlen(response->body);
             response->status = (int)status_value;
+            (void)memcpy(response->content_type,
+                         "application/json; charset=utf-8",
+                         sizeof("application/json; charset=utf-8"));
+        }
+    }
+    if (result == 0 && text != NULL) {
+        static const char prometheus_type[] =
+            "text/plain; version=0.0.4; charset=utf-8";
+        const char *media_type = json_string_value(content_type);
+        const char *text_value = json_string_value(text);
+        const size_t text_size = json_string_length(text);
+
+        if (strcmp(media_type, prometheus_type) != 0 ||
+            memchr(text_value, '\0', text_size) != NULL) {
+            result = -EPROTO;
+        } else {
+            response->body = malloc(text_size + 1U);
+            if (response->body == NULL) {
+                result = -ENOMEM;
+            } else {
+                (void)memcpy(response->body, text_value, text_size);
+                response->body[text_size] = '\0';
+                response->body_size = text_size;
+                response->status = (int)status_value;
+                (void)memcpy(response->content_type, prometheus_type,
+                             sizeof(prometheus_type));
+            }
         }
     }
     json_decref(root);
@@ -518,8 +562,8 @@ int jg_web_gateway_process(struct mg_connection *connection,
             response, 503, "management_unavailable",
             "The management service is temporarily unavailable.");
     }
-    result =
-        parse_daemon_response(daemon_response, daemon_response_size, response);
+    result = jg_web_gateway_decode_response(daemon_response,
+                                            daemon_response_size, response);
     sodium_memzero(daemon_response, daemon_response_size);
     if (result != 0) {
         jg_web_gateway_response_clear(response);
