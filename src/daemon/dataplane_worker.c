@@ -27,6 +27,7 @@ struct atomic_dataplane_stats {
     atomic_uint_fast64_t malformed;
     atomic_uint_fast64_t fragments;
     atomic_uint_fast64_t streams;
+    atomic_uint_fast64_t tcp_resets;
     atomic_uint_fast64_t internal_errors;
 };
 
@@ -44,6 +45,8 @@ struct jg_dataplane_worker {
     size_t stream_output_size;
     size_t stream_message_capacity;
     size_t reader_index;
+    jg_dataplane_reset_sender reset_sender;
+    void *reset_context;
 };
 
 /** @brief Determine whether packet parser limits are safe. */
@@ -63,6 +66,7 @@ static void initialize_stats(struct atomic_dataplane_stats *stats)
     atomic_init(&stats->malformed, 0U);
     atomic_init(&stats->fragments, 0U);
     atomic_init(&stats->streams, 0U);
+    atomic_init(&stats->tcp_resets, 0U);
     atomic_init(&stats->internal_errors, 0U);
 }
 
@@ -176,8 +180,26 @@ static int process_stream(struct jg_dataplane_worker *worker,
                 return operation_result;
             }
             if (result->verdict == JG_NFQUEUE_DROP) {
-                return jg_tcp_stream_tracker_reject_flow(
+                struct jg_tcp_reset_pair resets;
+
+                operation_result = jg_tcp_stream_tracker_reject_flow(
                     worker->streams, &result->packet, now_ms);
+                if (operation_result != 0 ||
+                    result->reason != JG_DATAPLANE_POLICY_BLOCK) {
+                    return operation_result;
+                }
+                if (worker->reset_sender == NULL) {
+                    return -ENOTCONN;
+                }
+                operation_result = jg_tcp_reset_build(&result->packet, &resets);
+                if (operation_result == 0) {
+                    operation_result =
+                        worker->reset_sender(&resets, worker->reset_context);
+                }
+                if (operation_result == 0) {
+                    increment(&worker->stats.tcp_resets);
+                }
+                return operation_result;
             }
         }
     } else if (stream_result == JG_TCP_STREAM_BUFFERED ||
@@ -284,6 +306,19 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
     return 0;
 }
 
+/** @brief Configure synchronous reset output for one stopped worker. */
+int jg_dataplane_worker_set_reset_sender(struct jg_dataplane_worker *worker,
+                                         jg_dataplane_reset_sender sender,
+                                         void *context)
+{
+    if (worker == NULL || sender == NULL) {
+        return -EINVAL;
+    }
+    worker->reset_sender = sender;
+    worker->reset_context = context;
+    return 0;
+}
+
 /** @brief Classify one queued packet through a protected policy snapshot. */
 enum jg_nfqueue_verdict jg_dataplane_worker_process(
     const struct jg_nfqueue_packet *packet,
@@ -344,6 +379,8 @@ int jg_dataplane_worker_get_stats(const struct jg_dataplane_worker *worker,
         atomic_load_explicit(&worker->stats.fragments, memory_order_relaxed);
     stats->streams =
         atomic_load_explicit(&worker->stats.streams, memory_order_relaxed);
+    stats->tcp_resets =
+        atomic_load_explicit(&worker->stats.tcp_resets, memory_order_relaxed);
     stats->internal_errors = atomic_load_explicit(
         &worker->stats.internal_errors, memory_order_relaxed);
     return 0;

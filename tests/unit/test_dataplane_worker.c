@@ -39,6 +39,24 @@ static const uint8_t tcp_query[] = {
     0x04U, 't',   'e',   's',   't',   0x00U, 0x00U, 0x01U, 0x00U, 0x01U,
 };
 
+/** Captured synchronous reset output from one worker. */
+struct reset_capture {
+    struct jg_tcp_reset_pair resets;
+    size_t calls;
+};
+
+/** @brief Capture one reset pair without transmitting it. */
+static int capture_resets(const struct jg_tcp_reset_pair *resets, void *context)
+{
+    struct reset_capture *capture = context;
+
+    assert_non_null(resets);
+    assert_non_null(capture);
+    capture->resets = *resets;
+    ++capture->calls;
+    return 0;
+}
+
 /** @brief Build one empty immutable policy store. */
 static struct jg_policy_store *build_store(void)
 {
@@ -232,10 +250,14 @@ static void test_tcp_dns(void **state)
     struct jg_dataplane_worker *worker = NULL;
     struct jg_dataplane_stats stats;
     struct jg_tcp_stream_stats stream_stats;
+    struct reset_capture capture = {0};
 
     (void)state;
     assert_int_equal(
         jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    assert_int_equal(
+        jg_dataplane_worker_set_reset_sender(worker, capture_resets, &capture),
+        0);
     packet.data = first_frame;
     packet.size =
         build_tcp_segment(first_frame, sizeof(first_frame), 0U, 16U, 1000U);
@@ -247,13 +269,18 @@ static void test_tcp_dns(void **state)
         build_tcp_segment(last_frame, sizeof(last_frame), 16U, 16U, 1016U);
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
+    assert_int_equal(capture.resets.to_client_size, 54U);
+    assert_int_equal(capture.resets.to_server_size, 54U);
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
     assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
     assert_int_equal(stats.packets, 3U);
     assert_int_equal(stats.accepted, 1U);
     assert_int_equal(stats.blocked, 2U);
     assert_int_equal(stats.streams, 1U);
+    assert_int_equal(stats.tcp_resets, 1U);
     assert_int_equal(stats.internal_errors, 0U);
     assert_int_equal(
         jg_dataplane_worker_get_stream_stats(worker, &stream_stats), 0);
@@ -306,11 +333,19 @@ static void test_arguments(void **state)
     assert_int_equal(
         jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, NULL), -EINVAL);
     assert_int_equal(jg_dataplane_worker_process(NULL, NULL), JG_NFQUEUE_DROP);
+    assert_int_equal(
+        jg_dataplane_worker_set_reset_sender(NULL, capture_resets, NULL),
+        -EINVAL);
+    assert_int_equal(
+        jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    assert_int_equal(jg_dataplane_worker_set_reset_sender(worker, NULL, NULL),
+                     -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_stats(NULL, NULL), -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_fragment_stats(NULL, NULL),
                      -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_stream_stats(NULL, NULL), -EINVAL);
     jg_dataplane_worker_destroy(NULL);
+    jg_dataplane_worker_destroy(worker);
     jg_policy_store_destroy(store);
 }
 

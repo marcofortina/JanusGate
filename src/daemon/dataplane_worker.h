@@ -17,7 +17,20 @@
 #include "janusgate/packet.h"
 #include "nfqueue.h"
 #include "policy_store.h"
+#include "tcp_reset.h"
 #include "tcp_stream.h"
+
+/**
+ * @brief Synchronous output function for one pair of TCP reset frames.
+ *
+ * @param[in] resets Complete reset frame pair.
+ * @param[in,out] context Sender-specific context.
+ *
+ * @return 0 on success.
+ * @return A negative errno-style error otherwise.
+ */
+typedef int (*jg_dataplane_reset_sender)(const struct jg_tcp_reset_pair *resets,
+                                         void *context);
 
 /**
  * @brief Lock-free counters maintained by one data-plane worker.
@@ -35,6 +48,8 @@ struct jg_dataplane_stats {
     uint64_t fragments;
     /** TCP packets deferred to stream state. */
     uint64_t streams;
+    /** Blocked TCP connections reset successfully. */
+    uint64_t tcp_resets;
     /** Internal classification failures closed with a drop. */
     uint64_t internal_errors;
 };
@@ -66,6 +81,22 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
                                const struct jg_fragment_limits *fragment_limits,
                                const struct jg_tcp_stream_limits *stream_limits,
                                struct jg_dataplane_worker **worker);
+
+/**
+ * @brief Configure synchronous TCP reset output for blocked DNS streams.
+ *
+ * @param[in,out] worker Data-plane worker to configure.
+ * @param[in] sender Reset output function.
+ * @param[in,out] context Context passed unchanged to @p sender.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null worker or sender.
+ *
+ * @thread_safety Configure the worker before its queue thread starts.
+ */
+int jg_dataplane_worker_set_reset_sender(struct jg_dataplane_worker *worker,
+                                         jg_dataplane_reset_sender sender,
+                                         void *context);
 
 /**
  * @brief Process one NFQUEUE packet against the current policy snapshot.
