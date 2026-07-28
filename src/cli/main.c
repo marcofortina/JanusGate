@@ -59,6 +59,7 @@ struct cli_options {
     bool json;
     bool quiet;
     bool verbose;
+    bool yes;
     bool help;
     bool version;
 };
@@ -75,6 +76,7 @@ enum cli_option {
     CLI_OPTION_TIMEOUT,
     CLI_OPTION_QUIET,
     CLI_OPTION_VERBOSE,
+    CLI_OPTION_YES,
     CLI_OPTION_VERSION,
     CLI_OPTION_HELP
 };
@@ -92,6 +94,15 @@ static void print_usage(FILE *output)
                 "       janusgatectl [OPTIONS] network set FILE\n"
                 "       janusgatectl [OPTIONS] network confirm\n"
                 "       janusgatectl [OPTIONS] network rollback\n"
+                "       janusgatectl [OPTIONS] policy list\n"
+                "       janusgatectl [OPTIONS] policy show KIND ID\n"
+                "       janusgatectl [OPTIONS] policy add KIND FILE\n"
+                "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
+                "       janusgatectl [OPTIONS] policy remove KIND ID\n"
+                "       janusgatectl [OPTIONS] policy simulate FILE\n"
+                "       janusgatectl [OPTIONS] domain block DOMAIN\n"
+                "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
+                "       janusgatectl [OPTIONS] domain remove ID\n"
                 "       janusgatectl [--socket PATH] [--json] ping\n"
                 "       janusgatectl [--socket PATH] [--json] policy reload\n"
                 "       janusgatectl --version\n"
@@ -109,6 +120,7 @@ static void print_usage(FILE *output)
                 "  --json              stable compact JSON output\n"
                 "  --quiet             suppress successful output\n"
                 "  --verbose           report transport and request details\n"
+                "  --yes               confirm destructive operations\n"
                 "  --help              show this help\n"
                 "  --version           show the program version\n");
 }
@@ -126,6 +138,21 @@ static int parse_timeout(const char *text, unsigned *timeout_seconds)
         return -EINVAL;
     }
     *timeout_seconds = (unsigned)value;
+    return 0;
+}
+
+/** @brief Parse one nonzero decimal resource identifier. */
+static int parse_identifier(const char *text, uint64_t *identifier)
+{
+    char *end = NULL;
+    unsigned long long value = 0ULL;
+
+    errno = 0;
+    value = strtoull(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value == 0ULL) {
+        return -EINVAL;
+    }
+    *identifier = (uint64_t)value;
     return 0;
 }
 
@@ -155,6 +182,7 @@ static int parse_options(int argc,
         {"timeout", required_argument, NULL, CLI_OPTION_TIMEOUT},
         {"quiet", no_argument, NULL, CLI_OPTION_QUIET},
         {"verbose", no_argument, NULL, CLI_OPTION_VERBOSE},
+        {"yes", no_argument, NULL, CLI_OPTION_YES},
         {"version", no_argument, NULL, CLI_OPTION_VERSION},
         {"help", no_argument, NULL, CLI_OPTION_HELP},
         {NULL, 0, NULL, 0},
@@ -220,6 +248,9 @@ static int parse_options(int argc,
             break;
         case CLI_OPTION_VERBOSE:
             options->verbose = true;
+            break;
+        case CLI_OPTION_YES:
+            options->yes = true;
             break;
         case CLI_OPTION_VERSION:
             options->version = true;
@@ -569,7 +600,10 @@ static json_t *read_json_object(const char *path, int *result)
             *result = -EINVAL;
         }
     }
-    free(data);
+    if (data != NULL) {
+        sodium_memzero(data, size);
+        free(data);
+    }
     return object;
 }
 
@@ -613,13 +647,13 @@ static int load_network_revision(const struct cli_options *options,
     return result;
 }
 
-/** @brief Send and present one network management request. */
-static int send_network_request(const struct cli_options *options,
-                                const char *token,
-                                const char *command,
-                                const char *method,
-                                const char *path,
-                                json_t *body)
+/** @brief Send and present one JSON management request. */
+static int send_api_request(const struct cli_options *options,
+                            const char *token,
+                            const char *command,
+                            const char *method,
+                            const char *path,
+                            json_t *body)
 {
     struct jg_cli_response response = {0};
     int result =
@@ -633,6 +667,68 @@ static int send_network_request(const struct cli_options *options,
     result = present_api_response(options, command, &response);
     jg_cli_response_clear(&response);
     return result;
+}
+
+/** @brief Fetch and decode one successful JSON API object. */
+static int fetch_api_object(const struct cli_options *options,
+                            const char *token,
+                            const char *path,
+                            const char *query,
+                            json_t **object)
+{
+    struct jg_cli_response response = {0};
+    json_error_t error;
+    json_t *body = json_object();
+    int result = 0;
+
+    *object = NULL;
+    if (body == NULL) {
+        return CLI_EXIT_FAILURE;
+    }
+    result = request_api(options, token, "GET", path, query, body, &response);
+    json_decref(body);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgatectl: request failed: %s\n",
+                      strerror(-result));
+        return CLI_EXIT_FAILURE;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result = report_api_failure(&response);
+    } else {
+        *object = json_loadb(response.body, response.body_size,
+                             JSON_REJECT_DUPLICATES, &error);
+        if (!json_is_object(*object)) {
+            json_decref(*object);
+            *object = NULL;
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    jg_cli_response_clear(&response);
+    return result;
+}
+
+/** @brief Present one locally assembled JSON result. */
+static int present_object(const struct cli_options *options, json_t *object)
+{
+    char *encoded = NULL;
+
+    if (options->quiet) {
+        return CLI_EXIT_SUCCESS;
+    }
+    if (!options->json) {
+        if (json_dumpf(object, stdout, JSON_INDENT(2) | JSON_SORT_KEYS) != 0 ||
+            putchar('\n') == EOF) {
+            return CLI_EXIT_FAILURE;
+        }
+        return CLI_EXIT_SUCCESS;
+    }
+    encoded = json_dumps(object, JSON_COMPACT | JSON_SORT_KEYS);
+    if (encoded == NULL) {
+        return CLI_EXIT_FAILURE;
+    }
+    (void)printf("%s\n", encoded);
+    free(encoded);
+    return CLI_EXIT_SUCCESS;
 }
 
 /** @brief Validate or stage one complete network configuration document. */
@@ -654,9 +750,8 @@ static int run_network_configuration(const struct cli_options *options,
                                                         : CLI_EXIT_FAILURE;
     }
     if (strcmp(operation, "validate") == 0) {
-        result =
-            send_network_request(options, token, "network validate", "POST",
-                                 "/api/v1/network/validate", configuration);
+        result = send_api_request(options, token, "network validate", "POST",
+                                  "/api/v1/network/validate", configuration);
         json_decref(configuration);
         return result;
     }
@@ -671,7 +766,7 @@ static int run_network_configuration(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_network_request(
+        result = send_api_request(
             options, token,
             strcmp(operation, "set") == 0 ? "network set" : "network apply",
             "POST", "/api/v1/network/apply", body);
@@ -702,8 +797,7 @@ static int run_network_transaction(const struct cli_options *options,
         return CLI_EXIT_FAILURE;
     }
     (void)snprintf(path, sizeof(path), "/api/v1/network/%s", operation);
-    result =
-        send_network_request(options, token, operation, "POST", path, body);
+    result = send_api_request(options, token, operation, "POST", path, body);
     json_decref(body);
     return result;
 }
@@ -725,14 +819,361 @@ static int run_network_command(const struct cli_options *options,
         if (body == NULL) {
             result = CLI_EXIT_FAILURE;
         } else {
-            result = send_network_request(options, token, "network show", "GET",
-                                          "/api/v1/network", body);
+            result = send_api_request(options, token, "network show", "GET",
+                                      "/api/v1/network", body);
         }
         json_decref(body);
     } else if (argc == 3) {
         result = run_network_configuration(options, token, argv[1], argv[2]);
     } else {
         result = run_network_transaction(options, token, argv[1]);
+    }
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
+/** @brief Map one CLI policy kind to its API collection and array field. */
+static int policy_collection(const char *kind,
+                             const char **path,
+                             const char **array_name)
+{
+    if (strcmp(kind, "domain") == 0) {
+        *path = "/api/v1/domains";
+        *array_name = "domains";
+        return 0;
+    }
+    if (strcmp(kind, "destination") == 0) {
+        *path = "/api/v1/policies/destinations";
+        *array_name = "destination_rules";
+        return 0;
+    }
+    return -EINVAL;
+}
+
+/** @brief Fetch one exact policy rule and return an owned JSON object. */
+static int fetch_policy_rule(const struct cli_options *options,
+                             const char *token,
+                             const char *kind,
+                             uint64_t identifier,
+                             json_t **rule)
+{
+    const char *collection = NULL;
+    const char *array_name = NULL;
+    char query[96U];
+    json_t *page = NULL;
+    json_t *rules = NULL;
+    json_t *candidate = NULL;
+    json_t *value = NULL;
+    int result = policy_collection(kind, &collection, &array_name);
+
+    *rule = NULL;
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    (void)snprintf(query, sizeof(query), "after_id=%llu&limit=1",
+                   (unsigned long long)(identifier - 1U));
+    result = fetch_api_object(options, token, collection, query, &page);
+    if (result == CLI_EXIT_SUCCESS) {
+        rules = json_object_get(page, array_name);
+        candidate = json_array_get(rules, 0U);
+        value = json_object_get(candidate, "id");
+        if (!json_is_integer(value) ||
+            (uint64_t)json_integer_value(value) != identifier) {
+            (void)fprintf(stderr, "janusgatectl: policy rule not found\n");
+            result = CLI_EXIT_FAILURE;
+        } else {
+            *rule = json_deep_copy(candidate);
+            if (*rule == NULL) {
+                result = CLI_EXIT_FAILURE;
+            }
+        }
+    }
+    json_decref(page);
+    return result;
+}
+
+/** @brief Prompt before a destructive operation unless already confirmed. */
+static bool destructive_operation_confirmed(const struct cli_options *options,
+                                            const char *description)
+{
+    char answer[8U];
+
+    if (options->yes) {
+        return true;
+    }
+    if (isatty(STDIN_FILENO) == 0) {
+        (void)fprintf(stderr,
+                      "janusgatectl: %s requires --yes in non-interactive "
+                      "mode\n",
+                      description);
+        return false;
+    }
+    (void)fprintf(stderr, "%s? [y/N] ", description);
+    if (fgets(answer, sizeof(answer), stdin) == NULL) {
+        return false;
+    }
+    return (answer[0U] == 'y' || answer[0U] == 'Y') &&
+           (answer[1U] == '\n' || answer[1U] == '\0');
+}
+
+/** @brief List both policy-rule collections as one stable document. */
+static int run_policy_list(const struct cli_options *options, const char *token)
+{
+    json_t *domains = NULL;
+    json_t *destinations = NULL;
+    json_t *body = NULL;
+    int result =
+        fetch_api_object(options, token, "/api/v1/domains", NULL, &domains);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result =
+            fetch_api_object(options, token, "/api/v1/policies/destinations",
+                             NULL, &destinations);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        body = json_object();
+        if (body == NULL ||
+            json_object_set(body, "domain_rules", domains) != 0 ||
+            json_object_set(body, "destination_rules", destinations) != 0) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            result = present_object(options, body);
+        }
+    }
+    json_decref(body);
+    json_decref(destinations);
+    json_decref(domains);
+    return result;
+}
+
+/** @brief Display one exact domain or destination policy rule. */
+static int run_policy_show(const struct cli_options *options,
+                           const char *token,
+                           const char *kind,
+                           const char *identifier_text)
+{
+    json_t *rule = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    result = fetch_policy_rule(options, token, kind, identifier, &rule);
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, rule);
+    }
+    json_decref(rule);
+    return result;
+}
+
+/** @brief Build one exact API path for a typed policy rule. */
+static int policy_rule_path(const char *kind,
+                            uint64_t identifier,
+                            char *path,
+                            size_t path_size)
+{
+    const char *collection = NULL;
+    const char *array_name = NULL;
+    int written = 0;
+
+    if (policy_collection(kind, &collection, &array_name) != 0) {
+        return -EINVAL;
+    }
+    (void)array_name;
+    written = snprintf(path, path_size, "%s/%llu", collection,
+                       (unsigned long long)identifier);
+    return written > 0 && (size_t)written < path_size ? 0 : -ENOSPC;
+}
+
+/** @brief Create or replace one typed policy rule from a JSON document. */
+static int run_policy_write(const struct cli_options *options,
+                            const char *token,
+                            const char *operation,
+                            const char *kind,
+                            const char *identifier_text,
+                            const char *file)
+{
+    const char *collection = NULL;
+    const char *array_name = NULL;
+    char path[128U];
+    json_t *body = NULL;
+    json_t *current = NULL;
+    json_t *revision = NULL;
+    uint64_t identifier = 0U;
+    int result = policy_collection(kind, &collection, &array_name);
+
+    (void)array_name;
+    if (result != 0 || (identifier_text != NULL &&
+                        parse_identifier(identifier_text, &identifier) != 0)) {
+        return CLI_EXIT_USAGE;
+    }
+    body = read_json_object(file, &result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: policy document: %s\n",
+                      strerror(-result));
+        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
+                                                        : CLI_EXIT_FAILURE;
+    }
+    if (identifier_text == NULL) {
+        (void)snprintf(path, sizeof(path), "%s", collection);
+    } else {
+        result = fetch_policy_rule(options, token, kind, identifier, &current);
+        revision = json_object_get(current, "revision");
+        if (result == CLI_EXIT_SUCCESS &&
+            (!json_is_integer(revision) ||
+             json_object_set(body, "revision", revision) != 0 ||
+             policy_rule_path(kind, identifier, path, sizeof(path)) != 0)) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(
+            options, token,
+            strcmp(operation, "add") == 0 ? "policy add" : "policy update",
+            strcmp(operation, "add") == 0 ? "POST" : "PATCH", path, body);
+    }
+    json_decref(current);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Delete one revision-bound typed policy rule. */
+static int run_policy_remove(const struct cli_options *options,
+                             const char *token,
+                             const char *kind,
+                             const char *identifier_text)
+{
+    char path[128U];
+    json_t *rule = NULL;
+    json_t *revision = NULL;
+    json_t *body = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    result = fetch_policy_rule(options, token, kind, identifier, &rule);
+    if (result == CLI_EXIT_SUCCESS &&
+        !destructive_operation_confirmed(options, "Remove the policy rule")) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        revision = json_object_get(rule, "revision");
+        body = json_object();
+        if (!json_is_integer(revision) || body == NULL ||
+            json_object_set(body, "revision", revision) != 0 ||
+            policy_rule_path(kind, identifier, path, sizeof(path)) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "policy remove", "DELETE",
+                                  path, body);
+    }
+    json_decref(body);
+    json_decref(rule);
+    return result;
+}
+
+/** @brief Simulate one policy decision from a JSON document. */
+static int run_policy_simulation(const struct cli_options *options,
+                                 const char *token,
+                                 const char *file)
+{
+    json_t *body = NULL;
+    int result = 0;
+
+    body = read_json_object(file, &result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: simulation document: %s\n",
+                      strerror(-result));
+        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
+                                                        : CLI_EXIT_FAILURE;
+    }
+    result = send_api_request(options, token, "policy simulate", "POST",
+                              "/api/v1/policies/simulate", body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Run one recognized policy administration command. */
+static int run_policy_command(const struct cli_options *options,
+                              int argc,
+                              char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (argc == 2) {
+        result = run_policy_list(options, token);
+    } else if (strcmp(argv[1], "show") == 0) {
+        result = run_policy_show(options, token, argv[2], argv[3]);
+    } else if (strcmp(argv[1], "add") == 0) {
+        result =
+            run_policy_write(options, token, "add", argv[2], NULL, argv[3]);
+    } else if (strcmp(argv[1], "update") == 0) {
+        result = run_policy_write(options, token, "update", argv[2], argv[3],
+                                  argv[4]);
+    } else if (strcmp(argv[1], "remove") == 0) {
+        result = run_policy_remove(options, token, argv[2], argv[3]);
+    } else {
+        result = run_policy_simulation(options, token, argv[2]);
+    }
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
+/** @brief Create one global DNS domain rule from a CLI shorthand. */
+static int run_domain_create(const struct cli_options *options,
+                             const char *token,
+                             const char *action,
+                             const char *domain)
+{
+    json_t *body = json_object();
+    json_t *scope = json_object();
+    int result = 0;
+
+    if (body == NULL || scope == NULL ||
+        json_object_set_new(scope, "type", json_string("global")) != 0 ||
+        json_object_set_new(body, "domain", json_string(domain)) != 0 ||
+        json_object_set_new(body, "include_subdomains", json_true()) != 0 ||
+        json_object_set_new(body, "action", json_string(action)) != 0 ||
+        json_object_set_new(body, "target", json_string("dns")) != 0 ||
+        json_object_set(body, "scope", scope) != 0 ||
+        json_object_set_new(body, "attribution", json_string("janusgatectl")) !=
+            0 ||
+        json_object_set_new(body, "enabled", json_true()) != 0) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token,
+                                  strcmp(action, "block") == 0 ? "domain block"
+                                                               : "domain allow",
+                                  "POST", "/api/v1/domains", body);
+    }
+    json_decref(scope);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Run one recognized domain-policy shorthand command. */
+static int run_domain_command(const struct cli_options *options, char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "remove") == 0) {
+        result = run_policy_remove(options, token, "domain", argv[2]);
+    } else {
+        result = run_domain_create(options, token, argv[1], argv[2]);
     }
     sodium_memzero(token, sizeof(token));
     return result;
@@ -760,6 +1201,20 @@ static int run_command(const struct cli_options *options,
           (strcmp(argv[1], "validate") == 0 || strcmp(argv[1], "apply") == 0 ||
            strcmp(argv[1], "set") == 0)))) {
         return run_network_command(options, argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "policy") == 0 &&
+        ((argc == 2 && strcmp(argv[1], "list") == 0) ||
+         (argc == 3 && strcmp(argv[1], "simulate") == 0) ||
+         (argc == 4 &&
+          (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "add") == 0 ||
+           strcmp(argv[1], "remove") == 0)) ||
+         (argc == 5 && strcmp(argv[1], "update") == 0))) {
+        return run_policy_command(options, argc, argv);
+    }
+    if (argc == 3 && strcmp(argv[0], "domain") == 0 &&
+        (strcmp(argv[1], "block") == 0 || strcmp(argv[1], "allow") == 0 ||
+         strcmp(argv[1], "remove") == 0)) {
+        return run_domain_command(options, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
