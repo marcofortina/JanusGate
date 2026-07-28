@@ -13,7 +13,7 @@
 #include "janusgate/checked.h"
 
 /** Number of stable metrics emitted from one runtime snapshot. */
-#define METRIC_COUNT 33U
+#define METRIC_COUNT 35U
 
 /** Stable metadata for one numeric Prometheus metric. */
 struct metric_descriptor {
@@ -90,6 +90,10 @@ static const struct metric_descriptor metrics[METRIC_COUNT] = {
      "Synthetic Ethernet frames sent successfully."},
     {"janusgate_packet_output_errors_total", "counter",
      "Synthetic Ethernet frame output errors."},
+    {"janusgate_tls_sni_inspected_total", "counter",
+     "Visible TLS server names evaluated against policy."},
+    {"janusgate_tls_sni_encrypted_or_unavailable_total", "counter",
+     "TLS flows whose private server name was encrypted or unavailable."},
 };
 
 _Static_assert(sizeof(metrics) / sizeof(metrics[0]) == METRIC_COUNT,
@@ -132,6 +136,8 @@ static void collect_values(const struct jg_daemon_runtime_stats *stats,
     values[30U] = stats->tcp_streams.timeouts;
     values[31U] = stats->output.sent;
     values[32U] = stats->output.errors;
+    values[33U] = stats->dataplane.sni_inspected;
+    values[34U] = stats->dataplane.sni_encrypted_or_unavailable;
 }
 
 /** @brief Measure one complete Prometheus metric record. */

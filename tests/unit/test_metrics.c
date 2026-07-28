@@ -29,6 +29,8 @@ static void test_render_snapshot(void **state)
     stats.queues.packets = 101U;
     stats.dataplane.accepted = 89U;
     stats.dataplane.blocked = 12U;
+    stats.dataplane.sni_inspected = 8U;
+    stats.dataplane.sni_encrypted_or_unavailable = 2U;
     stats.tcp_streams.messages = 7U;
     stats.output.errors = 3U;
     assert_int_equal(
@@ -41,6 +43,9 @@ static void test_render_snapshot(void **state)
     assert_non_null(strstr(output, "janusgate_nfqueue_packets_total 101\n"));
     assert_non_null(strstr(output, "janusgate_dataplane_allowed_total 89\n"));
     assert_non_null(strstr(output, "janusgate_dataplane_blocked_total 12\n"));
+    assert_non_null(strstr(output, "janusgate_tls_sni_inspected_total 8\n"));
+    assert_non_null(
+        strstr(output, "janusgate_tls_sni_encrypted_or_unavailable_total 2\n"));
     assert_non_null(strstr(output, "janusgate_tcp_stream_messages_total 7\n"));
     assert_non_null(strstr(output, "janusgate_packet_output_errors_total 3\n"));
 }
