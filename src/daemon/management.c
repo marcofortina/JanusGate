@@ -2707,6 +2707,70 @@ static int append_network_audit(struct jg_management *management,
     return result;
 }
 
+/** @brief Append one authenticated configuration reload outcome. */
+static int append_configuration_audit(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    int operation_result,
+    uint64_t previous_generation,
+    const struct jg_daemon_configuration_status *status,
+    uint64_t now)
+{
+    char source_address[INET6_ADDRSTRLEN];
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int result = 0;
+
+    if (details == NULL ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source_address,
+                  sizeof(source_address)) == NULL) {
+        result = details == NULL ? -ENOMEM : -EINVAL;
+    }
+    if (result == 0 &&
+        (json_object_set_new(details, "operation_result",
+                             json_integer(operation_result)) != 0 ||
+         json_object_set_new(details, "restart_required",
+                             json_boolean(operation_result == 0 &&
+                                          status->restart_required)) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source_address,
+            .action = "configuration.reload",
+            .object_type = "runtime_configuration",
+            .object_id = "active",
+            .details = encoded,
+            .has_previous_revision = true,
+            .previous_revision = previous_generation,
+            .has_new_revision = operation_result == 0,
+            .new_revision =
+                operation_result == 0 ? status->policy_generation : 0U,
+            .success = operation_result == 0,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
 /** @brief Append one domain-rule mutation and publication outcome. */
 static int append_domain_rule_audit(struct jg_management *management,
                                     const struct management_request *request,
@@ -4822,6 +4886,102 @@ static int handle_metrics(struct jg_management *management,
     }
     free(metrics);
     return result;
+}
+
+/** @brief Validate or atomically reload persistent runtime configuration. */
+static int handle_configuration(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                uint64_t now,
+                                bool reload,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_daemon_configuration_status status;
+    json_t *body = NULL;
+    uint64_t previous_generation = 0U;
+    int audit_result = 0;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_OPERATE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The configuration request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "runtime_unavailable",
+                             "Runtime configuration is unavailable while the "
+                             "service is offline.",
+                             request->request_id, output, output_size, written);
+    }
+    if (reload) {
+        result = jg_daemon_runtime_get_policy_generation(management->runtime,
+                                                         &previous_generation);
+        if (result == 0) {
+            result = jg_daemon_runtime_reload_configuration(management->runtime,
+                                                            &status);
+        }
+        audit_result = append_configuration_audit(
+            management, request, remote, &actor, result, previous_generation,
+            &status, now);
+        if (audit_result != 0) {
+            return respond_error(
+                500, "audit_failure",
+                "The configuration reload could not be audited.",
+                request->request_id, output, output_size, written);
+        }
+    } else {
+        result = jg_daemon_runtime_validate_configuration(management->runtime,
+                                                          &status);
+    }
+    if (result != 0) {
+        if (result == -EOVERFLOW || result == -EBUSY) {
+            return respond_error(
+                409, "configuration_conflict",
+                "The persistent configuration cannot be processed now.",
+                request->request_id, output, output_size, written);
+        }
+        if (result == -EINVAL || result == -ERANGE || result == -EILSEQ ||
+            result == -EPROTONOSUPPORT) {
+            return respond_error(
+                422, "configuration_invalid",
+                "The persistent configuration did not pass validation.",
+                request->request_id, output, output_size, written);
+        }
+        return respond_error(
+            503, "configuration_unavailable",
+            "The persistent configuration could not be validated.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "validated", json_true()) != 0 ||
+        json_object_set_new(body, "reloaded", json_boolean(reload)) != 0 ||
+        json_object_set_new(
+            body, "network_revision",
+            json_integer((json_int_t)status.network_revision)) != 0 ||
+        json_object_set_new(
+            body, "policy_generation",
+            json_integer((json_int_t)status.policy_generation)) != 0 ||
+        json_object_set_new(
+            body, "domain_rule_count",
+            json_integer((json_int_t)status.domain_rule_count)) != 0 ||
+        json_object_set_new(
+            body, "destination_rule_count",
+            json_integer((json_int_t)status.destination_rule_count)) != 0 ||
+        json_object_set_new(body, "restart_required",
+                            json_boolean(status.restart_required)) != 0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
 }
 
 /** @brief Simulate one authenticated decision on the active policy snapshot. */
@@ -8370,6 +8530,14 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/config/validate") == 0 && post) {
+        return handle_configuration(management, request, remote, now, false,
+                                    output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/config/reload") == 0 && post) {
+        return handle_configuration(management, request, remote, now, true,
+                                    output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/network") == 0 &&
         strcmp(request->method, "GET") == 0) {

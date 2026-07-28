@@ -1743,6 +1743,83 @@ static void test_backup_restore_api(void **state)
     sodium_memzero(&token, sizeof(token));
 }
 
+/** @brief Verify configuration operation authorization and request bounds. */
+static void test_configuration_api(void **state)
+{
+    static const char password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    const struct jg_account_token_config token_config = {
+        .name = "configuration operator",
+        .permissions = JG_ACCESS_OPERATE,
+        .requests_per_minute = 100U,
+    };
+    struct jg_account_api_token token;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[1024U];
+    json_t *response = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"config-validate\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/config/validate\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"config-reload\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/config/reload\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"config-invalid\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/config/validate\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"unexpected\":true}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+    sodium_memzero(&token, sizeof(token));
+}
+
 /** @brief Verify authenticated network inspection and proposal validation. */
 static void test_network_api(void **state)
 {
@@ -2439,6 +2516,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_backup_restore_api,
                                         setup_certificate_management,
                                         teardown_management),
+        cmocka_unit_test_setup_teardown(test_configuration_api,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_network_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_source_api, setup_management,

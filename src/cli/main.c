@@ -139,6 +139,8 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] backup create full\n"
         "       janusgatectl [OPTIONS] backup inspect ID\n"
         "       janusgatectl [OPTIONS] backup restore ID\n"
+        "       janusgatectl [OPTIONS] config validate\n"
+        "       janusgatectl [OPTIONS] config reload\n"
         "       janusgatectl [--socket PATH] [--json] ping\n"
         "       janusgatectl [--socket PATH] [--json] policy reload\n"
         "       janusgatectl --version\n"
@@ -2500,6 +2502,31 @@ static int run_backup_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Validate or reload persistent appliance configuration. */
+static int run_config_command(const struct cli_options *options,
+                              const char *operation)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    const char *path = strcmp(operation, "reload") == 0
+                           ? "/api/v1/config/reload"
+                           : "/api/v1/config/validate";
+    json_t *body = NULL;
+    int result = load_token(options, token);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        body = json_object();
+        if (body == NULL) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "config", "POST", path, body);
+    }
+    json_decref(body);
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Query operational events or immutable audit records. */
 static int run_record_command(const struct cli_options *options,
                               int argc,
@@ -2619,6 +2646,10 @@ static int run_command(const struct cli_options *options,
            strcmp(argv[2], "full") == 0)) ||
          strcmp(argv[1], "inspect") == 0 || strcmp(argv[1], "restore") == 0)) {
         return run_backup_command(options, argc, argv);
+    }
+    if (argc == 2 && strcmp(argv[0], "config") == 0 &&
+        (strcmp(argv[1], "validate") == 0 || strcmp(argv[1], "reload") == 0)) {
+        return run_config_command(options, argv[1]);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
