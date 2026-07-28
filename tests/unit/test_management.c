@@ -1111,7 +1111,7 @@ static void test_source_api(void **state)
     struct jg_auth_password_policy password_policy;
     struct jg_account_token_config token_config = {
         .name = "source test",
-        .permissions = JG_ACCESS_POLICY_READ,
+        .permissions = JG_ACCESS_POLICY_READ | JG_ACCESS_POLICY_WRITE,
         .requests_per_minute = 100U,
     };
     struct jg_database_blocklist_source_config source_config = {
@@ -1138,6 +1138,8 @@ static void test_source_api(void **state)
     json_t *value = NULL;
     const time_t now = time(NULL);
     uint64_t user_id = 0U;
+    uint64_t source_id = 0U;
+    uint64_t source_revision = 0U;
     int written = 0;
 
     assert_true(now > 0);
@@ -1187,6 +1189,83 @@ static void test_source_api(void **state)
                         "unknown");
     assert_true(json_is_null(json_object_get(value, "active_checksum")));
     assert_true(json_is_null(json_object_get(value, "last_attempt_at")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"source-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/sources\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
+        "\"name\":\"API source\",\"url\":\"https://api.example/list\","
+        "\"signature_url\":null,\"format\":\"domain\",\"mode\":\"strict\","
+        "\"enabled\":true,\"update_interval_seconds\":7200,"
+        "\"max_download_bytes\":2048,\"max_decompressed_bytes\":8192,"
+        "\"connect_timeout_ms\":5000,\"transfer_timeout_ms\":30000,"
+        "\"redirect_limit\":2,\"retry_base_seconds\":60,"
+        "\"retry_max_seconds\":600,\"sha256_pin\":null,"
+        "\"ed25519_public_key\":null}}",
+        api_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "published")));
+    value = json_object_get(body, "source");
+    source_id = (uint64_t)json_integer_value(json_object_get(value, "id"));
+    source_revision =
+        (uint64_t)json_integer_value(json_object_get(value, "revision"));
+    assert_true(source_id > source.id);
+    assert_int_equal(source_revision, 1U);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"source-update\",\"method\":\"PATCH\","
+        "\"path\":\"/api/v1/sources/%llu\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
+        "\"revision\":%llu,\"name\":\"API source updated\","
+        "\"url\":\"https://api.example/list\",\"signature_url\":null,"
+        "\"format\":\"hosts\",\"mode\":\"tolerant\",\"enabled\":false,"
+        "\"update_interval_seconds\":7200,\"max_download_bytes\":2048,"
+        "\"max_decompressed_bytes\":8192,\"connect_timeout_ms\":5000,"
+        "\"transfer_timeout_ms\":30000,\"redirect_limit\":2,"
+        "\"retry_base_seconds\":60,\"retry_max_seconds\":600,"
+        "\"sha256_pin\":null,\"ed25519_public_key\":null}}",
+        (unsigned long long)source_id, api_token.secret,
+        (unsigned long long)source_revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    value = json_object_get(json_object_get(response, "body"), "source");
+    source_revision =
+        (uint64_t)json_integer_value(json_object_get(value, "revision"));
+    assert_int_equal(source_revision, 2U);
+    assert_false(json_is_true(json_object_get(value, "enabled")));
+    assert_string_equal(json_string_value(json_object_get(value, "format")),
+                        "hosts");
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"source-delete\",\"method\":\"DELETE\","
+                 "\"path\":\"/api/v1/sources/%llu\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{\"revision\":%llu}}",
+                 (unsigned long long)source_id, api_token.secret,
+                 (unsigned long long)source_revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "deleted")));
+    assert_int_equal(json_integer_value(json_object_get(body, "id")),
+                     (json_int_t)source_id);
     json_decref(response);
 }
 

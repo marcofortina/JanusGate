@@ -694,6 +694,77 @@ static bool required_identifier(const json_t *object,
     return true;
 }
 
+/** @brief Read one required bounded nonnegative JSON integer. */
+static bool required_unsigned(const json_t *object,
+                              const char *name,
+                              uint64_t maximum,
+                              uint64_t *value)
+{
+    json_t *field = json_object_get(object, name);
+    const json_int_t number =
+        json_is_integer(field) ? json_integer_value(field) : -1;
+
+    if (number < 0 || (uint64_t)number > maximum) {
+        return false;
+    }
+    *value = (uint64_t)number;
+    return true;
+}
+
+/** @brief Read one required string-or-null JSON field. */
+static bool required_nullable_string(const json_t *object,
+                                     const char *name,
+                                     size_t maximum,
+                                     const char **value)
+{
+    json_t *field = json_object_get(object, name);
+    const char *text = NULL;
+    size_t length = 0U;
+
+    if (json_is_null(field)) {
+        *value = NULL;
+        return true;
+    }
+    if (!json_is_string(field)) {
+        return false;
+    }
+    text = json_string_value(field);
+    length = bounded_length(text, maximum);
+    if (length == 0U || length > maximum) {
+        return false;
+    }
+    *value = text;
+    return true;
+}
+
+/** @brief Decode one required nullable 32-byte hexadecimal field. */
+static bool required_optional_digest(const json_t *object,
+                                     const char *name,
+                                     uint8_t digest[32U],
+                                     bool *present)
+{
+    json_t *field = json_object_get(object, name);
+    const char *text = NULL;
+    size_t decoded_size = 0U;
+
+    if (json_is_null(field)) {
+        (void)memset(digest, 0, 32U);
+        *present = false;
+        return true;
+    }
+    if (!json_is_string(field) || json_string_length(field) != 64U) {
+        return false;
+    }
+    text = json_string_value(field);
+    if (sodium_hex2bin(digest, 32U, text, 64U, NULL, &decoded_size, NULL) !=
+            0 ||
+        decoded_size != 32U) {
+        return false;
+    }
+    *present = true;
+    return true;
+}
+
 /** @brief Add a timestamp or JSON null to one response object. */
 static int set_optional_timestamp(json_t *object,
                                   const char *name,
@@ -1362,6 +1433,134 @@ static json_t *destination_rule_json(
     return body;
 }
 
+/** @brief Parse one external blocklist syntax name. */
+static bool parse_blocklist_format(const char *text,
+                                   enum jg_blocklist_format *format)
+{
+    if (text == NULL || format == NULL) {
+        return false;
+    }
+    if (strcmp(text, "domain") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_DOMAIN;
+    } else if (strcmp(text, "hosts") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_HOSTS;
+    } else if (strcmp(text, "category") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_CATEGORY;
+    } else if (strcmp(text, "rpz") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_RPZ;
+    } else if (strcmp(text, "json") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_JSON;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/** @brief Parse one external blocklist import mode. */
+static bool parse_blocklist_mode(const char *text, enum jg_blocklist_mode *mode)
+{
+    if (text == NULL || mode == NULL) {
+        return false;
+    }
+    if (strcmp(text, "strict") == 0) {
+        *mode = JG_BLOCKLIST_STRICT;
+    } else if (strcmp(text, "tolerant") == 0) {
+        *mode = JG_BLOCKLIST_TOLERANT;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/** @brief Parse one complete create or replacement source request. */
+static int parse_blocklist_source_request(
+    json_t *body,
+    bool updating,
+    struct jg_database_blocklist_source_config *config,
+    uint64_t *revision)
+{
+    static const char *const fields[] = {
+        "revision",
+        "name",
+        "url",
+        "signature_url",
+        "format",
+        "mode",
+        "enabled",
+        "update_interval_seconds",
+        "max_download_bytes",
+        "max_decompressed_bytes",
+        "connect_timeout_ms",
+        "transfer_timeout_ms",
+        "redirect_limit",
+        "retry_base_seconds",
+        "retry_max_seconds",
+        "sha256_pin",
+        "ed25519_public_key",
+    };
+    const char *format = NULL;
+    const char *mode = NULL;
+    uint64_t update_interval = 0U;
+    uint64_t max_download = 0U;
+    uint64_t max_decompressed = 0U;
+    uint64_t connect_timeout = 0U;
+    uint64_t transfer_timeout = 0U;
+    uint64_t redirect_limit = 0U;
+    uint64_t retry_base = 0U;
+    uint64_t retry_max = 0U;
+
+    (void)memset(config, 0, sizeof(*config));
+    *revision = 0U;
+    config->name =
+        required_string(body, "name", 1U, JG_DATABASE_BLOCKLIST_NAME_MAX);
+    format = required_string(body, "format", 3U, 8U);
+    mode = required_string(body, "mode", 6U, 8U);
+    if (!fields_allowed(body, fields, sizeof(fields) / sizeof(fields[0U])) ||
+        config->name == NULL ||
+        !required_nullable_string(body, "url", JG_DATABASE_BLOCKLIST_URL_MAX,
+                                  &config->url) ||
+        !required_nullable_string(body, "signature_url",
+                                  JG_DATABASE_BLOCKLIST_URL_MAX,
+                                  &config->signature_url) ||
+        !parse_blocklist_format(format, &config->format) ||
+        !parse_blocklist_mode(mode, &config->mode) ||
+        !required_boolean(body, "enabled", &config->enabled) ||
+        !required_unsigned(body, "update_interval_seconds", (uint64_t)INT64_MAX,
+                           &update_interval) ||
+        !required_unsigned(body, "max_download_bytes", (uint64_t)SIZE_MAX,
+                           &max_download) ||
+        !required_unsigned(body, "max_decompressed_bytes", (uint64_t)SIZE_MAX,
+                           &max_decompressed) ||
+        !required_unsigned(body, "connect_timeout_ms", UINT32_MAX,
+                           &connect_timeout) ||
+        !required_unsigned(body, "transfer_timeout_ms", UINT32_MAX,
+                           &transfer_timeout) ||
+        !required_unsigned(body, "redirect_limit", UINT32_MAX,
+                           &redirect_limit) ||
+        !required_unsigned(body, "retry_base_seconds", (uint64_t)INT64_MAX,
+                           &retry_base) ||
+        !required_unsigned(body, "retry_max_seconds", (uint64_t)INT64_MAX,
+                           &retry_max) ||
+        !required_optional_digest(body, "sha256_pin", config->sha256_pin,
+                                  &config->has_sha256_pin) ||
+        !required_optional_digest(body, "ed25519_public_key",
+                                  config->ed25519_public_key,
+                                  &config->has_signature) ||
+        (updating && !required_identifier(body, "revision", revision)) ||
+        (!updating && json_object_get(body, "revision") != NULL)) {
+        return -EINVAL;
+    }
+    config->update_interval_seconds = update_interval;
+    config->max_download_bytes = (size_t)max_download;
+    config->max_decompressed_bytes = (size_t)max_decompressed;
+    config->connect_timeout_ms = (uint32_t)connect_timeout;
+    config->transfer_timeout_ms = (uint32_t)transfer_timeout;
+    config->redirect_limit = (uint32_t)redirect_limit;
+    config->retry_base_seconds = retry_base;
+    config->retry_max_seconds = retry_max;
+    return 0;
+}
+
 /** @brief Parse one optional external domain policy target. */
 static bool parse_policy_target(const char *text,
                                 enum jg_policy_domain_target *target)
@@ -2024,6 +2223,73 @@ static int append_destination_rule_audit(
             .has_new_revision = has_new_revision,
             .new_revision = rule->revision,
             .success = published,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Append one blocklist-source mutation and publication outcome. */
+static int append_blocklist_source_audit(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    bool has_previous_revision,
+    uint64_t previous_revision,
+    bool has_new_revision,
+    const struct jg_database_blocklist_source *source,
+    bool published,
+    uint64_t generation,
+    uint64_t now)
+{
+    char object_id[32U];
+    char source_address[INET6_ADDRSTRLEN];
+    json_t *details = blocklist_source_json(source);
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = snprintf(object_id, sizeof(object_id), "%llu",
+                           (unsigned long long)source->id);
+    int result = 0;
+
+    if (written <= 0 || (size_t)written >= sizeof(object_id) ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source_address,
+                  sizeof(source_address)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "published", json_boolean(published)) !=
+            0 ||
+        json_object_set_new(details, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source_address,
+            .action = action,
+            .object_type = "blocklist_source",
+            .object_id = object_id,
+            .details = encoded,
+            .has_previous_revision = has_previous_revision,
+            .previous_revision = previous_revision,
+            .has_new_revision = has_new_revision,
+            .new_revision = source->revision,
+            .success = true,
             .request_id = request->request_id,
         };
         result = jg_database_audit_append(management->database, &event, NULL);
@@ -3071,6 +3337,277 @@ static int handle_blocklist_sources_list(
         return result;
     }
     return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Load one exact blocklist source for mutation and audit. */
+static int load_blocklist_source(struct jg_management *management,
+                                 uint64_t source_id,
+                                 struct jg_database_blocklist_source *source)
+{
+    size_t count = 0U;
+    bool has_more = false;
+    int result = jg_database_list_blocklist_sources(
+        management->database, source_id - 1U, 1U, source, &count, &has_more);
+
+    (void)has_more;
+    if (result == 0 && (count != 1U || source->id != source_id)) {
+        result = -ENOENT;
+    }
+    return result;
+}
+
+/** @brief Reload policy after a source mutation when runtime is available. */
+static void publish_blocklist_source_change(struct jg_management *management,
+                                            bool *published,
+                                            uint64_t *generation)
+{
+    *published = false;
+    *generation = 0U;
+    if (management->runtime == NULL) {
+        return;
+    }
+    *published = jg_daemon_runtime_reload_policy(management->runtime) == 0;
+    if (jg_daemon_runtime_get_policy_generation(management->runtime,
+                                                generation) != 0) {
+        *generation = 0U;
+    }
+}
+
+/** @brief Encode one created or updated blocklist-source result. */
+static int respond_blocklist_source(
+    int status,
+    const struct jg_database_blocklist_source *source,
+    bool published,
+    uint64_t generation,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    json_t *body = json_object();
+    json_t *item = blocklist_source_json(source);
+
+    if (body == NULL || item == NULL ||
+        json_object_set(body, "source", item) != 0 ||
+        json_object_set_new(body, "published", json_boolean(published)) != 0 ||
+        json_object_set_new(body, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        json_decref(item);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(item);
+    return encode_response(status, body, NULL, output, output_size, written);
+}
+
+/** @brief Create one blocklist source through an authorized API request. */
+static int handle_blocklist_source_create(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_blocklist_source_config config;
+    struct jg_database_blocklist_source created;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = parse_blocklist_source_request(request->body, false, &config,
+                                            &revision);
+    if (request->query[0U] != '\0' || result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The blocklist-source request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_database_create_blocklist_source(management->database, &config,
+                                                 &created);
+    if (result == -EEXIST) {
+        return respond_error(409, "source_name_exists",
+                             "The blocklist-source name is already in use.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -EILSEQ) {
+        return respond_error(400, "invalid_source",
+                             "The blocklist-source properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "source_create_failed",
+                             "The blocklist source could not be created.",
+                             request->request_id, output, output_size, written);
+    }
+    publish_blocklist_source_change(management, &published, &generation);
+    result = append_blocklist_source_audit(
+        management, request, remote, &actor, "blocklist.source.create", false,
+        0U, true, &created, published, generation, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The source was created, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_blocklist_source(published ? 201 : 202, &created, published,
+                                    generation, output, output_size, written);
+}
+
+/** @brief Replace one blocklist source through an authorized API request. */
+static int handle_blocklist_source_update(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t source_id,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_blocklist_source_config config;
+    struct jg_database_blocklist_source updated;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result =
+        parse_blocklist_source_request(request->body, true, &config, &revision);
+    if (request->query[0U] != '\0' || result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The blocklist-source update is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_database_update_blocklist_source(
+        management->database, source_id, &config, revision, &updated);
+    if (result == -ENOENT) {
+        return respond_error(404, "source_not_found",
+                             "The blocklist source was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The source has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EEXIST) {
+        return respond_error(409, "source_name_exists",
+                             "The blocklist-source name is already in use.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -EILSEQ) {
+        return respond_error(400, "invalid_source",
+                             "The blocklist-source properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "source_update_failed",
+                             "The blocklist source could not be updated.",
+                             request->request_id, output, output_size, written);
+    }
+    publish_blocklist_source_change(management, &published, &generation);
+    result = append_blocklist_source_audit(
+        management, request, remote, &actor, "blocklist.source.update", true,
+        revision, true, &updated, published, generation, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The source changed, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_blocklist_source(published ? 200 : 202, &updated, published,
+                                    generation, output, output_size, written);
+}
+
+/** @brief Delete one blocklist source through an authorized API request. */
+static int handle_blocklist_source_delete(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t source_id,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    static const char *const fields[] = {"revision"};
+    struct authenticated_actor actor;
+    struct jg_database_blocklist_source removed;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool published = false;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "revision", &revision)) {
+        return respond_error(400, "invalid_body",
+                             "The blocklist-source deletion is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = load_blocklist_source(management, source_id, &removed);
+    if (result == 0) {
+        result = jg_database_delete_blocklist_source(management->database,
+                                                     source_id, revision);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "source_not_found",
+                             "The blocklist source was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The source has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "source_delete_failed",
+                             "The blocklist source could not be deleted.",
+                             request->request_id, output, output_size, written);
+    }
+    publish_blocklist_source_change(management, &published, &generation);
+    result = append_blocklist_source_audit(
+        management, request, remote, &actor, "blocklist.source.delete", true,
+        revision, false, &removed, published, generation, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The source was deleted, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "id", json_integer((json_int_t)source_id)) !=
+            0 ||
+        json_object_set_new(body, "deleted", json_true()) != 0 ||
+        json_object_set_new(body, "published", json_boolean(published)) != 0 ||
+        json_object_set_new(body, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    return encode_response(published ? 200 : 202, body, NULL, output,
+                           output_size, written);
 }
 
 /** @brief Return one authenticated stable page of domain rules. */
@@ -4869,6 +5406,7 @@ static int dispatch_request(struct jg_management *management,
                                              sizeof("/api/v1/auth/") - 1U) == 0;
     uint64_t destination_rule_id = 0U;
     uint64_t domain_rule_id = 0U;
+    uint64_t source_id = 0U;
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
 
@@ -4892,6 +5430,24 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_blocklist_sources_list(management, request, remote, now,
                                              output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/sources") == 0 && post) {
+        return handle_blocklist_source_create(management, request, remote, now,
+                                              output, output_size, written);
+    }
+    if (strcmp(request->method, "PATCH") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/sources/", "",
+                                   &source_id)) {
+        return handle_blocklist_source_update(management, request, remote,
+                                              source_id, now, output,
+                                              output_size, written);
+    }
+    if (strcmp(request->method, "DELETE") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/sources/", "",
+                                   &source_id)) {
+        return handle_blocklist_source_delete(management, request, remote,
+                                              source_id, now, output,
+                                              output_size, written);
     }
     if (strcmp(request->path, "/api/v1/domains") == 0 &&
         strcmp(request->method, "GET") == 0) {
