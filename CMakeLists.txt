@@ -19,6 +19,7 @@ include(ProjectMetadata)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
+pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
 pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 
@@ -42,6 +43,7 @@ configure_file(
 
 add_library(
   janusgate-common STATIC
+  src/common/blocklist.c
   src/common/checked.c
   src/common/database.c
   src/common/dns.c
@@ -56,7 +58,9 @@ target_include_directories(
          "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 target_link_libraries(janusgate-common PUBLIC PkgConfig::IDN2 PkgConfig::SODIUM)
-target_link_libraries(janusgate-common PRIVATE PkgConfig::SQLITE3)
+target_link_libraries(
+  janusgate-common
+  PRIVATE PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
 
 install(
@@ -65,6 +69,7 @@ install(
   ARCHIVE COMPONENT development)
 install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/database.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/dns.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/domain.h"

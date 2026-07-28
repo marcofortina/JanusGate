@@ -9,6 +9,7 @@
 
 #include <cmocka.h>
 
+int jg_test_blocklist(void);
 int jg_test_checked(void);
 int jg_test_database(void);
 int jg_test_dns(void);
@@ -19,8 +20,9 @@ int jg_test_policy(void);
 /** @brief Run every unit-test group and combine their exit status. */
 int main(void)
 {
-    int result = jg_test_checked();
+    int result = jg_test_blocklist();
 
+    result |= jg_test_checked();
     result |= jg_test_database();
     result |= jg_test_domain();
     result |= jg_test_dns();
