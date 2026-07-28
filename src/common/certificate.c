@@ -79,7 +79,6 @@ static int render_name(const X509_NAME *name,
 {
     BIO *memory = BIO_new(BIO_s_mem());
     char *data = NULL;
-    long size = 0L;
     int result = 0;
 
     if (memory == NULL) {
@@ -89,7 +88,8 @@ static int render_name(const X509_NAME *name,
         result = -EINVAL;
     }
     if (result == 0) {
-        size = BIO_get_mem_data(memory, &data);
+        const long size = BIO_get_mem_data(memory, &data);
+
         if (size <= 0L || size > (long)JG_CERTIFICATE_NAME_MAX) {
             result = -ENOSPC;
         } else {
@@ -407,6 +407,95 @@ int jg_certificate_inspect_file(const char *path,
         free(data);
     }
     return result;
+}
+
+/** @brief Return the first private-key PEM marker in canonical identity data.
+ */
+static uint8_t *find_private_key(uint8_t *data)
+{
+    static const char *const markers[] = {
+        "-----BEGIN PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+    };
+    uint8_t *first = NULL;
+    size_t index = 0U;
+
+    for (index = 0U; index < sizeof(markers) / sizeof(markers[0U]); ++index) {
+        uint8_t *candidate = (uint8_t *)strstr((char *)data, markers[index]);
+
+        if (candidate != NULL && (first == NULL || candidate < first)) {
+            first = candidate;
+        }
+    }
+    return first;
+}
+
+/** @brief Export one installed identity with optional private material. */
+int jg_certificate_export_file(const char *path,
+                               bool include_private_key,
+                               char **pem,
+                               size_t *pem_size)
+{
+    struct jg_certificate_info info;
+    uint8_t *data = NULL;
+    const uint8_t *private_key = NULL;
+    size_t data_size = 0U;
+    size_t public_size = 0U;
+    int result = 0;
+
+    if (pem == NULL || pem_size == NULL) {
+        return -EINVAL;
+    }
+    *pem = NULL;
+    *pem_size = 0U;
+    result = read_secure_file(path, &data, &data_size);
+    if (result == 0) {
+        result = jg_certificate_inspect((const char *)data, data_size,
+                                        (const char *)data, data_size, &info);
+    }
+    if (result == 0 && include_private_key) {
+        *pem = (char *)data;
+        *pem_size = data_size;
+        data = NULL;
+    }
+    if (result == 0 && !include_private_key) {
+        private_key = find_private_key(data);
+        if (private_key == NULL) {
+            result = -EILSEQ;
+        } else {
+            public_size = (size_t)(private_key - data);
+            *pem = malloc(public_size + 1U);
+            if (*pem == NULL) {
+                result = -ENOMEM;
+            }
+        }
+    }
+    if (result == 0 && !include_private_key) {
+        (void)memcpy(*pem, data, public_size);
+        (*pem)[public_size] = '\0';
+        *pem_size = public_size;
+    }
+    if (data != NULL) {
+        sodium_memzero(data, data_size);
+        free(data);
+    }
+    if (result != 0) {
+        jg_certificate_pem_clear(*pem, *pem_size);
+        *pem = NULL;
+        *pem_size = 0U;
+    }
+    return result;
+}
+
+/** @brief Securely erase and release exported PEM data. */
+void jg_certificate_pem_clear(char *pem, size_t pem_size)
+{
+    if (pem != NULL) {
+        sodium_memzero(pem, pem_size);
+        free(pem);
+    }
 }
 
 /** @brief Create one exclusive random temporary name in an open directory. */

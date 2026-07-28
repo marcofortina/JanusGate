@@ -106,6 +106,37 @@ JG_PUBLIC int jg_certificate_inspect_file(const char *path,
                                           struct jg_certificate_info *info);
 
 /**
+ * @brief Export an installed identity with or without its private key.
+ *
+ * @param[in] path Absolute combined server identity path.
+ * @param[in] include_private_key Whether to retain private-key PEM.
+ * @param[out] pem Receives owned null-terminated PEM.
+ * @param[out] pem_size Receives exact PEM bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EACCES for insecure ownership, permissions, or file type.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety This function is reentrant.
+ *
+ * @side_effects Opens and reads one bounded file without following a symlink.
+ * Release @p pem with jg_certificate_pem_clear().
+ */
+JG_PUBLIC int jg_certificate_export_file(const char *path,
+                                         bool include_private_key,
+                                         char **pem,
+                                         size_t *pem_size);
+
+/**
+ * @brief Securely erase and release exported PEM.
+ *
+ * @param[in,out] pem Exported PEM, or null.
+ * @param[in] pem_size Exact PEM bytes.
+ */
+JG_PUBLIC void jg_certificate_pem_clear(char *pem, size_t pem_size);
+
+/**
  * @brief Atomically install one matching certificate and private key.
  *
  * The destination directory must already exist. An existing destination must

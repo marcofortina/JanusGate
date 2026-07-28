@@ -138,6 +138,8 @@ static void test_certificate_installation(void **state)
     char path[256U];
     char link[256U];
     char pending[256U];
+    char *exported = NULL;
+    size_t exported_size = 0U;
     char *loaded_key = NULL;
     size_t loaded_key_size = 0U;
     struct stat metadata;
@@ -174,6 +176,21 @@ static void test_certificate_installation(void **state)
     assert_memory_equal(inspected.fingerprint_sha256,
                         installed.fingerprint_sha256,
                         sizeof(installed.fingerprint_sha256));
+    assert_int_equal(
+        jg_certificate_export_file(path, false, &exported, &exported_size), 0);
+    assert_int_equal(exported_size, material.certificate_size);
+    assert_memory_equal(exported, material.certificate, exported_size);
+    assert_null(strstr(exported, "PRIVATE KEY"));
+    jg_certificate_pem_clear(exported, exported_size);
+    exported = NULL;
+    exported_size = 0U;
+    assert_int_equal(
+        jg_certificate_export_file(path, true, &exported, &exported_size), 0);
+    assert_true(exported_size > material.certificate_size);
+    assert_non_null(strstr(exported, "PRIVATE KEY"));
+    jg_certificate_pem_clear(exported, exported_size);
+    exported = NULL;
+    exported_size = 0U;
 
     assert_int_equal(chmod(path, 0644), 0);
     assert_int_equal(jg_certificate_inspect_file(path, &inspected), -EACCES);
