@@ -1002,6 +1002,113 @@ static const char *policy_target_name(enum jg_policy_domain_target target)
     }
 }
 
+/** @brief Return the stable external name for one policy scope. */
+static const char *policy_scope_name(enum jg_policy_scope_type type)
+{
+    switch (type) {
+    case JG_POLICY_SCOPE_GLOBAL:
+        return "global";
+    case JG_POLICY_SCOPE_MAC:
+        return "mac";
+    case JG_POLICY_SCOPE_IPV4:
+        return "ipv4";
+    case JG_POLICY_SCOPE_IPV6:
+        return "ipv6";
+    case JG_POLICY_SCOPE_VLAN:
+        return "vlan";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Convert one canonical client scope to public JSON. */
+static json_t *policy_scope_json(const struct jg_policy_scope *scope)
+{
+    char address[INET6_ADDRSTRLEN];
+    char mac[18U];
+    const char *name = policy_scope_name(scope->type);
+    json_t *body = json_object();
+    int written = 0;
+    int result = 0;
+
+    if (name == NULL || body == NULL ||
+        json_object_set_new(body, "type", json_string(name)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && scope->type == JG_POLICY_SCOPE_MAC) {
+        written = snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+                           scope->value.mac[0U], scope->value.mac[1U],
+                           scope->value.mac[2U], scope->value.mac[3U],
+                           scope->value.mac[4U], scope->value.mac[5U]);
+        if (written != (int)(sizeof(mac) - 1U) ||
+            json_object_set_new(body, "address", json_string(mac)) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 && (scope->type == JG_POLICY_SCOPE_IPV4 ||
+                        scope->type == JG_POLICY_SCOPE_IPV6)) {
+        const int family =
+            scope->type == JG_POLICY_SCOPE_IPV4 ? AF_INET : AF_INET6;
+
+        if (inet_ntop(family, scope->value.network.address, address,
+                      sizeof(address)) == NULL ||
+            json_object_set_new(body, "address", json_string(address)) != 0 ||
+            json_object_set_new(
+                body, "prefix_length",
+                json_integer((json_int_t)scope->value.network.prefix_length)) !=
+                0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 && scope->type == JG_POLICY_SCOPE_VLAN &&
+        json_object_set_new(body, "vlan",
+                            json_integer((json_int_t)scope->value.vlan_id)) !=
+            0) {
+        result = -ENOMEM;
+    }
+    if (result != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Convert one persistent domain rule to public JSON. */
+static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
+{
+    const char *effect = policy_effect_name(rule->effect);
+    const char *source = policy_source_name(rule->source);
+    const char *target = policy_target_name(rule->target);
+    json_t *body = json_object();
+    json_t *scope = policy_scope_json(&rule->scope);
+
+    if (effect == NULL || source == NULL || target == NULL || body == NULL ||
+        scope == NULL ||
+        json_object_set_new(body, "id", json_integer((json_int_t)rule->id)) !=
+            0 ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)rule->revision)) != 0 ||
+        json_object_set_new(body, "updated_at",
+                            json_integer((json_int_t)rule->updated_at)) != 0 ||
+        json_object_set_new(body, "domain", json_string(rule->domain)) != 0 ||
+        json_object_set_new(body, "include_subdomains",
+                            json_boolean(rule->include_subdomains)) != 0 ||
+        json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(body, "source", json_string(source)) != 0 ||
+        json_object_set_new(body, "target", json_string(target)) != 0 ||
+        json_object_set_new(body, "attribution",
+                            json_string(rule->attribution)) != 0 ||
+        json_object_set_new(body, "enabled", json_boolean(rule->enabled)) !=
+            0 ||
+        json_object_set(body, "scope", scope) != 0) {
+        json_decref(scope);
+        json_decref(body);
+        return NULL;
+    }
+    json_decref(scope);
+    return body;
+}
+
 /** @brief Parse one optional external domain policy target. */
 static bool parse_policy_target(const char *text,
                                 enum jg_policy_domain_target *target)
@@ -1181,18 +1288,20 @@ static json_t *policy_simulation_json(
     return body;
 }
 
-/** @brief Parse exact offset and limit parameters for one collection. */
-static int parse_collection_query(const char *query,
-                                  size_t maximum_limit,
-                                  uint64_t *offset,
-                                  size_t *limit)
+/** @brief Parse one exact numeric cursor and limit query. */
+static int parse_page_query(const char *query,
+                            const char *cursor_name,
+                            size_t maximum_limit,
+                            uint64_t *position,
+                            size_t *limit)
 {
     const char *cursor = query;
-    bool have_offset = false;
+    const size_t cursor_name_size = strlen(cursor_name);
+    bool have_position = false;
     bool have_limit = false;
     int result = 0;
 
-    *offset = 0U;
+    *position = 0U;
     *limit = maximum_limit < 50U ? maximum_limit : 50U;
     while (result == 0 && cursor != NULL && *cursor != '\0') {
         const char *end = strchr(cursor, '&');
@@ -1203,15 +1312,15 @@ static int parse_collection_query(const char *query,
 
         if (equals == NULL || (size_t)(equals - cursor) >= field_size) {
             result = -EINVAL;
-        } else if ((size_t)(equals - cursor) == sizeof("offset") - 1U &&
-                   memcmp(cursor, "offset", sizeof("offset") - 1U) == 0 &&
-                   !have_offset) {
+        } else if ((size_t)(equals - cursor) == cursor_name_size &&
+                   memcmp(cursor, cursor_name, cursor_name_size) == 0 &&
+                   !have_position) {
             result = parse_decimal(equals + 1,
                                    field_size - (size_t)(equals + 1 - cursor),
                                    (uint64_t)INT64_MAX, &parsed);
             if (result == 0) {
-                *offset = parsed;
-                have_offset = true;
+                *position = parsed;
+                have_position = true;
             }
         } else if ((size_t)(equals - cursor) == sizeof("limit") - 1U &&
                    memcmp(cursor, "limit", sizeof("limit") - 1U) == 0 &&
@@ -2216,6 +2325,90 @@ static int handle_policy_simulation(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one authenticated stable page of domain rules. */
+static int handle_domain_rules_list(struct jg_management *management,
+                                    const struct management_request *request,
+                                    const struct remote_address *remote,
+                                    uint64_t now,
+                                    uint8_t *output,
+                                    size_t output_size,
+                                    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_domain_rule *rules = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t after_id = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_POLICY_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_page_query(request->query, "after_id",
+                         JG_DATABASE_POLICY_PAGE_MAX, &after_id, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The domain-rule pagination is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    rules = calloc(limit, sizeof(*rules));
+    if (rules == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_database_list_domain_rules(management->database, after_id,
+                                           limit, rules, &count, &has_more);
+    if (result != 0) {
+        free(rules);
+        return respond_error(500, "domains_unavailable",
+                             "The domain rules could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = domain_rule_json(&rules[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "after_id",
+                             json_integer((json_int_t)after_id)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "has_more", json_boolean(has_more)) != 0 ||
+         json_object_set(body, "domains", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        json_t *next = has_more && count > 0U
+                           ? json_integer((json_int_t)rules[count - 1U].id)
+                           : json_null();
+
+        if (json_object_set_new(body, "next_after_id", next) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(rules);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated stable page of local users. */
 static int handle_users_list(struct jg_management *management,
                              const struct management_request *request,
@@ -2241,8 +2434,8 @@ static int handle_users_list(struct jg_management *management,
                                    written);
     }
     if (json_object_size(request->body) != 0U ||
-        parse_collection_query(request->query, JG_ACCOUNT_USER_PAGE_MAX,
-                               &offset, &limit) != 0) {
+        parse_page_query(request->query, "offset", JG_ACCOUNT_USER_PAGE_MAX,
+                         &offset, &limit) != 0) {
         return respond_error(400, "invalid_query",
                              "The user pagination parameters are not valid.",
                              request->request_id, output, output_size, written);
@@ -2588,8 +2781,8 @@ static int handle_tokens_list(struct jg_management *management,
                                    written);
     }
     if (json_object_size(request->body) != 0U ||
-        parse_collection_query(request->query, JG_ACCOUNT_TOKEN_PAGE_MAX,
-                               &offset, &limit) != 0) {
+        parse_page_query(request->query, "offset", JG_ACCOUNT_TOKEN_PAGE_MAX,
+                         &offset, &limit) != 0) {
         return respond_error(400, "invalid_query",
                              "The token pagination parameters are not valid.",
                              request->request_id, output, output_size, written);
@@ -2845,8 +3038,8 @@ static int handle_audit_list(struct jg_management *management,
                                    written);
     }
     if (json_object_size(request->body) != 0U ||
-        parse_collection_query(request->query, JG_AUDIT_PAGE_MAX, &offset,
-                               &limit) != 0) {
+        parse_page_query(request->query, "offset", JG_AUDIT_PAGE_MAX, &offset,
+                         &limit) != 0) {
         return respond_error(400, "invalid_query",
                              "The audit pagination parameters are not valid.",
                              request->request_id, output, output_size, written);
@@ -3254,6 +3447,11 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/domains") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_domain_rules_list(management, request, remote, now,
+                                        output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/policies/simulate") == 0 && post) {
         return handle_policy_simulation(management, request, remote, now,

@@ -149,6 +149,7 @@ static void test_browser_authentication(void **state)
         .requests_per_minute = 1U,
     };
     struct jg_account_api_token api_token;
+    struct jg_policy_rule_input domain_rules[2U];
     json_t *response = NULL;
     json_t *body = NULL;
     json_t *value = NULL;
@@ -222,6 +223,72 @@ static void test_browser_authentication(void **state)
     body = json_object_get(response, "body");
     value = json_object_get(json_object_get(body, "user"), "username");
     assert_string_equal(json_string_value(value), "administrator");
+    json_decref(response);
+
+    (void)memset(domain_rules, 0, sizeof(domain_rules));
+    domain_rules[0U].id = 2U;
+    domain_rules[0U].domain = "Blocked.Example.";
+    domain_rules[0U].include_subdomains = true;
+    domain_rules[0U].effect = JG_POLICY_BLOCK;
+    domain_rules[0U].source = JG_POLICY_SOURCE_EXPLICIT;
+    domain_rules[0U].scope.type = JG_POLICY_SCOPE_GLOBAL;
+    domain_rules[0U].attribution = "management test";
+    domain_rules[1U].id = 1U;
+    domain_rules[1U].domain = "safe.example";
+    domain_rules[1U].effect = JG_POLICY_ALLOW;
+    domain_rules[1U].source = JG_POLICY_SOURCE_EXPLICIT;
+    domain_rules[1U].scope.type = JG_POLICY_SCOPE_VLAN;
+    domain_rules[1U].scope.value.vlan_id = 20U;
+    domain_rules[1U].attribution = "local exception";
+    assert_int_equal(jg_database_replace_domain_rules(
+                         fixture->database, domain_rules,
+                         sizeof(domain_rules) / sizeof(domain_rules[0U])),
+                     0);
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"domains-1\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/domains\",\"query\":\"limit=1\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "count")), 1);
+    assert_true(json_is_true(json_object_get(body, "has_more")));
+    assert_int_equal(json_integer_value(json_object_get(body, "next_after_id")),
+                     1);
+    value = json_array_get(json_object_get(body, "domains"), 0U);
+    assert_string_equal(json_string_value(json_object_get(value, "domain")),
+                        "safe.example");
+    assert_string_equal(json_string_value(json_object_get(
+                            json_object_get(value, "scope"), "type")),
+                        "vlan");
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"domains-2\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/domains\","
+                 "\"query\":\"after_id=1&limit=1\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "has_more")));
+    assert_true(json_is_null(json_object_get(body, "next_after_id")));
+    value = json_array_get(json_object_get(body, "domains"), 0U);
+    assert_string_equal(json_string_value(json_object_get(value, "domain")),
+                        "blocked.example");
+    assert_true(json_is_true(json_object_get(value, "include_subdomains")));
     json_decref(response);
 
     written = snprintf(
