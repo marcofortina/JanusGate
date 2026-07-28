@@ -1131,6 +1131,7 @@ static void test_source_api(void **state)
     };
     struct jg_database_blocklist_source source;
     struct jg_account_api_token api_token;
+    struct jg_audit_verification verification;
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
     char request[2048U];
     json_t *response = NULL;
@@ -1196,11 +1197,12 @@ static void test_source_api(void **state)
         "{\"request_id\":\"source-create\",\"method\":\"POST\","
         "\"path\":\"/api/v1/sources\",\"host\":\"192.168.77.1\","
         "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
-        "\"name\":\"API source\",\"url\":\"https://api.example/list\","
+        "\"name\":\"API source\","
+        "\"url\":\"https://127.0.0.1:1/blocklist\","
         "\"signature_url\":null,\"format\":\"domain\",\"mode\":\"strict\","
         "\"enabled\":true,\"update_interval_seconds\":7200,"
         "\"max_download_bytes\":2048,\"max_decompressed_bytes\":8192,"
-        "\"connect_timeout_ms\":5000,\"transfer_timeout_ms\":30000,"
+        "\"connect_timeout_ms\":100,\"transfer_timeout_ms\":100,"
         "\"redirect_limit\":2,\"retry_base_seconds\":60,"
         "\"retry_max_seconds\":600,\"sha256_pin\":null,"
         "\"ed25519_public_key\":null}}",
@@ -1226,11 +1228,12 @@ static void test_source_api(void **state)
         "\"path\":\"/api/v1/sources/%llu\",\"host\":\"192.168.77.1\","
         "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
         "\"revision\":%llu,\"name\":\"API source updated\","
-        "\"url\":\"https://api.example/list\",\"signature_url\":null,"
+        "\"url\":\"https://127.0.0.1:1/blocklist\","
+        "\"signature_url\":null,"
         "\"format\":\"hosts\",\"mode\":\"tolerant\",\"enabled\":false,"
         "\"update_interval_seconds\":7200,\"max_download_bytes\":2048,"
-        "\"max_decompressed_bytes\":8192,\"connect_timeout_ms\":5000,"
-        "\"transfer_timeout_ms\":30000,\"redirect_limit\":2,"
+        "\"max_decompressed_bytes\":8192,\"connect_timeout_ms\":100,"
+        "\"transfer_timeout_ms\":100,\"redirect_limit\":2,"
         "\"retry_base_seconds\":60,\"retry_max_seconds\":600,"
         "\"sha256_pin\":null,\"ed25519_public_key\":null}}",
         (unsigned long long)source_id, api_token.secret,
@@ -1247,6 +1250,34 @@ static void test_source_api(void **state)
     assert_false(json_is_true(json_object_get(value, "enabled")));
     assert_string_equal(json_string_value(json_object_get(value, "format")),
                         "hosts");
+    json_decref(response);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"source-refresh\",\"method\":\"POST\","
+                       "\"path\":\"/api/v1/sources/%llu/refresh\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{\"revision\":%llu}}",
+                       (unsigned long long)source_id, api_token.secret,
+                       (unsigned long long)source_revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     502);
+    body = json_object_get(response, "body");
+    assert_string_equal(json_string_value(json_object_get(
+                            json_object_get(body, "error"), "code")),
+                        "blocklist_update_failed");
+    value = json_object_get(body, "source");
+    assert_string_equal(json_string_value(json_object_get(value, "health")),
+                        "failed");
+    assert_int_equal(
+        json_integer_value(json_object_get(value, "consecutive_failures")), 1);
+    value = json_object_get(body, "attempt");
+    assert_false(json_is_true(json_object_get(value, "success")));
+    assert_string_equal(json_string_value(json_object_get(value, "outcome")),
+                        "failed");
     json_decref(response);
 
     written =
@@ -1267,6 +1298,10 @@ static void test_source_api(void **state)
     assert_int_equal(json_integer_value(json_object_get(body, "id")),
                      (json_int_t)source_id);
     json_decref(response);
+    assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
+                     0);
+    assert_true(verification.valid);
+    assert_int_equal(verification.records_inspected, 4U);
 }
 
 /** @brief Verify malformed and cross-origin requests fail closed. */
