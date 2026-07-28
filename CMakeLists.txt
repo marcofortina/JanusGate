@@ -17,6 +17,7 @@ include(CTest)
 include(CompilerOptions)
 include(ProjectMetadata)
 
+find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
@@ -70,13 +71,16 @@ target_link_libraries(
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
 
-add_library(janusgate-daemon-core STATIC src/daemon/nfqueue.c)
+add_library(
+  janusgate-daemon-core STATIC
+  src/daemon/nfqueue.c
+  src/daemon/nfqueue_group.c)
 target_include_directories(
   janusgate-daemon-core
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")
 target_link_libraries(
   janusgate-daemon-core
-  PUBLIC JanusGate::common
+  PUBLIC JanusGate::common Threads::Threads
   PRIVATE PkgConfig::NETFILTER_QUEUE)
 janusgate_apply_compiler_options(janusgate-daemon-core)
 
