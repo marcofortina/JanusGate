@@ -611,6 +611,169 @@ static bool read_material(sqlite3_stmt *statement,
     return stored_material_valid(material);
 }
 
+/** @brief Copy one validated audit text span into a bounded field. */
+static void copy_text(char *output,
+                      size_t output_size,
+                      const struct audit_text *text)
+{
+    const size_t size = text->present ? text->size : 0U;
+
+    if (size > 0U) {
+        (void)memcpy(output, text->data, size);
+    }
+    output[size < output_size ? size : output_size - 1U] = '\0';
+}
+
+/** @brief Decode one selected immutable audit record. */
+static int decode_record(sqlite3_stmt *statement,
+                         struct jg_audit_record *record)
+{
+    struct audit_material material;
+    const void *previous_hash = sqlite3_column_blob(statement, 8);
+    const void *event_hash = sqlite3_column_blob(statement, 9);
+    uint64_t event_id = 0U;
+    const bool first = sqlite3_column_type(statement, 8) == SQLITE_NULL;
+
+    if (record == NULL || !read_material(statement, &event_id, &material) ||
+        (!first &&
+         (previous_hash == NULL ||
+          sqlite3_column_bytes(statement, 8) != JG_AUDIT_HASH_SIZE)) ||
+        event_hash == NULL ||
+        sqlite3_column_bytes(statement, 9) != JG_AUDIT_HASH_SIZE) {
+        return -EILSEQ;
+    }
+    (void)memset(record, 0, sizeof(*record));
+    record->event_id = event_id;
+    record->occurred_at = material.occurred_at;
+    record->actor_type = material.actor_type;
+    record->has_actor_id = material.has_actor_id;
+    record->actor_id = material.actor_id;
+    record->has_previous_revision = material.has_previous_revision;
+    record->previous_revision = material.previous_revision;
+    record->has_new_revision = material.has_new_revision;
+    record->new_revision = material.new_revision;
+    record->success = material.success;
+    record->first = first;
+    if (!first) {
+        (void)memcpy(record->previous_hash, previous_hash, JG_AUDIT_HASH_SIZE);
+    }
+    (void)memcpy(record->event_hash, event_hash, JG_AUDIT_HASH_SIZE);
+    copy_text(record->source, sizeof(record->source), &material.source);
+    copy_text(record->action, sizeof(record->action), &material.action);
+    copy_text(record->object_type, sizeof(record->object_type),
+              &material.object_type);
+    copy_text(record->object_id, sizeof(record->object_id),
+              &material.object_id);
+    copy_text(record->details, sizeof(record->details), &material.details);
+    copy_text(record->request_id, sizeof(record->request_id),
+              &material.request_id);
+    return 0;
+}
+
+/** @brief List one stable bounded page of immutable audit records. */
+int jg_database_audit_list(struct jg_database *database,
+                           uint64_t offset,
+                           struct jg_audit_record *records,
+                           size_t capacity,
+                           size_t *count,
+                           uint64_t *total)
+{
+    static const char count_query[] = "SELECT count(*) FROM audit_events;";
+    static const char list_query[] =
+        "SELECT id,occurred_at,actor_type,actor_id,action,object_type,"
+        "object_id,details,previous_hash,event_hash,source,previous_revision,"
+        "new_revision,success,request_id FROM audit_events"
+        " ORDER BY id DESC LIMIT ?1 OFFSET ?2;";
+    sqlite3_stmt *statement = NULL;
+    bool transaction_open = false;
+    size_t loaded = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (total != NULL) {
+        *total = 0U;
+    }
+    if (database == NULL || records == NULL || count == NULL || total == NULL ||
+        capacity == 0U || capacity > JG_AUDIT_PAGE_MAX ||
+        capacity > (size_t)INT64_MAX || offset > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    (void)memset(records, 0, capacity * sizeof(*records));
+    result = execute_statement(database->handle, "BEGIN;");
+    transaction_open = result == 0;
+    if (result == 0) {
+        status = sqlite3_prepare_v3(database->handle, count_query, -1, 0U,
+                                    &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status != SQLITE_ROW || sqlite3_column_int64(statement, 0) < 0) {
+            result = status == SQLITE_ROW ? -EILSEQ
+                                          : jg_database_sqlite_result(status);
+        } else {
+            *total = (uint64_t)sqlite3_column_int64(statement, 0);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status = sqlite3_prepare_v3(database->handle, list_query, -1, 0U,
+                                    &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)capacity);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)offset);
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && loaded < capacity) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            break;
+        }
+        if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        } else {
+            result = decode_record(statement, &records[loaded]);
+            if (result == 0) {
+                ++loaded;
+            }
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = execute_statement(database->handle, "COMMIT;");
+        if (result == 0) {
+            transaction_open = false;
+            *count = loaded;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)execute_statement(database->handle, "ROLLBACK;");
+        (void)memset(records, 0, capacity * sizeof(*records));
+        *count = 0U;
+        *total = 0U;
+    }
+    return result;
+}
+
 /** @brief Validate one row's stored links against its computed digest. */
 static int verify_row(sqlite3_stmt *statement,
                       bool first,

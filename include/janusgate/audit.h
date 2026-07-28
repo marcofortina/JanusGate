@@ -18,6 +18,7 @@
 #define JANUSGATE_AUDIT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "janusgate/version.h"
@@ -42,6 +43,9 @@
 
 /** Largest accepted request identifier excluding its terminator. */
 #define JG_AUDIT_REQUEST_ID_MAX 128U
+
+/** Largest audit page returned by one management query. */
+#define JG_AUDIT_PAGE_MAX 10U
 
 /** Opaque database connection declared by database.h. */
 struct jg_database;
@@ -111,6 +115,50 @@ struct jg_audit_verification {
 };
 
 /**
+ * @brief One immutable audit record safe for administration surfaces.
+ */
+struct jg_audit_record {
+    /** Persistent positive event identifier. */
+    uint64_t event_id;
+    /** Unix timestamp in seconds. */
+    uint64_t occurred_at;
+    /** Authenticated actor kind. */
+    enum jg_audit_actor_type actor_type;
+    /** Whether actor_id is present. */
+    bool has_actor_id;
+    /** Persistent actor identifier. */
+    uint64_t actor_id;
+    /** Whether previous_revision is present. */
+    bool has_previous_revision;
+    /** Object revision before the operation. */
+    uint64_t previous_revision;
+    /** Whether new_revision is present. */
+    bool has_new_revision;
+    /** Object revision after the operation. */
+    uint64_t new_revision;
+    /** Whether the attempted operation succeeded. */
+    bool success;
+    /** Whether this is the first chain record without a previous digest. */
+    bool first;
+    /** Previous event digest when @ref first is false. */
+    uint8_t previous_hash[JG_AUDIT_HASH_SIZE];
+    /** Digest assigned to this event. */
+    uint8_t event_hash[JG_AUDIT_HASH_SIZE];
+    /** Bounded operation source. */
+    char source[JG_AUDIT_SOURCE_MAX + 1U];
+    /** Stable operation name. */
+    char action[JG_AUDIT_ACTION_MAX + 1U];
+    /** Stable affected object type. */
+    char object_type[JG_AUDIT_OBJECT_TYPE_MAX + 1U];
+    /** Optional affected object identifier. */
+    char object_id[JG_AUDIT_OBJECT_ID_MAX + 1U];
+    /** Exact bounded canonical detail document. */
+    char details[JG_AUDIT_DETAILS_MAX + 1U];
+    /** Request correlation identifier. */
+    char request_id[JG_AUDIT_REQUEST_ID_MAX + 1U];
+};
+
+/**
  * @brief Append one administrative event to the persistent hash chain.
  *
  * The latest chain digest is read and the new event is inserted under one
@@ -134,6 +182,31 @@ JG_PUBLIC int jg_database_audit_append(
     struct jg_database *database,
     const struct jg_audit_event *event,
     struct jg_audit_append_result *append_result);
+
+/**
+ * @brief List immutable audit records from newest to oldest.
+ *
+ * @param[in] database Open database.
+ * @param[in] offset Zero-based page offset.
+ * @param[out] records Receives up to @p capacity records.
+ * @param[in] capacity Requested page size from one through
+ * JG_AUDIT_PAGE_MAX.
+ * @param[out] count Receives the number of returned records.
+ * @param[out] total Receives the total number of audit records.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for an invalid argument or pagination.
+ * @return -EILSEQ for invalid persistent audit content.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_audit_list(struct jg_database *database,
+                                     uint64_t offset,
+                                     struct jg_audit_record *records,
+                                     size_t capacity,
+                                     size_t *count,
+                                     uint64_t *total);
 
 /**
  * @brief Verify every persistent audit record and hash-chain link.

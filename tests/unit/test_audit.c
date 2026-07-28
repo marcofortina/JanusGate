@@ -93,8 +93,11 @@ static void test_append_and_verify(void **state)
     struct jg_audit_event invalid = make_event("", "{}");
     struct jg_audit_append_result first_result;
     struct jg_audit_append_result second_result;
+    struct jg_audit_record records[1U];
     struct jg_audit_verification verification;
     uint8_t zero[JG_AUDIT_HASH_SIZE] = {0};
+    size_t count = 0U;
+    uint64_t total = 0U;
 
     (void)state;
     assert_int_equal(jg_database_audit_append(database, &first, &first_result),
@@ -125,6 +128,27 @@ static void test_append_and_verify(void **state)
     assert_true(verification.valid);
     assert_int_equal(verification.records_inspected, 2U);
     assert_int_equal(verification.first_invalid_id, 0U);
+
+    assert_int_equal(
+        jg_database_audit_list(database, 0U, records, 1U, &count, &total), 0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(total, 2U);
+    assert_int_equal(records[0U].event_id, second_result.event_id);
+    assert_int_equal(records[0U].actor_type, JG_AUDIT_ACTOR_USER);
+    assert_true(records[0U].has_actor_id);
+    assert_int_equal(records[0U].actor_id, 7U);
+    assert_string_equal(records[0U].details, "{\"id\":1}");
+    assert_memory_equal(records[0U].previous_hash, first_result.event_hash,
+                        JG_AUDIT_HASH_SIZE);
+    assert_memory_equal(records[0U].event_hash, second_result.event_hash,
+                        JG_AUDIT_HASH_SIZE);
+    assert_false(records[0U].first);
+
+    assert_int_equal(
+        jg_database_audit_list(database, 1U, records, 1U, &count, &total), 0);
+    assert_int_equal(records[0U].event_id, first_result.event_id);
+    assert_true(records[0U].first);
+    assert_memory_equal(records[0U].previous_hash, zero, sizeof(zero));
 
     jg_database_close(database);
     remove_test_database(directory, path);
