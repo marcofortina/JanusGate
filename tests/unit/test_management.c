@@ -1103,6 +1103,93 @@ static void test_token_api(void **state)
     assert_int_equal(verification.records_inspected, 2U);
 }
 
+/** @brief Verify authenticated blocklist-source paging and state JSON. */
+static void test_source_api(void **state)
+{
+    static const char password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_token_config token_config = {
+        .name = "source test",
+        .permissions = JG_ACCESS_POLICY_READ,
+        .requests_per_minute = 100U,
+    };
+    struct jg_database_blocklist_source_config source_config = {
+        .name = "Threat domains",
+        .url = "https://lists.example/domains",
+        .format = JG_BLOCKLIST_FORMAT_HOSTS,
+        .mode = JG_BLOCKLIST_TOLERANT,
+        .enabled = true,
+        .update_interval_seconds = 3600U,
+        .max_download_bytes = 1048576U,
+        .max_decompressed_bytes = 4194304U,
+        .connect_timeout_ms = 5000U,
+        .transfer_timeout_ms = 30000U,
+        .redirect_limit = 3U,
+        .retry_base_seconds = 60U,
+        .retry_max_seconds = 3600U,
+    };
+    struct jg_database_blocklist_source source;
+    struct jg_account_api_token api_token;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[2048U];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &api_token),
+                     0);
+    assert_int_equal(jg_database_create_blocklist_source(
+                         fixture->database, &source_config, &source),
+                     0);
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"sources-list\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/sources\",\"query\":\"limit=1\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{}}",
+                 api_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "count")), 1);
+    assert_false(json_is_true(json_object_get(body, "has_more")));
+    assert_true(json_is_null(json_object_get(body, "next_after_id")));
+    value = json_array_get(json_object_get(body, "sources"), 0U);
+    assert_int_equal(json_integer_value(json_object_get(value, "id")),
+                     (json_int_t)source.id);
+    assert_string_equal(json_string_value(json_object_get(value, "name")),
+                        source_config.name);
+    assert_string_equal(json_string_value(json_object_get(value, "format")),
+                        "hosts");
+    assert_string_equal(json_string_value(json_object_get(value, "mode")),
+                        "tolerant");
+    assert_string_equal(json_string_value(json_object_get(value, "health")),
+                        "unknown");
+    assert_true(json_is_null(json_object_get(value, "active_checksum")));
+    assert_true(json_is_null(json_object_get(value, "last_attempt_at")));
+    json_decref(response);
+}
+
 /** @brief Verify malformed and cross-origin requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -1135,6 +1222,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_user_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_token_api, setup_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_source_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),

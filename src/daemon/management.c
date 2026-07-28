@@ -1111,6 +1111,186 @@ static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
     return body;
 }
 
+/** @brief Return the stable external name for one blocklist syntax. */
+static const char *blocklist_format_name(enum jg_blocklist_format format)
+{
+    switch (format) {
+    case JG_BLOCKLIST_FORMAT_DOMAIN:
+        return "domain";
+    case JG_BLOCKLIST_FORMAT_HOSTS:
+        return "hosts";
+    case JG_BLOCKLIST_FORMAT_CATEGORY:
+        return "category";
+    case JG_BLOCKLIST_FORMAT_RPZ:
+        return "rpz";
+    case JG_BLOCKLIST_FORMAT_JSON:
+        return "json";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Return the stable external name for one blocklist import mode. */
+static const char *blocklist_mode_name(enum jg_blocklist_mode mode)
+{
+    switch (mode) {
+    case JG_BLOCKLIST_STRICT:
+        return "strict";
+    case JG_BLOCKLIST_TOLERANT:
+        return "tolerant";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Return the stable external name for blocklist source health. */
+static const char *blocklist_health_name(
+    enum jg_database_blocklist_health health)
+{
+    switch (health) {
+    case JG_DATABASE_BLOCKLIST_UNKNOWN:
+        return "unknown";
+    case JG_DATABASE_BLOCKLIST_HEALTHY:
+        return "healthy";
+    case JG_DATABASE_BLOCKLIST_DEGRADED:
+        return "degraded";
+    case JG_DATABASE_BLOCKLIST_FAILED:
+        return "failed";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Encode one optional fixed-size digest as lowercase hexadecimal. */
+static json_t *optional_digest_json(const uint8_t *digest,
+                                    size_t digest_size,
+                                    bool present)
+{
+    char encoded[JG_BLOCKLIST_CHECKSUM_SIZE * 2U + 1U];
+
+    if (!present) {
+        return json_null();
+    }
+    if (digest_size > JG_BLOCKLIST_CHECKSUM_SIZE ||
+        sodium_bin2hex(encoded, sizeof(encoded), digest, digest_size) == NULL) {
+        return NULL;
+    }
+    return json_string(encoded);
+}
+
+/** @brief Convert one persistent blocklist source and state to public JSON. */
+static json_t *blocklist_source_json(
+    const struct jg_database_blocklist_source *source)
+{
+    const char *format = blocklist_format_name(source->format);
+    const char *mode = blocklist_mode_name(source->mode);
+    const char *health = blocklist_health_name(source->health);
+    json_t *body = json_object();
+    json_t *sha256_pin = optional_digest_json(
+        source->sha256_pin, sizeof(source->sha256_pin), source->has_sha256_pin);
+    json_t *public_key = optional_digest_json(
+        source->ed25519_public_key, sizeof(source->ed25519_public_key),
+        source->has_signature);
+    json_t *active_checksum = optional_digest_json(
+        source->active_checksum, sizeof(source->active_checksum),
+        source->has_active_checksum);
+    int result = 0;
+
+    if (format == NULL || mode == NULL || health == NULL || body == NULL ||
+        sha256_pin == NULL || public_key == NULL || active_checksum == NULL) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "id",
+                             json_integer((json_int_t)source->id)) != 0 ||
+         json_object_set_new(body, "revision",
+                             json_integer((json_int_t)source->revision)) != 0 ||
+         json_object_set_new(body, "created_at",
+                             json_integer((json_int_t)source->created_at)) !=
+             0 ||
+         json_object_set_new(body, "updated_at",
+                             json_integer((json_int_t)source->updated_at)) !=
+             0 ||
+         json_object_set_new(body, "name", json_string(source->name)) != 0 ||
+         json_object_set_new(body, "url",
+                             source->url[0U] == '\0'
+                                 ? json_null()
+                                 : json_string(source->url)) != 0 ||
+         json_object_set_new(body, "signature_url",
+                             source->signature_url[0U] == '\0'
+                                 ? json_null()
+                                 : json_string(source->signature_url)) != 0 ||
+         json_object_set_new(body, "format", json_string(format)) != 0 ||
+         json_object_set_new(body, "mode", json_string(mode)) != 0 ||
+         json_object_set_new(body, "enabled", json_boolean(source->enabled)) !=
+             0 ||
+         json_object_set_new(
+             body, "update_interval_seconds",
+             json_integer((json_int_t)source->update_interval_seconds)) != 0 ||
+         json_object_set_new(
+             body, "max_download_bytes",
+             json_integer((json_int_t)source->max_download_bytes)) != 0 ||
+         json_object_set_new(
+             body, "max_decompressed_bytes",
+             json_integer((json_int_t)source->max_decompressed_bytes)) != 0 ||
+         json_object_set_new(
+             body, "connect_timeout_ms",
+             json_integer((json_int_t)source->connect_timeout_ms)) != 0 ||
+         json_object_set_new(
+             body, "transfer_timeout_ms",
+             json_integer((json_int_t)source->transfer_timeout_ms)) != 0 ||
+         json_object_set_new(
+             body, "redirect_limit",
+             json_integer((json_int_t)source->redirect_limit)) != 0 ||
+         json_object_set_new(
+             body, "retry_base_seconds",
+             json_integer((json_int_t)source->retry_base_seconds)) != 0 ||
+         json_object_set_new(
+             body, "retry_max_seconds",
+             json_integer((json_int_t)source->retry_max_seconds)) != 0 ||
+         json_object_set(body, "sha256_pin", sha256_pin) != 0 ||
+         json_object_set(body, "ed25519_public_key", public_key) != 0 ||
+         json_object_set_new(body, "etag",
+                             source->etag[0U] == '\0'
+                                 ? json_null()
+                                 : json_string(source->etag)) != 0 ||
+         json_object_set_new(body, "last_modified",
+                             source->last_modified[0U] == '\0'
+                                 ? json_null()
+                                 : json_string(source->last_modified)) != 0 ||
+         json_object_set_new(
+             body, "consecutive_failures",
+             json_integer((json_int_t)source->consecutive_failures)) != 0 ||
+         json_object_set(body, "active_checksum", active_checksum) != 0 ||
+         json_object_set_new(
+             body, "active_entries",
+             json_integer((json_int_t)source->active_entries)) != 0 ||
+         json_object_set_new(
+             body, "rejected_entries",
+             json_integer((json_int_t)source->rejected_entries)) != 0 ||
+         json_object_set_new(body, "health", json_string(health)) != 0 ||
+         json_object_set_new(body, "last_error",
+                             source->last_error[0U] == '\0'
+                                 ? json_null()
+                                 : json_string(source->last_error)) != 0 ||
+         set_optional_timestamp(body, "last_attempt_at",
+                                source->last_attempt_at) != 0 ||
+         set_optional_timestamp(body, "last_success_at",
+                                source->last_success_at) != 0 ||
+         set_optional_timestamp(body, "next_attempt_at",
+                                source->next_attempt_at) != 0)) {
+        result = -ENOMEM;
+    }
+    json_decref(sha256_pin);
+    json_decref(public_key);
+    json_decref(active_checksum);
+    if (result != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
 /** @brief Return the stable external name for one transport selector. */
 static const char *policy_transport_name(enum jg_policy_transport transport)
 {
@@ -2804,6 +2984,91 @@ static int handle_policy_simulation(struct jg_management *management,
     body = policy_simulation_json(&simulation);
     if (body == NULL) {
         return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Return one authenticated stable page of blocklist sources. */
+static int handle_blocklist_sources_list(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_blocklist_source *sources = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t after_id = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_POLICY_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_page_query(request->query, "after_id",
+                         JG_DATABASE_POLICY_PAGE_MAX, &after_id, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The blocklist-source pagination is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    sources = calloc(limit, sizeof(*sources));
+    if (sources == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_database_list_blocklist_sources(
+        management->database, after_id, limit, sources, &count, &has_more);
+    if (result != 0) {
+        free(sources);
+        return respond_error(500, "sources_unavailable",
+                             "The blocklist sources could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = blocklist_source_json(&sources[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "after_id",
+                             json_integer((json_int_t)after_id)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "has_more", json_boolean(has_more)) != 0 ||
+         json_object_set(body, "sources", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        json_t *next = has_more && count > 0U
+                           ? json_integer((json_int_t)sources[count - 1U].id)
+                           : json_null();
+
+        if (json_object_set_new(body, "next_after_id", next) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(sources);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
     }
     return encode_response(200, body, NULL, output, output_size, written);
 }
@@ -4622,6 +4887,11 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/sources") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_blocklist_sources_list(management, request, remote, now,
+                                             output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/domains") == 0 &&
         strcmp(request->method, "GET") == 0) {
