@@ -246,6 +246,15 @@ int jg_nfqueue_group_request_stop(struct jg_nfqueue_group *group)
     return group == NULL ? -EINVAL : notify_stop(group);
 }
 
+/** @brief Join workers without initiating a new stop request. */
+int jg_nfqueue_group_wait(struct jg_nfqueue_group *group)
+{
+    if (group == NULL) {
+        return -EINVAL;
+    }
+    return group->joined ? 0 : join_workers(group);
+}
+
 /** @brief Join every worker after requesting an orderly stop. */
 int jg_nfqueue_group_join(struct jg_nfqueue_group *group)
 {

@@ -98,6 +98,22 @@ int jg_nfqueue_group_start(const struct jg_nfqueue_group_config *config,
 int jg_nfqueue_group_request_stop(struct jg_nfqueue_group *group);
 
 /**
+ * @brief Wait for every worker after an external or internal stop request.
+ *
+ * Unlike @ref jg_nfqueue_group_join, this function does not initiate a stop.
+ * It returns when another control path requests shutdown or one worker fails
+ * and stops the group.
+ *
+ * @param[in,out] group Running or stopped group.
+ *
+ * @return 0 after an orderly stop.
+ * @return The first negative worker or join error otherwise.
+ *
+ * @thread_safety Exactly one control thread may wait for a group.
+ */
+int jg_nfqueue_group_wait(struct jg_nfqueue_group *group);
+
+/**
  * @brief Request an orderly stop and join every worker.
  *
  * @param[in,out] group Running or stopped group.

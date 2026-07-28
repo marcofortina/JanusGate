@@ -113,6 +113,10 @@ add_executable(janusgate-netd src/netd/main.c)
 target_link_libraries(janusgate-netd PRIVATE janusgate-netd-core)
 janusgate_apply_compiler_options(janusgate-netd)
 
+add_executable(janusgated src/daemon/main.c)
+target_link_libraries(janusgated PRIVATE janusgate-daemon-core)
+janusgate_apply_compiler_options(janusgated)
+
 install(
   TARGETS janusgate-common
   EXPORT JanusGateTargets
@@ -132,7 +136,7 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)
 install(
-  TARGETS janusgate-netd
+  TARGETS janusgate-netd janusgated
   RUNTIME DESTINATION "${CMAKE_INSTALL_SBINDIR}"
   COMPONENT runtime)
 install(
@@ -150,7 +154,7 @@ add_custom_target(
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-netd janusgate-unit-tests
+  DEPENDS janusgate-netd janusgated janusgate-unit-tests
   USES_TERMINAL)
 
 if(BUILD_TESTING)

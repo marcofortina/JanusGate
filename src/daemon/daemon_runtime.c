@@ -214,6 +214,12 @@ int jg_daemon_runtime_request_stop(struct jg_daemon_runtime *runtime)
                            : jg_nfqueue_group_request_stop(runtime->queues);
 }
 
+/** @brief Wait for an external stop request or queue-worker failure. */
+int jg_daemon_runtime_wait(struct jg_daemon_runtime *runtime)
+{
+    return runtime == NULL ? -EINVAL : jg_nfqueue_group_wait(runtime->queues);
+}
+
 /** @brief Stop and join every queue worker. */
 int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime)
 {

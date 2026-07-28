@@ -56,6 +56,7 @@ static void test_operations(void **state)
     assert_int_equal(jg_daemon_runtime_start(NULL, &runtime), -EINVAL);
     assert_null(runtime);
     assert_int_equal(jg_daemon_runtime_request_stop(NULL), -EINVAL);
+    assert_int_equal(jg_daemon_runtime_wait(NULL), -EINVAL);
     assert_int_equal(jg_daemon_runtime_join(NULL), -EINVAL);
     jg_daemon_runtime_destroy(NULL);
 }

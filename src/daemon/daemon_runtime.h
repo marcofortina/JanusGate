@@ -95,6 +95,21 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
 int jg_daemon_runtime_request_stop(struct jg_daemon_runtime *runtime);
 
 /**
+ * @brief Wait until a signal or worker failure stops the packet runtime.
+ *
+ * This function does not initiate shutdown.
+ *
+ * @param[in,out] runtime Running or stopped runtime.
+ *
+ * @return 0 after an orderly external stop.
+ * @return -EINVAL for a null runtime.
+ * @return The first negative worker or join error otherwise.
+ *
+ * @thread_safety Exactly one control thread may wait for the runtime.
+ */
+int jg_daemon_runtime_wait(struct jg_daemon_runtime *runtime);
+
+/**
  * @brief Request an orderly stop and join every queue worker.
  *
  * @param[in,out] runtime Running or stopped runtime.
