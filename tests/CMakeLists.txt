@@ -18,7 +18,8 @@ add_executable(
   unit/test_netd.c
   unit/test_nfqueue.c
   unit/test_packet.c
-  unit/test_policy.c)
+  unit/test_policy.c
+  unit/test_policy_store.c)
 target_link_libraries(
   janusgate-unit-tests
   PRIVATE JanusGate::common janusgate-daemon-core janusgate-netd-core

@@ -75,7 +75,8 @@ add_library(
   janusgate-daemon-core STATIC
   src/daemon/dataplane.c
   src/daemon/nfqueue.c
-  src/daemon/nfqueue_group.c)
+  src/daemon/nfqueue_group.c
+  src/daemon/policy_store.c)
 target_include_directories(
   janusgate-daemon-core
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")

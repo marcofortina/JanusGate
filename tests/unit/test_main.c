@@ -22,6 +22,7 @@ int jg_test_netd(void);
 int jg_test_nfqueue(void);
 int jg_test_packet(void);
 int jg_test_policy(void);
+int jg_test_policy_store(void);
 
 /** @brief Run every unit-test group and combine their exit status. */
 int main(void)
@@ -40,5 +41,6 @@ int main(void)
     result |= jg_test_nfqueue();
     result |= jg_test_packet();
     result |= jg_test_policy();
+    result |= jg_test_policy_store();
     return result;
 }
