@@ -43,7 +43,8 @@ static enum jg_ipc_error body_error(int result)
         return JG_IPC_ERROR_MALFORMED;
     }
     if (result == -EINVAL || result == -ERANGE || result == -ENODEV ||
-        result == -EEXIST || result == -EBUSY || result == -EACCES) {
+        result == -EEXIST || result == -EBUSY || result == -EACCES ||
+        result == -EADDRINUSE) {
         return JG_IPC_ERROR_INVALID;
     }
     return JG_IPC_ERROR_SYSTEM;

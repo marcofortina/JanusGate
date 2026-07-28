@@ -110,6 +110,8 @@ static void test_request_dispatch(void **state)
 /** @brief Verify bounded rtnetlink lookup and missing-link reporting. */
 static void test_link_query(void **state)
 {
+    const struct jg_network_config config = test_config();
+    struct jg_netd_bridge_checkpoint checkpoint;
     struct jg_netd_link loopback;
 
     (void)state;
@@ -118,6 +120,9 @@ static void test_link_query(void **state)
     assert_true(loopback.mtu > 0U);
     assert_int_equal(jg_netd_query_link("jg-missing-link", &loopback), -ENODEV);
     assert_int_equal(jg_netd_query_link(NULL, &loopback), -EINVAL);
+    assert_int_equal(jg_netd_apply_bridge(&config, &checkpoint), -ENODEV);
+    assert_false(checkpoint.valid);
+    assert_int_equal(jg_netd_restore_bridge(&checkpoint), -EINVAL);
 }
 
 /** @brief Verify authenticated `SOCK_SEQPACKET` request exchange. */

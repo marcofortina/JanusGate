@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -23,6 +24,8 @@
 struct link_query {
     struct jg_netd_link link;
     bool received;
+    bool stp_received;
+    bool multicast_received;
     int error;
 };
 
@@ -41,6 +44,33 @@ static int configure_netlink_timeout(struct mnl_socket *socket)
     return 0;
 }
 
+/** @brief Decode mutable bridge settings from nested link data. */
+static int decode_bridge_data(const struct nlattr *attribute, void *user_data)
+{
+    struct link_query *query = user_data;
+    const uint16_t type = mnl_attr_get_type(attribute);
+
+    if (mnl_attr_type_valid(attribute, IFLA_BR_MAX) < 0) {
+        return MNL_CB_OK;
+    }
+    if (type == IFLA_BR_STP_STATE) {
+        if (mnl_attr_validate(attribute, MNL_TYPE_U32) < 0) {
+            query->error = -EPROTO;
+            return MNL_CB_ERROR;
+        }
+        query->link.stp = mnl_attr_get_u32(attribute) != 0U;
+        query->stp_received = true;
+    } else if (type == IFLA_BR_MCAST_SNOOPING) {
+        if (mnl_attr_validate(attribute, MNL_TYPE_U8) < 0) {
+            query->error = -EPROTO;
+            return MNL_CB_ERROR;
+        }
+        query->link.multicast_snooping = mnl_attr_get_u8(attribute) != 0U;
+        query->multicast_received = true;
+    }
+    return MNL_CB_OK;
+}
+
 /** @brief Decode nested link-kind attributes. */
 static int decode_link_info(const struct nlattr *attribute, void *user_data)
 {
@@ -56,6 +86,13 @@ static int decode_link_info(const struct nlattr *attribute, void *user_data)
             return MNL_CB_ERROR;
         }
         query->link.bridge = strcmp(mnl_attr_get_str(attribute), "bridge") == 0;
+    } else if (type == IFLA_INFO_DATA &&
+               mnl_attr_parse_nested(attribute, decode_bridge_data, query) <
+                   0) {
+        if (query->error == 0) {
+            query->error = -EPROTO;
+        }
+        return MNL_CB_ERROR;
     }
     return MNL_CB_OK;
 }
@@ -108,6 +145,7 @@ static int decode_link_message(const struct nlmsghdr *header, void *user_data)
         return MNL_CB_ERROR;
     }
     query->link.index = (uint32_t)interface->ifi_index;
+    query->link.flags = interface->ifi_flags;
     if (mnl_attr_parse(header, (unsigned int)sizeof(*interface),
                        decode_link_attribute, query) < 0) {
         if (query->error == 0) {
@@ -119,6 +157,8 @@ static int decode_link_message(const struct nlmsghdr *header, void *user_data)
         query->error = -EPROTO;
         return MNL_CB_ERROR;
     }
+    query->link.bridge_settings_valid =
+        query->stp_received && query->multicast_received;
     query->received = true;
     return MNL_CB_STOP;
 }
@@ -210,6 +250,62 @@ int jg_netd_query_link(const char *name, struct jg_netd_link *link)
     return query_link_index((uint32_t)interface_index, link);
 }
 
+/** @brief Reject IPv4 or IPv6 addresses on every data-plane link. */
+static int validate_data_addresses(const struct jg_network_config *config,
+                                   bool bridge_exists)
+{
+    struct ifaddrs *addresses = NULL;
+    struct ifaddrs *address = NULL;
+    int result = 0;
+
+    if (getifaddrs(&addresses) != 0) {
+        return -errno;
+    }
+    address = addresses;
+    while (address != NULL && result == 0) {
+        if (address->ifa_name != NULL && address->ifa_addr != NULL &&
+            (address->ifa_addr->sa_family == AF_INET ||
+             address->ifa_addr->sa_family == AF_INET6) &&
+            (strcmp(address->ifa_name, config->ingress) == 0 ||
+             strcmp(address->ifa_name, config->egress) == 0 ||
+             (bridge_exists &&
+              strcmp(address->ifa_name, config->bridge) == 0))) {
+            result = -EADDRINUSE;
+        }
+        address = address->ifa_next;
+    }
+    freeifaddrs(addresses);
+    return result;
+}
+
+/** @brief Reject unconfigured ports attached to an existing owned bridge. */
+static int validate_bridge_members(const struct jg_netd_link *bridge,
+                                   const struct jg_netd_link *ingress,
+                                   const struct jg_netd_link *egress)
+{
+    struct if_nameindex *interfaces = if_nameindex();
+    const struct if_nameindex *interface = interfaces;
+    int result = interfaces == NULL ? -errno : 0;
+
+    while (result == 0 && interface->if_index != 0U) {
+        if (interface->if_index != ingress->index &&
+            interface->if_index != egress->index &&
+            interface->if_index != bridge->index) {
+            struct jg_netd_link link;
+
+            result = jg_netd_query_link(interface->if_name, &link);
+            if (result == 0 && link.master_index == bridge->index) {
+                result = -EBUSY;
+            }
+        }
+        ++interface;
+    }
+    if (interfaces != NULL) {
+        if_freenameindex(interfaces);
+    }
+    return result;
+}
+
 /** @brief Validate proposed topology and MTU against effective links. */
 int jg_netd_validate_live_config(const struct jg_network_config *config,
                                  uint32_t *effective_mtu)
@@ -235,7 +331,8 @@ int jg_netd_validate_live_config(const struct jg_network_config *config,
         result = jg_netd_query_link(config->bridge, &bridge);
         if (result == 0) {
             bridge_exists = true;
-            if (!bridge.bridge || !bridge.owned) {
+            if (!bridge.bridge || !bridge.owned ||
+                !bridge.bridge_settings_valid) {
                 result = -EEXIST;
             }
         } else if (result == -ENODEV) {
@@ -243,7 +340,8 @@ int jg_netd_validate_live_config(const struct jg_network_config *config,
         }
     }
     if (result == 0 &&
-        ((ingress.master_index != 0U &&
+        (ingress.bridge || egress.bridge ||
+         (ingress.master_index != 0U &&
           (!bridge_exists || ingress.master_index != bridge.index)) ||
          (egress.master_index != 0U &&
           (!bridge_exists || egress.master_index != bridge.index)))) {
@@ -252,6 +350,12 @@ int jg_netd_validate_live_config(const struct jg_network_config *config,
     if (result == 0 && bridge_exists &&
         management.master_index == bridge.index) {
         result = -EINVAL;
+    }
+    if (result == 0 && bridge_exists) {
+        result = validate_bridge_members(&bridge, &ingress, &egress);
+    }
+    if (result == 0) {
+        result = validate_data_addresses(config, bridge_exists);
     }
     if (result == 0) {
         safe_mtu = ingress.mtu < egress.mtu ? ingress.mtu : egress.mtu;

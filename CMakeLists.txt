@@ -70,6 +70,7 @@ janusgate_apply_compiler_options(janusgate-common)
 
 add_library(
   janusgate-netd-core STATIC
+  src/netd/bridge.c
   src/netd/rtnetlink.c
   src/netd/server.c)
 target_include_directories(

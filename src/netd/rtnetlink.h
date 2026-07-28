@@ -28,10 +28,38 @@ struct jg_netd_link {
     uint32_t master_index;
     /** Current link MTU. */
     uint32_t mtu;
+    /** Current kernel interface flags. */
+    uint32_t flags;
     /** Whether the link kind is `bridge`. */
     bool bridge;
     /** Whether the fixed JanusGate ownership alias is present. */
     bool owned;
+    /** Current bridge spanning-tree setting. */
+    bool stp;
+    /** Current bridge multicast-snooping setting. */
+    bool multicast_snooping;
+    /** Whether both bridge settings were present in the response. */
+    bool bridge_settings_valid;
+};
+
+/**
+ * @brief Complete prior bridge state retained for cross-subsystem rollback.
+ */
+struct jg_netd_bridge_checkpoint {
+    /** Prior bridge state, meaningful when @ref bridge_existed is true. */
+    struct jg_netd_link bridge;
+    /** Prior ingress-port master and administrative state. */
+    struct jg_netd_link ingress;
+    /** Prior egress-port master and administrative state. */
+    struct jg_netd_link egress;
+    /** Bridge index created or reused by the completed transaction. */
+    uint32_t bridge_index;
+    /** MTU selected during validation. */
+    uint32_t effective_mtu;
+    /** Whether the owned bridge existed before the transaction. */
+    bool bridge_existed;
+    /** Whether this checkpoint may be restored exactly once. */
+    bool valid;
 };
 
 /**
@@ -67,6 +95,7 @@ int jg_netd_query_link(const char *name, struct jg_netd_link *link);
  * @return -ENODEV when a required physical interface is absent.
  * @return -EEXIST when the bridge name belongs to another link.
  * @return -EBUSY when a data port belongs to another master.
+ * @return -EADDRINUSE when a data link has an IP address.
  * @return -ERANGE when port or requested MTU is unsafe.
  * @return A negative errno-style query error otherwise.
  *
@@ -76,5 +105,46 @@ int jg_netd_query_link(const char *name, struct jg_netd_link *link);
  */
 int jg_netd_validate_live_config(const struct jg_network_config *config,
                                  uint32_t *effective_mtu);
+
+/**
+ * @brief Apply the owned data bridge as a rollback-safe transaction.
+ *
+ * The function creates or reconfigures only the allowlisted owned bridge,
+ * attaches exactly the two configured data ports, and brings the three links
+ * up. Any failed step restores the prior port masters, link state, MTU, and
+ * bridge settings.
+ *
+ * @param[in] config Structurally and operationally valid configuration.
+ * @param[out] checkpoint Receives prior state for a later cross-subsystem
+ * rollback. It contains no owned resources.
+ *
+ * @return 0 when the bridge transaction completed.
+ * @return -EUCLEAN when an apply error was followed by failed rollback.
+ * @return A negative errno-style validation or rtnetlink error otherwise.
+ *
+ * @thread_safety Calls affecting the same links require external
+ * serialization.
+ *
+ * @side_effects Creates, updates, or restores JanusGate-owned network links.
+ */
+int jg_netd_apply_bridge(const struct jg_network_config *config,
+                         struct jg_netd_bridge_checkpoint *checkpoint);
+
+/**
+ * @brief Restore a successfully captured bridge checkpoint.
+ *
+ * @param[in,out] checkpoint Prior state returned by
+ * @ref jg_netd_apply_bridge. It is invalidated after successful restoration.
+ *
+ * @return 0 when prior state was restored.
+ * @return -EINVAL for a null or already consumed checkpoint.
+ * @return A negative errno-style rtnetlink error otherwise.
+ *
+ * @thread_safety Calls affecting the same links require external
+ * serialization.
+ *
+ * @side_effects Restores or removes JanusGate-owned network links.
+ */
+int jg_netd_restore_bridge(struct jg_netd_bridge_checkpoint *checkpoint);
 
 #endif
