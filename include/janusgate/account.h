@@ -59,6 +59,15 @@
 /** Minimum interval between persistent session activity writes. */
 #define JG_ACCOUNT_SESSION_TOUCH_INTERVAL 60U
 
+/** Maximum API-token display-name bytes excluding the null terminator. */
+#define JG_ACCOUNT_TOKEN_NAME_MAX 128U
+
+/** Smallest accepted API-token request limit per minute. */
+#define JG_ACCOUNT_TOKEN_RATE_MIN 1U
+
+/** Largest accepted API-token request limit per minute. */
+#define JG_ACCOUNT_TOKEN_RATE_MAX 60000U
+
 /**
  * @brief Authenticated local identity returned to management services.
  */
@@ -89,6 +98,36 @@ struct jg_account_session_tokens {
     char csrf[JG_AUTH_SECRET_TEXT_SIZE];
     /** Absolute Unix expiry timestamp. */
     uint64_t expires_at;
+};
+
+/**
+ * @brief Validated configuration used when issuing one API token.
+ */
+struct jg_account_token_config {
+    /** Nonempty administrative display name borrowed during the call. */
+    const char *name;
+    /** Nonzero API scope permissions limited by the owning user's roles. */
+    uint32_t permissions;
+    /** Absolute Unix expiry, or zero for no expiry. */
+    uint64_t expires_at;
+    /** Optional source-network family. */
+    enum jg_policy_address_family source_family;
+    /** Network-order source prefix address. */
+    uint8_t source_address[16U];
+    /** Significant source prefix bits, or zero without a restriction. */
+    uint8_t source_prefix;
+    /** Per-token requests accepted in one minute. */
+    uint32_t requests_per_minute;
+};
+
+/**
+ * @brief One-time plaintext API-token issuance result.
+ */
+struct jg_account_api_token {
+    /** Persistent nonzero token identifier. */
+    uint64_t token_id;
+    /** Opaque token displayed only by the creation operation. */
+    char secret[JG_AUTH_SECRET_TEXT_SIZE];
 };
 
 /**
@@ -307,5 +346,92 @@ JG_PUBLIC int jg_account_session_revoke(struct jg_database *database,
  */
 JG_PUBLIC int jg_account_sessions_revoke_all(struct jg_database *database,
                                              uint64_t user_id);
+
+/**
+ * @brief Issue one scoped API token for an enabled local user.
+ *
+ * The requested scopes must be a subset of the user's current role
+ * permissions. Only a fixed digest of the returned secret is persisted.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Owning nonzero user identifier.
+ * @param[in] config Complete token configuration.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] token Receives the persistent identifier and one-time secret.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null, malformed, or unsupported input.
+ * @return -EACCES when the user is disabled or lacks requested permissions.
+ * @return -ENOENT when the user does not exist.
+ * @return A negative errno-style cryptographic or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts one persistent token and obtains random bytes.
+ */
+JG_PUBLIC int jg_account_token_issue(
+    struct jg_database *database,
+    uint64_t user_id,
+    const struct jg_account_token_config *config,
+    uint64_t now,
+    struct jg_account_api_token *token);
+
+/**
+ * @brief Authenticate one API token and return its current identity.
+ *
+ * Role permissions and persistent token scopes are intersected on every
+ * authentication. Optional source-network and expiry restrictions are
+ * enforced before the token's last-use timestamp is advanced.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] token Opaque API-token bytes.
+ * @param[in] token_size Number of bytes in @p token.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[in] remote_family Current IPv4 or IPv6 source family.
+ * @param[in] remote_address Current network-order source address.
+ * @param[out] identity Receives the authorized owning identity.
+ * @param[out] token_id Receives the persistent token identifier.
+ * @param[out] requests_per_minute Receives the persistent rate limit.
+ *
+ * @return 0 on successful token authentication.
+ * @return -EINVAL for a null or inconsistent input.
+ * @return -EACCES for an unknown, expired, revoked, disabled, or
+ * source-mismatched token.
+ * @return A negative errno-style digest or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects May advance the persistent last-use timestamp.
+ */
+JG_PUBLIC int jg_account_token_validate(
+    struct jg_database *database,
+    const uint8_t *token,
+    size_t token_size,
+    uint64_t now,
+    enum jg_policy_address_family remote_family,
+    const uint8_t *remote_address,
+    struct jg_account_identity *identity,
+    uint64_t *token_id,
+    uint32_t *requests_per_minute);
+
+/**
+ * @brief Revoke one API token idempotently.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] token_id Persistent nonzero token identifier.
+ * @param[in] now Current Unix timestamp in seconds.
+ *
+ * @return 0 when the token was already revoked or is revoked now.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the token does not exist.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Sets the revocation timestamp and increments token revision.
+ */
+JG_PUBLIC int jg_account_token_revoke(struct jg_database *database,
+                                      uint64_t token_id,
+                                      uint64_t now);
 
 #endif

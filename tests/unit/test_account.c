@@ -315,6 +315,78 @@ static void test_web_sessions(void **state)
     remove_account_database(directory, path);
 }
 
+/** @brief Verify API-token scopes, source policy, use tracking, and revocation.
+ */
+static void test_api_tokens(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    static const uint8_t remote[4U] = {192U, 0U, 2U, 10U};
+    static const uint8_t other_remote[4U] = {198U, 51U, 100U, 10U};
+    char directory[64U];
+    char path[512U];
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_account_token_config config = {
+        .name = "automation",
+        .permissions = JG_ACCESS_STATUS_READ | JG_ACCESS_POLICY_READ,
+        .source_family = JG_POLICY_ADDRESS_IPV4,
+        .source_address = {192U, 0U, 2U, 99U},
+        .source_prefix = 24U,
+        .requests_per_minute = 120U,
+    };
+    struct jg_account_api_token token;
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_identity identity;
+    struct jg_database *database = NULL;
+    uint32_t requests_per_minute = 0U;
+    uint64_t authenticated_token_id = 0U;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_account_bootstrap_issue(database, 100U, 300U, bootstrap), 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, 101U,
+                         &user_id),
+                     0);
+    assert_int_equal(
+        jg_account_token_issue(database, user_id, &config, 110U, &token), 0);
+    assert_true(token.token_id > 0U);
+    assert_int_equal(strlen(token.secret), JG_AUTH_SECRET_TEXT_SIZE - 1U);
+    assert_int_equal(jg_account_token_validate(
+                         database, (const uint8_t *)token.secret,
+                         strlen(token.secret), 111U, JG_POLICY_ADDRESS_IPV4,
+                         remote, &identity, &authenticated_token_id,
+                         &requests_per_minute),
+                     0);
+    assert_int_equal(authenticated_token_id, token.token_id);
+    assert_int_equal(requests_per_minute, 120U);
+    assert_int_equal(identity.permissions, config.permissions);
+    assert_int_equal(jg_account_token_validate(
+                         database, (const uint8_t *)token.secret,
+                         strlen(token.secret), 112U, JG_POLICY_ADDRESS_IPV4,
+                         other_remote, &identity, &authenticated_token_id,
+                         &requests_per_minute),
+                     -EACCES);
+    assert_int_equal(jg_account_token_revoke(database, token.token_id, 113U),
+                     0);
+    assert_int_equal(jg_account_token_revoke(database, token.token_id, 114U),
+                     0);
+    assert_int_equal(jg_account_token_validate(
+                         database, (const uint8_t *)token.secret,
+                         strlen(token.secret), 115U, JG_POLICY_ADDRESS_IPV4,
+                         remote, &identity, &authenticated_token_id,
+                         &requests_per_minute),
+                     -EACCES);
+    jg_database_close(database);
+    remove_account_database(directory, path);
+}
+
 /** @brief Run the first-boot account unit-test group. */
 int jg_test_account(void)
 {
@@ -323,6 +395,7 @@ int jg_test_account(void)
         cmocka_unit_test(test_bootstrap_expiration),
         cmocka_unit_test(test_password_authentication),
         cmocka_unit_test(test_web_sessions),
+        cmocka_unit_test(test_api_tokens),
     };
 
     return cmocka_run_group_tests_name("account", tests, NULL, NULL);
