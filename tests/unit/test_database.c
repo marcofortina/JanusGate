@@ -963,6 +963,91 @@ static void test_dns_response_configuration(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify stable paging and complete blocklist-source decoding. */
+static void test_blocklist_source_page(void **state)
+{
+    static const char sources[] =
+        "INSERT INTO blocklist_sources("
+        "id,name,url,format,strict_mode,enabled,update_interval,"
+        "max_download_bytes,max_decompressed_bytes,sha256_pin,"
+        "ed25519_public_key,created_at,updated_at,signature_url,"
+        "connect_timeout_ms,transfer_timeout_ms,redirect_limit,"
+        "retry_base_seconds,retry_max_seconds,revision) VALUES("
+        "2,'remote','https://lists.example/domains','hosts',0,1,3600,"
+        "1024,4096,X'000102030405060708090a0b0c0d0e0f"
+        "101112131415161718191a1b1c1d1e1f',"
+        "X'1f1e1d1c1b1a19181716151413121110"
+        "0f0e0d0c0b0a09080706050403020100',10,20,"
+        "'https://lists.example/domains.sig',5000,30000,3,60,900,4),("
+        "9,'local',NULL,'domain',1,0,86400,2048,8192,NULL,NULL,30,30,NULL,"
+        "10000,60000,0,300,3600,1);"
+        "INSERT INTO blocklist_source_status("
+        "source_id,etag,last_modified,last_attempt_at,last_success_at,"
+        "next_attempt_at,consecutive_failures,active_checksum,active_entries,"
+        "health,last_error,rejected_entries) VALUES("
+        "2,'\"revision-4\"','Mon, 27 Jul 2026 10:00:00 GMT',100,90,160,2,"
+        "X'01010101010101010101010101010101"
+        "01010101010101010101010101010101',42,'degraded','timeout',3);";
+    char directory[64U];
+    char path[512U];
+    struct jg_database_blocklist_source page[1U];
+    struct jg_database *database = NULL;
+    sqlite3 *handle = NULL;
+    size_t count = 0U;
+    bool has_more = false;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    jg_database_close(database);
+    assert_int_equal(
+        sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, sources, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+    database = NULL;
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+
+    assert_int_equal(jg_database_list_blocklist_sources(database, 0U, 1U, page,
+                                                        &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_true(has_more);
+    assert_int_equal(page[0U].id, 2U);
+    assert_int_equal(page[0U].revision, 4U);
+    assert_string_equal(page[0U].name, "remote");
+    assert_string_equal(page[0U].url, "https://lists.example/domains");
+    assert_string_equal(page[0U].signature_url,
+                        "https://lists.example/domains.sig");
+    assert_int_equal(page[0U].format, JG_BLOCKLIST_FORMAT_HOSTS);
+    assert_int_equal(page[0U].mode, JG_BLOCKLIST_TOLERANT);
+    assert_true(page[0U].enabled);
+    assert_true(page[0U].has_sha256_pin);
+    assert_true(page[0U].has_signature);
+    assert_true(page[0U].has_active_checksum);
+    assert_int_equal(page[0U].active_entries, 42U);
+    assert_int_equal(page[0U].rejected_entries, 3U);
+    assert_int_equal(page[0U].health, JG_DATABASE_BLOCKLIST_DEGRADED);
+    assert_string_equal(page[0U].last_error, "timeout");
+
+    assert_int_equal(jg_database_list_blocklist_sources(database, 2U, 1U, page,
+                                                        &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(page[0U].id, 9U);
+    assert_string_equal(page[0U].name, "local");
+    assert_string_equal(page[0U].url, "");
+    assert_false(page[0U].enabled);
+    assert_false(page[0U].has_active_checksum);
+    assert_int_equal(page[0U].health, JG_DATABASE_BLOCKLIST_UNKNOWN);
+    assert_int_equal(jg_database_list_blocklist_sources(database, 0U, 0U, page,
+                                                        &count, &has_more),
+                     -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the SQLite lifecycle and migration test group. */
 int jg_test_database(void)
 {
@@ -976,6 +1061,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
         cmocka_unit_test(test_dns_response_configuration),
+        cmocka_unit_test(test_blocklist_source_page),
     };
 
     return cmocka_run_group_tests_name("database", tests, NULL, NULL);

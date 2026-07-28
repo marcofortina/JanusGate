@@ -2167,6 +2167,350 @@ static int decode_destination_record(
     return result;
 }
 
+/** @brief Copy one nullable text column into bounded record storage. */
+static int copy_optional_text(sqlite3_stmt *statement,
+                              int column,
+                              char *destination,
+                              size_t capacity)
+{
+    const unsigned char *text = NULL;
+    int byte_count = 0;
+
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        destination[0U] = '\0';
+        return 0;
+    }
+    if (sqlite3_column_type(statement, column) != SQLITE_TEXT) {
+        return -EILSEQ;
+    }
+    text = sqlite3_column_text(statement, column);
+    byte_count = sqlite3_column_bytes(statement, column);
+    if (text == NULL || byte_count < 0 || (size_t)byte_count >= capacity ||
+        memchr(text, '\0', (size_t)byte_count) != NULL) {
+        return -EILSEQ;
+    }
+    (void)memcpy(destination, text, (size_t)byte_count);
+    destination[byte_count] = '\0';
+    return 0;
+}
+
+/** @brief Decode one required nonnegative integer column. */
+static int decode_unsigned(sqlite3_stmt *statement, int column, uint64_t *value)
+{
+    sqlite3_int64 persistent = 0;
+
+    if (sqlite3_column_type(statement, column) != SQLITE_INTEGER) {
+        return -EILSEQ;
+    }
+    persistent = sqlite3_column_int64(statement, column);
+    if (persistent < 0) {
+        return -EILSEQ;
+    }
+    *value = (uint64_t)persistent;
+    return 0;
+}
+
+/** @brief Decode a nullable nonnegative integer as zero when absent. */
+static int decode_optional_unsigned(sqlite3_stmt *statement,
+                                    int column,
+                                    uint64_t *value)
+{
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        *value = 0U;
+        return 0;
+    }
+    return decode_unsigned(statement, column, value);
+}
+
+/** @brief Decode one optional fixed-size binary column. */
+static int decode_optional_blob(sqlite3_stmt *statement,
+                                int column,
+                                uint8_t *destination,
+                                size_t expected_size,
+                                bool *present)
+{
+    const void *blob = NULL;
+
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        *present = false;
+        return 0;
+    }
+    blob = sqlite3_column_blob(statement, column);
+    if (sqlite3_column_type(statement, column) != SQLITE_BLOB || blob == NULL ||
+        sqlite3_column_bytes(statement, column) != (int)expected_size) {
+        return -EILSEQ;
+    }
+    (void)memcpy(destination, blob, expected_size);
+    *present = true;
+    return 0;
+}
+
+/** @brief Decode one persistent blocklist syntax name. */
+static int decode_blocklist_format(const char *text,
+                                   enum jg_blocklist_format *format)
+{
+    if (strcmp(text, "domain") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_DOMAIN;
+    } else if (strcmp(text, "hosts") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_HOSTS;
+    } else if (strcmp(text, "category") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_CATEGORY;
+    } else if (strcmp(text, "rpz") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_RPZ;
+    } else if (strcmp(text, "json") == 0) {
+        *format = JG_BLOCKLIST_FORMAT_JSON;
+    } else {
+        return -EILSEQ;
+    }
+    return 0;
+}
+
+/** @brief Decode one persistent blocklist health name. */
+static int decode_blocklist_health(const char *text,
+                                   enum jg_database_blocklist_health *health)
+{
+    if (strcmp(text, "unknown") == 0) {
+        *health = JG_DATABASE_BLOCKLIST_UNKNOWN;
+    } else if (strcmp(text, "healthy") == 0) {
+        *health = JG_DATABASE_BLOCKLIST_HEALTHY;
+    } else if (strcmp(text, "degraded") == 0) {
+        *health = JG_DATABASE_BLOCKLIST_DEGRADED;
+    } else if (strcmp(text, "failed") == 0) {
+        *health = JG_DATABASE_BLOCKLIST_FAILED;
+    } else {
+        return -EILSEQ;
+    }
+    return 0;
+}
+
+/** @brief Decode the integer fields of one blocklist-source row. */
+static int decode_blocklist_source_integers(
+    sqlite3_stmt *statement,
+    struct jg_database_blocklist_source *source)
+{
+    static const int state_columns[] = {22, 23, 24, 25, 27, 28};
+    uint64_t config[8U];
+    uint64_t state[6U];
+    size_t index = 0U;
+    int result = 0;
+
+    for (index = 0U; index < 8U && result == 0; ++index) {
+        result = decode_unsigned(statement, (int)index + 10, &config[index]);
+    }
+    for (index = 0U; index < 3U && result == 0; ++index) {
+        result = decode_optional_unsigned(statement, state_columns[index],
+                                          &state[index]);
+    }
+    for (; index < 6U && result == 0; ++index) {
+        result =
+            decode_unsigned(statement, state_columns[index], &state[index]);
+    }
+    if (result != 0 || config[0U] < 300U || config[0U] > 2592000U ||
+        config[1U] == 0U || config[1U] > SIZE_MAX || config[2U] < config[1U] ||
+        config[2U] > SIZE_MAX || config[3U] == 0U || config[3U] > INT32_MAX ||
+        config[4U] == 0U || config[4U] > INT32_MAX || config[5U] > 20U ||
+        config[6U] == 0U || config[7U] < config[6U] || state[3U] > UINT32_MAX ||
+        state[4U] > SIZE_MAX || state[5U] > SIZE_MAX) {
+        return result != 0 ? result : -EILSEQ;
+    }
+    source->update_interval_seconds = config[0U];
+    source->max_download_bytes = (size_t)config[1U];
+    source->max_decompressed_bytes = (size_t)config[2U];
+    source->connect_timeout_ms = (uint32_t)config[3U];
+    source->transfer_timeout_ms = (uint32_t)config[4U];
+    source->redirect_limit = (uint32_t)config[5U];
+    source->retry_base_seconds = config[6U];
+    source->retry_max_seconds = config[7U];
+    source->last_attempt_at = state[0U];
+    source->last_success_at = state[1U];
+    source->next_attempt_at = state[2U];
+    source->consecutive_failures = (uint32_t)state[3U];
+    source->active_entries = (size_t)state[4U];
+    source->rejected_entries = (size_t)state[5U];
+    return 0;
+}
+
+/** @brief Decode one selected blocklist source and update-state row. */
+static int decode_blocklist_source(sqlite3_stmt *statement,
+                                   struct jg_database_blocklist_source *source)
+{
+    const char *text = NULL;
+    size_t text_length = 0U;
+    uint64_t id = 0U;
+    uint64_t revision = 0U;
+    uint64_t created_at = 0U;
+    uint64_t updated_at = 0U;
+    uint64_t strict_mode = 0U;
+    uint64_t enabled = 0U;
+    int result = 0;
+
+    (void)memset(source, 0, sizeof(*source));
+    result = decode_unsigned(statement, 0, &id);
+    if (result == 0) {
+        result = decode_unsigned(statement, 1, &revision);
+    }
+    if (result == 0) {
+        result = decode_unsigned(statement, 2, &created_at);
+    }
+    if (result == 0) {
+        result = decode_unsigned(statement, 3, &updated_at);
+    }
+    if (result == 0) {
+        result = copy_optional_text(statement, 4, source->name,
+                                    sizeof(source->name));
+    }
+    if (result == 0) {
+        result =
+            copy_optional_text(statement, 5, source->url, sizeof(source->url));
+    }
+    if (result == 0) {
+        result = copy_optional_text(statement, 6, source->signature_url,
+                                    sizeof(source->signature_url));
+    }
+    if (result == 0) {
+        result = required_text(statement, 7, &text, &text_length);
+    }
+    if (result == 0) {
+        result = decode_blocklist_format(text, &source->format);
+    }
+    if (result == 0) {
+        result = decode_unsigned(statement, 8, &strict_mode);
+    }
+    if (result == 0) {
+        result = decode_unsigned(statement, 9, &enabled);
+    }
+    if (result == 0) {
+        result = decode_blocklist_source_integers(statement, source);
+    }
+    if (result == 0) {
+        result = decode_optional_blob(statement, 18, source->sha256_pin,
+                                      sizeof(source->sha256_pin),
+                                      &source->has_sha256_pin);
+    }
+    if (result == 0) {
+        result = decode_optional_blob(statement, 19, source->ed25519_public_key,
+                                      sizeof(source->ed25519_public_key),
+                                      &source->has_signature);
+    }
+    if (result == 0) {
+        result = copy_optional_text(statement, 20, source->etag,
+                                    sizeof(source->etag));
+    }
+    if (result == 0) {
+        result = copy_optional_text(statement, 21, source->last_modified,
+                                    sizeof(source->last_modified));
+    }
+    if (result == 0) {
+        result = decode_optional_blob(statement, 26, source->active_checksum,
+                                      sizeof(source->active_checksum),
+                                      &source->has_active_checksum);
+    }
+    if (result == 0) {
+        result = required_text(statement, 29, &text, &text_length);
+    }
+    if (result == 0) {
+        result = decode_blocklist_health(text, &source->health);
+    }
+    if (result == 0) {
+        result = copy_optional_text(statement, 30, source->last_error,
+                                    sizeof(source->last_error));
+    }
+    if (result == 0 &&
+        (id == 0U || revision == 0U || updated_at < created_at ||
+         source->name[0U] == '\0' ||
+         (source->url[0U] != '\0' &&
+          strncmp(source->url, "https://", 8U) != 0) ||
+         (source->url[0U] == '\0' && source->has_signature) ||
+         ((source->signature_url[0U] != '\0') != source->has_signature) ||
+         (source->signature_url[0U] != '\0' &&
+          strncmp(source->signature_url, "https://", 8U) != 0) ||
+         (strict_mode != 0U && strict_mode != 1U) ||
+         (enabled != 0U && enabled != 1U) ||
+         (!source->has_active_checksum && source->active_entries != 0U))) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        source->id = id;
+        source->revision = revision;
+        source->created_at = created_at;
+        source->updated_at = updated_at;
+        source->mode =
+            strict_mode != 0U ? JG_BLOCKLIST_STRICT : JG_BLOCKLIST_TOLERANT;
+        source->enabled = enabled != 0U;
+    }
+    return result;
+}
+
+/** @brief Read one stable identifier-ordered page of blocklist sources. */
+int jg_database_list_blocklist_sources(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_blocklist_source *sources,
+    size_t *count,
+    bool *has_more)
+{
+    static const char query[] =
+        "SELECT s.id,s.revision,s.created_at,s.updated_at,s.name,s.url,"
+        "s.signature_url,s.format,s.strict_mode,s.enabled,s.update_interval,"
+        "s.max_download_bytes,s.max_decompressed_bytes,s.connect_timeout_ms,"
+        "s.transfer_timeout_ms,s.redirect_limit,s.retry_base_seconds,"
+        "s.retry_max_seconds,s.sha256_pin,s.ed25519_public_key,st.etag,"
+        "st.last_modified,st.last_attempt_at,st.last_success_at,"
+        "st.next_attempt_at,COALESCE(st.consecutive_failures,0),"
+        "st.active_checksum,COALESCE(st.active_entries,0),"
+        "COALESCE(st.rejected_entries,0),COALESCE(st.health,'unknown'),"
+        "st.last_error FROM blocklist_sources AS s LEFT JOIN "
+        "blocklist_source_status AS st ON st.source_id=s.id WHERE s.id>?1 "
+        "ORDER BY s.id LIMIT ?2;";
+    sqlite3_stmt *statement = NULL;
+    size_t index = 0U;
+    bool more = false;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || after_id > (uint64_t)INT64_MAX || limit == 0U ||
+        limit > JG_DATABASE_POLICY_PAGE_MAX || sources == NULL ||
+        count == NULL || has_more == NULL) {
+        return -EINVAL;
+    }
+    *count = 0U;
+    *has_more = false;
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)after_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 2, (int)(limit + 1U));
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
+        if (index == limit) {
+            more = true;
+            break;
+        }
+        result = decode_blocklist_source(statement, &sources[index]);
+        ++index;
+    }
+    if (result == 0 && !more && status != SQLITE_DONE) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *count = index;
+        *has_more = more;
+    }
+    return result;
+}
+
 /** @brief Read one stable identifier-ordered page of domain rules. */
 int jg_database_list_domain_rules(struct jg_database *database,
                                   uint64_t after_id,

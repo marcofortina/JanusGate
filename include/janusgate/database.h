@@ -24,6 +24,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/blocklist.h"
+#include "janusgate/blocklist_remote.h"
 #include "janusgate/dns_policy.h"
 #include "janusgate/network.h"
 #include "janusgate/policy.h"
@@ -40,6 +42,29 @@
 
 /** Maximum number of policy records returned by one database page. */
 #define JG_DATABASE_POLICY_PAGE_MAX 100U
+
+/** Maximum blocklist source name bytes excluding the terminator. */
+#define JG_DATABASE_BLOCKLIST_NAME_MAX 128U
+
+/** Maximum stored source URL bytes excluding the terminator. */
+#define JG_DATABASE_BLOCKLIST_URL_MAX 2048U
+
+/** Maximum stored blocklist update error bytes excluding the terminator. */
+#define JG_DATABASE_BLOCKLIST_ERROR_MAX 2048U
+
+/**
+ * @brief Persistent health classification for one blocklist source.
+ */
+enum jg_database_blocklist_health {
+    /** No update has completed. */
+    JG_DATABASE_BLOCKLIST_UNKNOWN = 0,
+    /** The latest scheduled update completed successfully. */
+    JG_DATABASE_BLOCKLIST_HEALTHY = 1,
+    /** Updates are failing while a last-known-good list remains active. */
+    JG_DATABASE_BLOCKLIST_DEGRADED = 2,
+    /** No usable list is active after repeated failures. */
+    JG_DATABASE_BLOCKLIST_FAILED = 3
+};
 
 /** Opaque owned database connection. */
 struct jg_database;
@@ -106,6 +131,122 @@ struct jg_database_destination_rule {
     struct jg_policy_scope scope;
     /** Whether the rule participates in active policy. */
     bool enabled;
+};
+
+/**
+ * @brief Caller-owned configuration for one local or remote blocklist source.
+ */
+struct jg_database_blocklist_source_config {
+    /** Unique human-readable source name. */
+    const char *name;
+    /** HTTPS update URL, or null for a local source. */
+    const char *url;
+    /** Optional HTTPS detached-signature URL. */
+    const char *signature_url;
+    /** Imported list syntax. */
+    enum jg_blocklist_format format;
+    /** Strict or tolerant record handling. */
+    enum jg_blocklist_mode mode;
+    /** Whether source entries participate in active policy. */
+    bool enabled;
+    /** Normal remote update interval in seconds. */
+    uint64_t update_interval_seconds;
+    /** Maximum compressed download bytes. */
+    size_t max_download_bytes;
+    /** Maximum decompressed import bytes. */
+    size_t max_decompressed_bytes;
+    /** TCP and TLS connection timeout in milliseconds. */
+    uint32_t connect_timeout_ms;
+    /** Complete transfer timeout in milliseconds. */
+    uint32_t transfer_timeout_ms;
+    /** Maximum followed HTTPS redirects. */
+    uint32_t redirect_limit;
+    /** Initial failed-update retry delay in seconds. */
+    uint64_t retry_base_seconds;
+    /** Maximum failed-update retry delay in seconds. */
+    uint64_t retry_max_seconds;
+    /** Whether @ref sha256_pin is configured. */
+    bool has_sha256_pin;
+    /** Expected downloaded-body SHA-256 digest. */
+    uint8_t sha256_pin[JG_BLOCKLIST_CHECKSUM_SIZE];
+    /** Whether detached Ed25519 verification is required. */
+    bool has_signature;
+    /** Ed25519 public verification key. */
+    uint8_t ed25519_public_key[32U];
+};
+
+/**
+ * @brief Self-contained persistent blocklist source and update state.
+ */
+struct jg_database_blocklist_source {
+    /** Stable positive source identifier. */
+    uint64_t id;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Creation time as Unix seconds. */
+    uint64_t created_at;
+    /** Last configuration modification time as Unix seconds. */
+    uint64_t updated_at;
+    /** Unique human-readable source name. */
+    char name[JG_DATABASE_BLOCKLIST_NAME_MAX + 1U];
+    /** HTTPS update URL, empty for a local source. */
+    char url[JG_DATABASE_BLOCKLIST_URL_MAX + 1U];
+    /** Detached-signature URL, empty when unused. */
+    char signature_url[JG_DATABASE_BLOCKLIST_URL_MAX + 1U];
+    /** Imported list syntax. */
+    enum jg_blocklist_format format;
+    /** Strict or tolerant record handling. */
+    enum jg_blocklist_mode mode;
+    /** Whether source entries participate in active policy. */
+    bool enabled;
+    /** Normal remote update interval in seconds. */
+    uint64_t update_interval_seconds;
+    /** Maximum compressed download bytes. */
+    size_t max_download_bytes;
+    /** Maximum decompressed import bytes. */
+    size_t max_decompressed_bytes;
+    /** TCP and TLS connection timeout in milliseconds. */
+    uint32_t connect_timeout_ms;
+    /** Complete transfer timeout in milliseconds. */
+    uint32_t transfer_timeout_ms;
+    /** Maximum followed HTTPS redirects. */
+    uint32_t redirect_limit;
+    /** Initial failed-update retry delay. */
+    uint64_t retry_base_seconds;
+    /** Maximum failed-update retry delay. */
+    uint64_t retry_max_seconds;
+    /** Whether @ref sha256_pin is configured. */
+    bool has_sha256_pin;
+    /** Expected downloaded-body SHA-256 digest. */
+    uint8_t sha256_pin[JG_BLOCKLIST_CHECKSUM_SIZE];
+    /** Whether detached Ed25519 verification is required. */
+    bool has_signature;
+    /** Ed25519 public verification key. */
+    uint8_t ed25519_public_key[32U];
+    /** HTTP validator sent through If-None-Match. */
+    char etag[JG_BLOCKLIST_ETAG_MAX + 1U];
+    /** HTTP validator sent through If-Modified-Since. */
+    char last_modified[JG_BLOCKLIST_LAST_MODIFIED_MAX + 1U];
+    /** Latest attempted update time, or zero. */
+    uint64_t last_attempt_at;
+    /** Latest successful update time, or zero. */
+    uint64_t last_success_at;
+    /** Earliest next scheduled update time, or zero. */
+    uint64_t next_attempt_at;
+    /** Consecutive failed attempts. */
+    uint32_t consecutive_failures;
+    /** Whether @ref active_checksum identifies a last-known-good list. */
+    bool has_active_checksum;
+    /** Canonical checksum of the active list. */
+    uint8_t active_checksum[JG_BLOCKLIST_CHECKSUM_SIZE];
+    /** Active unique entry count. */
+    size_t active_entries;
+    /** Records rejected by the active import. */
+    size_t rejected_entries;
+    /** Current source health. */
+    enum jg_database_blocklist_health health;
+    /** Latest bounded update error, empty after success. */
+    char last_error[JG_DATABASE_BLOCKLIST_ERROR_MAX + 1U];
 };
 
 /**
@@ -446,6 +587,36 @@ JG_PUBLIC int jg_database_update_destination_rule(
 JG_PUBLIC int jg_database_delete_destination_rule(struct jg_database *database,
                                                   uint64_t rule_id,
                                                   uint64_t expected_revision);
+
+/**
+ * @brief Read one stable identifier-ordered page of blocklist sources.
+ *
+ * Pass the last identifier returned by the preceding page as @p after_id, or
+ * zero for the first page. Configuration and latest update state are returned
+ * together.
+ *
+ * @param[in] database Open database.
+ * @param[in] after_id Exclusive identifier cursor.
+ * @param[in] limit Requested page size from one through
+ * JG_DATABASE_POLICY_PAGE_MAX.
+ * @param[out] sources Array with room for at least @p limit records.
+ * @param[out] count Number of records written to @p sources.
+ * @param[out] has_more Whether another record follows this page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_list_blocklist_sources(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_blocklist_source *sources,
+    size_t *count,
+    bool *has_more);
 
 /**
  * @brief Read one stable identifier-ordered page of persistent domain rules.
