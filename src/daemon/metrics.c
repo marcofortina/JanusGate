@@ -13,7 +13,7 @@
 #include "janusgate/checked.h"
 
 /** Number of stable metrics emitted from one runtime snapshot. */
-#define METRIC_COUNT 35U
+#define METRIC_COUNT 39U
 
 /** Stable metadata for one numeric Prometheus metric. */
 struct metric_descriptor {
@@ -94,6 +94,14 @@ static const struct metric_descriptor metrics[METRIC_COUNT] = {
      "Visible TLS server names evaluated against policy."},
     {"janusgate_tls_sni_encrypted_or_unavailable_total", "counter",
      "TLS flows whose private server name was encrypted or unavailable."},
+    {"janusgate_dns_block_drop_total", "counter",
+     "Blocked UDP DNS queries discarded without a response."},
+    {"janusgate_dns_block_refused_total", "counter",
+     "REFUSED responses sent for blocked UDP DNS queries."},
+    {"janusgate_dns_block_nxdomain_total", "counter",
+     "NXDOMAIN responses sent for blocked UDP DNS queries."},
+    {"janusgate_dns_block_sinkhole_total", "counter",
+     "Sinkhole responses sent for blocked UDP DNS queries."},
 };
 
 _Static_assert(sizeof(metrics) / sizeof(metrics[0]) == METRIC_COUNT,
@@ -138,6 +146,10 @@ static void collect_values(const struct jg_daemon_runtime_stats *stats,
     values[32U] = stats->output.errors;
     values[33U] = stats->dataplane.sni_inspected;
     values[34U] = stats->dataplane.sni_encrypted_or_unavailable;
+    values[35U] = stats->dataplane.dns_dropped;
+    values[36U] = stats->dataplane.dns_refused;
+    values[37U] = stats->dataplane.dns_nxdomain;
+    values[38U] = stats->dataplane.dns_sinkholed;
 }
 
 /** @brief Measure one complete Prometheus metric record. */

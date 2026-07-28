@@ -72,6 +72,10 @@ static int aggregate_worker(const struct jg_daemon_runtime *runtime,
     saturating_add(dataplane.fragments, &stats->dataplane.fragments);
     saturating_add(dataplane.streams, &stats->dataplane.streams);
     saturating_add(dataplane.tcp_resets, &stats->dataplane.tcp_resets);
+    saturating_add(dataplane.dns_dropped, &stats->dataplane.dns_dropped);
+    saturating_add(dataplane.dns_refused, &stats->dataplane.dns_refused);
+    saturating_add(dataplane.dns_nxdomain, &stats->dataplane.dns_nxdomain);
+    saturating_add(dataplane.dns_sinkholed, &stats->dataplane.dns_sinkholed);
     saturating_add(dataplane.internal_errors,
                    &stats->dataplane.internal_errors);
     saturating_add(dataplane.sni_inspected, &stats->dataplane.sni_inspected);

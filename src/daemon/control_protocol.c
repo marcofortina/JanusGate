@@ -12,13 +12,19 @@
 #include "janusgate/checked.h"
 
 /** Version of the current fixed daemon status body. */
-#define DAEMON_STATUS_VERSION 2U
+#define DAEMON_STATUS_VERSION 3U
 
 /** Version of the original fixed daemon status body. */
 #define DAEMON_STATUS_VERSION_ONE 1U
 
+/** Version which introduced visible-SNI outcome counters. */
+#define DAEMON_STATUS_VERSION_TWO 2U
+
 /** Ordered counter count in a version-one status body. */
 #define DAEMON_STATUS_VERSION_ONE_COUNTER_COUNT 33U
+
+/** Ordered counter count in a version-two status body. */
+#define DAEMON_STATUS_VERSION_TWO_COUNTER_COUNT 35U
 
 /** Fixed metadata bytes preceding ordered status counters. */
 #define DAEMON_STATUS_HEADER_SIZE 8U
@@ -27,6 +33,11 @@
 #define DAEMON_STATUS_VERSION_ONE_WIRE_SIZE                                    \
     (DAEMON_STATUS_HEADER_SIZE +                                               \
      DAEMON_STATUS_VERSION_ONE_COUNTER_COUNT * sizeof(uint64_t))
+
+/** Exact bytes in a version-two daemon status body. */
+#define DAEMON_STATUS_VERSION_TWO_WIRE_SIZE                                    \
+    (DAEMON_STATUS_HEADER_SIZE +                                               \
+     DAEMON_STATUS_VERSION_TWO_COUNTER_COUNT * sizeof(uint64_t))
 
 /** @brief Copy semantic status fields into their stable wire order. */
 static void collect_counters(const struct jg_daemon_runtime_stats *stats,
@@ -67,6 +78,10 @@ static void collect_counters(const struct jg_daemon_runtime_stats *stats,
     values[32U] = stats->output.errors;
     values[33U] = stats->dataplane.sni_inspected;
     values[34U] = stats->dataplane.sni_encrypted_or_unavailable;
+    values[35U] = stats->dataplane.dns_dropped;
+    values[36U] = stats->dataplane.dns_refused;
+    values[37U] = stats->dataplane.dns_nxdomain;
+    values[38U] = stats->dataplane.dns_sinkholed;
 }
 
 /** @brief Restore semantic status fields from stable wire order. */
@@ -166,6 +181,9 @@ int jg_daemon_status_decode(const uint8_t *data,
     if (version == DAEMON_STATUS_VERSION_ONE) {
         expected_size = DAEMON_STATUS_VERSION_ONE_WIRE_SIZE;
         expected_count = DAEMON_STATUS_VERSION_ONE_COUNTER_COUNT;
+    } else if (version == DAEMON_STATUS_VERSION_TWO) {
+        expected_size = DAEMON_STATUS_VERSION_TWO_WIRE_SIZE;
+        expected_count = DAEMON_STATUS_VERSION_TWO_COUNTER_COUNT;
     } else if (version == DAEMON_STATUS_VERSION) {
         expected_size = JG_DAEMON_STATUS_WIRE_SIZE;
         expected_count = JG_DAEMON_STATUS_COUNTER_COUNT;
@@ -187,9 +205,16 @@ int jg_daemon_status_decode(const uint8_t *data,
         }
     }
     restore_counters(values, &decoded);
-    if (version == DAEMON_STATUS_VERSION) {
+    if (version == DAEMON_STATUS_VERSION_TWO ||
+        version == DAEMON_STATUS_VERSION) {
         decoded.dataplane.sni_inspected = values[33U];
         decoded.dataplane.sni_encrypted_or_unavailable = values[34U];
+    }
+    if (version == DAEMON_STATUS_VERSION) {
+        decoded.dataplane.dns_dropped = values[35U];
+        decoded.dataplane.dns_refused = values[36U];
+        decoded.dataplane.dns_nxdomain = values[37U];
+        decoded.dataplane.dns_sinkholed = values[38U];
     }
     *stats = decoded;
     return 0;

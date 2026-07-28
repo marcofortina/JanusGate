@@ -62,6 +62,14 @@ static void print_status_human(const struct jg_daemon_runtime_stats *stats)
                  stats->dataplane.tcp_resets);
     (void)printf("Internal errors:   %" PRIu64 "\n",
                  stats->dataplane.internal_errors);
+    (void)printf("DNS drop:          %" PRIu64 "\n",
+                 stats->dataplane.dns_dropped);
+    (void)printf("DNS REFUSED:       %" PRIu64 "\n",
+                 stats->dataplane.dns_refused);
+    (void)printf("DNS NXDOMAIN:      %" PRIu64 "\n",
+                 stats->dataplane.dns_nxdomain);
+    (void)printf("DNS sinkhole:      %" PRIu64 "\n",
+                 stats->dataplane.dns_sinkholed);
     (void)printf("SNI inspected:     %" PRIu64 "\n",
                  stats->dataplane.sni_inspected);
     (void)printf("SNI unavailable:   %" PRIu64 "\n",
@@ -86,7 +94,9 @@ static void print_status_json(const struct jg_daemon_runtime_stats *stats)
         "\"fragments\":%" PRIu64 ",\"streams\":%" PRIu64 ","
         "\"tcp_resets\":%" PRIu64 ",\"internal_errors\":%" PRIu64 ","
         "\"sni_inspected\":%" PRIu64 ","
-        "\"sni_encrypted_or_unavailable\":%" PRIu64 "},"
+        "\"sni_encrypted_or_unavailable\":%" PRIu64 ","
+        "\"dns_actions\":{\"drop\":%" PRIu64 ",\"refused\":%" PRIu64 ","
+        "\"nxdomain\":%" PRIu64 ",\"sinkhole\":%" PRIu64 "}},"
         "\"fragments\":{"
         "\"stored\":%" PRIu64 ",\"duplicates\":%" PRIu64 ","
         "\"completed\":%" PRIu64 ",\"malformed\":%" PRIu64 ","
@@ -107,15 +117,17 @@ static void print_status_json(const struct jg_daemon_runtime_stats *stats)
         stats->dataplane.fragments, stats->dataplane.streams,
         stats->dataplane.tcp_resets, stats->dataplane.internal_errors,
         stats->dataplane.sni_inspected,
-        stats->dataplane.sni_encrypted_or_unavailable, stats->fragments.stored,
-        stats->fragments.duplicates, stats->fragments.completed,
-        stats->fragments.malformed, stats->fragments.overlaps,
-        stats->fragments.exhausted, stats->fragments.timeouts,
-        stats->tcp_streams.buffered, stats->tcp_streams.duplicates,
-        stats->tcp_streams.messages, stats->tcp_streams.closed,
-        stats->tcp_streams.malformed, stats->tcp_streams.conflicts,
-        stats->tcp_streams.exhausted, stats->tcp_streams.timeouts,
-        stats->output.sent, stats->output.errors);
+        stats->dataplane.sni_encrypted_or_unavailable,
+        stats->dataplane.dns_dropped, stats->dataplane.dns_refused,
+        stats->dataplane.dns_nxdomain, stats->dataplane.dns_sinkholed,
+        stats->fragments.stored, stats->fragments.duplicates,
+        stats->fragments.completed, stats->fragments.malformed,
+        stats->fragments.overlaps, stats->fragments.exhausted,
+        stats->fragments.timeouts, stats->tcp_streams.buffered,
+        stats->tcp_streams.duplicates, stats->tcp_streams.messages,
+        stats->tcp_streams.closed, stats->tcp_streams.malformed,
+        stats->tcp_streams.conflicts, stats->tcp_streams.exhausted,
+        stats->tcp_streams.timeouts, stats->output.sent, stats->output.errors);
 }
 
 /** @brief Run one parsed local administration command. */

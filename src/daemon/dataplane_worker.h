@@ -65,6 +65,14 @@ struct jg_dataplane_stats {
     uint64_t streams;
     /** Blocked TCP connections reset successfully. */
     uint64_t tcp_resets;
+    /** Blocked UDP DNS queries discarded without a response. */
+    uint64_t dns_dropped;
+    /** REFUSED responses sent for blocked UDP DNS queries. */
+    uint64_t dns_refused;
+    /** NXDOMAIN responses sent for blocked UDP DNS queries. */
+    uint64_t dns_nxdomain;
+    /** Sinkhole responses sent for blocked UDP DNS queries. */
+    uint64_t dns_sinkholed;
     /** Internal classification failures closed with a drop. */
     uint64_t internal_errors;
     /** Complete visible SNI values evaluated against policy. */

@@ -16,7 +16,7 @@
 #include "daemon_runtime.h"
 
 /** Number of ordered counters in the current daemon status body. */
-#define JG_DAEMON_STATUS_COUNTER_COUNT 35U
+#define JG_DAEMON_STATUS_COUNTER_COUNT 39U
 
 /** Exact bytes in the current daemon status body. */
 #define JG_DAEMON_STATUS_WIRE_SIZE                                             \
@@ -44,7 +44,7 @@ int jg_daemon_status_encode(const struct jg_daemon_runtime_stats *stats,
 /**
  * @brief Decode one exact canonical daemon status body.
  *
- * Version-one and current status bodies are accepted.
+ * Every released status body version is accepted.
  *
  * @param[in] data Exact supported status body.
  * @param[in] data_size Number of bytes in @p data.

@@ -30,6 +30,10 @@ struct atomic_dataplane_stats {
     atomic_uint_fast64_t fragments;
     atomic_uint_fast64_t streams;
     atomic_uint_fast64_t tcp_resets;
+    atomic_uint_fast64_t dns_dropped;
+    atomic_uint_fast64_t dns_refused;
+    atomic_uint_fast64_t dns_nxdomain;
+    atomic_uint_fast64_t dns_sinkholed;
     atomic_uint_fast64_t internal_errors;
     atomic_uint_fast64_t sni_inspected;
     atomic_uint_fast64_t sni_encrypted_or_unavailable;
@@ -80,6 +84,10 @@ static void initialize_stats(struct atomic_dataplane_stats *stats)
     atomic_init(&stats->fragments, 0U);
     atomic_init(&stats->streams, 0U);
     atomic_init(&stats->tcp_resets, 0U);
+    atomic_init(&stats->dns_dropped, 0U);
+    atomic_init(&stats->dns_refused, 0U);
+    atomic_init(&stats->dns_nxdomain, 0U);
+    atomic_init(&stats->dns_sinkholed, 0U);
     atomic_init(&stats->internal_errors, 0U);
     atomic_init(&stats->sni_inspected, 0U);
     atomic_init(&stats->sni_encrypted_or_unavailable, 0U);
@@ -143,6 +151,18 @@ static int respond_blocked_udp(struct jg_dataplane_worker *worker,
         }
         operation_result = worker->frame_sender(
             worker->dns_response, response_size, worker->frame_context);
+    }
+    if (operation_result == 0) {
+        if (worker->dns_response_config.action == JG_DNS_BLOCK_DROP) {
+            increment(&worker->stats.dns_dropped);
+        } else if (worker->dns_response_config.action == JG_DNS_BLOCK_REFUSED) {
+            increment(&worker->stats.dns_refused);
+        } else if (worker->dns_response_config.action ==
+                   JG_DNS_BLOCK_NXDOMAIN) {
+            increment(&worker->stats.dns_nxdomain);
+        } else {
+            increment(&worker->stats.dns_sinkholed);
+        }
     }
     return operation_result;
 }
@@ -591,6 +611,14 @@ int jg_dataplane_worker_get_stats(const struct jg_dataplane_worker *worker,
         atomic_load_explicit(&worker->stats.streams, memory_order_relaxed);
     stats->tcp_resets =
         atomic_load_explicit(&worker->stats.tcp_resets, memory_order_relaxed);
+    stats->dns_dropped =
+        atomic_load_explicit(&worker->stats.dns_dropped, memory_order_relaxed);
+    stats->dns_refused =
+        atomic_load_explicit(&worker->stats.dns_refused, memory_order_relaxed);
+    stats->dns_nxdomain =
+        atomic_load_explicit(&worker->stats.dns_nxdomain, memory_order_relaxed);
+    stats->dns_sinkholed = atomic_load_explicit(&worker->stats.dns_sinkholed,
+                                                memory_order_relaxed);
     stats->internal_errors = atomic_load_explicit(
         &worker->stats.internal_errors, memory_order_relaxed);
     stats->sni_inspected = atomic_load_explicit(&worker->stats.sni_inspected,

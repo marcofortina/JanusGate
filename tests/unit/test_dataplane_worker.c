@@ -294,6 +294,7 @@ static void test_fragmented_dns(void **state)
     assert_int_equal(capture.frame[44U], 0x81U);
     assert_int_equal(capture.frame[45U], 0x85U);
     assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
+    assert_int_equal(stats.dns_refused, 1U);
     assert_int_equal(stats.packets, 2U);
     assert_int_equal(stats.accepted, 1U);
     assert_int_equal(stats.blocked, 1U);
@@ -319,6 +320,7 @@ static void test_udp_dns_response(void **state)
     struct jg_dns_response_config config;
     struct jg_policy_store *store = build_blocking_store();
     struct jg_dataplane_worker *worker = NULL;
+    struct jg_dataplane_stats stats;
     struct frame_capture capture = {0};
 
     (void)state;
@@ -333,6 +335,9 @@ static void test_udp_dns_response(void **state)
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_DROP);
     assert_int_equal(capture.calls, 1U);
+    assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
+    assert_int_equal(stats.dns_refused, 1U);
+    assert_int_equal(stats.dns_dropped, 0U);
     assert_int_equal(capture.size, packet.size);
     assert_int_equal(capture.frame[44U], 0x81U);
     assert_int_equal(capture.frame[45U], 0x85U);
@@ -343,6 +348,8 @@ static void test_udp_dns_response(void **state)
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_DROP);
     assert_int_equal(capture.calls, 1U);
+    assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
+    assert_int_equal(stats.dns_dropped, 1U);
     jg_dataplane_worker_destroy(worker);
     jg_policy_store_destroy(store);
 }
