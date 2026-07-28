@@ -12,6 +12,7 @@ add_executable(
   unit/test_database.c
   unit/test_dns.c
   unit/test_domain.c
+  unit/test_ipc.c
   unit/test_packet.c
   unit/test_policy.c)
 target_link_libraries(

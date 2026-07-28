@@ -15,6 +15,7 @@ int jg_test_checked(void);
 int jg_test_database(void);
 int jg_test_dns(void);
 int jg_test_domain(void);
+int jg_test_ipc(void);
 int jg_test_packet(void);
 int jg_test_policy(void);
 
@@ -27,6 +28,7 @@ int main(void)
     result |= jg_test_checked();
     result |= jg_test_database();
     result |= jg_test_domain();
+    result |= jg_test_ipc();
     result |= jg_test_dns();
     result |= jg_test_packet();
     result |= jg_test_policy();
