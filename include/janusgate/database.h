@@ -706,6 +706,41 @@ JG_PUBLIC int jg_database_activate_blocklist(
     const struct jg_blocklist_report *report);
 
 /**
+ * @brief Persist a not-modified or failed blocklist update attempt.
+ *
+ * A successful attempt confirms an existing last-known-good list after HTTP
+ * 304. A failed attempt preserves that list and marks the source degraded, or
+ * failed when no active list exists.
+ *
+ * @param[in] database Open database.
+ * @param[in] source_id Persistent positive source identifier.
+ * @param[in] expected_revision Source revision used for the attempt.
+ * @param[in] state Completed remote scheduling and validator state.
+ * @param[in] successful Whether the server confirmed the active list.
+ * @param[in] error Nonempty failure description, or null on success.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or inconsistent attempt state.
+ * @return -ENODATA when success is reported without an active list.
+ * @return -ENOENT when the source does not exist.
+ * @return -EAGAIN when the source configuration changed during the attempt.
+ * @return -EOVERFLOW when timestamps cannot be represented persistently.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Updates scheduling, validators, health, and the latest error
+ * atomically without replacing active entries.
+ */
+JG_PUBLIC int jg_database_record_blocklist_attempt(
+    struct jg_database *database,
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const struct jg_blocklist_remote_state *state,
+    bool successful,
+    const char *error);
+
+/**
  * @brief Read one stable identifier-ordered page of blocklist sources.
  *
  * Pass the last identifier returned by the preceding page as @p after_id, or

@@ -1177,6 +1177,7 @@ static void test_blocklist_activation(void **state)
     char path[512U];
     struct jg_database_blocklist_source_config config = make_blocklist_source();
     struct jg_database_blocklist_source source;
+    struct jg_database_blocklist_source empty;
     struct jg_database_blocklist_source updated;
     struct jg_database_domain_rule rules[2U];
     struct jg_blocklist_remote_state remote;
@@ -1233,6 +1234,34 @@ static void test_blocklist_activation(void **state)
     assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_HEALTHY);
     assert_string_equal(updated.etag, "\"active-1\"");
 
+    remote.last_attempt_at = 200U;
+    remote.next_attempt_at = 260U;
+    remote.consecutive_failures = 1U;
+    assert_int_equal(jg_database_record_blocklist_attempt(
+                         database, source.id, source.revision, &remote, false,
+                         "transfer timed out"),
+                     0);
+    assert_int_equal(jg_database_list_blocklist_sources(
+                         database, 0U, 1U, &updated, &count, &has_more),
+                     0);
+    assert_true(updated.has_active_checksum);
+    assert_int_equal(updated.active_entries, 2U);
+    assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_DEGRADED);
+    assert_string_equal(updated.last_error, "transfer timed out");
+    remote.last_attempt_at = 260U;
+    remote.last_success_at = 260U;
+    remote.next_attempt_at = 3860U;
+    remote.consecutive_failures = 0U;
+    assert_int_equal(jg_database_record_blocklist_attempt(database, source.id,
+                                                          source.revision,
+                                                          &remote, true, NULL),
+                     0);
+    assert_int_equal(jg_database_list_blocklist_sources(
+                         database, 0U, 1U, &updated, &count, &has_more),
+                     0);
+    assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_HEALTHY);
+    assert_string_equal(updated.last_error, "");
+
     config.enabled = false;
     assert_int_equal(
         jg_database_update_blocklist_source(database, source.id, &config,
@@ -1242,6 +1271,33 @@ static void test_blocklist_activation(void **state)
                                                     source.revision, blocklist,
                                                     &remote, &report),
                      -EAGAIN);
+
+    config.name = "Empty source";
+    config.enabled = true;
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &empty), 0);
+    remote.last_attempt_at = 400U;
+    remote.last_success_at = 0U;
+    remote.next_attempt_at = 460U;
+    remote.consecutive_failures = 1U;
+    assert_int_equal(jg_database_record_blocklist_attempt(
+                         database, empty.id, empty.revision, &remote, false,
+                         "connection refused"),
+                     0);
+    assert_int_equal(jg_database_list_blocklist_sources(
+                         database, source.id, 1U, &updated, &count, &has_more),
+                     0);
+    assert_int_equal(updated.id, empty.id);
+    assert_false(updated.has_active_checksum);
+    assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_FAILED);
+    remote.last_attempt_at = 460U;
+    remote.last_success_at = 460U;
+    remote.next_attempt_at = 4060U;
+    remote.consecutive_failures = 0U;
+    assert_int_equal(jg_database_record_blocklist_attempt(database, empty.id,
+                                                          empty.revision,
+                                                          &remote, true, NULL),
+                     -ENODATA);
     jg_blocklist_destroy(blocklist);
     jg_database_close(database);
     remove_database(directory, path);

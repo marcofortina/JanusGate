@@ -3318,6 +3318,168 @@ int jg_database_activate_blocklist(
     return result;
 }
 
+/** @brief Validate one completed not-modified or failed update attempt. */
+static int validate_blocklist_attempt(
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const struct jg_blocklist_remote_state *state,
+    bool successful,
+    const char *error)
+{
+    int result = 0;
+
+    if (source_id == 0U || source_id > (uint64_t)INT64_MAX ||
+        expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX ||
+        state == NULL || state->last_attempt_at == 0U ||
+        state->next_attempt_at < state->last_attempt_at ||
+        (state->last_success_at != 0U &&
+         state->last_success_at > state->last_attempt_at) ||
+        !blocklist_validator_valid(state->etag, JG_BLOCKLIST_ETAG_MAX) ||
+        !blocklist_validator_valid(state->last_modified,
+                                   JG_BLOCKLIST_LAST_MODIFIED_MAX) ||
+        (successful && (error != NULL || state->consecutive_failures != 0U ||
+                        state->last_success_at != state->last_attempt_at)) ||
+        (!successful && (error == NULL || state->consecutive_failures == 0U))) {
+        return -EINVAL;
+    }
+    if (state->last_attempt_at > (uint64_t)INT64_MAX ||
+        state->last_success_at > (uint64_t)INT64_MAX ||
+        state->next_attempt_at > (uint64_t)INT64_MAX) {
+        return -EOVERFLOW;
+    }
+    if (!successful) {
+        result =
+            validate_source_text(error, JG_DATABASE_BLOCKLIST_ERROR_MAX, NULL);
+    }
+    return result;
+}
+
+/** @brief Upsert one completed blocklist attempt without replacing entries. */
+static int store_blocklist_attempt(
+    sqlite3 *handle,
+    uint64_t source_id,
+    const struct jg_blocklist_remote_state *state,
+    bool successful,
+    const char *error)
+{
+    static const char update[] =
+        "INSERT INTO blocklist_source_status("
+        "source_id,etag,last_modified,last_attempt_at,last_success_at,"
+        "next_attempt_at,consecutive_failures,health,last_error"
+        ") VALUES(?1,?2,?3,?4,?5,?6,?7,"
+        "CASE WHEN ?8=1 THEN 'healthy' ELSE 'failed' END,?9)"
+        " ON CONFLICT(source_id) DO UPDATE SET etag=excluded.etag,"
+        "last_modified=excluded.last_modified,"
+        "last_attempt_at=excluded.last_attempt_at,"
+        "last_success_at=excluded.last_success_at,"
+        "next_attempt_at=excluded.next_attempt_at,"
+        "consecutive_failures=excluded.consecutive_failures,"
+        "health=CASE WHEN ?8=1 THEN 'healthy' "
+        "WHEN active_checksum IS NULL THEN 'failed' ELSE 'degraded' END,"
+        "last_error=excluded.last_error;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(
+        handle, update, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)source_id);
+    }
+    if (status == SQLITE_OK) {
+        status = state->etag[0U] == '\0'
+                     ? sqlite3_bind_null(statement, 2)
+                     : sqlite3_bind_text(statement, 2, state->etag, -1,
+                                         SQLITE_TRANSIENT);
+    }
+    if (status == SQLITE_OK) {
+        status = state->last_modified[0U] == '\0'
+                     ? sqlite3_bind_null(statement, 3)
+                     : sqlite3_bind_text(statement, 3, state->last_modified, -1,
+                                         SQLITE_TRANSIENT);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 4,
+                                    (sqlite3_int64)state->last_attempt_at);
+    }
+    if (status == SQLITE_OK) {
+        status = state->last_success_at == 0U
+                     ? sqlite3_bind_null(statement, 5)
+                     : sqlite3_bind_int64(
+                           statement, 5, (sqlite3_int64)state->last_success_at);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 6,
+                                    (sqlite3_int64)state->next_attempt_at);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 7,
+                                    (sqlite3_int64)state->consecutive_failures);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int(statement, 8, successful ? 1 : 0);
+    }
+    if (status == SQLITE_OK) {
+        status = successful ? sqlite3_bind_null(statement, 9)
+                            : sqlite3_bind_text(statement, 9, error, -1,
+                                                SQLITE_TRANSIENT);
+    }
+    if (result == 0) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Persist one completed blocklist attempt without replacing entries. */
+int jg_database_record_blocklist_attempt(
+    struct jg_database *database,
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const struct jg_blocklist_remote_state *state,
+    bool successful,
+    const char *error)
+{
+    struct jg_database_blocklist_source source;
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    result = validate_blocklist_attempt(source_id, expected_revision, state,
+                                        successful, error);
+    if (result == 0) {
+        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        result = read_blocklist_source(database, source_id, &source);
+    }
+    if (result == 0 && source.revision != expected_revision) {
+        result = -EAGAIN;
+    }
+    if (result == 0 && successful && !source.has_active_checksum) {
+        result = -ENODATA;
+    }
+    if (result == 0) {
+        result = store_blocklist_attempt(database->handle, source_id, state,
+                                         successful, error);
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
+    }
+    return result;
+}
+
 /** @brief Read one stable identifier-ordered page of domain rules. */
 int jg_database_list_domain_rules(struct jg_database *database,
                                   uint64_t after_id,
