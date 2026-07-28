@@ -154,7 +154,8 @@ janusgate_apply_compiler_options(janusgate-cli-core)
 add_executable(janusgatectl src/cli/main.c)
 target_link_libraries(
   janusgatectl
-  PRIVATE JanusGate::common janusgate-cli-core janusgate-control-protocol)
+  PRIVATE JanusGate::common janusgate-cli-core janusgate-control-protocol
+          PkgConfig::JANSSON)
 janusgate_apply_compiler_options(janusgatectl)
 
 add_library(

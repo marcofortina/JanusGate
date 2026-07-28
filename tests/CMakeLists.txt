@@ -51,5 +51,6 @@ janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)
 add_test(NAME cli-version COMMAND janusgatectl --version)
+add_test(NAME cli-help COMMAND janusgatectl --help)
 add_test(NAME web-version COMMAND janusgate-web --version)
 set_tests_properties(unit PROPERTIES TIMEOUT 30)
