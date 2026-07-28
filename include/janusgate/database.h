@@ -20,8 +20,10 @@
 #ifndef JANUSGATE_DATABASE_H
 #define JANUSGATE_DATABASE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/policy.h"
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
@@ -29,6 +31,9 @@
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
+
+/** Maximum active domain rules accepted from persistent storage. */
+#define JG_DATABASE_POLICY_RULE_LIMIT 1000000U
 
 /** Opaque owned database connection. */
 struct jg_database;
@@ -99,5 +104,60 @@ JG_PUBLIC int jg_database_schema_version(struct jg_database *database,
  * @thread_safety The caller must serialize access to @p database.
  */
 JG_PUBLIC int jg_database_check_integrity(struct jg_database *database);
+
+/**
+ * @brief Atomically replace every active persistent domain rule.
+ *
+ * All inputs are validated before the write transaction begins. Domains are
+ * stored in normalized IDNA2008 A-label form. A failed validation or write
+ * leaves the preceding rule set unchanged.
+ *
+ * @param[in] database Open database.
+ * @param[in] rules Rules to persist, or null when @p rule_count is zero.
+ * @param[in] rule_count Number of input rules, bounded by
+ * JG_DATABASE_POLICY_RULE_LIMIT.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or rule content.
+ * @return -EOVERFLOW for unsupported identifiers or packed sizes.
+ * @return -ENOMEM when allocation fails.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces the complete active `domain_rules` table in one
+ * transaction.
+ */
+JG_PUBLIC int jg_database_replace_domain_rules(
+    struct jg_database *database,
+    const struct jg_policy_rule_input *rules,
+    size_t rule_count);
+
+/**
+ * @brief Load active rules into a new immutable policy snapshot.
+ *
+ * A read transaction copies a single consistent database view before the
+ * snapshot is constructed.
+ *
+ * @param[in] database Open database.
+ * @param[in] generation Nonzero generation assigned to the new snapshot.
+ * @param[out] snapshot Receives the owned immutable snapshot.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument or zero generation.
+ * @return -EOVERFLOW when stored data exceeds configured limits.
+ * @return -ENOMEM when allocation fails.
+ * @return -EILSEQ for invalid stored rule data.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Initializes policy hashing and obtains random bytes through
+ * the snapshot builder.
+ */
+JG_PUBLIC int jg_database_load_policy_snapshot(
+    struct jg_database *database,
+    uint64_t generation,
+    struct jg_policy_snapshot **snapshot);
 
 #endif

@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -91,6 +92,26 @@ static void set_schema_version(sqlite3 *handle, uint32_t version)
                      SQLITE_OK);
     assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+}
+
+/** @brief Construct a valid global rule for database round-trip tests. */
+static struct jg_policy_rule_input make_rule(uint64_t id,
+                                             const char *domain,
+                                             bool include_subdomains,
+                                             enum jg_policy_effect effect,
+                                             enum jg_policy_source source)
+{
+    struct jg_policy_rule_input rule;
+
+    (void)memset(&rule, 0, sizeof(rule));
+    rule.id = id;
+    rule.domain = domain;
+    rule.include_subdomains = include_subdomains;
+    rule.effect = effect;
+    rule.source = source;
+    rule.scope.type = JG_POLICY_SCOPE_GLOBAL;
+    rule.attribution = "database test";
+    return rule;
 }
 
 /** @brief Verify initial migration, permissions, schema, and reopening. */
@@ -178,6 +199,73 @@ static void test_insecure_permissions_rejected(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify atomic policy replacement and immutable snapshot loading. */
+static void test_policy_round_trip(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_policy_rule_input rules[3U];
+    struct jg_policy_rule_input invalid;
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_snapshot_info info;
+    struct jg_policy_client client;
+    struct jg_policy_match match;
+    struct jg_database *database = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+
+    rules[0] = make_rule(10U, "Example.ORG.", true, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_BLOCKLIST);
+    rules[1] = make_rule(5U, "safe.example.org", true, JG_POLICY_ALLOW,
+                         JG_POLICY_SOURCE_EXPLICIT);
+    rules[2] = make_rule(3U, "blocked.example.org", false, JG_POLICY_ALLOW,
+                         JG_POLICY_SOURCE_EXPLICIT);
+    rules[2].scope.type = JG_POLICY_SCOPE_VLAN;
+    rules[2].scope.value.vlan_id = 7U;
+    assert_int_equal(jg_database_replace_domain_rules(database, rules, 3U), 0);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 9U, &snapshot),
+                     0);
+    assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
+    assert_int_equal(info.generation, 9U);
+    assert_int_equal(info.rule_count, 3U);
+
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "host.example.org", NULL, &match), 0);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.rule_id, 10U);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "www.safe.example.org", NULL, &match),
+        0);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(match.rule_id, 5U);
+
+    (void)memset(&client, 0, sizeof(client));
+    client.has_vlan = true;
+    client.vlan_id = 7U;
+    assert_int_equal(jg_policy_match_domain(snapshot, "blocked.example.org",
+                                            &client, &match),
+                     0);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(match.rule_id, 3U);
+    jg_policy_snapshot_destroy(snapshot);
+
+    invalid = make_rule(1U, "invalid.example", false, JG_POLICY_ALLOW,
+                        JG_POLICY_SOURCE_BLOCKLIST);
+    assert_true(jg_database_replace_domain_rules(database, &invalid, 1U) < 0);
+    snapshot = NULL;
+    assert_int_equal(jg_database_load_policy_snapshot(database, 10U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "host.example.org", NULL, &match), 0);
+    assert_int_equal(match.rule_id, 10U);
+
+    jg_policy_snapshot_destroy(snapshot);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the SQLite lifecycle and migration test group. */
 int jg_test_database(void)
 {
@@ -185,6 +273,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_initial_migration),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_insecure_permissions_rejected),
+        cmocka_unit_test(test_policy_round_trip),
     };
 
     return cmocka_run_group_tests_name("database", tests, NULL, NULL);
