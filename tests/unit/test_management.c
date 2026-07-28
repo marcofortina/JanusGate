@@ -1520,6 +1520,229 @@ static void test_backup_api(void **state)
     sodium_memzero(&token, sizeof(token));
 }
 
+/** @brief Verify backup dry runs, confirmation, checkpoints, and restore. */
+static void test_backup_restore_api(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    const struct jg_account_token_config token_config = {
+        .name = "restore administrator",
+        .permissions = JG_ACCESS_BACKUPS_WRITE,
+        .requests_per_minute = 100U,
+    };
+    const struct jg_network_config initial = {
+        .bridge = "br-data",
+        .ingress = "eth0",
+        .egress = "eth1",
+        .management = "eth2",
+        .queue_first = 100U,
+        .queue_count = 4U,
+        .queue_length = 4096U,
+        .failure_mode = JG_NETWORK_FAIL_OPEN,
+        .multicast_snooping = true,
+        .queue_cpu_fanout = true,
+    };
+    const struct jg_network_config changed = {
+        .bridge = "br-data",
+        .ingress = "eth0",
+        .egress = "eth1",
+        .management = "eth2",
+        .queue_first = 100U,
+        .queue_count = 4U,
+        .queue_length = 8192U,
+        .failure_mode = JG_NETWORK_FAIL_CLOSED,
+        .multicast_snooping = true,
+        .queue_cpu_fanout = true,
+    };
+    struct jg_account_api_token token;
+    struct jg_audit_verification verification;
+    struct jg_database_backup records[4U];
+    struct jg_network_config loaded;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[2048U];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    json_t *checkpoint = NULL;
+    const time_t now = time(NULL);
+    uint64_t configuration_backup_id = 0U;
+    uint64_t full_backup_id = 0U;
+    uint64_t user_id = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, (uint64_t)now,
+                         &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+    assert_int_equal(
+        jg_database_store_network_config(fixture->database, &initial), 0);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"restore-configuration-create\","
+                 "\"method\":\"POST\",\"path\":\"/api/v1/backups\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{\"kind\":\"configuration\","
+                 "\"include_private_key\":false,\"passphrase\":null}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    backup = json_object_get(json_object_get(response, "body"), "backup");
+    configuration_backup_id =
+        (uint64_t)json_integer_value(json_object_get(backup, "id"));
+    assert_true(configuration_backup_id > 0U);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"restore-full-create\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/backups\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{\"kind\":\"full\",\"include_private_key\":true,"
+                 "\"passphrase\":\"archive passphrase\"}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    backup = json_object_get(json_object_get(response, "body"), "backup");
+    full_backup_id =
+        (uint64_t)json_integer_value(json_object_get(backup, "id"));
+    assert_true(full_backup_id > configuration_backup_id);
+    json_decref(response);
+
+    assert_int_equal(
+        jg_database_store_network_config(fixture->database, &changed), 0);
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restore-configuration-dry\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups/%llu/restore\","
+        "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+        "\"bearer\":\"%s\",\"body\":{\"passphrase\":null,"
+        "\"dry_run\":true,\"confirm\":false}}",
+        (unsigned long long)configuration_backup_id, token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "dry_run")));
+    assert_true(json_is_true(json_object_get(body, "changes")));
+    assert_true(json_is_null(json_object_get(body, "checkpoint")));
+    assert_false(json_is_true(json_object_get(body, "reload_required")));
+    assert_true(json_is_true(
+        json_object_get(json_object_get(body, "database"), "changes")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restore-configuration-apply\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups/%llu/restore\","
+        "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+        "\"bearer\":\"%s\",\"body\":{\"passphrase\":null,"
+        "\"dry_run\":false,\"confirm\":true}}",
+        (unsigned long long)configuration_backup_id, token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    checkpoint = json_object_get(body, "checkpoint");
+    assert_false(json_is_true(json_object_get(body, "dry_run")));
+    assert_true(json_is_true(json_object_get(body, "reload_required")));
+    assert_string_equal(json_string_value(json_object_get(checkpoint, "kind")),
+                        "configuration");
+    json_decref(response);
+    assert_int_equal(
+        jg_database_load_network_config(fixture->database, &loaded), 0);
+    assert_int_equal(loaded.queue_length, initial.queue_length);
+    assert_int_equal(loaded.failure_mode, initial.failure_mode);
+
+    assert_int_equal(
+        jg_database_store_network_config(fixture->database, &changed), 0);
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restore-full-wrong-passphrase\","
+        "\"method\":\"POST\",\"path\":\"/api/v1/backups/%llu/restore\","
+        "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+        "\"bearer\":\"%s\",\"body\":{\"passphrase\":\"wrong passphrase\","
+        "\"dry_run\":true,\"confirm\":false}}",
+        (unsigned long long)full_backup_id, token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "incorrect_passphrase");
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restore-full-apply\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups/%llu/restore\","
+        "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+        "\"bearer\":\"%s\",\"body\":{\"passphrase\":\"archive passphrase\","
+        "\"dry_run\":false,\"confirm\":true}}",
+        (unsigned long long)full_backup_id, token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    checkpoint = json_object_get(body, "checkpoint");
+    assert_true(json_is_true(json_object_get(body, "changes")));
+    assert_false(json_is_true(json_object_get(body, "certificate_changes")));
+    assert_string_equal(json_string_value(json_object_get(checkpoint, "kind")),
+                        "full");
+    json_decref(response);
+    assert_int_equal(
+        jg_database_load_network_config(fixture->database, &loaded), 0);
+    assert_int_equal(loaded.queue_length, initial.queue_length);
+    assert_int_equal(loaded.failure_mode, initial.failure_mode);
+
+    assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
+                     0);
+    assert_true(verification.valid);
+    assert_int_equal(verification.records_inspected, 5U);
+    assert_int_equal(
+        jg_database_list_backups(fixture->database, 0U,
+                                 sizeof(records) / sizeof(records[0U]), records,
+                                 &count, &has_more),
+        0);
+    assert_false(has_more);
+    assert_int_equal(count, 4U);
+    for (size_t index = 0U; index < count; ++index) {
+        assert_int_equal(
+            jg_backup_remove(fixture->directory, records[index].filename), 0);
+    }
+    sodium_memzero(&token, sizeof(token));
+}
+
 /** @brief Verify authenticated network inspection and proposal validation. */
 static void test_network_api(void **state)
 {
@@ -2213,6 +2436,9 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(
             test_backup_api, setup_certificate_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_backup_restore_api,
+                                        setup_certificate_management,
+                                        teardown_management),
         cmocka_unit_test_setup_teardown(test_network_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_source_api, setup_management,

@@ -962,6 +962,41 @@ static json_t *backup_manifest_json(const struct jg_backup_info *info)
     return body;
 }
 
+/** @brief Convert one database restore comparison to public JSON fields. */
+static json_t *restore_report_json(
+    const struct jg_database_restore_report *report)
+{
+    char current[sizeof(report->current_checksum) * 2U + 1U];
+    char replacement[sizeof(report->replacement_checksum) * 2U + 1U];
+    json_t *body = json_object();
+
+    if (sodium_bin2hex(current, sizeof(current), report->current_checksum,
+                       sizeof(report->current_checksum)) == NULL ||
+        sodium_bin2hex(replacement, sizeof(replacement),
+                       report->replacement_checksum,
+                       sizeof(report->replacement_checksum)) == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "schema_version",
+                            json_integer((json_int_t)report->schema_version)) !=
+            0 ||
+        json_object_set_new(body, "current_size",
+                            json_integer((json_int_t)report->current_size)) !=
+            0 ||
+        json_object_set_new(
+            body, "replacement_size",
+            json_integer((json_int_t)report->replacement_size)) != 0 ||
+        json_object_set_new(body, "current_checksum_sha256",
+                            json_string(current)) != 0 ||
+        json_object_set_new(body, "replacement_checksum_sha256",
+                            json_string(replacement)) != 0 ||
+        json_object_set_new(body, "changes", json_boolean(report->changes)) !=
+            0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
 /** @brief Parse one bounded unsigned decimal text span. */
 static int parse_decimal(const char *text,
                          size_t size,
@@ -3436,6 +3471,70 @@ static int load_backup(struct jg_management *management,
         *archive_size = 0U;
         (void)memset(info, 0, sizeof(*info));
     }
+    return result;
+}
+
+/** @brief Validate or atomically apply one backed-up server identity. */
+static int restore_backup_certificate(struct jg_management *management,
+                                      const uint8_t *certificate,
+                                      size_t certificate_size,
+                                      bool apply,
+                                      bool *changes)
+{
+    struct jg_certificate_info current;
+    struct jg_certificate_info replacement;
+    struct jg_certificate_info installed;
+    char *current_identity = NULL;
+    size_t current_identity_size = 0U;
+    const char *private_key = (const char *)certificate;
+    size_t private_key_size = certificate_size;
+    bool current_present = false;
+    int result = 0;
+
+    if (management == NULL || changes == NULL ||
+        (certificate == NULL && certificate_size != 0U)) {
+        return -EINVAL;
+    }
+    *changes = false;
+    result =
+        jg_certificate_inspect_file(management->certificate_path, &current);
+    if (result == 0) {
+        current_present = true;
+    } else if (result == -ENOENT) {
+        result = 0;
+    }
+    if (result == 0 && certificate_size == 0U) {
+        return 0;
+    }
+    if (result == 0) {
+        result = jg_certificate_inspect(
+            (const char *)certificate, certificate_size,
+            (const char *)certificate, certificate_size, &replacement);
+    }
+    if (result != 0 && current_present) {
+        result = jg_certificate_export_file(management->certificate_path, true,
+                                            &current_identity,
+                                            &current_identity_size);
+        if (result == 0) {
+            private_key = current_identity;
+            private_key_size = current_identity_size;
+            result = jg_certificate_inspect((const char *)certificate,
+                                            certificate_size, private_key,
+                                            private_key_size, &replacement);
+        }
+    }
+    if (result == 0) {
+        *changes = !current_present ||
+                   sodium_memcmp(current.fingerprint_sha256,
+                                 replacement.fingerprint_sha256,
+                                 sizeof(current.fingerprint_sha256)) != 0;
+    }
+    if (result == 0 && apply && *changes) {
+        result = jg_certificate_install(
+            management->certificate_path, (const char *)certificate,
+            certificate_size, private_key, private_key_size, &installed);
+    }
+    jg_certificate_pem_clear(current_identity, current_identity_size);
     return result;
 }
 
@@ -7518,6 +7617,223 @@ static int handle_backup_inspect(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Validate or apply one confirmed transactional backup restore. */
+static int handle_backup_restore(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const struct remote_address *remote,
+                                 uint64_t backup_id,
+                                 uint64_t now,
+                                 uint8_t *output,
+                                 size_t output_size,
+                                 size_t *written)
+{
+    static const char *const fields[] = {
+        "passphrase",
+        "dry_run",
+        "confirm",
+    };
+    struct authenticated_actor actor;
+    struct jg_database_backup metadata;
+    struct jg_database_backup checkpoint;
+    struct jg_backup_info info;
+    struct jg_backup_contents contents;
+    struct jg_backup_contents checkpoint_contents;
+    struct jg_database_restore_report report;
+    struct jg_database_restore_report rollback_report;
+    struct jg_database_restore_report audit_report;
+    const char *passphrase = NULL;
+    uint8_t *archive = NULL;
+    uint8_t *checkpoint_archive = NULL;
+    size_t archive_size = 0U;
+    size_t checkpoint_archive_size = 0U;
+    bool dry_run = false;
+    bool confirm = false;
+    bool certificate_changes = false;
+    bool changes = false;
+    bool checkpoint_created = false;
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    json_t *database_report = NULL;
+    json_t *checkpoint_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_BACKUPS_WRITE, now, &actor);
+
+    (void)memset(&contents, 0, sizeof(contents));
+    (void)memset(&checkpoint_contents, 0, sizeof(checkpoint_contents));
+    (void)memset(&checkpoint, 0, sizeof(checkpoint));
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        json_object_size(request->body) !=
+            sizeof(fields) / sizeof(fields[0U]) ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_nullable_string(request->body, "passphrase",
+                                  JG_BACKUP_PASSPHRASE_MAX, &passphrase) ||
+        !required_boolean(request->body, "dry_run", &dry_run) ||
+        !required_boolean(request->body, "confirm", &confirm) ||
+        (dry_run && confirm) || (!dry_run && !confirm)) {
+        return respond_error(
+            400, "invalid_body",
+            "A dry run must be unconfirmed and an applied restore confirmed.",
+            request->request_id, output, output_size, written);
+    }
+    result = load_backup(management, backup_id, &metadata, &archive,
+                         &archive_size, &info);
+    if (result != 0) {
+        const bool missing = result == -ENOENT && metadata.id == 0U;
+
+        return respond_error(
+            missing ? 404 : 409,
+            missing ? "backup_not_found" : "backup_invalid",
+            missing ? "The requested backup does not exist."
+                    : "The recorded backup archive is missing or invalid.",
+            request->request_id, output, output_size, written);
+    }
+    if ((metadata.kind == JG_BACKUP_CONFIGURATION && passphrase != NULL) ||
+        (metadata.kind == JG_BACKUP_FULL &&
+         (passphrase == NULL ||
+          strlen(passphrase) < JG_BACKUP_PASSPHRASE_MIN))) {
+        jg_backup_data_clear(archive, archive_size);
+        return respond_error(
+            400, "invalid_body",
+            "The passphrase does not match the selected backup kind.",
+            request->request_id, output, output_size, written);
+    }
+    result =
+        jg_backup_open(archive, archive_size, passphrase,
+                       passphrase == NULL ? 0U : strlen(passphrase), &contents);
+    jg_backup_data_clear(archive, archive_size);
+    if (result != 0) {
+        return respond_error(result == -EKEYREJECTED ? 400 : 409,
+                             result == -EKEYREJECTED ? "incorrect_passphrase"
+                                                     : "backup_invalid",
+                             result == -EKEYREJECTED
+                                 ? "The full-backup passphrase is not correct."
+                                 : "The backup payload could not be validated.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_database_restore(
+        management->database, contents.database, contents.database_size,
+        metadata.kind == JG_BACKUP_FULL, true, &report);
+    if (result == 0) {
+        result = restore_backup_certificate(management, contents.certificate,
+                                            contents.certificate_size, false,
+                                            &certificate_changes);
+    }
+    if (result != 0) {
+        jg_backup_contents_clear(&contents);
+        return respond_error(
+            result == -ENOTSUP ? 409 : 400, "restore_validation_failed",
+            "The backup contents cannot be restored on this appliance.",
+            request->request_id, output, output_size, written);
+    }
+    changes = report.changes || certificate_changes;
+    if (!dry_run && changes) {
+        result = create_backup(management, metadata.kind,
+                               metadata.kind == JG_BACKUP_FULL, passphrase,
+                               passphrase == NULL ? 0U : strlen(passphrase),
+                               now, &checkpoint);
+        checkpoint_created = result == 0;
+    }
+    if (!dry_run && changes && result == 0) {
+        result =
+            jg_backup_load(management->backup_directory, checkpoint.filename,
+                           &checkpoint_archive, &checkpoint_archive_size);
+    }
+    if (!dry_run && changes && result == 0) {
+        result = jg_backup_open(
+            checkpoint_archive, checkpoint_archive_size, passphrase,
+            passphrase == NULL ? 0U : strlen(passphrase), &checkpoint_contents);
+    }
+    jg_backup_data_clear(checkpoint_archive, checkpoint_archive_size);
+    if (!dry_run && changes && result != 0) {
+        jg_backup_contents_clear(&contents);
+        jg_backup_contents_clear(&checkpoint_contents);
+        return respond_error(
+            500, "checkpoint_failed",
+            "The automatic pre-restore checkpoint could not be created.",
+            request->request_id, output, output_size, written);
+    }
+    if (!dry_run && changes) {
+        result = jg_database_restore(
+            management->database, contents.database, contents.database_size,
+            metadata.kind == JG_BACKUP_FULL, false, &report);
+    }
+    if (!dry_run && changes && result == 0) {
+        result = restore_backup_certificate(management, contents.certificate,
+                                            contents.certificate_size, true,
+                                            &certificate_changes);
+    }
+    if (!dry_run && changes && result != 0) {
+        int rollback_result = jg_database_restore(
+            management->database, checkpoint_contents.database,
+            checkpoint_contents.database_size,
+            checkpoint.kind == JG_BACKUP_FULL, false, &rollback_report);
+        bool rollback_certificate_changes = false;
+
+        if (rollback_result == 0) {
+            rollback_result = restore_backup_certificate(
+                management, checkpoint_contents.certificate,
+                checkpoint_contents.certificate_size, true,
+                &rollback_certificate_changes);
+        }
+        jg_backup_contents_clear(&contents);
+        jg_backup_contents_clear(&checkpoint_contents);
+        return respond_error(
+            rollback_result == 0 ? 500 : 503,
+            rollback_result == 0 ? "restore_failed" : "restore_rollback_failed",
+            rollback_result == 0
+                ? "The restore failed and the previous state was recovered."
+                : "The restore and its automatic rollback both failed.",
+            request->request_id, output, output_size, written);
+    }
+    audit_report = report;
+    audit_report.changes = changes;
+    result = append_backup_audit(management, request, remote, &actor,
+                                 dry_run ? "backup.restore.dry_run"
+                                         : "backup.restore",
+                                 &metadata, &audit_report, dry_run, now);
+    if (result != 0) {
+        jg_backup_contents_clear(&contents);
+        jg_backup_contents_clear(&checkpoint_contents);
+        return respond_error(
+            500, "audit_failure",
+            "The restore completed, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    backup = backup_json(&metadata);
+    database_report = restore_report_json(&report);
+    checkpoint_body =
+        checkpoint_created ? backup_json(&checkpoint) : json_null();
+    if (body == NULL || backup == NULL || database_report == NULL ||
+        checkpoint_body == NULL ||
+        json_object_set(body, "backup", backup) != 0 ||
+        json_object_set_new(body, "dry_run", json_boolean(dry_run)) != 0 ||
+        json_object_set_new(body, "changes", json_boolean(changes)) != 0 ||
+        json_object_set(body, "database", database_report) != 0 ||
+        json_object_set_new(body, "certificate_changes",
+                            json_boolean(certificate_changes)) != 0 ||
+        json_object_set(body, "checkpoint", checkpoint_body) != 0 ||
+        json_object_set_new(body, "reload_required",
+                            json_boolean(!dry_run && changes)) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(backup);
+    json_decref(database_report);
+    json_decref(checkpoint_body);
+    jg_backup_contents_clear(&contents);
+    jg_backup_contents_clear(&checkpoint_contents);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated filtered page of operational events. */
 static int handle_events_list(struct jg_management *management,
                               const struct management_request *request,
@@ -8215,6 +8531,11 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/backups") == 0 && post) {
         return handle_backup_create(management, request, remote, now, output,
                                     output_size, written);
+    }
+    if (post && collection_path_identifier(request->path, "/api/v1/backups/",
+                                           "/restore", &backup_id)) {
+        return handle_backup_restore(management, request, remote, backup_id,
+                                     now, output, output_size, written);
     }
     if (strcmp(request->method, "GET") == 0 &&
         collection_path_identifier(request->path, "/api/v1/backups/", "",
