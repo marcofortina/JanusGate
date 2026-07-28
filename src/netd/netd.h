@@ -15,6 +15,9 @@
 #include "janusgate/ipc.h"
 #include "janusgate/network.h"
 
+/** Seconds allowed to confirm one pending network transaction. */
+#define JG_NETD_CONFIRM_TIMEOUT_SECONDS 120U
+
 /**
  * @brief Validate and dispatch one decoded network-helper request.
  *
@@ -99,6 +102,19 @@ int jg_netd_confirm_network(void);
  * @side_effects Restores JanusGate-owned kernel network state.
  */
 int jg_netd_rollback_network(void);
+
+/**
+ * @brief Roll back a pending network transaction after its deadline.
+ *
+ * @return 0 when no transaction is due or rollback succeeds.
+ * @return -EUCLEAN when an expired transaction cannot be fully restored.
+ * @return A negative errno-style monotonic-clock error otherwise.
+ *
+ * @thread_safety State-changing calls require external serialization.
+ *
+ * @side_effects May restore JanusGate-owned kernel network state.
+ */
+int jg_netd_expire_network(void);
 
 /**
  * @brief Run the fixed-path privileged network-helper server.

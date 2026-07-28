@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -29,6 +30,9 @@
 
 /** Maximum wait for one local request or response. */
 #define JG_NETD_IO_TIMEOUT_SECONDS 5
+
+/** Maximum server-loop delay before checking a rollback deadline. */
+#define JG_NETD_POLL_INTERVAL_MS 1000
 
 /** Process-wide orderly-shutdown request set by signal handlers. */
 static volatile sig_atomic_t stop_requested = 0;
@@ -371,17 +375,34 @@ int jg_netd_run(uid_t allowed_uid, gid_t socket_gid)
         }
     }
     while (result == 0 && stop_requested == 0) {
-        const int client_fd = accept4(server_fd, NULL, NULL, SOCK_CLOEXEC);
+        struct pollfd descriptor = {
+            .fd = server_fd,
+            .events = POLLIN,
+        };
+        int ready = 0;
+        int client_fd = -1;
 
-        if (client_fd < 0) {
-            if (errno != EINTR) {
+        result = jg_netd_expire_network();
+        if (result == 0) {
+            ready = poll(&descriptor, 1U, JG_NETD_POLL_INTERVAL_MS);
+            if (ready < 0 && errno != EINTR) {
                 result = -errno;
             }
-        } else {
+        }
+        if (result == 0 && ready > 0 && (descriptor.revents & POLLIN) != 0) {
+            client_fd = accept4(server_fd, NULL, NULL, SOCK_CLOEXEC);
+            if (client_fd < 0 && errno != EINTR) {
+                result = -errno;
+            }
+        }
+        if (client_fd >= 0) {
             if (configure_client_socket(client_fd) == 0) {
                 (void)jg_netd_handle_connection(client_fd, allowed_uid);
             }
             (void)close(client_fd);
+        } else if (result == 0 && ready > 0 &&
+                   (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            result = -EIO;
         }
     }
     if (server_fd >= 0) {

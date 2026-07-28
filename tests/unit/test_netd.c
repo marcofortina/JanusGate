@@ -170,6 +170,7 @@ static void test_link_query(void **state)
     assert_int_equal(jg_netd_apply_bridge(&config, &checkpoint), -ENODEV);
     assert_false(checkpoint.valid);
     assert_int_equal(jg_netd_restore_bridge(&checkpoint), -EINVAL);
+    assert_int_equal(jg_netd_expire_network(), 0);
 }
 
 /** @brief Verify authenticated `SOCK_SEQPACKET` request exchange. */
