@@ -32,7 +32,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 7U
+#define JG_DATABASE_SCHEMA_VERSION 8U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -83,6 +83,8 @@ struct jg_database_domain_rule {
     char domain[JG_DOMAIN_NAME_MAX + 1U];
     /** Human-readable rule provenance. */
     char attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
+    /** Imported category, empty for administrator-authored rules. */
+    char category[JG_BLOCKLIST_CATEGORY_MAX + 1U];
     /** Whether descendants at DNS label boundaries also match. */
     bool include_subdomains;
     /** Whether the rule participates in active policy. */

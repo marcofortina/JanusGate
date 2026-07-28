@@ -360,6 +360,7 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "certificate_metadata"));
     assert_true(table_exists(inspection, "bootstrap_credentials"));
     assert_true(column_exists(inspection, "domain_rules", "revision"));
+    assert_true(column_exists(inspection, "domain_rules", "category"));
     assert_true(column_exists(inspection, "destination_rules", "revision"));
     assert_true(column_exists(inspection, "blocklist_sources", "revision"));
     assert_true(
@@ -435,6 +436,7 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "audit_events", "request_id"));
     assert_true(column_exists(inspection, "domain_rules", "target"));
     assert_true(column_exists(inspection, "domain_rules", "revision"));
+    assert_true(column_exists(inspection, "domain_rules", "category"));
     assert_true(column_exists(inspection, "destination_rules", "source"));
     assert_true(column_exists(inspection, "destination_rules", "scope_type"));
     assert_true(column_exists(inspection, "destination_rules", "revision"));
@@ -616,6 +618,7 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(domain_page[1U].id, 5U);
     assert_string_equal(domain_page[1U].domain, "safe.example.org");
     assert_string_equal(domain_page[1U].attribution, "database test");
+    assert_string_equal(domain_page[1U].category, "");
     assert_int_equal(jg_database_list_domain_rules(
                          database, 5U, 2U, domain_page, &page_count, &has_more),
                      0);

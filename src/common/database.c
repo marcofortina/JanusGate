@@ -513,6 +513,19 @@ static const char *const migration_7[] = {
     migration_7_blocklists,
 };
 
+/** Preserve imported blocklist category metadata. */
+static const char migration_8_blocklists[] =
+    "ALTER TABLE domain_rules ADD COLUMN category TEXT NOT NULL DEFAULT '' "
+    "CHECK(length(CAST(category AS BLOB)) <= 128);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(8,unixepoch());"
+    "PRAGMA user_version=8;";
+
+/** Ordered statement groups composing schema version eight. */
+static const char *const migration_8[] = {
+    migration_8_blocklists,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -522,6 +535,7 @@ static const struct database_migration migrations[] = {
     {5U, migration_5, sizeof(migration_5) / sizeof(migration_5[0])},
     {6U, migration_6, sizeof(migration_6) / sizeof(migration_6[0])},
     {7U, migration_7, sizeof(migration_7) / sizeof(migration_7[0])},
+    {8U, migration_8, sizeof(migration_8) / sizeof(migration_8[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1040,6 +1054,33 @@ static int required_text(sqlite3_stmt *statement,
     }
     *text = (const char *)value;
     *length = (size_t)byte_count;
+    return 0;
+}
+
+/** @brief Copy one nullable text column into bounded record storage. */
+static int copy_optional_text(sqlite3_stmt *statement,
+                              int column,
+                              char *destination,
+                              size_t capacity)
+{
+    const unsigned char *text = NULL;
+    int byte_count = 0;
+
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        destination[0U] = '\0';
+        return 0;
+    }
+    if (sqlite3_column_type(statement, column) != SQLITE_TEXT) {
+        return -EILSEQ;
+    }
+    text = sqlite3_column_text(statement, column);
+    byte_count = sqlite3_column_bytes(statement, column);
+    if (text == NULL || byte_count < 0 || (size_t)byte_count >= capacity ||
+        memchr(text, '\0', (size_t)byte_count) != NULL) {
+        return -EILSEQ;
+    }
+    (void)memcpy(destination, text, (size_t)byte_count);
+    destination[byte_count] = '\0';
     return 0;
 }
 
@@ -2118,6 +2159,17 @@ static int decode_domain_record(sqlite3_stmt *statement,
         result = decode_rule_metadata(statement, 11, 12, 13, &record->enabled,
                                       &record->updated_at, &record->revision);
     }
+    if (result == 0 && sqlite3_column_type(statement, 14) != SQLITE_TEXT) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        result = copy_optional_text(statement, 14, record->category,
+                                    sizeof(record->category));
+    }
+    if (result == 0 && !jg_utf8_text_valid((const uint8_t *)record->category,
+                                           strlen(record->category), true)) {
+        result = -EILSEQ;
+    }
     if (result == 0) {
         record->id = rule.id;
         record->include_subdomains = rule.include_subdomains;
@@ -2166,33 +2218,6 @@ static int decode_destination_record(
                      strlen(rule.attribution) + 1U);
     }
     return result;
-}
-
-/** @brief Copy one nullable text column into bounded record storage. */
-static int copy_optional_text(sqlite3_stmt *statement,
-                              int column,
-                              char *destination,
-                              size_t capacity)
-{
-    const unsigned char *text = NULL;
-    int byte_count = 0;
-
-    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
-        destination[0U] = '\0';
-        return 0;
-    }
-    if (sqlite3_column_type(statement, column) != SQLITE_TEXT) {
-        return -EILSEQ;
-    }
-    text = sqlite3_column_text(statement, column);
-    byte_count = sqlite3_column_bytes(statement, column);
-    if (text == NULL || byte_count < 0 || (size_t)byte_count >= capacity ||
-        memchr(text, '\0', (size_t)byte_count) != NULL) {
-        return -EILSEQ;
-    }
-    (void)memcpy(destination, text, (size_t)byte_count);
-    destination[byte_count] = '\0';
-    return 0;
 }
 
 /** @brief Decode one required nonnegative integer column. */
@@ -3020,8 +3045,8 @@ int jg_database_list_domain_rules(struct jg_database *database,
 {
     static const char query[] =
         "SELECT id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution,target,enabled,updated_at,revision"
-        " FROM domain_rules WHERE id>?1 ORDER BY id LIMIT ?2;";
+        "prefix_length,vlan_id,attribution,target,enabled,updated_at,revision,"
+        "category FROM domain_rules WHERE id>?1 ORDER BY id LIMIT ?2;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     bool more = false;

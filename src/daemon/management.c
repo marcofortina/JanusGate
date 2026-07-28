@@ -1098,6 +1098,8 @@ static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
         json_object_set_new(body, "target", json_string(target)) != 0 ||
         json_object_set_new(body, "attribution",
                             json_string(rule->attribution)) != 0 ||
+        json_object_set_new(body, "category", json_string(rule->category)) !=
+            0 ||
         json_object_set_new(body, "enabled", json_boolean(rule->enabled)) !=
             0 ||
         json_object_set(body, "scope", scope) != 0) {
