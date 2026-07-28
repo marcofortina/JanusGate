@@ -1160,6 +1160,24 @@ static enum jg_network_failure_mode parse_network_failure_mode(const char *name)
     return 0;
 }
 
+/** @brief Compare every semantic field of two network configurations. */
+static bool network_configs_equal(const struct jg_network_config *left,
+                                  const struct jg_network_config *right)
+{
+    return strcmp(left->bridge, right->bridge) == 0 &&
+           strcmp(left->ingress, right->ingress) == 0 &&
+           strcmp(left->egress, right->egress) == 0 &&
+           strcmp(left->management, right->management) == 0 &&
+           left->bridge_mtu == right->bridge_mtu &&
+           left->queue_first == right->queue_first &&
+           left->queue_count == right->queue_count &&
+           left->queue_length == right->queue_length &&
+           left->failure_mode == right->failure_mode &&
+           left->stp == right->stp &&
+           left->multicast_snooping == right->multicast_snooping &&
+           left->queue_cpu_fanout == right->queue_cpu_fanout;
+}
+
 /** @brief Convert one validated network configuration to public JSON. */
 static json_t *network_config_json(const struct jg_network_config *config)
 {
@@ -1708,6 +1726,19 @@ static int parse_network_apply_request(json_t *body,
         return -EINVAL;
     }
     return parse_network_config_request(configuration, config);
+}
+
+/** @brief Parse one exact revision-bound network operation request. */
+static int parse_network_revision_request(json_t *body, uint64_t *revision)
+{
+    static const char *const fields[] = {
+        "revision",
+    };
+
+    return fields_allowed(body, fields, sizeof(fields) / sizeof(fields[0U])) &&
+                   required_identifier(body, "revision", revision)
+               ? 0
+               : -EINVAL;
 }
 
 /** @brief Parse one external blocklist syntax name. */
@@ -3702,6 +3733,309 @@ static int handle_network_apply(struct jg_management *management,
             request->request_id, output, output_size, written);
     }
     return encode_response(202, body, NULL, output, output_size, written);
+}
+
+/** @brief Confirm one pending network change and persist its revision. */
+static int handle_network_confirm(struct jg_management *management,
+                                  const struct management_request *request,
+                                  const struct remote_address *remote,
+                                  uint64_t now,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_network_config record;
+    struct jg_database_network_config updated;
+    struct jg_database_network_config recovered;
+    struct jg_network_state state;
+    struct jg_network_state recovery_state;
+    json_t *body = NULL;
+    json_t *configuration = NULL;
+    json_t *runtime = NULL;
+    uint64_t revision = 0U;
+    int audit_result = 0;
+    int recovery_result = 0;
+    int state_result = 0;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_NETWORK_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = request->query[0U] == '\0'
+                 ? parse_network_revision_request(request->body, &revision)
+                 : -EINVAL;
+    if (result != 0) {
+        return respond_error(400, "invalid_request",
+                             "The network confirmation request is invalid.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        jg_database_load_network_config_record(management->database, &record);
+    if (result != 0) {
+        return respond_error(
+            result == -ENOENT ? 404 : 500,
+            result == -ENOENT ? "network_unconfigured" : "network_unavailable",
+            result == -ENOENT
+                ? "Network configuration has not been initialized."
+                : "Network configuration could not be read.",
+            request->request_id, output, output_size, written);
+    }
+    if (record.revision != revision) {
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.confirm",
+            &record.config, -EAGAIN, record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(409, "revision_conflict",
+                             "The network configuration revision has changed.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_state(&state);
+    if (result != 0 || !state.pending) {
+        if (result == 0) {
+            result = -EBUSY;
+        }
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.confirm",
+            &record.config, result, record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(
+            result == -EBUSY ? 409 : 503,
+            result == -EBUSY ? "network_transaction_absent"
+                             : "network_state_unavailable",
+            result == -EBUSY
+                ? "No network transaction is awaiting confirmation."
+                : "The pending network state could not be read.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_database_replace_network_config(
+        management->database, &state.pending_config, record.revision, &updated);
+    if (result != 0) {
+        (void)jg_netd_client_rollback();
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.confirm",
+            &state.pending_config, result, record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(
+            result == -EAGAIN ? 409 : 500,
+            result == -EAGAIN ? "revision_conflict" : "network_store_failure",
+            result == -EAGAIN
+                ? "The network configuration revision has changed."
+                : "The pending network configuration could not be persisted.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_confirm();
+    if (result != 0) {
+        state_result = jg_netd_client_state(&recovery_state);
+        if (state_result == 0 && !recovery_state.pending &&
+            recovery_state.has_confirmed &&
+            network_configs_equal(&recovery_state.confirmed,
+                                  &state.pending_config)) {
+            result = 0;
+        } else if (state_result == 0) {
+            recovery_result =
+                recovery_state.pending ? jg_netd_client_rollback() : 0;
+            if (recovery_result == -EBUSY) {
+                recovery_result = 0;
+            }
+        } else {
+            recovery_result = state_result;
+        }
+        if (result != 0 && recovery_result == 0) {
+            recovery_result = jg_database_replace_network_config(
+                management->database, &record.config, updated.revision,
+                &recovered);
+        }
+        if (result != 0) {
+            audit_result = append_network_audit(
+                management, request, remote, &actor, "network.confirm",
+                &state.pending_config, recovery_result == 0 ? result : -EUCLEAN,
+                record.revision, true,
+                recovery_result == 0 ? recovered.revision : updated.revision,
+                now);
+            if (audit_result != 0) {
+                return respond_error(
+                    500, "audit_failure",
+                    "The network recovery could not be audited.",
+                    request->request_id, output, output_size, written);
+            }
+            return respond_error(
+                500,
+                recovery_result == 0 ? "network_confirm_failure"
+                                     : "network_recovery_failure",
+                recovery_result == 0
+                    ? "The network change was not confirmed and was restored."
+                    : "The network change could not be restored consistently.",
+                request->request_id, output, output_size, written);
+        }
+    }
+    audit_result = append_network_audit(
+        management, request, remote, &actor, "network.confirm", &updated.config,
+        0, record.revision, true, updated.revision, now);
+    if (audit_result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The confirmed network change could not be audited.",
+            request->request_id, output, output_size, written);
+    }
+    state_result = jg_netd_client_state(&state);
+    body = json_object();
+    configuration = network_config_json(&updated.config);
+    runtime = state_result == 0 ? network_state_json(&state) : json_null();
+    if (body == NULL || configuration == NULL || runtime == NULL ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)updated.revision)) != 0 ||
+        json_object_set_new(body, "updated_at",
+                            json_integer((json_int_t)updated.updated_at)) !=
+            0 ||
+        json_object_set_new(body, "runtime_available",
+                            json_boolean(state_result == 0)) != 0 ||
+        json_object_set(body, "configuration", configuration) != 0 ||
+        json_object_set(body, "runtime", runtime) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(runtime);
+    json_decref(configuration);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Roll back one pending network change without persistence. */
+static int handle_network_rollback(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_network_config record;
+    struct jg_network_state state;
+    json_t *body = NULL;
+    json_t *runtime = NULL;
+    uint64_t revision = 0U;
+    int audit_result = 0;
+    int state_result = 0;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_NETWORK_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = request->query[0U] == '\0'
+                 ? parse_network_revision_request(request->body, &revision)
+                 : -EINVAL;
+    if (result != 0) {
+        return respond_error(400, "invalid_request",
+                             "The network rollback request is invalid.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        jg_database_load_network_config_record(management->database, &record);
+    if (result != 0) {
+        return respond_error(
+            result == -ENOENT ? 404 : 500,
+            result == -ENOENT ? "network_unconfigured" : "network_unavailable",
+            result == -ENOENT
+                ? "Network configuration has not been initialized."
+                : "Network configuration could not be read.",
+            request->request_id, output, output_size, written);
+    }
+    if (record.revision != revision) {
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.rollback",
+            &record.config, -EAGAIN, record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(409, "revision_conflict",
+                             "The network configuration revision has changed.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_state(&state);
+    if (result != 0 || !state.pending) {
+        if (result == 0) {
+            result = -EBUSY;
+        }
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.rollback",
+            &record.config, result, record.revision, false, 0U, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network attempt could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
+        }
+        return respond_error(
+            result == -EBUSY ? 409 : 503,
+            result == -EBUSY ? "network_transaction_absent"
+                             : "network_state_unavailable",
+            result == -EBUSY ? "No network transaction is awaiting rollback."
+                             : "The pending network state could not be read.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_rollback();
+    audit_result = append_network_audit(
+        management, request, remote, &actor, "network.rollback",
+        &state.pending_config, result, record.revision, false, 0U, now);
+    if (audit_result != 0) {
+        return respond_error(500, "audit_failure",
+                             "The network rollback could not be audited.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(
+            result == -EBUSY ? 409 : 500,
+            result == -EBUSY ? "network_transaction_absent"
+                             : "network_recovery_failure",
+            result == -EBUSY
+                ? "No network transaction is awaiting rollback."
+                : "The network change could not be restored consistently.",
+            request->request_id, output, output_size, written);
+    }
+    state_result = jg_netd_client_state(&state);
+    body = json_object();
+    runtime = state_result == 0 ? network_state_json(&state) : json_null();
+    if (body == NULL || runtime == NULL ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)record.revision)) != 0 ||
+        json_object_set_new(body, "rolled_back", json_true()) != 0 ||
+        json_object_set_new(body, "runtime_available",
+                            json_boolean(state_result == 0)) != 0 ||
+        json_object_set(body, "runtime", runtime) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(runtime);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
 }
 
 /** @brief Add one nonnegative runtime counter to a JSON object. */
@@ -6652,6 +6986,14 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/network/apply") == 0 && post) {
         return handle_network_apply(management, request, remote, now, output,
                                     output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/network/confirm") == 0 && post) {
+        return handle_network_confirm(management, request, remote, now, output,
+                                      output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/network/rollback") == 0 && post) {
+        return handle_network_rollback(management, request, remote, now, output,
+                                       output_size, written);
     }
     if (strcmp(request->path, "/api/v1/blocklists") == 0 && post) {
         return handle_blocklist_import(management, request, remote, now, output,

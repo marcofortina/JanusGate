@@ -1128,7 +1128,7 @@ static void test_network_api(void **state)
         .queue_cpu_fanout = true,
     };
     struct jg_account_api_token token;
-    struct jg_audit_record audit;
+    struct jg_audit_record audits[3U];
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
     char request[2048U];
     json_t *response = NULL;
@@ -1231,15 +1231,51 @@ static void test_network_api(void **state)
             "code")),
         "revision_conflict");
     json_decref(response);
-    assert_int_equal(jg_database_audit_list(fixture->database, 0U, &audit, 1U,
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, audits, 1U,
                                             &count, &total),
                      0);
     assert_int_equal(count, 1U);
     assert_int_equal(total, 1U);
-    assert_string_equal(audit.action, "network.apply");
-    assert_int_equal(audit.previous_revision, 1U);
-    assert_false(audit.has_new_revision);
-    assert_false(audit.success);
+    assert_string_equal(audits[0U].action, "network.apply");
+    assert_int_equal(audits[0U].previous_revision, 1U);
+    assert_false(audits[0U].has_new_revision);
+    assert_false(audits[0U].success);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"network-confirm-stale\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/network/confirm\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"revision\":2}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     409);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"network-rollback-stale\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/network/rollback\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"revision\":2}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     409);
+    json_decref(response);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, audits, 3U,
+                                            &count, &total),
+                     0);
+    assert_int_equal(count, 3U);
+    assert_int_equal(total, 3U);
+    assert_string_equal(audits[0U].action, "network.rollback");
+    assert_string_equal(audits[1U].action, "network.confirm");
+    assert_string_equal(audits[2U].action, "network.apply");
 }
 
 /** @brief Verify authenticated blocklist-source paging and state JSON. */
