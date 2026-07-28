@@ -17,6 +17,9 @@
 #include "daemon_runtime.h"
 #include "janusgate/ipc.h"
 
+/** Opaque running or stopped daemon control server. */
+struct jg_control_server;
+
 /**
  * @brief Validate and dispatch one decoded daemon-control request.
  *
@@ -66,5 +69,51 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
 int jg_control_handle_connection(int socket_fd,
                                  uid_t allowed_uid,
                                  struct jg_daemon_runtime *runtime);
+
+/**
+ * @brief Open the fixed control socket and start its serial server thread.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[in] allowed_uid Dedicated web service user identifier.
+ * @param[in] socket_gid Dedicated local-control group identifier.
+ * @param[out] server Receives the owned running server.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null runtime or destination or a root web identity.
+ * @return A negative errno-style directory, socket, allocation, or thread
+ * error otherwise.
+ *
+ * @thread_safety Only one server may own @ref JG_CONTROL_SOCKET_PATH.
+ *
+ * @side_effects Creates a Unix-domain socket and starts one control thread.
+ */
+int jg_control_server_start(struct jg_daemon_runtime *runtime,
+                            uid_t allowed_uid,
+                            gid_t socket_gid,
+                            struct jg_control_server **server);
+
+/**
+ * @brief Request a stop, join the server thread, and report its result.
+ *
+ * @param[in,out] server Running or stopped control server.
+ *
+ * @return 0 after an orderly stop.
+ * @return -EINVAL for a null server.
+ * @return The first negative notification, thread, or server error otherwise.
+ *
+ * @thread_safety Exactly one control thread may stop the server.
+ */
+int jg_control_server_stop(struct jg_control_server *server);
+
+/**
+ * @brief Stop if necessary and release one control server.
+ *
+ * @param[in,out] server Server to release; null is accepted.
+ *
+ * @thread_safety No other operation may use the server concurrently.
+ *
+ * @side_effects Stops the thread, closes sockets, and removes the owned path.
+ */
+void jg_control_server_destroy(struct jg_control_server *server);
 
 #endif

@@ -130,6 +130,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/database.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/dns.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/domain.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/identity.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/ipc.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/network.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"

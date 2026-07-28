@@ -108,12 +108,26 @@ static void test_connection(void **state)
                      -EINVAL);
 }
 
+/** @brief Verify null-safe server lifecycle arguments. */
+static void test_lifecycle_arguments(void **state)
+{
+    struct jg_control_server *server = NULL;
+
+    (void)state;
+    assert_int_equal(jg_control_server_start(NULL, 1U, 1U, &server), -EINVAL);
+    assert_null(server);
+    assert_int_equal(jg_control_server_start(NULL, 1U, 1U, NULL), -EINVAL);
+    assert_int_equal(jg_control_server_stop(NULL), -EINVAL);
+    jg_control_server_destroy(NULL);
+}
+
 /** @brief Run the authenticated daemon control test group. */
 int jg_test_control_server(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_dispatch),
         cmocka_unit_test(test_connection),
+        cmocka_unit_test(test_lifecycle_arguments),
     };
 
     return cmocka_run_group_tests_name("control server", tests, NULL, NULL);

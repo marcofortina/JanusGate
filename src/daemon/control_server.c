@@ -9,14 +9,42 @@
 #include "control_server.h"
 
 #include <errno.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include <poll.h>
+#include <pthread.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "control_protocol.h"
+
+/** Runtime directory containing local-control sockets. */
+#define JG_RUNTIME_DIRECTORY "/run/janusgate"
+
+/** Maximum wait for one local request or response. */
+#define JG_CONTROL_IO_TIMEOUT_SECONDS 5
+
+/** Complete ownership and thread state for one daemon control server. */
+struct jg_control_server {
+    struct jg_daemon_runtime *runtime;
+    pthread_t thread;
+    atomic_int result;
+    uid_t allowed_uid;
+    int server_fd;
+    int stop_fd;
+    bool thread_started;
+    bool joined;
+    bool owns_path;
+};
 
 /** @brief Convert one daemon operation failure to a stable protocol error. */
 static enum jg_ipc_error operation_error(int result)
@@ -233,4 +261,279 @@ int jg_control_handle_connection(int socket_fd,
         return -errno;
     }
     return (size_t)sent == response_size ? 0 : -EIO;
+}
+
+/** @brief Notify the server thread through its level-triggered event. */
+static int notify_stop(struct jg_control_server *server)
+{
+    const uint64_t notification = 1U;
+    const ssize_t written =
+        write(server->stop_fd, &notification, sizeof(notification));
+
+    if (written == (ssize_t)sizeof(notification) ||
+        (written < 0 && errno == EAGAIN)) {
+        return 0;
+    }
+    return written < 0 ? -errno : -EIO;
+}
+
+/** @brief Create or validate the shared root-owned runtime directory. */
+static int prepare_runtime_directory(gid_t socket_gid)
+{
+    struct stat status;
+
+    if (mkdir(JG_RUNTIME_DIRECTORY, 0750) != 0 && errno != EEXIST) {
+        return -errno;
+    }
+    if (lstat(JG_RUNTIME_DIRECTORY, &status) != 0) {
+        return -errno;
+    }
+    if (!S_ISDIR(status.st_mode) || status.st_uid != 0U ||
+        (status.st_mode & (S_IWGRP | S_IWOTH)) != 0U) {
+        return -EACCES;
+    }
+    if (chown(JG_RUNTIME_DIRECTORY, 0U, socket_gid) != 0 ||
+        chmod(JG_RUNTIME_DIRECTORY, 0750) != 0) {
+        return -errno;
+    }
+    return 0;
+}
+
+/** @brief Remove only a stale root-owned control socket. */
+static int remove_stale_socket(void)
+{
+    struct stat status;
+
+    if (lstat(JG_CONTROL_SOCKET_PATH, &status) != 0) {
+        return errno == ENOENT ? 0 : -errno;
+    }
+    if (!S_ISSOCK(status.st_mode) || status.st_uid != 0U) {
+        return -EEXIST;
+    }
+    return unlink(JG_CONTROL_SOCKET_PATH) == 0 ? 0 : -errno;
+}
+
+/** @brief Open and permission the fixed non-blocking listening socket. */
+static int open_server_socket(gid_t socket_gid, bool *owns_path)
+{
+    struct sockaddr_un address;
+    int socket_fd = -1;
+    int result = prepare_runtime_directory(socket_gid);
+
+    if (result == 0) {
+        result = remove_stale_socket();
+    }
+    if (result == 0) {
+        socket_fd =
+            socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        if (socket_fd < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        (void)memset(&address, 0, sizeof(address));
+        address.sun_family = AF_UNIX;
+        if (sizeof(JG_CONTROL_SOCKET_PATH) > sizeof(address.sun_path)) {
+            result = -ENAMETOOLONG;
+        } else {
+            (void)memcpy(address.sun_path, JG_CONTROL_SOCKET_PATH,
+                         sizeof(JG_CONTROL_SOCKET_PATH));
+        }
+    }
+    if (result == 0 && bind(socket_fd, (const struct sockaddr *)&address,
+                            (socklen_t)sizeof(address)) != 0) {
+        result = -errno;
+    } else if (result == 0) {
+        *owns_path = true;
+    }
+    if (result == 0 && (chown(JG_CONTROL_SOCKET_PATH, 0U, socket_gid) != 0 ||
+                        chmod(JG_CONTROL_SOCKET_PATH, 0660) != 0 ||
+                        listen(socket_fd, 16) != 0)) {
+        result = -errno;
+    }
+    if (result != 0 && socket_fd >= 0) {
+        (void)close(socket_fd);
+        socket_fd = -1;
+    }
+    return result == 0 ? socket_fd : result;
+}
+
+/** @brief Impose bounded blocking time on one connected peer. */
+static int configure_client_socket(int socket_fd)
+{
+    const struct timeval timeout = {
+        .tv_sec = JG_CONTROL_IO_TIMEOUT_SECONDS,
+        .tv_usec = 0,
+    };
+
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                   (socklen_t)sizeof(timeout)) != 0 ||
+        setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout,
+                   (socklen_t)sizeof(timeout)) != 0) {
+        return -errno;
+    }
+    return 0;
+}
+
+/** @brief Accept and service peers until the stop event becomes readable. */
+static int serve_connections(struct jg_control_server *server)
+{
+    struct pollfd descriptors[2U] = {
+        {.fd = server->server_fd, .events = POLLIN},
+        {.fd = server->stop_fd, .events = POLLIN},
+    };
+    int result = 0;
+
+    while (result == 0) {
+        const int ready = poll(descriptors, 2U, -1);
+
+        if (ready < 0) {
+            if (errno != EINTR) {
+                result = -errno;
+            }
+        } else if ((descriptors[1U].revents & POLLIN) != 0) {
+            break;
+        } else if ((descriptors[0U].revents & POLLIN) != 0) {
+            const int client_fd =
+                accept4(server->server_fd, NULL, NULL, SOCK_CLOEXEC);
+
+            if (client_fd < 0) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    result = -errno;
+                }
+            } else {
+                if (configure_client_socket(client_fd) == 0) {
+                    (void)jg_control_handle_connection(
+                        client_fd, server->allowed_uid, server->runtime);
+                }
+                (void)close(client_fd);
+            }
+        } else if (descriptors[0U].revents != 0 ||
+                   descriptors[1U].revents != 0) {
+            result = -EIO;
+        }
+    }
+    return result;
+}
+
+/** @brief Run the serial control loop and stop packet workers on failure. */
+static void *run_server(void *context)
+{
+    struct jg_control_server *server = context;
+    const int result = serve_connections(server);
+
+    atomic_store_explicit(&server->result, result, memory_order_release);
+    if (result != 0) {
+        (void)jg_daemon_runtime_request_stop(server->runtime);
+    }
+    return NULL;
+}
+
+/** @brief Close descriptors, remove the owned path, and release state. */
+static void release_server(struct jg_control_server *server)
+{
+    if (server == NULL) {
+        return;
+    }
+    if (server->server_fd >= 0) {
+        (void)close(server->server_fd);
+    }
+    if (server->stop_fd >= 0) {
+        (void)close(server->stop_fd);
+    }
+    if (server->owns_path) {
+        (void)unlink(JG_CONTROL_SOCKET_PATH);
+    }
+    free(server);
+}
+
+/** @brief Open the fixed control socket and start its serial thread. */
+int jg_control_server_start(struct jg_daemon_runtime *runtime,
+                            uid_t allowed_uid,
+                            gid_t socket_gid,
+                            struct jg_control_server **server)
+{
+    struct jg_control_server *started = NULL;
+    int result = 0;
+
+    if (server == NULL) {
+        return -EINVAL;
+    }
+    *server = NULL;
+    if (runtime == NULL || allowed_uid == 0U) {
+        return -EINVAL;
+    }
+    started = calloc(1U, sizeof(*started));
+    if (started == NULL) {
+        return -ENOMEM;
+    }
+    started->runtime = runtime;
+    started->allowed_uid = allowed_uid;
+    started->server_fd = -1;
+    started->stop_fd = -1;
+    atomic_init(&started->result, 0);
+    started->stop_fd = eventfd(0U, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (started->stop_fd < 0) {
+        result = -errno;
+    }
+    if (result == 0) {
+        started->server_fd =
+            open_server_socket(socket_gid, &started->owns_path);
+        if (started->server_fd < 0) {
+            result = started->server_fd;
+        }
+    }
+    if (result == 0) {
+        result = pthread_create(&started->thread, NULL, run_server, started);
+        if (result == 0) {
+            started->thread_started = true;
+        } else {
+            result = -result;
+        }
+    }
+    if (result != 0) {
+        release_server(started);
+        return result;
+    }
+    *server = started;
+    return 0;
+}
+
+/** @brief Stop, join, and report one control-server thread. */
+int jg_control_server_stop(struct jg_control_server *server)
+{
+    int result = 0;
+
+    if (server == NULL) {
+        return -EINVAL;
+    }
+    if (server->joined) {
+        return atomic_load_explicit(&server->result, memory_order_acquire);
+    }
+    result = notify_stop(server);
+    if (server->thread_started) {
+        const int join_result = pthread_join(server->thread, NULL);
+
+        server->thread_started = false;
+        if (result == 0 && join_result != 0) {
+            result = -join_result;
+        }
+    }
+    server->joined = true;
+    if (result == 0) {
+        result = atomic_load_explicit(&server->result, memory_order_acquire);
+    }
+    return result;
+}
+
+/** @brief Stop and release one complete control server. */
+void jg_control_server_destroy(struct jg_control_server *server)
+{
+    if (server == NULL) {
+        return;
+    }
+    if (!server->joined) {
+        (void)jg_control_server_stop(server);
+    }
+    release_server(server);
 }

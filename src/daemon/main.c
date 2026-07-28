@@ -11,9 +11,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <grp.h>
+#include <pwd.h>
 #include <sys/stat.h>
 
+#include "control_server.h"
 #include "daemon_runtime.h"
+#include "janusgate/identity.h"
 #include "janusgate/version.h"
 
 /** Signals synchronously owned by the daemon control thread. */
@@ -22,6 +26,33 @@ struct shutdown_waiter {
     sigset_t signals;
     int result;
 };
+
+/** @brief Resolve the web service and shared control-socket group. */
+static int resolve_control_identity(uid_t *web_uid, gid_t *control_gid)
+{
+    const struct passwd *web_identity = NULL;
+    const struct group *control_group = NULL;
+
+    if (web_uid == NULL || control_gid == NULL) {
+        return -EINVAL;
+    }
+    errno = 0;
+    web_identity = getpwnam(JG_WEB_SERVICE_USER);
+    if (web_identity == NULL) {
+        return errno == 0 ? -ENOENT : -errno;
+    }
+    if (web_identity->pw_uid == 0U) {
+        return -EINVAL;
+    }
+    errno = 0;
+    control_group = getgrnam(JG_CONTROL_GROUP);
+    if (control_group == NULL) {
+        return errno == 0 ? -ENOENT : -errno;
+    }
+    *web_uid = web_identity->pw_uid;
+    *control_gid = control_group->gr_gid;
+    return 0;
+}
 
 /** @brief Block termination signals before any worker thread is created. */
 static int block_shutdown_signals(sigset_t *signals)
@@ -62,8 +93,11 @@ int main(int argc, char **argv)
 {
     struct jg_daemon_runtime_config config;
     struct jg_daemon_runtime *runtime = NULL;
+    struct jg_control_server *control_server = NULL;
     struct shutdown_waiter waiter;
     pthread_t signal_thread;
+    uid_t web_uid = 0U;
+    gid_t control_gid = 0U;
     bool signal_thread_started = false;
     int result = 0;
 
@@ -82,9 +116,16 @@ int main(int argc, char **argv)
         .runtime = NULL,
         .result = 0,
     };
-    result = block_shutdown_signals(&waiter.signals);
+    result = resolve_control_identity(&web_uid, &control_gid);
+    if (result == 0) {
+        result = block_shutdown_signals(&waiter.signals);
+    }
     if (result == 0) {
         result = jg_daemon_runtime_start(&config, &runtime);
+    }
+    if (result == 0) {
+        result = jg_control_server_start(runtime, web_uid, control_gid,
+                                         &control_server);
     }
     if (result == 0) {
         waiter.runtime = runtime;
@@ -101,6 +142,13 @@ int main(int argc, char **argv)
     } else if (runtime != NULL) {
         (void)jg_daemon_runtime_request_stop(runtime);
     }
+    if (control_server != NULL) {
+        const int control_result = jg_control_server_stop(control_server);
+
+        if (result == 0 && control_result != 0) {
+            result = control_result;
+        }
+    }
     if (signal_thread_started) {
         const int wake_result = pthread_kill(signal_thread, SIGUSR1);
         const int join_result = pthread_join(signal_thread, NULL);
@@ -115,6 +163,7 @@ int main(int argc, char **argv)
             result = waiter.result;
         }
     }
+    jg_control_server_destroy(control_server);
     jg_daemon_runtime_destroy(runtime);
     if (result != 0) {
         (void)fprintf(stderr, "janusgated: %s\n", strerror(-result));
