@@ -73,6 +73,16 @@ static const char preserve_sensitive_data[] =
     "SELECT * FROM retained.operational_events;"
     "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;";
 
+/** Append-only operational history retained across every restore mode. */
+static const char preserve_restore_history_data[] =
+    "DELETE FROM main.audit_events;"
+    "DELETE FROM main.operational_events;"
+    "DELETE FROM main.backup_metadata;"
+    "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
+    "INSERT INTO main.operational_events "
+    "SELECT * FROM retained.operational_events;"
+    "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;";
+
 /** Foundation tables for schema version one. */
 static const char migration_1_foundation[] =
     "CREATE TABLE schema_migrations ("
@@ -1088,8 +1098,10 @@ static int open_database_image(const uint8_t *data,
     return result;
 }
 
-/** @brief Retain current sensitive tables inside a configuration snapshot. */
-static int preserve_sensitive_tables(sqlite3 *replacement, sqlite3 *current)
+/** @brief Retain selected current tables inside a replacement snapshot. */
+static int preserve_current_tables(sqlite3 *replacement,
+                                   sqlite3 *current,
+                                   const char *statements)
 {
     int result = execute_sql(replacement, "ATTACH ':memory:' AS retained;");
 
@@ -1100,7 +1112,7 @@ static int preserve_sensitive_tables(sqlite3 *replacement, sqlite3 *current)
         result = execute_sql(replacement, "BEGIN IMMEDIATE;");
     }
     if (result == 0) {
-        result = execute_sql(replacement, preserve_sensitive_data);
+        result = execute_sql(replacement, statements);
     }
     if (result == 0) {
         result = execute_sql(replacement, "COMMIT;");
@@ -1260,6 +1272,10 @@ int jg_database_restore(struct jg_database *database,
     if (result == 0 && !include_sensitive) {
         result = scrub_database(replacement);
     }
+    if (result == 0 && include_sensitive) {
+        result = preserve_current_tables(replacement, database->handle,
+                                         preserve_restore_history_data);
+    }
     if (result == 0) {
         result = jg_database_export(database, include_sensitive, &current_data,
                                     &current_size);
@@ -1282,7 +1298,8 @@ int jg_database_restore(struct jg_database *database,
                                         sizeof(report->current_checksum)) != 0;
     }
     if (result == 0 && report->changes && !dry_run && !include_sensitive) {
-        result = preserve_sensitive_tables(replacement, database->handle);
+        result = preserve_current_tables(replacement, database->handle,
+                                         preserve_sensitive_data);
     }
     if (result == 0 && report->changes && !dry_run) {
         result = replace_database(database->handle, replacement);

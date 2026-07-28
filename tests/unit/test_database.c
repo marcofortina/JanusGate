@@ -593,10 +593,23 @@ static void test_database_export(void **state)
 
     assert_int_equal(sqlite3_open(path, &writer), SQLITE_OK);
     assert_int_equal(
-        sqlite3_exec(writer,
-                     "UPDATE system_settings SET value='changed-again';"
-                     "UPDATE users SET password_hash='replacement-hash';",
-                     NULL, NULL, NULL),
+        sqlite3_exec(
+            writer,
+            "UPDATE system_settings SET value='changed-again';"
+            "UPDATE users SET password_hash='replacement-hash';"
+            "INSERT INTO backup_metadata(id,created_at,kind,path,"
+            "checksum,schema_version,size_bytes) VALUES("
+            "2,20,'full','backup-2.jgb',zeroblob(32),9,200);"
+            "INSERT INTO audit_events(id,occurred_at,actor_type,"
+            "action,object_type,details,event_hash) VALUES("
+            "2,20,'system','restore','database','{}',"
+            "x'"
+            "0100000000000000000000000000000000000000000000000000000000000000'"
+            ");"
+            "INSERT INTO operational_events(id,occurred_at,severity,"
+            "component,code,message,details) VALUES("
+            "2,20,'info','database','restore','restore','{}');",
+            NULL, NULL, NULL),
         SQLITE_OK);
     assert_int_equal(sqlite3_close(writer), SQLITE_OK);
     writer = NULL;
@@ -617,6 +630,9 @@ static void test_database_export(void **state)
                       "gateway");
     assert_text_value(snapshot, "SELECT password_hash FROM users WHERE id=1;",
                       "current-hash");
+    assert_int_equal(row_count(snapshot, "backup_metadata"), 2);
+    assert_int_equal(row_count(snapshot, "audit_events"), 2);
+    assert_int_equal(row_count(snapshot, "operational_events"), 2);
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
     jg_database_export_clear(inspection_data, inspection_data_size);
 

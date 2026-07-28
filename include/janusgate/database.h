@@ -408,10 +408,12 @@ JG_PUBLIC void jg_database_export_clear(uint8_t *data, size_t data_size);
  * @brief Validate and transactionally restore an in-memory SQLite snapshot.
  *
  * A configuration restore preserves current users, credentials, sessions,
- * tokens, client-certificate mappings, events, and backup history. A full
- * restore replaces every table. Both modes validate schema and integrity,
- * create an in-memory rollback checkpoint, and restore that checkpoint if
- * replacement fails.
+ * tokens and client-certificate mappings. Both modes retain the append-only
+ * audit and operational history as well as the current backup catalog, so
+ * stored archives remain reachable and restore activity cannot erase evidence.
+ * A full restore replaces every other table. Both modes validate schema and
+ * integrity, create an in-memory rollback checkpoint, and restore that
+ * checkpoint if replacement fails.
  *
  * @param[in] database Open destination database.
  * @param[in] data SQLite replacement snapshot.
