@@ -31,8 +31,10 @@ static void test_simple_question(void **state)
     assert_int_equal(parsed.id, UINT16_C(0x1234));
     assert_int_equal(parsed.question_count, 1U);
     assert_string_equal(parsed.questions[0].name, "example.org");
+    assert_int_equal(parsed.questions[0].wire_offset, 12U);
     assert_int_equal(parsed.questions[0].type, 1U);
     assert_int_equal(parsed.questions[0].class_code, 1U);
+    assert_int_equal(parsed.question_wire_size, sizeof(simple_query) - 12U);
 }
 
 /** @brief Verify backward compression pointers across multiple questions. */

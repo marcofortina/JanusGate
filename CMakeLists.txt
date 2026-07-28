@@ -91,6 +91,7 @@ add_library(
   src/daemon/dataplane.c
   src/daemon/dataplane_worker.c
   src/daemon/daemon_runtime.c
+  src/daemon/dns_response.c
   src/daemon/fragment.c
   src/daemon/netd_client.c
   src/daemon/nfqueue.c

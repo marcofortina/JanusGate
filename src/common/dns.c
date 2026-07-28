@@ -223,6 +223,7 @@ enum jg_dns_result jg_dns_parse_query(const uint8_t *message,
     for (index = 0U; index < (size_t)parsed->wire_question_count; ++index) {
         struct jg_dns_question *question = &parsed->questions[index];
 
+        question->wire_offset = cursor;
         result =
             jg_dns_decode_name(message, message_size, cursor, question->name,
                                sizeof(question->name), &cursor);
@@ -240,6 +241,7 @@ enum jg_dns_result jg_dns_parse_query(const uint8_t *message,
         cursor += 4U;
         ++parsed->question_count;
     }
+    parsed->question_wire_size = cursor - JG_DNS_HEADER_SIZE;
 
     result = skip_records(message, message_size, &cursor, parsed->answer_count,
                           false, parsed);

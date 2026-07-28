@@ -50,6 +50,8 @@ enum jg_dns_result {
 struct jg_dns_question {
     /** Lowercase owner name without the trailing root dot. */
     char name[JG_DOMAIN_NAME_MAX + 1U];
+    /** Offset of the encoded owner name in the original DNS message. */
+    size_t wire_offset;
     /** Host-order DNS resource record type. */
     uint16_t type;
     /** Host-order DNS class. */
@@ -74,6 +76,8 @@ struct jg_dns_message {
     uint16_t additional_count;
     /** Number of entries populated in @ref questions. */
     size_t question_count;
+    /** Bytes occupied by the complete wire-format question section. */
+    size_t question_wire_size;
     /** Whether an EDNS OPT record was present in additional data. */
     bool has_edns0;
     /** Normalized questions in wire order. */
