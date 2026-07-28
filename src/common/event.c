@@ -403,3 +403,61 @@ int jg_database_event_list(struct jg_database *database,
     }
     return result;
 }
+
+/** @brief List newest error and critical events in descending order. */
+int jg_database_event_list_recent_errors(struct jg_database *database,
+                                         struct jg_event_record *records,
+                                         size_t capacity,
+                                         size_t *count)
+{
+    static const char query[] =
+        "SELECT id,occurred_at,severity,component,code,message,details"
+        " FROM operational_events WHERE severity IN('error','critical')"
+        " ORDER BY id DESC LIMIT ?1;";
+    sqlite3_stmt *statement = NULL;
+    size_t loaded = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (database == NULL || records == NULL || count == NULL ||
+        capacity == 0U || capacity > JG_EVENT_PAGE_MAX) {
+        return -EINVAL;
+    }
+    (void)memset(records, 0, capacity * sizeof(*records));
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)capacity);
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && loaded < capacity) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            break;
+        }
+        if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        } else {
+            result = decode_record(statement, &records[loaded]);
+            if (result == 0) {
+                ++loaded;
+            }
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *count = loaded;
+    } else {
+        (void)memset(records, 0, capacity * sizeof(*records));
+    }
+    return result;
+}

@@ -184,6 +184,48 @@ static void test_event_validation(void **state)
     assert_false(has_more);
 }
 
+/** @brief Verify newest-first diagnostic selection of severe events. */
+static void test_recent_errors(void **state)
+{
+    struct event_fixture *fixture = *state;
+    struct jg_event event = {
+        .occurred_at = 100U,
+        .severity = JG_EVENT_SEVERITY_INFO,
+        .component = "daemon",
+        .code = "test.event",
+        .message = "Test event.",
+        .details = "{}",
+    };
+    struct jg_event_record records[2U];
+    size_t count = 0U;
+
+    assert_int_equal(jg_database_event_append(fixture->database, &event, NULL),
+                     0);
+    event.occurred_at = 101U;
+    event.severity = JG_EVENT_SEVERITY_ERROR;
+    event.code = "test.error";
+    assert_int_equal(jg_database_event_append(fixture->database, &event, NULL),
+                     0);
+    event.occurred_at = 102U;
+    event.severity = JG_EVENT_SEVERITY_WARNING;
+    event.code = "test.warning";
+    assert_int_equal(jg_database_event_append(fixture->database, &event, NULL),
+                     0);
+    event.occurred_at = 103U;
+    event.severity = JG_EVENT_SEVERITY_CRITICAL;
+    event.code = "test.critical";
+    assert_int_equal(jg_database_event_append(fixture->database, &event, NULL),
+                     0);
+    assert_int_equal(jg_database_event_list_recent_errors(fixture->database,
+                                                          records, 2U, &count),
+                     0);
+    assert_int_equal(count, 2U);
+    assert_int_equal(records[0U].id, 4U);
+    assert_int_equal(records[0U].severity, JG_EVENT_SEVERITY_CRITICAL);
+    assert_int_equal(records[1U].id, 2U);
+    assert_int_equal(records[1U].severity, JG_EVENT_SEVERITY_ERROR);
+}
+
 /** @brief Run the bounded operational-event test group. */
 int jg_test_event(void)
 {
@@ -191,6 +233,8 @@ int jg_test_event(void)
         cmocka_unit_test_setup_teardown(test_event_lifecycle, setup_event,
                                         teardown_event),
         cmocka_unit_test_setup_teardown(test_event_validation, setup_event,
+                                        teardown_event),
+        cmocka_unit_test_setup_teardown(test_recent_errors, setup_event,
                                         teardown_event),
     };
 

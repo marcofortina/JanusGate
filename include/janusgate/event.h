@@ -158,4 +158,30 @@ JG_PUBLIC int jg_database_event_list(struct jg_database *database,
                                      size_t *count,
                                      bool *has_more);
 
+/**
+ * @brief List the most recent error and critical operational events.
+ *
+ * Records are returned from newest to oldest. Event details are retained in
+ * the returned records; administration surfaces decide whether to disclose
+ * them.
+ *
+ * @param[in,out] database Open database.
+ * @param[out] records Array with room for at least @p capacity records.
+ * @param[in] capacity Requested count from one through
+ * @ref JG_EVENT_PAGE_MAX.
+ * @param[out] count Number of records written.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent data.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_event_list_recent_errors(
+    struct jg_database *database,
+    struct jg_event_record *records,
+    size_t capacity,
+    size_t *count);
+
 #endif
