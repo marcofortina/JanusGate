@@ -44,6 +44,21 @@
 /** Maximum account lock delay in seconds. */
 #define JG_ACCOUNT_LOCK_DELAY_MAX 3600U
 
+/** Smallest accepted absolute web-session lifetime in seconds. */
+#define JG_ACCOUNT_SESSION_LIFETIME_MIN 300U
+
+/** Largest accepted absolute web-session lifetime in seconds. */
+#define JG_ACCOUNT_SESSION_LIFETIME_MAX 604800U
+
+/** Smallest accepted web-session inactivity timeout in seconds. */
+#define JG_ACCOUNT_SESSION_INACTIVITY_MIN 60U
+
+/** Largest accepted web-session inactivity timeout in seconds. */
+#define JG_ACCOUNT_SESSION_INACTIVITY_MAX 86400U
+
+/** Minimum interval between persistent session activity writes. */
+#define JG_ACCOUNT_SESSION_TOUCH_INTERVAL 60U
+
 /**
  * @brief Authenticated local identity returned to management services.
  */
@@ -62,6 +77,18 @@ struct jg_account_identity {
     bool force_password_change;
     /** Whether TOTP is required for this user. */
     bool totp_enabled;
+};
+
+/**
+ * @brief One-time plaintext values returned when a web session is issued.
+ */
+struct jg_account_session_tokens {
+    /** Opaque session identifier placed only in a secure cookie. */
+    char session[JG_AUTH_SECRET_TEXT_SIZE];
+    /** Opaque CSRF value sent outside the cookie on state changes. */
+    char csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    /** Absolute Unix expiry timestamp. */
+    uint64_t expires_at;
 };
 
 /**
@@ -164,5 +191,121 @@ JG_PUBLIC int jg_account_authenticate(
     const struct jg_auth_password_policy *password_policy,
     uint64_t now,
     struct jg_account_identity *identity);
+
+/**
+ * @brief Issue one persistent web session for an authenticated identity.
+ *
+ * Only digests of the session and CSRF values are stored. When a remote
+ * address is supplied, subsequent validation requires the exact same address.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] identity Authenticated enabled identity.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[in] lifetime Absolute session lifetime in the supported range.
+ * @param[in] remote_family IPv4, IPv6, or `JG_POLICY_ADDRESS_NONE`.
+ * @param[in] remote_address Network-order address, required for IPv4/IPv6.
+ * @param[out] tokens Receives one-time session and CSRF values.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null or inconsistent input.
+ * @return -ERANGE for an invalid lifetime.
+ * @return -EACCES when the identity is disabled or its epoch is stale.
+ * @return A negative errno-style cryptographic or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts one persistent session and obtains random bytes.
+ */
+JG_PUBLIC int jg_account_session_issue(
+    struct jg_database *database,
+    const struct jg_account_identity *identity,
+    uint64_t now,
+    uint64_t lifetime,
+    enum jg_policy_address_family remote_family,
+    const uint8_t *remote_address,
+    struct jg_account_session_tokens *tokens);
+
+/**
+ * @brief Validate a web session and optionally its CSRF token.
+ *
+ * Session validation checks user enablement, absolute lifetime, inactivity,
+ * remote-address binding, and the user's current revocation epoch. Successful
+ * activity is persisted at a bounded interval.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] session Exact opaque session bytes.
+ * @param[in] session_size Number of bytes in @p session.
+ * @param[in] csrf Candidate CSRF bytes, or null when not required.
+ * @param[in] csrf_size Number of bytes in @p csrf.
+ * @param[in] require_csrf Whether a matching CSRF value is mandatory.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[in] inactivity_timeout Accepted idle seconds.
+ * @param[in] remote_family Current IPv4, IPv6, or unavailable family.
+ * @param[in] remote_address Current network-order address when available.
+ * @param[out] identity Receives the current authorized identity.
+ *
+ * @return 0 for a valid session.
+ * @return -EINVAL for a null or inconsistent input.
+ * @return -ERANGE for an invalid inactivity timeout.
+ * @return -EACCES for an unknown, expired, revoked, address-mismatched, or
+ * CSRF-invalid session.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects May advance the persistent last-seen timestamp.
+ */
+JG_PUBLIC int jg_account_session_validate(
+    struct jg_database *database,
+    const uint8_t *session,
+    size_t session_size,
+    const uint8_t *csrf,
+    size_t csrf_size,
+    bool require_csrf,
+    uint64_t now,
+    uint64_t inactivity_timeout,
+    enum jg_policy_address_family remote_family,
+    const uint8_t *remote_address,
+    struct jg_account_identity *identity);
+
+/**
+ * @brief Revoke one opaque web session idempotently.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] session Exact opaque session bytes.
+ * @param[in] session_size Number of bytes in @p session.
+ *
+ * @return 0 when the session was absent or removed.
+ * @return -EINVAL for invalid input.
+ * @return A negative errno-style digest or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Deletes a matching persistent session.
+ */
+JG_PUBLIC int jg_account_session_revoke(struct jg_database *database,
+                                        const uint8_t *session,
+                                        size_t session_size);
+
+/**
+ * @brief Revoke every current and outstanding session for one user.
+ *
+ * The user's session epoch and revision are incremented before all stored
+ * sessions are deleted in the same transaction.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Nonzero persistent user identifier.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null database or zero identifier.
+ * @return -ENOENT when the user does not exist.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Invalidates every session issued under the old epoch.
+ */
+JG_PUBLIC int jg_account_sessions_revoke_all(struct jg_database *database,
+                                             uint64_t user_id);
 
 #endif

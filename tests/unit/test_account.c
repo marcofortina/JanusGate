@@ -228,6 +228,93 @@ static void test_password_authentication(void **state)
     remove_account_database(directory, path);
 }
 
+/** @brief Verify CSRF, idle expiry, address binding, and global revocation. */
+static void test_web_sessions(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    static const uint8_t remote[4U] = {192U, 0U, 2U, 10U};
+    static const uint8_t other_remote[4U] = {192U, 0U, 2U, 11U};
+    char directory[64U];
+    char path[512U];
+    char token[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_account_session_tokens session;
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_identity identity;
+    struct jg_account_identity validated;
+    struct jg_database *database = NULL;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_account_bootstrap_issue(database, 100U, 300U, token),
+                     0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)token, strlen(token),
+                         "administrator", password, sizeof(password) - 1U,
+                         &password_policy, 101U, &user_id),
+                     0);
+    assert_int_equal(jg_account_authenticate(database, "administrator",
+                                             password, sizeof(password) - 1U,
+                                             &password_policy, 110U, &identity),
+                     0);
+    assert_int_equal(jg_account_session_issue(database, &identity, 110U,
+                                              JG_ACCOUNT_SESSION_LIFETIME_MIN,
+                                              JG_POLICY_ADDRESS_IPV4, remote,
+                                              &session),
+                     0);
+    assert_int_equal(strlen(session.session), JG_AUTH_SECRET_TEXT_SIZE - 1U);
+    assert_int_equal(strlen(session.csrf), JG_AUTH_SECRET_TEXT_SIZE - 1U);
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)session.session,
+                         strlen(session.session), (const uint8_t *)session.csrf,
+                         strlen(session.csrf), true, 111U,
+                         JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     0);
+    assert_int_equal(validated.user_id, identity.user_id);
+    session.csrf[0U] = session.csrf[0U] == 'A' ? 'B' : 'A';
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)session.session,
+                         strlen(session.session), (const uint8_t *)session.csrf,
+                         strlen(session.csrf), true, 112U,
+                         JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     -EACCES);
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)session.session,
+                         strlen(session.session), NULL, 0U, false, 112U,
+                         JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, other_remote, &validated),
+                     -EACCES);
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)session.session,
+                         strlen(session.session), NULL, 0U, false,
+                         110U + JG_ACCOUNT_SESSION_INACTIVITY_MIN + 1U,
+                         JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     -EACCES);
+    assert_int_equal(jg_account_sessions_revoke_all(database, user_id), 0);
+    assert_int_equal(
+        jg_account_session_validate(database, (const uint8_t *)session.session,
+                                    strlen(session.session), NULL, 0U, false,
+                                    113U, JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                                    JG_POLICY_ADDRESS_IPV4, remote, &validated),
+        -EACCES);
+    assert_int_equal(jg_account_session_revoke(database,
+                                               (const uint8_t *)session.session,
+                                               strlen(session.session)),
+                     0);
+    assert_int_equal(jg_account_session_revoke(database,
+                                               (const uint8_t *)session.session,
+                                               strlen(session.session)),
+                     0);
+    jg_database_close(database);
+    remove_account_database(directory, path);
+}
+
 /** @brief Run the first-boot account unit-test group. */
 int jg_test_account(void)
 {
@@ -235,6 +322,7 @@ int jg_test_account(void)
         cmocka_unit_test(test_initial_administrator),
         cmocka_unit_test(test_bootstrap_expiration),
         cmocka_unit_test(test_password_authentication),
+        cmocka_unit_test(test_web_sessions),
     };
 
     return cmocka_run_group_tests_name("account", tests, NULL, NULL);
