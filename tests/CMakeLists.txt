@@ -20,6 +20,7 @@ add_executable(
   unit/test_control_protocol.c
   unit/test_control_server.c
   unit/test_database.c
+  unit/test_diagnostic.c
   unit/test_dataplane.c
   unit/test_dataplane_worker.c
   unit/test_daemon_runtime.c

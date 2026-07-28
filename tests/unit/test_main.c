@@ -26,6 +26,7 @@ int jg_test_database(void);
 int jg_test_dataplane(void);
 int jg_test_dataplane_worker(void);
 int jg_test_daemon_runtime(void);
+int jg_test_diagnostic(void);
 int jg_test_dns(void);
 int jg_test_dns_response(void);
 int jg_test_domain(void);
@@ -66,6 +67,7 @@ int main(void)
     result |= jg_test_control_protocol();
     result |= jg_test_control_server();
     result |= jg_test_database();
+    result |= jg_test_diagnostic();
     result |= jg_test_dataplane();
     result |= jg_test_dataplane_worker();
     result |= jg_test_daemon_runtime();
