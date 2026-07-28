@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -18,12 +19,14 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include <jansson.h>
 #include <sodium.h>
 
 #include "client.h"
+#include "janusgate/backup.h"
 #include "janusgate/ipc.h"
 #include "janusgate/ipc_client.h"
 #include "janusgate/version.h"
@@ -51,6 +54,7 @@ struct cli_options {
     const char *socket_path;
     const char *endpoint;
     const char *token_file;
+    const char *passphrase_file;
     const char *client_certificate;
     const char *client_key;
     const char *ca_file;
@@ -60,6 +64,7 @@ struct cli_options {
     bool quiet;
     bool verbose;
     bool yes;
+    bool include_private_key;
     bool help;
     bool version;
 };
@@ -69,6 +74,7 @@ enum cli_option {
     CLI_OPTION_SOCKET = 256,
     CLI_OPTION_ENDPOINT,
     CLI_OPTION_TOKEN_FILE,
+    CLI_OPTION_PASSPHRASE_FILE,
     CLI_OPTION_CLIENT_CERTIFICATE,
     CLI_OPTION_CLIENT_KEY,
     CLI_OPTION_CA_FILE,
@@ -77,6 +83,7 @@ enum cli_option {
     CLI_OPTION_QUIET,
     CLI_OPTION_VERBOSE,
     CLI_OPTION_YES,
+    CLI_OPTION_INCLUDE_PRIVATE_KEY,
     CLI_OPTION_VERSION,
     CLI_OPTION_HELP
 };
@@ -85,68 +92,77 @@ enum cli_option {
 static void print_usage(FILE *output)
 {
     (void)fprintf(
-        output, "usage: janusgatectl [OPTIONS] status\n"
-                "       janusgatectl [OPTIONS] health\n"
-                "       janusgatectl [OPTIONS] stats\n"
-                "       janusgatectl [OPTIONS] network show\n"
-                "       janusgatectl [OPTIONS] network validate FILE\n"
-                "       janusgatectl [OPTIONS] network apply FILE\n"
-                "       janusgatectl [OPTIONS] network set FILE\n"
-                "       janusgatectl [OPTIONS] network confirm\n"
-                "       janusgatectl [OPTIONS] network rollback\n"
-                "       janusgatectl [OPTIONS] policy list\n"
-                "       janusgatectl [OPTIONS] policy show KIND ID\n"
-                "       janusgatectl [OPTIONS] policy add KIND FILE\n"
-                "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
-                "       janusgatectl [OPTIONS] policy remove KIND ID\n"
-                "       janusgatectl [OPTIONS] policy simulate FILE\n"
-                "       janusgatectl [OPTIONS] domain block DOMAIN\n"
-                "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
-                "       janusgatectl [OPTIONS] domain remove ID\n"
-                "       janusgatectl [OPTIONS] blocklist list\n"
-                "       janusgatectl [OPTIONS] blocklist import SOURCE FILE\n"
-                "       janusgatectl [OPTIONS] blocklist export\n"
-                "       janusgatectl [OPTIONS] source list\n"
-                "       janusgatectl [OPTIONS] source add FILE\n"
-                "       janusgatectl [OPTIONS] source update ID FILE\n"
-                "       janusgatectl [OPTIONS] source refresh ID\n"
-                "       janusgatectl [OPTIONS] source enable ID\n"
-                "       janusgatectl [OPTIONS] source disable ID\n"
-                "       janusgatectl [OPTIONS] events [QUERY]\n"
-                "       janusgatectl [OPTIONS] audit [QUERY]\n"
-                "       janusgatectl [OPTIONS] audit verify\n"
-                "       janusgatectl [OPTIONS] user list\n"
-                "       janusgatectl [OPTIONS] user add FILE\n"
-                "       janusgatectl [OPTIONS] user update ID FILE\n"
-                "       janusgatectl [OPTIONS] user disable ID\n"
-                "       janusgatectl [OPTIONS] user password ID FILE\n"
-                "       janusgatectl [OPTIONS] user totp ID\n"
-                "       janusgatectl [OPTIONS] token list\n"
-                "       janusgatectl [OPTIONS] token create FILE\n"
-                "       janusgatectl [OPTIONS] token revoke ID\n"
-                "       janusgatectl [OPTIONS] certificate show\n"
-                "       janusgatectl [OPTIONS] certificate install FILE\n"
-                "       janusgatectl [OPTIONS] certificate csr FILE\n"
-                "       janusgatectl [--socket PATH] [--json] ping\n"
-                "       janusgatectl [--socket PATH] [--json] policy reload\n"
-                "       janusgatectl --version\n"
-                "\n"
-                "Transport options:\n"
-                "  --socket PATH       local control socket\n"
-                "  --endpoint URL      remote HTTPS management origin\n"
-                "  --token-file PATH   private file containing one API token\n"
-                "  --client-cert PATH  optional mTLS client certificate\n"
-                "  --client-key PATH   optional mTLS client private key\n"
-                "  --ca-file PATH      optional PEM trust-anchor file\n"
-                "  --timeout SECONDS   remote request timeout (1-300)\n"
-                "\n"
-                "Output options:\n"
-                "  --json              stable compact JSON output\n"
-                "  --quiet             suppress successful output\n"
-                "  --verbose           report transport and request details\n"
-                "  --yes               confirm destructive operations\n"
-                "  --help              show this help\n"
-                "  --version           show the program version\n");
+        output,
+        "usage: janusgatectl [OPTIONS] status\n"
+        "       janusgatectl [OPTIONS] health\n"
+        "       janusgatectl [OPTIONS] stats\n"
+        "       janusgatectl [OPTIONS] network show\n"
+        "       janusgatectl [OPTIONS] network validate FILE\n"
+        "       janusgatectl [OPTIONS] network apply FILE\n"
+        "       janusgatectl [OPTIONS] network set FILE\n"
+        "       janusgatectl [OPTIONS] network confirm\n"
+        "       janusgatectl [OPTIONS] network rollback\n"
+        "       janusgatectl [OPTIONS] policy list\n"
+        "       janusgatectl [OPTIONS] policy show KIND ID\n"
+        "       janusgatectl [OPTIONS] policy add KIND FILE\n"
+        "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
+        "       janusgatectl [OPTIONS] policy remove KIND ID\n"
+        "       janusgatectl [OPTIONS] policy simulate FILE\n"
+        "       janusgatectl [OPTIONS] domain block DOMAIN\n"
+        "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
+        "       janusgatectl [OPTIONS] domain remove ID\n"
+        "       janusgatectl [OPTIONS] blocklist list\n"
+        "       janusgatectl [OPTIONS] blocklist import SOURCE FILE\n"
+        "       janusgatectl [OPTIONS] blocklist export\n"
+        "       janusgatectl [OPTIONS] source list\n"
+        "       janusgatectl [OPTIONS] source add FILE\n"
+        "       janusgatectl [OPTIONS] source update ID FILE\n"
+        "       janusgatectl [OPTIONS] source refresh ID\n"
+        "       janusgatectl [OPTIONS] source enable ID\n"
+        "       janusgatectl [OPTIONS] source disable ID\n"
+        "       janusgatectl [OPTIONS] events [QUERY]\n"
+        "       janusgatectl [OPTIONS] audit [QUERY]\n"
+        "       janusgatectl [OPTIONS] audit verify\n"
+        "       janusgatectl [OPTIONS] user list\n"
+        "       janusgatectl [OPTIONS] user add FILE\n"
+        "       janusgatectl [OPTIONS] user update ID FILE\n"
+        "       janusgatectl [OPTIONS] user disable ID\n"
+        "       janusgatectl [OPTIONS] user password ID FILE\n"
+        "       janusgatectl [OPTIONS] user totp ID\n"
+        "       janusgatectl [OPTIONS] token list\n"
+        "       janusgatectl [OPTIONS] token create FILE\n"
+        "       janusgatectl [OPTIONS] token revoke ID\n"
+        "       janusgatectl [OPTIONS] certificate show\n"
+        "       janusgatectl [OPTIONS] certificate install FILE\n"
+        "       janusgatectl [OPTIONS] certificate csr FILE\n"
+        "       janusgatectl [OPTIONS] backup create configuration\n"
+        "       janusgatectl [OPTIONS] backup create full\n"
+        "       janusgatectl [OPTIONS] backup inspect ID\n"
+        "       janusgatectl [OPTIONS] backup restore ID\n"
+        "       janusgatectl [--socket PATH] [--json] ping\n"
+        "       janusgatectl [--socket PATH] [--json] policy reload\n"
+        "       janusgatectl --version\n"
+        "\n"
+        "Transport options:\n"
+        "  --socket PATH       local control socket\n"
+        "  --endpoint URL      remote HTTPS management origin\n"
+        "  --token-file PATH   private file containing one API token\n"
+        "  --passphrase-file PATH\n"
+        "                      private full-backup passphrase file\n"
+        "  --client-cert PATH  optional mTLS client certificate\n"
+        "  --client-key PATH   optional mTLS client private key\n"
+        "  --ca-file PATH      optional PEM trust-anchor file\n"
+        "  --timeout SECONDS   remote request timeout (1-300)\n"
+        "\n"
+        "Output options:\n"
+        "  --json              stable compact JSON output\n"
+        "  --quiet             suppress successful output\n"
+        "  --verbose           report transport and request details\n"
+        "  --yes               confirm destructive operations\n"
+        "  --include-private-key\n"
+        "                      include the server key in a full backup\n"
+        "  --help              show this help\n"
+        "  --version           show the program version\n");
 }
 
 /** @brief Parse one bounded positive decimal option. */
@@ -171,6 +187,9 @@ static int parse_identifier(const char *text, uint64_t *identifier)
     char *end = NULL;
     unsigned long long value = 0ULL;
 
+    if (text == NULL || identifier == NULL) {
+        return -EINVAL;
+    }
     errno = 0;
     value = strtoull(text, &end, 10);
     if (errno != 0 || end == text || *end != '\0' || value == 0ULL) {
@@ -199,6 +218,8 @@ static int parse_options(int argc,
         {"socket", required_argument, NULL, CLI_OPTION_SOCKET},
         {"endpoint", required_argument, NULL, CLI_OPTION_ENDPOINT},
         {"token-file", required_argument, NULL, CLI_OPTION_TOKEN_FILE},
+        {"passphrase-file", required_argument, NULL,
+         CLI_OPTION_PASSPHRASE_FILE},
         {"client-cert", required_argument, NULL, CLI_OPTION_CLIENT_CERTIFICATE},
         {"client-key", required_argument, NULL, CLI_OPTION_CLIENT_KEY},
         {"ca-file", required_argument, NULL, CLI_OPTION_CA_FILE},
@@ -207,6 +228,8 @@ static int parse_options(int argc,
         {"quiet", no_argument, NULL, CLI_OPTION_QUIET},
         {"verbose", no_argument, NULL, CLI_OPTION_VERBOSE},
         {"yes", no_argument, NULL, CLI_OPTION_YES},
+        {"include-private-key", no_argument, NULL,
+         CLI_OPTION_INCLUDE_PRIVATE_KEY},
         {"version", no_argument, NULL, CLI_OPTION_VERSION},
         {"help", no_argument, NULL, CLI_OPTION_HELP},
         {NULL, 0, NULL, 0},
@@ -238,6 +261,13 @@ static int parse_options(int argc,
                 result = -EINVAL;
             } else {
                 options->token_file = optarg;
+            }
+            break;
+        case CLI_OPTION_PASSPHRASE_FILE:
+            if (options->passphrase_file != NULL) {
+                result = -EINVAL;
+            } else {
+                options->passphrase_file = optarg;
             }
             break;
         case CLI_OPTION_CLIENT_CERTIFICATE:
@@ -275,6 +305,9 @@ static int parse_options(int argc,
             break;
         case CLI_OPTION_YES:
             options->yes = true;
+            break;
+        case CLI_OPTION_INCLUDE_PRIVATE_KEY:
+            options->include_private_key = true;
             break;
         case CLI_OPTION_VERSION:
             options->version = true;
@@ -352,6 +385,174 @@ static int read_token_file(const char *path,
     }
     sodium_memzero(data, sizeof(data));
     (void)close(descriptor);
+    return result;
+}
+
+/** @brief Read one bounded passphrase from a private regular file. */
+static int read_passphrase_file(const char *path,
+                                char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U],
+                                size_t *passphrase_size)
+{
+    uint8_t data[JG_BACKUP_PASSPHRASE_MAX + 2U];
+    struct stat status;
+    size_t size = 0U;
+    int descriptor = -1;
+    int result = 0;
+
+    *passphrase_size = 0U;
+    if (path == NULL || path[0U] != '/') {
+        return -EINVAL;
+    }
+    descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        return -errno;
+    }
+    if (fstat(descriptor, &status) != 0) {
+        result = -errno;
+    } else if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+               (status.st_mode & (S_IRWXG | S_IRWXO | S_IXUSR)) != 0U ||
+               (status.st_mode & S_IRUSR) == 0U ||
+               status.st_size < (off_t)JG_BACKUP_PASSPHRASE_MIN ||
+               status.st_size > (off_t)(JG_BACKUP_PASSPHRASE_MAX + 1U)) {
+        result = -EACCES;
+    }
+    while (result == 0 && size < sizeof(data)) {
+        const ssize_t count =
+            read(descriptor, data + size, sizeof(data) - size);
+
+        if (count > 0) {
+            size += (size_t)count;
+        } else if (count == 0) {
+            break;
+        } else if (errno != EINTR) {
+            result = -errno;
+        }
+    }
+    if (result == 0 && size > 0U && data[size - 1U] == (uint8_t)'\n') {
+        --size;
+    }
+    if (result == 0 &&
+        (size < JG_BACKUP_PASSPHRASE_MIN || size > JG_BACKUP_PASSPHRASE_MAX ||
+         memchr(data, '\0', size) != NULL ||
+         memchr(data, '\n', size) != NULL)) {
+        result = -EINVAL;
+    }
+    if (result == 0) {
+        (void)memcpy(passphrase, data, size);
+        passphrase[size] = '\0';
+        *passphrase_size = size;
+    }
+    sodium_memzero(data, sizeof(data));
+    if (close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    return result;
+}
+
+/** @brief Read one passphrase from a terminal while suppressing echo. */
+static int read_terminal_passphrase(
+    const char *message,
+    char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U],
+    size_t *passphrase_size)
+{
+    char input[JG_BACKUP_PASSPHRASE_MAX + 2U];
+    struct termios original;
+    struct termios hidden;
+    sigset_t blocked;
+    sigset_t previous;
+    size_t size = 0U;
+    bool signals_blocked = false;
+    bool terminal_changed = false;
+    int result = 0;
+
+    *passphrase_size = 0U;
+    if (isatty(STDIN_FILENO) == 0) {
+        return -ENOTTY;
+    }
+    if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 ||
+        sigaddset(&blocked, SIGTERM) != 0 || sigaddset(&blocked, SIGHUP) != 0 ||
+        sigaddset(&blocked, SIGQUIT) != 0) {
+        result = -errno;
+    }
+    if (result == 0 && sigprocmask(SIG_BLOCK, &blocked, &previous) != 0) {
+        result = -errno;
+    } else if (result == 0) {
+        signals_blocked = true;
+    }
+    if (result == 0 && tcgetattr(STDIN_FILENO, &original) != 0) {
+        result = -errno;
+    }
+    if (result == 0) {
+        hidden = original;
+        hidden.c_lflag &= (tcflag_t)~ECHO;
+        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &hidden) != 0) {
+            result = -errno;
+        } else {
+            terminal_changed = true;
+        }
+    }
+    if (result == 0 && (fputs(message, stderr) == EOF || fflush(stderr) != 0)) {
+        result = -EIO;
+    }
+    if (result == 0 && fgets(input, sizeof(input), stdin) == NULL) {
+        result = ferror(stdin) != 0 ? -EIO : -EINVAL;
+    }
+    if (terminal_changed &&
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &original) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (terminal_changed) {
+        (void)fputc('\n', stderr);
+    }
+    if (signals_blocked && sigprocmask(SIG_SETMASK, &previous, NULL) != 0 &&
+        result == 0) {
+        result = -errno;
+    }
+    if (result == 0) {
+        size = strlen(input);
+        if (size > 0U && input[size - 1U] == '\n') {
+            input[--size] = '\0';
+        }
+        if (size < JG_BACKUP_PASSPHRASE_MIN ||
+            size > JG_BACKUP_PASSPHRASE_MAX) {
+            result = -EINVAL;
+        }
+    }
+    if (result == 0) {
+        (void)memcpy(passphrase, input, size + 1U);
+        *passphrase_size = size;
+    }
+    sodium_memzero(input, sizeof(input));
+    return result;
+}
+
+/** @brief Acquire and optionally confirm one full-backup passphrase. */
+static int read_backup_passphrase(
+    const struct cli_options *options,
+    bool confirm,
+    char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U],
+    size_t *passphrase_size)
+{
+    char verification[JG_BACKUP_PASSPHRASE_MAX + 1U];
+    size_t verification_size = 0U;
+    int result = 0;
+
+    if (options->passphrase_file != NULL) {
+        return read_passphrase_file(options->passphrase_file, passphrase,
+                                    passphrase_size);
+    }
+    result = read_terminal_passphrase("Backup passphrase: ", passphrase,
+                                      passphrase_size);
+    if (result == 0 && confirm) {
+        result = read_terminal_passphrase(
+            "Confirm backup passphrase: ", verification, &verification_size);
+        if (result == 0 &&
+            (verification_size != *passphrase_size ||
+             sodium_memcmp(verification, passphrase, *passphrase_size) != 0)) {
+            result = -EKEYREJECTED;
+        }
+    }
+    sodium_memzero(verification, sizeof(verification));
     return result;
 }
 
@@ -755,6 +956,39 @@ static int fetch_api_object(const struct cli_options *options,
     }
     result = request_api(options, token, "GET", path, query, body, &response);
     json_decref(body);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgatectl: request failed: %s\n",
+                      strerror(-result));
+        return CLI_EXIT_FAILURE;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result = report_api_failure(&response);
+    } else {
+        *object = json_loadb(response.body, response.body_size,
+                             JSON_REJECT_DUPLICATES, &error);
+        if (!json_is_object(*object)) {
+            json_decref(*object);
+            *object = NULL;
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    jg_cli_response_clear(&response);
+    return result;
+}
+
+/** @brief Send one JSON body and decode a successful JSON response. */
+static int post_api_object(const struct cli_options *options,
+                           const char *token,
+                           const char *path,
+                           json_t *body,
+                           json_t **object)
+{
+    struct jg_cli_response response = {0};
+    json_error_t error;
+    int result = 0;
+
+    *object = NULL;
+    result = request_api(options, token, "POST", path, NULL, body, &response);
     if (result != 0) {
         (void)fprintf(stderr, "janusgatectl: request failed: %s\n",
                       strerror(-result));
@@ -2034,6 +2268,238 @@ static int run_certificate_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Create one configuration or full backup through the API. */
+static int run_backup_create(const struct cli_options *options,
+                             const char *token,
+                             const char *kind)
+{
+    const bool full = strcmp(kind, "full") == 0;
+    char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U];
+    size_t passphrase_size = 0U;
+    json_t *body = NULL;
+    json_t *passphrase_value = NULL;
+    int result = CLI_EXIT_SUCCESS;
+
+    if (!full &&
+        (options->include_private_key || options->passphrase_file != NULL)) {
+        (void)fprintf(
+            stderr,
+            "janusgatectl: configuration backups cannot contain secrets\n");
+        return CLI_EXIT_USAGE;
+    }
+    (void)memset(passphrase, 0, sizeof(passphrase));
+    if (full) {
+        const int read_result =
+            read_backup_passphrase(options, true, passphrase, &passphrase_size);
+
+        if (read_result != 0) {
+            (void)fprintf(stderr, "janusgatectl: backup passphrase: %s\n",
+                          read_result == -EKEYREJECTED
+                              ? "confirmation does not match"
+                              : strerror(-read_result));
+            sodium_memzero(passphrase, sizeof(passphrase));
+            return read_result == -EINVAL || read_result == -ENOTTY
+                       ? CLI_EXIT_USAGE
+                       : CLI_EXIT_FAILURE;
+        }
+    }
+    body = json_object();
+    passphrase_value =
+        full ? json_stringn(passphrase, passphrase_size) : json_null();
+    if (body == NULL || passphrase_value == NULL ||
+        json_object_set_new(body, "kind", json_string(kind)) != 0 ||
+        json_object_set_new(
+            body, "include_private_key",
+            json_boolean(full && options->include_private_key)) != 0 ||
+        json_object_set(body, "passphrase", passphrase_value) != 0) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "backup create", "POST",
+                                  "/api/v1/backups", body);
+    }
+    json_decref(passphrase_value);
+    json_decref(body);
+    sodium_memzero(passphrase, sizeof(passphrase));
+    return result;
+}
+
+/** @brief Inspect one backup manifest by persistent identifier. */
+static int run_backup_inspect(const struct cli_options *options,
+                              const char *token,
+                              const char *identifier_text)
+{
+    char path[sizeof("/api/v1/backups/18446744073709551615")];
+    json_t *body = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    (void)snprintf(path, sizeof(path), "/api/v1/backups/%llu",
+                   (unsigned long long)identifier);
+    result = fetch_api_object(options, token, path, NULL, &body);
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Build one exact dry-run or confirmed restore request body. */
+static json_t *backup_restore_body(const char *passphrase,
+                                   size_t passphrase_size,
+                                   bool dry_run)
+{
+    json_t *body = json_object();
+    json_t *passphrase_value = passphrase == NULL
+                                   ? json_null()
+                                   : json_stringn(passphrase, passphrase_size);
+
+    if (body == NULL || passphrase_value == NULL ||
+        json_object_set(body, "passphrase", passphrase_value) != 0 ||
+        json_object_set_new(body, "dry_run", json_boolean(dry_run)) != 0 ||
+        json_object_set_new(body, "confirm", json_boolean(!dry_run)) != 0) {
+        json_decref(passphrase_value);
+        json_decref(body);
+        return NULL;
+    }
+    json_decref(passphrase_value);
+    return body;
+}
+
+/** @brief Dry-run and explicitly confirm one backup restore. */
+static int run_backup_restore(const struct cli_options *options,
+                              const char *token,
+                              const char *identifier_text)
+{
+    char path[sizeof("/api/v1/backups/18446744073709551615/restore")];
+    char inspect_path[sizeof("/api/v1/backups/18446744073709551615")];
+    char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U];
+    json_t *inspection = NULL;
+    json_t *backup = NULL;
+    json_t *kind_value = NULL;
+    json_t *body = NULL;
+    json_t *dry_run = NULL;
+    const char *kind = NULL;
+    size_t passphrase_size = 0U;
+    uint64_t identifier = 0U;
+    bool full = false;
+    bool changes = false;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    (void)memset(passphrase, 0, sizeof(passphrase));
+    if (result != 0 || options->include_private_key) {
+        return CLI_EXIT_USAGE;
+    }
+    (void)snprintf(inspect_path, sizeof(inspect_path), "/api/v1/backups/%llu",
+                   (unsigned long long)identifier);
+    (void)snprintf(path, sizeof(path), "/api/v1/backups/%llu/restore",
+                   (unsigned long long)identifier);
+    result = fetch_api_object(options, token, inspect_path, NULL, &inspection);
+    if (result == CLI_EXIT_SUCCESS) {
+        backup = json_object_get(inspection, "backup");
+        kind_value = json_object_get(backup, "kind");
+        kind =
+            json_is_string(kind_value) ? json_string_value(kind_value) : NULL;
+        if (kind == NULL ||
+            (strcmp(kind, "configuration") != 0 && strcmp(kind, "full") != 0)) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            full = strcmp(kind, "full") == 0;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS && !full &&
+        options->passphrase_file != NULL) {
+        (void)fprintf(stderr, "janusgatectl: configuration restores have no "
+                              "passphrase\n");
+        result = CLI_EXIT_USAGE;
+    }
+    if (result == CLI_EXIT_SUCCESS && full) {
+        const int read_result = read_backup_passphrase(
+            options, false, passphrase, &passphrase_size);
+
+        if (read_result != 0) {
+            (void)fprintf(stderr, "janusgatectl: backup passphrase: %s\n",
+                          strerror(-read_result));
+            result = read_result == -EINVAL || read_result == -ENOTTY
+                         ? CLI_EXIT_USAGE
+                         : CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        body = backup_restore_body(full ? passphrase : NULL, passphrase_size,
+                                   true);
+        if (body == NULL) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = post_api_object(options, token, path, body, &dry_run);
+    }
+    json_decref(body);
+    body = NULL;
+    if (result == CLI_EXIT_SUCCESS) {
+        json_t *value = json_object_get(dry_run, "changes");
+
+        if (!json_is_boolean(value)) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            changes = json_is_true(value);
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS && !options->json) {
+        result = present_object(options, dry_run);
+    }
+    if (result == CLI_EXIT_SUCCESS && !changes) {
+        if (options->json) {
+            result = present_object(options, dry_run);
+        }
+    } else if (result == CLI_EXIT_SUCCESS &&
+               !destructive_operation_confirmed(options,
+                                                "Apply the backup restore")) {
+        result = CLI_EXIT_FAILURE;
+    } else if (result == CLI_EXIT_SUCCESS) {
+        body = backup_restore_body(full ? passphrase : NULL, passphrase_size,
+                                   false);
+        if (body == NULL) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            result = send_api_request(options, token, "backup restore", "POST",
+                                      path, body);
+        }
+    }
+    json_decref(body);
+    json_decref(dry_run);
+    json_decref(inspection);
+    sodium_memzero(passphrase, sizeof(passphrase));
+    return result;
+}
+
+/** @brief Run one recognized backup administration command. */
+static int run_backup_command(const struct cli_options *options,
+                              int argc,
+                              char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "create") == 0) {
+        result = run_backup_create(options, token, argv[2]);
+    } else if (strcmp(argv[1], "inspect") == 0) {
+        result = run_backup_inspect(options, token, argv[2]);
+    } else {
+        result = run_backup_restore(options, token, argv[2]);
+    }
+    (void)argc;
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Query operational events or immutable audit records. */
 static int run_record_command(const struct cli_options *options,
                               int argc,
@@ -2065,9 +2531,20 @@ static int run_command(const struct cli_options *options,
                        char **argv,
                        bool *recognized)
 {
+    const bool full_backup_create =
+        argc == 3 && strcmp(argv[0], "backup") == 0 &&
+        strcmp(argv[1], "create") == 0 && strcmp(argv[2], "full") == 0;
+    const bool backup_restore = argc == 3 && strcmp(argv[0], "backup") == 0 &&
+                                strcmp(argv[1], "restore") == 0;
     int result = 0;
 
     *recognized = true;
+    if ((options->passphrase_file != NULL && !full_backup_create &&
+         !backup_restore) ||
+        (options->include_private_key && !full_backup_create)) {
+        *recognized = false;
+        return CLI_EXIT_USAGE;
+    }
     if (argc == 1 &&
         (strcmp(argv[0], "status") == 0 || strcmp(argv[0], "health") == 0 ||
          strcmp(argv[0], "stats") == 0)) {
@@ -2135,6 +2612,13 @@ static int run_command(const struct cli_options *options,
          (argc == 3 &&
           (strcmp(argv[1], "install") == 0 || strcmp(argv[1], "csr") == 0)))) {
         return run_certificate_command(options, argc, argv);
+    }
+    if (argc == 3 && strcmp(argv[0], "backup") == 0 &&
+        ((strcmp(argv[1], "create") == 0 &&
+          (strcmp(argv[2], "configuration") == 0 ||
+           strcmp(argv[2], "full") == 0)) ||
+         strcmp(argv[1], "inspect") == 0 || strcmp(argv[1], "restore") == 0)) {
+        return run_backup_command(options, argc, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
