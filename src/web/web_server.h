@@ -14,6 +14,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/ipc.h"
+
 /** Default first-boot management address. */
 #define JG_WEB_DEFAULT_ADDRESS "192.168.77.1"
 
@@ -39,6 +41,8 @@ struct jg_web_config {
     const char *certificate_path;
     /** Absolute local static-asset root. */
     const char *web_root;
+    /** Absolute daemon management control-socket path. */
+    const char *control_socket_path;
     /** Maximum complete request bytes. */
     uint32_t max_request_size;
     /** Fixed CivetWeb worker count. */

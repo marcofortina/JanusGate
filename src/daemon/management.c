@@ -60,6 +60,7 @@ struct management_request {
     const char *remote_address;
     const char *session;
     const char *csrf;
+    const char *bearer;
     json_t *body;
 };
 
@@ -314,8 +315,8 @@ static int parse_request(const uint8_t *data,
                          struct management_request *request)
 {
     static const char *const fields[] = {
-        "request_id",     "method",  "path", "host", "origin",
-        "remote_address", "session", "csrf", "body",
+        "request_id",     "method",  "path", "host",   "origin",
+        "remote_address", "session", "csrf", "bearer", "body",
     };
     json_error_t error;
     json_t *parsed = NULL;
@@ -346,12 +347,14 @@ static int parse_request(const uint8_t *data,
             optional_string(parsed, "session", JG_AUTH_SECRET_TEXT_SIZE - 1U);
         request->csrf =
             optional_string(parsed, "csrf", JG_AUTH_SECRET_TEXT_SIZE - 1U);
+        request->bearer =
+            optional_string(parsed, "bearer", JG_AUTH_SECRET_TEXT_SIZE - 1U);
         request->body = json_object_get(parsed, "body");
         if (!request_id_valid(request->request_id) || request->method == NULL ||
             request->path == NULL || !host_valid(request->host) ||
             request->origin == NULL || request->remote_address == NULL ||
             request->session == NULL || request->csrf == NULL ||
-            !json_is_object(request->body)) {
+            request->bearer == NULL || !json_is_object(request->body)) {
             result = -EINVAL;
         }
     }

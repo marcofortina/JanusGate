@@ -25,6 +25,8 @@
 
 #include <civetweb.h>
 
+#include "web_gateway.h"
+
 /** Largest static administration asset accepted by the server. */
 #define JG_WEB_ASSET_SIZE_MAX (2U * 1024U * 1024U)
 
@@ -69,6 +71,7 @@ struct jg_web_server {
     char *listen_address;
     char *certificate_path;
     char *web_root;
+    char *control_socket_path;
 };
 
 /** @brief Initialize secure first-boot web defaults. */
@@ -80,6 +83,7 @@ void jg_web_config_default(struct jg_web_config *config)
             .port = JG_WEB_DEFAULT_PORT,
             .certificate_path = JG_WEB_DEFAULT_CERTIFICATE,
             .web_root = JG_WEB_DEFAULT_ROOT,
+            .control_socket_path = JG_CONTROL_SOCKET_PATH,
             .max_request_size = 65536U,
             .worker_count = 8U,
             .hsts = false,
@@ -136,7 +140,8 @@ int jg_web_config_validate(const struct jg_web_config *config)
 {
     if (config == NULL || address_family(config->listen_address) == AF_UNSPEC ||
         config->port == 0U || !absolute_path_valid(config->certificate_path) ||
-        !absolute_path_valid(config->web_root)) {
+        !absolute_path_valid(config->web_root) ||
+        !absolute_path_valid(config->control_socket_path)) {
         return -EINVAL;
     }
     if (config->max_request_size < 4096U ||
@@ -263,19 +268,20 @@ static int send_header(struct mg_connection *connection,
                        const char *content_type,
                        uint64_t content_length,
                        bool sensitive,
-                       bool hsts)
+                       bool hsts,
+                       const char *extra_headers)
 {
-    int written = mg_printf(connection,
-                            "HTTP/1.1 %d %s\r\n"
-                            "Content-Type: %s\r\n"
-                            "Content-Length: %llu\r\n"
-                            "Cache-Control: %s\r\n"
-                            "%s%s"
-                            "Connection: close\r\n\r\n",
-                            status, reason, content_type,
-                            (unsigned long long)content_length,
-                            sensitive ? "no-store" : "no-cache",
-                            security_headers, hsts ? hsts_header : "");
+    int written = mg_printf(
+        connection,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %llu\r\n"
+        "Cache-Control: %s\r\n"
+        "%s%s%s"
+        "Connection: close\r\n\r\n",
+        status, reason, content_type, (unsigned long long)content_length,
+        sensitive ? "no-store" : "no-cache", security_headers,
+        hsts ? hsts_header : "", extra_headers);
 
     return written < 0 ? -EIO : 0;
 }
@@ -288,9 +294,9 @@ static int send_json(struct mg_connection *connection,
                      bool hsts)
 {
     const size_t body_size = strlen(body);
-    int result =
-        send_header(connection, status, reason,
-                    "application/json; charset=utf-8", body_size, true, hsts);
+    int result = send_header(connection, status, reason,
+                             "application/json; charset=utf-8", body_size, true,
+                             hsts, "");
 
     if (result == 0 &&
         mg_write(connection, body, body_size) != (int)body_size) {
@@ -341,7 +347,7 @@ static int send_asset(struct mg_connection *connection,
     if (result == 0) {
         result = send_header(connection, 200, "OK", asset->content_type,
                              (uint64_t)metadata.st_size, asset->sensitive,
-                             config->hsts);
+                             config->hsts, "");
     }
     while (result == 0 && !head_only) {
         const ssize_t received = read(descriptor, buffer, sizeof(buffer));
@@ -357,6 +363,117 @@ static int send_asset(struct mg_connection *connection,
     }
     (void)close(descriptor);
     return result;
+}
+
+/** @brief Return a conservative reason phrase for one gateway status. */
+static const char *status_reason(int status)
+{
+    switch (status) {
+    case 200:
+        return "OK";
+    case 201:
+        return "Created";
+    case 204:
+        return "No Content";
+    case 400:
+        return "Bad Request";
+    case 401:
+        return "Unauthorized";
+    case 403:
+        return "Forbidden";
+    case 404:
+        return "Not Found";
+    case 405:
+        return "Method Not Allowed";
+    case 409:
+        return "Conflict";
+    case 412:
+        return "Precondition Failed";
+    case 413:
+        return "Content Too Large";
+    case 415:
+        return "Unsupported Media Type";
+    case 422:
+        return "Unprocessable Content";
+    case 429:
+        return "Too Many Requests";
+    case 500:
+        return "Internal Server Error";
+    case 502:
+        return "Bad Gateway";
+    case 503:
+        return "Service Unavailable";
+    default:
+        return "Management Response";
+    }
+}
+
+/** @brief Build safe response-only headers for one gateway result. */
+static int gateway_headers(const struct jg_web_gateway_response *response,
+                           char *headers,
+                           size_t headers_size)
+{
+    const char *cookie = "";
+    char cookie_header[256U] = "";
+    int written = 0;
+
+    if (response->cookie_action == JG_WEB_COOKIE_SET) {
+        written = snprintf(
+            cookie_header, sizeof(cookie_header),
+            "Set-Cookie: janusgate_session=%s; Path=/; Secure; HttpOnly; "
+            "SameSite=Strict\r\n",
+            response->session);
+        if (written < 0 || (size_t)written >= sizeof(cookie_header)) {
+            return -ENOSPC;
+        }
+        cookie = cookie_header;
+    } else if (response->cookie_action == JG_WEB_COOKIE_CLEAR) {
+        cookie = "Set-Cookie: janusgate_session=; Path=/; Max-Age=0; Secure; "
+                 "HttpOnly; SameSite=Strict\r\n";
+    }
+    written = snprintf(headers, headers_size,
+                       "X-Request-ID: %s\r\n"
+                       "Vary: Cookie, Authorization\r\n"
+                       "%s",
+                       response->request_id, cookie);
+    return written < 0 || (size_t)written >= headers_size ? -ENOSPC : 0;
+}
+
+/** @brief Process and send one validated management API response. */
+static int send_gateway_response(struct mg_connection *connection,
+                                 const struct jg_web_server *server)
+{
+    struct jg_web_gateway_response response;
+    char headers[512U];
+    int result =
+        jg_web_gateway_process(connection, server->config.control_socket_path,
+                               server->config.max_request_size, &response);
+    int status = 500;
+
+    if (result == 0) {
+        result = gateway_headers(&response, headers, sizeof(headers));
+    }
+    if (result == 0) {
+        status = response.status;
+        result = send_header(
+            connection, response.status, status_reason(response.status),
+            "application/json; charset=utf-8", response.body_size, true,
+            server->config.hsts, headers);
+    }
+    if (result == 0 && response.body_size != 0U &&
+        mg_write(connection, response.body, response.body_size) !=
+            (int)response.body_size) {
+        result = -EPIPE;
+    }
+    jg_web_gateway_response_clear(&response);
+    if (result != 0 && result != -EPIPE) {
+        (void)send_json(connection, 500, "Internal Server Error",
+                        "{\"error\":{\"code\":\"internal_error\","
+                        "\"message\":\"The request could not be "
+                        "processed.\"}}\n",
+                        server->config.hsts);
+    }
+    return result == 0 ? status : 500;
 }
 
 /** @brief Dispatch one HTTPS management request. */
@@ -391,6 +508,9 @@ static int handle_request(struct mg_connection *connection, void *context)
                       "{\"status\":\"ok\",\"service\":\"janusgate-web\"}\n",
                       server->config.hsts);
         return result == 0 ? 200 : 500;
+    }
+    if (strncmp(request->local_uri, "/api/v1/", sizeof("/api/v1/") - 1U) == 0) {
+        return send_gateway_response(connection, server);
     }
     asset = find_asset(request->local_uri);
     if (asset == NULL) {
@@ -441,10 +561,15 @@ static int own_config(struct jg_web_server *server,
         result = duplicate_string(config->web_root, &server->web_root);
     }
     if (result == 0) {
+        result = duplicate_string(config->control_socket_path,
+                                  &server->control_socket_path);
+    }
+    if (result == 0) {
         server->config = *config;
         server->config.listen_address = server->listen_address;
         server->config.certificate_path = server->certificate_path;
         server->config.web_root = server->web_root;
+        server->config.control_socket_path = server->control_socket_path;
     }
     return result;
 }
@@ -547,6 +672,7 @@ void jg_web_server_destroy(struct jg_web_server *server)
         mg_stop(server->context);
     }
     free(server->web_root);
+    free(server->control_socket_path);
     free(server->certificate_path);
     free(server->listen_address);
     free(server);

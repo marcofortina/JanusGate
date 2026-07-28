@@ -26,7 +26,8 @@ static void print_usage(FILE *output)
     (void)fprintf(
         output,
         "usage: janusgate-web [--listen-address ADDRESS] [--port PORT]\n"
-        "                     [--certificate PATH] [--web-root PATH] [--hsts]\n"
+        "                     [--certificate PATH] [--web-root PATH]\n"
+        "                     [--socket PATH] [--hsts]\n"
         "       janusgate-web --version\n");
 }
 
@@ -69,6 +70,9 @@ static int parse_options(int argc, char **argv, struct jg_web_config *config)
             argument += 2;
         } else if (strcmp(argv[argument], "--web-root") == 0) {
             config->web_root = argv[argument + 1];
+            argument += 2;
+        } else if (strcmp(argv[argument], "--socket") == 0) {
+            config->control_socket_path = argv[argument + 1];
             argument += 2;
         } else {
             result = -EINVAL;

@@ -32,6 +32,9 @@ static void test_web_config_validation(void **state)
     config.web_root = "relative";
     assert_int_equal(jg_web_config_validate(&config), -EINVAL);
     config.web_root = JG_WEB_DEFAULT_ROOT;
+    config.control_socket_path = "relative";
+    assert_int_equal(jg_web_config_validate(&config), -EINVAL);
+    config.control_socket_path = JG_CONTROL_SOCKET_PATH;
     config.worker_count = 1U;
     assert_int_equal(jg_web_config_validate(&config), -ERANGE);
 }

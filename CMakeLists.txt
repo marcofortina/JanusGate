@@ -144,14 +144,17 @@ target_link_libraries(
   janusgatectl PRIVATE JanusGate::common janusgate-control-protocol)
 janusgate_apply_compiler_options(janusgatectl)
 
-add_library(janusgate-web-core STATIC src/web/web_server.c)
+add_library(
+  janusgate-web-core STATIC
+  src/web/web_gateway.c
+  src/web/web_server.c)
 target_include_directories(
   janusgate-web-core
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/web>"
   PRIVATE "${CIVETWEB_INCLUDE_DIR}")
 target_link_libraries(
   janusgate-web-core PUBLIC JanusGate::common
-  PRIVATE "${CIVETWEB_LIBRARY}")
+  PRIVATE "${CIVETWEB_LIBRARY}" PkgConfig::JANSSON)
 janusgate_apply_compiler_options(janusgate-web-core)
 
 add_executable(janusgate-web src/web/main.c)
