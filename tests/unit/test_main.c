@@ -10,6 +10,7 @@
 #include <cmocka.h>
 
 int jg_test_access(void);
+int jg_test_account(void);
 int jg_test_audit(void);
 int jg_test_auth(void);
 int jg_test_blocklist(void);
@@ -45,6 +46,7 @@ int main(void)
 {
     int result = jg_test_access();
 
+    result |= jg_test_account();
     result |= jg_test_audit();
     result |= jg_test_auth();
     result |= jg_test_blocklist();

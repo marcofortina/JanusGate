@@ -1,0 +1,170 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+ */
+
+#define _POSIX_C_SOURCE 200809L
+
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <cmocka.h>
+#include <sqlite3.h>
+
+#include "janusgate/account.h"
+
+int jg_test_account(void);
+
+/** @brief Create one private temporary account database path. */
+static void make_account_database_path(char *directory,
+                                       size_t directory_size,
+                                       char *path,
+                                       size_t path_size)
+{
+    const char template[] = "/tmp/janusgate-account-XXXXXX";
+    int written = 0;
+
+    assert_true(directory_size >= sizeof(template));
+    (void)snprintf(directory, directory_size, "%s", template);
+    assert_non_null(mkdtemp(directory));
+    written = snprintf(path, path_size, "%s/janusgate.db", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < path_size);
+}
+
+/** @brief Remove one account test database and its SQLite side files. */
+static void remove_account_database(const char *directory, const char *path)
+{
+    char auxiliary[512U];
+    int written = snprintf(auxiliary, sizeof(auxiliary), "%s-wal", path);
+
+    if (written > 0 && (size_t)written < sizeof(auxiliary)) {
+        (void)unlink(auxiliary);
+    }
+    written = snprintf(auxiliary, sizeof(auxiliary), "%s-shm", path);
+    if (written > 0 && (size_t)written < sizeof(auxiliary)) {
+        (void)unlink(auxiliary);
+    }
+    (void)unlink(path);
+    (void)rmdir(directory);
+}
+
+/** @brief Verify one-time bootstrap and atomic administrator creation. */
+static void test_initial_administrator(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    char directory[64U];
+    char path[512U];
+    char token[JG_AUTH_SECRET_TEXT_SIZE];
+    char incorrect[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_auth_password_policy password_policy;
+    struct jg_database *database = NULL;
+    sqlite3_stmt *statement = NULL;
+    sqlite3 *inspection = NULL;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_account_bootstrap_issue(database, 100U, 300U, token),
+                     0);
+    assert_int_equal(strlen(token), JG_AUTH_SECRET_TEXT_SIZE - 1U);
+    (void)memcpy(incorrect, token, sizeof(incorrect));
+    incorrect[0U] = incorrect[0U] == 'A' ? 'B' : 'A';
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)incorrect,
+                         strlen(incorrect), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, 101U,
+                         &user_id),
+                     -EACCES);
+    assert_int_equal(user_id, 0U);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)token, strlen(token),
+                         "administrator", password, sizeof(password) - 1U,
+                         &password_policy, 101U, &user_id),
+                     0);
+    assert_true(user_id > 0U);
+    assert_int_equal(jg_account_bootstrap_issue(database, 102U, 300U, token),
+                     -EEXIST);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &inspection, SQLITE_OPEN_READONLY, NULL),
+        SQLITE_OK);
+    assert_int_equal(
+        sqlite3_prepare_v2(
+            inspection,
+            "SELECT u.username,u.password_hash,r.name,b.consumed_at"
+            " FROM users u"
+            " JOIN user_roles ur ON ur.user_id=u.id"
+            " JOIN roles r ON r.id=ur.role_id"
+            " JOIN bootstrap_credentials b ON b.id=1;",
+            -1, &statement, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_string_equal((const char *)sqlite3_column_text(statement, 0),
+                        "administrator");
+    assert_string_not_equal((const char *)sqlite3_column_text(statement, 1),
+                            (const char *)password);
+    assert_string_equal((const char *)sqlite3_column_text(statement, 2),
+                        "administrator");
+    assert_int_equal(sqlite3_column_int64(statement, 3), 101);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
+    remove_account_database(directory, path);
+}
+
+/** @brief Verify expiration and validation of bootstrap credentials. */
+static void test_bootstrap_expiration(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    char directory[64U];
+    char path[512U];
+    char token[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_auth_password_policy password_policy;
+    struct jg_database *database = NULL;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_account_bootstrap_issue(
+            database, 100U, JG_ACCOUNT_BOOTSTRAP_LIFETIME_MIN - 1U, token),
+        -EINVAL);
+    assert_int_equal(
+        jg_account_bootstrap_issue(database, 100U,
+                                   JG_ACCOUNT_BOOTSTRAP_LIFETIME_MIN, token),
+        0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)token, strlen(token),
+                         "administrator", password, sizeof(password) - 1U,
+                         &password_policy,
+                         100U + JG_ACCOUNT_BOOTSTRAP_LIFETIME_MIN, &user_id),
+                     -EACCES);
+    assert_int_equal(user_id, 0U);
+    jg_database_close(database);
+    remove_account_database(directory, path);
+}
+
+/** @brief Run the first-boot account unit-test group. */
+int jg_test_account(void)
+{
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_initial_administrator),
+        cmocka_unit_test(test_bootstrap_expiration),
+    };
+
+    return cmocka_run_group_tests_name("account", tests, NULL, NULL);
+}
