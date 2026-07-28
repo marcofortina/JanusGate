@@ -12,6 +12,7 @@ add_executable(
   unit/test_database.c
   unit/test_dataplane.c
   unit/test_dataplane_worker.c
+  unit/test_daemon_runtime.c
   unit/test_dns.c
   unit/test_domain.c
   unit/test_fragment.c
