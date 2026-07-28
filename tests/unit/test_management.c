@@ -149,7 +149,13 @@ static void test_browser_authentication(void **state)
         .permissions = JG_ACCESS_STATUS_READ,
         .requests_per_minute = 1U,
     };
+    const struct jg_account_token_config health_token_config = {
+        .name = "health test",
+        .permissions = JG_ACCESS_STATUS_READ,
+        .requests_per_minute = 10U,
+    };
     struct jg_account_api_token api_token;
+    struct jg_account_api_token health_token;
     struct jg_policy_rule_input domain_rules[2U];
     struct jg_policy_destination_rule_input destination_rules[2U];
     json_t *response = NULL;
@@ -208,6 +214,44 @@ static void test_browser_authentication(void **state)
     response = process_request(fixture, request);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      429);
+    json_decref(response);
+
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &health_token_config, (uint64_t)now,
+                                            &health_token),
+                     0);
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"health-token\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/health\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{}}",
+                       health_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "healthy")));
+    assert_false(json_is_true(
+        json_object_get(json_object_get(body, "daemon"), "available")));
+    assert_false(json_is_true(
+        json_object_get(json_object_get(body, "network"), "available")));
+    json_decref(response);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"status-invalid\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/status\",\"query\":\"extra=true\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{}}",
+                       health_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
     json_decref(response);
 
     written =

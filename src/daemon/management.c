@@ -4167,19 +4167,13 @@ static int handle_status(struct jg_management *management,
     int result = authenticate_actor(management, request, remote, false,
                                     JG_ACCESS_STATUS_READ, now, &actor);
 
-    if (result == -EAGAIN) {
-        return respond_error(429, "rate_limited",
-                             "The API token request limit was exceeded.",
-                             request->request_id, output, output_size, written);
-    }
-    if (result == -EPERM || result == -EKEYEXPIRED) {
-        return respond_error(403, "forbidden",
-                             "The authenticated identity is not authorized.",
-                             request->request_id, output, output_size, written);
-    }
     if (result != 0) {
-        return respond_error(401, "authentication_required",
-                             "Valid authentication is required.",
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The status request is not valid.",
                              request->request_id, output, output_size, written);
     }
     if (management->runtime == NULL ||
@@ -4191,6 +4185,70 @@ static int handle_status(struct jg_management *management,
     body = status_body(&stats);
     if (body == NULL) {
         return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Return authenticated daemon and network-helper health. */
+static int handle_health(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_daemon_runtime_stats stats;
+    struct jg_network_state network_state;
+    json_t *body = NULL;
+    json_t *daemon = NULL;
+    json_t *network = NULL;
+    bool daemon_available = false;
+    bool network_available = false;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_STATUS_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The health request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    daemon_available =
+        management->runtime != NULL &&
+        jg_daemon_runtime_get_stats(management->runtime, &stats) == 0;
+    network_available = jg_netd_client_state(&network_state) == 0;
+    body = json_object();
+    daemon = json_object();
+    network = json_object();
+    if (body == NULL || daemon == NULL || network == NULL ||
+        json_object_set_new(
+            body, "healthy",
+            json_boolean(daemon_available && network_available)) != 0 ||
+        json_object_set_new(daemon, "available",
+                            json_boolean(daemon_available)) != 0 ||
+        json_object_set_new(network, "available",
+                            json_boolean(network_available)) != 0 ||
+        (daemon_available && set_counter(daemon, "policy_generation",
+                                         stats.policy_generation) != 0) ||
+        (network_available &&
+         (json_object_set_new(network, "configured",
+                              json_boolean(network_state.has_confirmed)) != 0 ||
+          json_object_set_new(network, "pending",
+                              json_boolean(network_state.pending)) != 0)) ||
+        set_object(body, "daemon", daemon) != 0 ||
+        set_object(body, "network", network) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(network);
+    json_decref(daemon);
+    if (result != 0) {
+        json_decref(body);
+        return result;
     }
     return encode_response(200, body, NULL, output, output_size, written);
 }
@@ -6967,6 +7025,11 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/status") == 0 &&
         strcmp(request->method, "GET") == 0) {
         return handle_status(management, request, remote, now, output,
+                             output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/health") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_health(management, request, remote, now, output,
                              output_size, written);
     }
     if (strcmp(request->path, "/api/v1/metrics") == 0 &&
