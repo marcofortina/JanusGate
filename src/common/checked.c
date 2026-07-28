@@ -63,6 +63,23 @@ bool jg_read_u32_be(const uint8_t *data,
     return true;
 }
 
+/** @brief Read a network-order 64-bit integer from a bounded buffer. */
+bool jg_read_u64_be(const uint8_t *data,
+                    size_t data_size,
+                    size_t offset,
+                    uint64_t *value)
+{
+    uint32_t high = 0U;
+    uint32_t low = 0U;
+
+    if (value == NULL || !jg_read_u32_be(data, data_size, offset, &high) ||
+        !jg_read_u32_be(data, data_size, offset + 4U, &low)) {
+        return false;
+    }
+    *value = ((uint64_t)high << 32U) | (uint64_t)low;
+    return true;
+}
+
 /** @brief Write a network-order 16-bit integer to a bounded buffer. */
 bool jg_write_u16_be(uint8_t *data,
                      size_t data_size,
@@ -75,6 +92,33 @@ bool jg_write_u16_be(uint8_t *data,
     data[offset] = (uint8_t)(value >> 8U);
     data[offset + 1U] = (uint8_t)(value & UINT16_C(0xff));
     return true;
+}
+
+/** @brief Write a network-order 32-bit integer to a bounded buffer. */
+bool jg_write_u32_be(uint8_t *data,
+                     size_t data_size,
+                     size_t offset,
+                     uint32_t value)
+{
+    if (data == NULL || !jg_range_valid(offset, 4U, data_size)) {
+        return false;
+    }
+    data[offset] = (uint8_t)(value >> 24U);
+    data[offset + 1U] = (uint8_t)((value >> 16U) & UINT32_C(0xff));
+    data[offset + 2U] = (uint8_t)((value >> 8U) & UINT32_C(0xff));
+    data[offset + 3U] = (uint8_t)(value & UINT32_C(0xff));
+    return true;
+}
+
+/** @brief Write a network-order 64-bit integer to a bounded buffer. */
+bool jg_write_u64_be(uint8_t *data,
+                     size_t data_size,
+                     size_t offset,
+                     uint64_t value)
+{
+    return jg_write_u32_be(data, data_size, offset, (uint32_t)(value >> 32U)) &&
+           jg_write_u32_be(data, data_size, offset + 4U,
+                           (uint32_t)(value & UINT64_C(0xffffffff)));
 }
 
 /** @brief Clear caller-owned storage through a non-elidable access path. */

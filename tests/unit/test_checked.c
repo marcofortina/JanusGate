@@ -48,8 +48,10 @@ static void test_ranges(void **state)
 static void test_network_access(void **state)
 {
     uint8_t data[] = {0x12U, 0x34U, 0x56U, 0x78U, 0x00U, 0x00U};
+    uint8_t wide_data[8U] = {0U};
     uint16_t short_value = 0U;
     uint32_t long_value = 0U;
+    uint64_t wide_value = 0U;
 
     (void)state;
     assert_true(jg_read_u16_be(data, sizeof(data), 0U, &short_value));
@@ -60,6 +62,15 @@ static void test_network_access(void **state)
     assert_true(jg_write_u16_be(data, sizeof(data), 4U, UINT16_C(0xabcd)));
     assert_int_equal(data[4], 0xab);
     assert_int_equal(data[5], 0xcd);
+    assert_true(jg_write_u32_be(data, sizeof(data), 1U, UINT32_C(0x89abcdef)));
+    assert_true(jg_read_u32_be(data, sizeof(data), 1U, &long_value));
+    assert_int_equal(long_value, UINT32_C(0x89abcdef));
+    assert_true(jg_write_u64_be(wide_data, sizeof(wide_data), 0U,
+                                UINT64_C(0x0123456789abcdef)));
+    assert_true(jg_read_u64_be(wide_data, sizeof(wide_data), 0U, &wide_value));
+    assert_int_equal(wide_value, UINT64_C(0x0123456789abcdef));
+    assert_false(jg_read_u64_be(wide_data, sizeof(wide_data), 1U, &wide_value));
+    assert_false(jg_write_u64_be(wide_data, sizeof(wide_data), 1U, wide_value));
 }
 
 /** @brief Verify that secure clearing overwrites every requested byte. */
