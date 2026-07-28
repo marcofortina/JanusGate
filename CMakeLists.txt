@@ -98,6 +98,7 @@ add_library(
   src/daemon/daemon_runtime.c
   src/daemon/dns_response.c
   src/daemon/fragment.c
+  src/daemon/management.c
   src/daemon/netd_client.c
   src/daemon/nfqueue.c
   src/daemon/nfqueue_group.c
@@ -111,7 +112,7 @@ target_include_directories(
 target_link_libraries(
   janusgate-daemon-core
   PUBLIC JanusGate::common janusgate-control-protocol Threads::Threads
-  PRIVATE PkgConfig::NETFILTER_QUEUE)
+  PRIVATE PkgConfig::JANSSON PkgConfig::NETFILTER_QUEUE)
 janusgate_apply_compiler_options(janusgate-daemon-core)
 
 add_library(

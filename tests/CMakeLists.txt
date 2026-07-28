@@ -26,6 +26,7 @@ add_executable(
   unit/test_ipc.c
   unit/test_ipc_client.c
   unit/test_metrics.c
+  unit/test_management.c
   unit/test_netd_client.c
   unit/test_network.c
   unit/test_netd.c
@@ -42,7 +43,7 @@ target_link_libraries(
   janusgate-unit-tests
   PRIVATE JanusGate::common janusgate-daemon-core janusgate-netd-core
           janusgate-web-core
-          PkgConfig::CMOCKA PkgConfig::SQLITE3)
+          PkgConfig::CMOCKA PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)

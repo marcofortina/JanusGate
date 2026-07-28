@@ -11,6 +11,7 @@
 #define JANUSGATE_DAEMON_RUNTIME_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "dataplane_worker.h"
@@ -20,12 +21,17 @@
 /** Default persistent database used by the production daemon. */
 #define JG_DAEMON_DATABASE_PATH "/var/lib/janusgate/janusgate.db"
 
+/** Default appliance-local TOTP protection key. */
+#define JG_DAEMON_TOTP_KEY_PATH "/var/lib/janusgate/totp.key"
+
 /**
  * @brief Process-local runtime tuning outside persistent appliance policy.
  */
 struct jg_daemon_runtime_config {
     /** Absolute path to the persistent JanusGate database. */
     const char *database_path;
+    /** Absolute path to the appliance-local TOTP protection key. */
+    const char *totp_key_path;
     /** SQLite busy timeout in milliseconds. */
     uint32_t database_busy_timeout_ms;
     /** Requested netlink receive-buffer bytes for every queue. */
@@ -195,6 +201,30 @@ int jg_daemon_runtime_get_policy_generation(
  */
 int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
                                 struct jg_daemon_runtime_stats *stats);
+
+/**
+ * @brief Process one authenticated internal management request.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[in] request Exact bounded JSON request bytes.
+ * @param[in] request_size Request byte count.
+ * @param[out] response Destination for JSON response bytes.
+ * @param[in] response_size Available response bytes.
+ * @param[out] written Receives the exact response byte count.
+ *
+ * @return 0 when an HTTP-level response was encoded.
+ * @return -EINVAL for invalid arguments.
+ * @return A negative errno-style management processing error otherwise.
+ *
+ * @thread_safety Calls require external serialization with other management
+ * writers.
+ */
+int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
+                                         const uint8_t *request,
+                                         size_t request_size,
+                                         uint8_t *response,
+                                         size_t response_size,
+                                         size_t *written);
 
 /**
  * @brief Stop and release the complete packet runtime.

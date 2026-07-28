@@ -25,6 +25,7 @@ static void test_configuration(void **state)
     (void)state;
     jg_daemon_runtime_config_default(&config);
     assert_string_equal(config.database_path, JG_DAEMON_DATABASE_PATH);
+    assert_string_equal(config.totp_key_path, JG_DAEMON_TOTP_KEY_PATH);
     assert_int_equal(config.database_busy_timeout_ms, 5000U);
     assert_int_equal(config.queue_receive_buffer_size,
                      JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT);
@@ -68,6 +69,9 @@ static void test_operations(void **state)
                      -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_stats(NULL, &stats), -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_stats(runtime, NULL), -EINVAL);
+    assert_int_equal(
+        jg_daemon_runtime_process_management(NULL, NULL, 0U, NULL, 0U, NULL),
+        -EINVAL);
     jg_daemon_runtime_destroy(NULL);
 }
 

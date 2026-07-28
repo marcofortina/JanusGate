@@ -75,7 +75,9 @@ enum jg_ipc_operation {
     /** Reload persistent policy into a new immutable daemon snapshot. */
     JG_IPC_POLICY_RELOAD = 8,
     /** Return one aggregate daemon status and counter snapshot. */
-    JG_IPC_DAEMON_STATUS = 9
+    JG_IPC_DAEMON_STATUS = 9,
+    /** Process one authenticated management API request. */
+    JG_IPC_MANAGEMENT_REQUEST = 10
 };
 
 /**

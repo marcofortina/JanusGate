@@ -15,6 +15,7 @@
 #include "dataplane_worker.h"
 #include "janusgate/database.h"
 #include "janusgate/network.h"
+#include "management.h"
 #include "netd_client.h"
 #include "nfqueue.h"
 #include "nfqueue_group.h"
@@ -24,6 +25,7 @@
 /** Complete ownership tree for one packet runtime. */
 struct jg_daemon_runtime {
     struct jg_database *database;
+    struct jg_management *management;
     struct jg_policy_store *policies;
     struct jg_dataplane_worker *workers[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_packet_output *outputs[JG_NETWORK_QUEUE_COUNT_MAX];
@@ -196,6 +198,7 @@ void jg_daemon_runtime_config_default(struct jg_daemon_runtime_config *config)
     }
     *config = (struct jg_daemon_runtime_config){
         .database_path = JG_DAEMON_DATABASE_PATH,
+        .totp_key_path = JG_DAEMON_TOTP_KEY_PATH,
         .database_busy_timeout_ms = 5000U,
         .queue_receive_buffer_size = JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT,
         .packet_send_buffer_size = JG_PACKET_OUTPUT_BUFFER_DEFAULT,
@@ -209,6 +212,8 @@ int jg_daemon_runtime_config_validate(
 {
     if (config == NULL || config->database_path == NULL ||
         config->database_path[0] != '/' || config->database_path[1] == '\0' ||
+        config->totp_key_path == NULL || config->totp_key_path[0] != '/' ||
+        config->totp_key_path[1] == '\0' ||
         config->database_busy_timeout_ms == 0U ||
         config->queue_receive_buffer_size == 0U ||
         config->packet_send_buffer_size == 0U ||
@@ -254,6 +259,10 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
         result = jg_database_open(config->database_path,
                                   config->database_busy_timeout_ms,
                                   &started->database);
+    }
+    if (result == 0) {
+        result = jg_management_create(started->database, config->totp_key_path,
+                                      &started->management);
     }
     if (result == 0) {
         result = jg_database_load_network_config(started->database, &network);
@@ -380,6 +389,21 @@ int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
     return result;
 }
 
+/** @brief Dispatch one serialized management request through runtime state. */
+int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
+                                         const uint8_t *request,
+                                         size_t request_size,
+                                         uint8_t *response,
+                                         size_t response_size,
+                                         size_t *written)
+{
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    return jg_management_process(runtime->management, request, request_size,
+                                 response, response_size, written);
+}
+
 /** @brief Release the packet runtime in reverse ownership order. */
 void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
 {
@@ -394,6 +418,7 @@ void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
         jg_dataplane_worker_destroy(runtime->workers[index]);
     }
     jg_policy_store_destroy(runtime->policies);
+    jg_management_destroy(runtime->management);
     jg_database_close(runtime->database);
     free(runtime);
 }

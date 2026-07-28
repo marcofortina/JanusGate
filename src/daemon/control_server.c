@@ -81,7 +81,7 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
     if (request == NULL || response == NULL || response_body == NULL ||
         response_size == NULL || request->request_id == 0U ||
         request->operation < JG_IPC_PING ||
-        request->operation > JG_IPC_DAEMON_STATUS ||
+        request->operation > JG_IPC_MANAGEMENT_REQUEST ||
         request->body_size > JG_IPC_MAX_BODY_SIZE ||
         (request->body_size != 0U && request->body == NULL)) {
         return -EINVAL;
@@ -120,6 +120,24 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
                 result = jg_daemon_status_encode(
                     &stats, response_body, response_capacity, response_size);
             }
+            if (result == -ENOSPC) {
+                return result;
+            }
+            response->error = operation_error(result);
+            if (result == 0) {
+                response->body = response_body;
+                response->body_size = *response_size;
+            }
+        }
+    } else if (request->operation == JG_IPC_MANAGEMENT_REQUEST) {
+        if (request->body_size == 0U) {
+            response->error = JG_IPC_ERROR_MALFORMED;
+        } else if (runtime == NULL) {
+            response->error = JG_IPC_ERROR_SYSTEM;
+        } else {
+            result = jg_daemon_runtime_process_management(
+                runtime, request->body, request->body_size, response_body,
+                response_capacity, response_size);
             if (result == -ENOSPC) {
                 return result;
             }
@@ -242,7 +260,7 @@ int jg_control_handle_connection(int socket_fd,
         result = jg_ipc_decode(request_data, request_size, &request);
     }
     if (result == 0) {
-        uint8_t response_body[JG_DAEMON_STATUS_WIRE_SIZE];
+        uint8_t response_body[JG_IPC_MAX_BODY_SIZE];
         size_t response_body_size = 0U;
 
         result = jg_control_process_request(
