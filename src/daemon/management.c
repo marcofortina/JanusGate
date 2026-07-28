@@ -683,8 +683,128 @@ static int parse_decimal(const char *text,
     return 0;
 }
 
-/** @brief Parse exact offset and limit parameters for the user collection. */
-static int parse_user_query(const char *query, uint64_t *offset, size_t *limit)
+/** @brief Read a required nullable nonnegative JSON timestamp. */
+static bool required_optional_timestamp(const json_t *object,
+                                        const char *name,
+                                        uint64_t *value)
+{
+    json_t *field = json_object_get(object, name);
+    const json_int_t number =
+        json_is_integer(field) ? json_integer_value(field) : -1;
+
+    if (json_is_null(field)) {
+        *value = 0U;
+        return true;
+    }
+    if (number <= 0) {
+        return false;
+    }
+    *value = (uint64_t)number;
+    return true;
+}
+
+/** @brief Parse one required nullable numeric IP prefix. */
+static int parse_source_network(const json_t *object,
+                                const char *name,
+                                struct jg_account_token_config *config)
+{
+    json_t *field = json_object_get(object, name);
+    const char *text = json_is_string(field) ? json_string_value(field) : NULL;
+    char address[INET6_ADDRSTRLEN];
+    const char *slash = text == NULL ? NULL : strrchr(text, '/');
+    const size_t address_size =
+        slash == NULL || text == NULL ? 0U : (size_t)(slash - text);
+    uint64_t prefix = 0U;
+
+    config->source_family = JG_POLICY_ADDRESS_NONE;
+    config->source_prefix = 0U;
+    (void)memset(config->source_address, 0, sizeof(config->source_address));
+    if (json_is_null(field)) {
+        return 0;
+    }
+    if (text == NULL || slash == NULL || address_size == 0U ||
+        address_size >= sizeof(address) ||
+        parse_decimal(slash + 1, strlen(slash + 1), 128U, &prefix) != 0) {
+        return -EINVAL;
+    }
+    (void)memcpy(address, text, address_size);
+    address[address_size] = '\0';
+    if (prefix <= 32U &&
+        inet_pton(AF_INET, address, config->source_address) == 1) {
+        config->source_family = JG_POLICY_ADDRESS_IPV4;
+    } else if (prefix <= 128U &&
+               inet_pton(AF_INET6, address, config->source_address) == 1) {
+        config->source_family = JG_POLICY_ADDRESS_IPV6;
+    } else {
+        return -EINVAL;
+    }
+    config->source_prefix = (uint8_t)prefix;
+    return 0;
+}
+
+/** @brief Convert safe persistent API-token metadata to public JSON. */
+static json_t *token_json(const struct jg_account_token_record *token)
+{
+    char scopes[JG_ACCESS_SCOPE_TEXT_MAX + 1U];
+    char address[INET6_ADDRSTRLEN];
+    char network[INET6_ADDRSTRLEN + 5U];
+    json_t *body = json_object();
+    int written = 0;
+    int result =
+        jg_access_scope_format(token->permissions, scopes, sizeof(scopes));
+
+    network[0U] = '\0';
+    if (result == 0 && token->source_family != JG_POLICY_ADDRESS_NONE) {
+        const int family =
+            token->source_family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6;
+
+        if (inet_ntop(family, token->source_address, address,
+                      sizeof(address)) == NULL) {
+            result = -EINVAL;
+        } else {
+            written = snprintf(network, sizeof(network), "%s/%u", address,
+                               token->source_prefix);
+            if (written <= 0 || (size_t)written >= sizeof(network)) {
+                result = -ENOSPC;
+            }
+        }
+    }
+    if (result != 0 || body == NULL ||
+        json_object_set_new(body, "id",
+                            json_integer((json_int_t)token->token_id)) != 0 ||
+        json_object_set_new(body, "user_id",
+                            json_integer((json_int_t)token->user_id)) != 0 ||
+        json_object_set_new(body, "username", json_string(token->username)) !=
+            0 ||
+        json_object_set_new(body, "name", json_string(token->name)) != 0 ||
+        json_object_set_new(body, "scopes", json_string(scopes)) != 0 ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)token->revision)) != 0 ||
+        json_object_set_new(body, "created_at",
+                            json_integer((json_int_t)token->created_at)) != 0 ||
+        set_optional_timestamp(body, "expires_at", token->expires_at) != 0 ||
+        set_optional_timestamp(body, "last_used_at", token->last_used_at) !=
+            0 ||
+        set_optional_timestamp(body, "revoked_at", token->revoked_at) != 0 ||
+        json_object_set_new(body, "revoked",
+                            json_boolean(token->revoked_at != 0U)) != 0 ||
+        json_object_set_new(
+            body, "requests_per_minute",
+            json_integer((json_int_t)token->requests_per_minute)) != 0 ||
+        json_object_set_new(body, "source_network",
+                            network[0U] == '\0' ? json_null()
+                                                : json_string(network)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Parse exact offset and limit parameters for one collection. */
+static int parse_collection_query(const char *query,
+                                  size_t maximum_limit,
+                                  uint64_t *offset,
+                                  size_t *limit)
 {
     const char *cursor = query;
     bool have_offset = false;
@@ -717,7 +837,7 @@ static int parse_user_query(const char *query, uint64_t *offset, size_t *limit)
                    !have_limit) {
             result = parse_decimal(equals + 1,
                                    field_size - (size_t)(equals + 1 - cursor),
-                                   JG_ACCOUNT_USER_PAGE_MAX, &parsed);
+                                   maximum_limit, &parsed);
             if (result == 0 && parsed > 0U) {
                 *limit = (size_t)parsed;
                 have_limit = true;
@@ -735,13 +855,13 @@ static int parse_user_query(const char *query, uint64_t *offset, size_t *limit)
     return result;
 }
 
-/** @brief Parse one user identifier from an exact collection subpath. */
-static bool user_path_identifier(const char *path,
-                                 const char *suffix,
-                                 uint64_t *user_id)
+/** @brief Parse one identifier from an exact collection subpath. */
+static bool collection_path_identifier(const char *path,
+                                       const char *prefix,
+                                       const char *suffix,
+                                       uint64_t *identifier_value)
 {
-    static const char prefix[] = "/api/v1/users/";
-    const size_t prefix_size = sizeof(prefix) - 1U;
+    const size_t prefix_size = strlen(prefix);
     const size_t suffix_size = strlen(suffix);
     const size_t path_size = strlen(path);
     const char *identifier = NULL;
@@ -756,8 +876,8 @@ static bool user_path_identifier(const char *path,
     identifier = path + prefix_size;
     identifier_size = path_size - prefix_size - suffix_size;
     return parse_decimal(identifier, identifier_size, (uint64_t)INT64_MAX,
-                         user_id) == 0 &&
-           *user_id > 0U;
+                         identifier_value) == 0 &&
+           *identifier_value > 0U;
 }
 
 /** @brief Append one successful user lifecycle event without credentials. */
@@ -817,6 +937,71 @@ static int append_user_audit(struct jg_management *management,
             .previous_revision = previous_revision,
             .has_new_revision = true,
             .new_revision = user->revision,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Append one successful API-token lifecycle event. */
+static int append_token_audit(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              const struct authenticated_actor *actor,
+                              const char *action,
+                              bool has_previous_revision,
+                              uint64_t previous_revision,
+                              const struct jg_account_token_record *token,
+                              uint64_t now)
+{
+    char object_id[32U];
+    char source[INET6_ADDRSTRLEN];
+    char scopes[JG_ACCESS_SCOPE_TEXT_MAX + 1U];
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = 0;
+    int result =
+        jg_access_scope_format(token->permissions, scopes, sizeof(scopes));
+
+    written = snprintf(object_id, sizeof(object_id), "%llu",
+                       (unsigned long long)token->token_id);
+    if (result != 0 || written <= 0 || (size_t)written >= sizeof(object_id) ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "user_id",
+                            json_integer((json_int_t)token->user_id)) != 0 ||
+        json_object_set_new(details, "name", json_string(token->name)) != 0 ||
+        json_object_set_new(details, "scopes", json_string(scopes)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = action,
+            .object_type = "api_token",
+            .object_id = object_id,
+            .details = encoded,
+            .has_previous_revision = has_previous_revision,
+            .previous_revision = previous_revision,
+            .has_new_revision = true,
+            .new_revision = token->revision,
             .success = true,
             .request_id = request->request_id,
         };
@@ -1354,7 +1539,8 @@ static int handle_users_list(struct jg_management *management,
                                    written);
     }
     if (json_object_size(request->body) != 0U ||
-        parse_user_query(request->query, &offset, &limit) != 0) {
+        parse_collection_query(request->query, JG_ACCOUNT_USER_PAGE_MAX,
+                               &offset, &limit) != 0) {
         return respond_error(400, "invalid_query",
                              "The user pagination parameters are not valid.",
                              request->request_id, output, output_size, written);
@@ -1675,6 +1861,263 @@ static int handle_user_password_reset(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one authenticated stable page of API-token metadata. */
+static int handle_tokens_list(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_account_token_record *tokens = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t offset = 0U;
+    uint64_t total = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_collection_query(request->query, JG_ACCOUNT_TOKEN_PAGE_MAX,
+                               &offset, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The token pagination parameters are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    tokens = calloc(limit, sizeof(*tokens));
+    if (tokens == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_account_token_list(management->database, offset, tokens, limit,
+                                   &count, &total);
+    if (result != 0) {
+        free(tokens);
+        return respond_error(500, "tokens_unavailable",
+                             "The API tokens could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = token_json(&tokens[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "offset",
+                             json_integer((json_int_t)offset)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "total", json_integer((json_int_t)total)) !=
+             0 ||
+         json_object_set(body, "tokens", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        const uint64_t next = offset + (uint64_t)count;
+        json_t *next_value = count > 0U && next < total
+                                 ? json_integer((json_int_t)next)
+                                 : json_null();
+
+        if (json_object_set_new(body, "next_offset", next_value) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(tokens);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Issue and display one new scoped API token exactly once. */
+static int handle_token_issue(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written)
+{
+    static const char *const fields[] = {
+        "user_id",    "name",           "scopes",
+        "expires_at", "source_network", "requests_per_minute",
+    };
+    struct authenticated_actor actor;
+    struct jg_account_token_config config;
+    struct jg_account_api_token issued;
+    struct jg_account_token_record token;
+    const char *name = NULL;
+    const char *scopes = NULL;
+    uint64_t user_id = 0U;
+    uint64_t rate = 0U;
+    json_t *body = NULL;
+    json_t *token_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    (void)memset(&config, 0, sizeof(config));
+    (void)memset(&issued, 0, sizeof(issued));
+    name =
+        required_string(request->body, "name", 1U, JG_ACCOUNT_TOKEN_NAME_MAX);
+    scopes =
+        required_string(request->body, "scopes", 1U, JG_ACCESS_SCOPE_TEXT_MAX);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "user_id", &user_id) ||
+        name == NULL || scopes == NULL ||
+        jg_access_scope_parse(scopes, &config.permissions) != 0 ||
+        !required_optional_timestamp(request->body, "expires_at",
+                                     &config.expires_at) ||
+        parse_source_network(request->body, "source_network", &config) != 0 ||
+        !required_identifier(request->body, "requests_per_minute", &rate) ||
+        rate > UINT32_MAX) {
+        return respond_error(400, "invalid_body",
+                             "The API-token request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    config.name = name;
+    config.requests_per_minute = (uint32_t)rate;
+    result = jg_account_token_issue(management->database, user_id, &config, now,
+                                    &issued);
+    if (result == -ENOENT) {
+        return respond_error(404, "user_not_found",
+                             "The token owner was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EACCES) {
+        return respond_error(
+            403, "invalid_scopes",
+            "The token scopes exceed the owner's current permissions.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -ERANGE) {
+        return respond_error(400, "invalid_token",
+                             "The API-token properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "token_issue_failed",
+                             "The API token could not be issued.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        jg_account_token_get(management->database, issued.token_id, &token);
+    if (result == 0) {
+        result = append_token_audit(management, request, remote, &actor,
+                                    "token.create", false, 0U, &token, now);
+    }
+    if (result != 0) {
+        sodium_memzero(&issued, sizeof(issued));
+        return respond_error(
+            500, "audit_failure",
+            "The token was issued, but its audit record could not be stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    token_body = token_json(&token);
+    if (body == NULL || token_body == NULL ||
+        json_object_set_new(token_body, "secret", json_string(issued.secret)) !=
+            0 ||
+        json_object_set(body, "token", token_body) != 0) {
+        json_decref(token_body);
+        json_decref(body);
+        sodium_memzero(&issued, sizeof(issued));
+        return -ENOMEM;
+    }
+    json_decref(token_body);
+    result = encode_response(201, body, NULL, output, output_size, written);
+    sodium_memzero(&issued, sizeof(issued));
+    return result;
+}
+
+/** @brief Revoke one API token idempotently and audit the action. */
+static int handle_token_revoke(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t token_id,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_account_token_record previous;
+    struct jg_account_token_record token;
+    json_t *body = NULL;
+    json_t *token_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The token-revocation request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_token_get(management->database, token_id, &previous);
+    if (result == -ENOENT) {
+        return respond_error(404, "token_not_found",
+                             "The API token was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_account_token_revoke(management->database, token_id, now);
+    }
+    if (result == 0) {
+        result = jg_account_token_get(management->database, token_id, &token);
+    }
+    if (result != 0) {
+        return respond_error(500, "token_revoke_failed",
+                             "The API token could not be revoked.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        append_token_audit(management, request, remote, &actor, "token.revoke",
+                           true, previous.revision, &token, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The token was revoked, but its audit record could not be stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    token_body = token_json(&token);
+    if (body == NULL || token_body == NULL ||
+        json_object_set(body, "token", token_body) != 0) {
+        json_decref(token_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(token_body);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return the current authenticated browser identity. */
 static int handle_session(struct jg_management *management,
                           const struct management_request *request,
@@ -1956,6 +2399,7 @@ static int dispatch_request(struct jg_management *management,
     const bool state_change = strcmp(request->method, "GET") != 0;
     const bool authentication_path = strncmp(request->path, "/api/v1/auth/",
                                              sizeof("/api/v1/auth/") - 1U) == 0;
+    uint64_t token_id = 0U;
     uint64_t user_id = 0U;
 
     if (state_change && (request->bearer[0U] == '\0' || authentication_path) &&
@@ -1978,12 +2422,29 @@ static int dispatch_request(struct jg_management *management,
         return handle_user_create(management, request, remote, now, output,
                                   output_size, written);
     }
-    if (post && user_path_identifier(request->path, "/password", &user_id)) {
+    if (strcmp(request->path, "/api/v1/tokens") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_tokens_list(management, request, remote, now, output,
+                                  output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/tokens") == 0 && post) {
+        return handle_token_issue(management, request, remote, now, output,
+                                  output_size, written);
+    }
+    if (strcmp(request->method, "DELETE") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/tokens/", "",
+                                   &token_id)) {
+        return handle_token_revoke(management, request, remote, token_id, now,
+                                   output, output_size, written);
+    }
+    if (post && collection_path_identifier(request->path, "/api/v1/users/",
+                                           "/password", &user_id)) {
         return handle_user_password_reset(management, request, remote, user_id,
                                           now, output, output_size, written);
     }
     if (strcmp(request->method, "PATCH") == 0 &&
-        user_path_identifier(request->path, "", &user_id)) {
+        collection_path_identifier(request->path, "/api/v1/users/", "",
+                                   &user_id)) {
         return handle_user_update(management, request, remote, user_id, now,
                                   output, output_size, written);
     }

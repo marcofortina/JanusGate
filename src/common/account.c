@@ -2407,6 +2407,56 @@ static int decode_token_row(sqlite3_stmt *statement,
     return 0;
 }
 
+/** @brief Read one safe administrative API-token metadata record. */
+int jg_account_token_get(struct jg_database *database,
+                         uint64_t token_id,
+                         struct jg_account_token_record *token)
+{
+    static const char query[] =
+        "SELECT t.id,t.user_id,u.username,t.name,t.scopes,t.created_at,"
+        "t.expires_at,t.last_used_at,t.revoked_at,t.source_family,"
+        "t.source_address,t.source_prefix,t.requests_per_minute,t.revision"
+        " FROM api_tokens t JOIN users u ON u.id=t.user_id WHERE t.id=?1;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (token != NULL) {
+        (void)memset(token, 0, sizeof(*token));
+    }
+    if (database == NULL || token_id == 0U || token_id > (uint64_t)INT64_MAX ||
+        token == NULL) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)token_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_ROW) {
+            result = decode_token_row(statement, token);
+        } else if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result != 0) {
+        (void)memset(token, 0, sizeof(*token));
+    }
+    return result;
+}
+
 /** @brief List one stable bounded page of safe API-token metadata. */
 int jg_account_token_list(struct jg_database *database,
                           uint64_t offset,

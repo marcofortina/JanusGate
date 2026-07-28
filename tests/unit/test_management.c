@@ -414,6 +414,141 @@ static void test_user_api(void **state)
     assert_int_equal(verification.records_inspected, 3U);
 }
 
+/** @brief Verify one-time token issue, inventory, use, and revocation. */
+static void test_token_api(void **state)
+{
+    static const char administrator_password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[4096U];
+    char session[JG_AUTH_SECRET_TEXT_SIZE];
+    char csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    char secret[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_audit_verification verification;
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    json_t *token = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    uint64_t token_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"tokens-bootstrap\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/auth/bootstrap\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"body\":{"
+        "\"token\":\"%s\",\"username\":\"administrator\","
+        "\"password\":\"%s\"}}",
+        bootstrap, administrator_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    value = json_object_get(response, "set_session");
+    assert_true(json_is_string(value));
+    (void)snprintf(session, sizeof(session), "%s", json_string_value(value));
+    body = json_object_get(response, "body");
+    user_id = (uint64_t)json_integer_value(
+        json_object_get(json_object_get(body, "user"), "id"));
+    value = json_object_get(body, "csrf");
+    assert_true(json_is_string(value));
+    (void)snprintf(csrf, sizeof(csrf), "%s", json_string_value(value));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"token-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/tokens\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{"
+        "\"user_id\":%llu,\"name\":\"management automation\","
+        "\"scopes\":\"status:read,access:write\",\"expires_at\":null,"
+        "\"source_network\":\"192.0.2.0/24\","
+        "\"requests_per_minute\":60}}",
+        session, csrf, (unsigned long long)user_id);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    token = json_object_get(json_object_get(response, "body"), "token");
+    token_id = (uint64_t)json_integer_value(json_object_get(token, "id"));
+    value = json_object_get(token, "secret");
+    assert_true(token_id > 0U);
+    assert_true(json_is_string(value));
+    assert_int_equal(json_string_length(value), JG_AUTH_SECRET_TEXT_SIZE - 1U);
+    (void)snprintf(secret, sizeof(secret), "%s", json_string_value(value));
+    assert_string_equal(
+        json_string_value(json_object_get(token, "source_network")),
+        "192.0.2.0/24");
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"tokens-bearer-list\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/tokens\",\"query\":\"limit=10\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{}}",
+                 secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "total")), 1);
+    token = json_array_get(json_object_get(body, "tokens"), 0U);
+    assert_null(json_object_get(token, "secret"));
+    assert_false(json_is_true(json_object_get(token, "revoked")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"token-revoke\",\"method\":\"DELETE\","
+        "\"path\":\"/api/v1/tokens/%llu\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{}}",
+        (unsigned long long)token_id, session, csrf);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    token = json_object_get(json_object_get(response, "body"), "token");
+    assert_true(json_is_true(json_object_get(token, "revoked")));
+    assert_int_equal(json_integer_value(json_object_get(token, "revision")), 2);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"tokens-revoked-list\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/tokens\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{}}",
+                 secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     401);
+    json_decref(response);
+
+    assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
+                     0);
+    assert_true(verification.valid);
+    assert_int_equal(verification.records_inspected, 2U);
+}
+
 /** @brief Verify malformed and cross-origin requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -442,6 +577,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_browser_authentication,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_user_api, setup_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_token_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),

@@ -639,6 +639,25 @@ JG_PUBLIC int jg_account_token_list(struct jg_database *database,
                                     uint64_t *total);
 
 /**
+ * @brief Read one API token's safe administrative metadata.
+ *
+ * @param[in] database Open database.
+ * @param[in] token_id Persistent nonzero token identifier.
+ * @param[out] token Receives metadata without hash or plaintext secret.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for an invalid argument.
+ * @return -ENOENT when the token does not exist.
+ * @return -EILSEQ for invalid persistent token metadata.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_token_get(struct jg_database *database,
+                                   uint64_t token_id,
+                                   struct jg_account_token_record *token);
+
+/**
  * @brief Authenticate one API token and return its current identity.
  *
  * Role permissions and persistent token scopes are intersected on every
