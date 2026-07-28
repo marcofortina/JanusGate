@@ -422,6 +422,47 @@ static void test_user_api(void **state)
                      400);
     json_decref(response);
 
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"audit-list\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/audit\",\"query\":\"limit=2\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+                       "\"body\":{}}",
+                       session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "total")), 3);
+    assert_int_equal(json_array_size(json_object_get(body, "events")), 2U);
+    value = json_array_get(json_object_get(body, "events"), 0U);
+    assert_string_equal(json_string_value(json_object_get(value, "action")),
+                        "user.password_reset");
+    assert_int_equal(json_string_length(json_object_get(value, "event_hash")),
+                     JG_AUDIT_HASH_SIZE * 2U);
+    json_decref(response);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"audit-verify\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/audit/verify\","
+                       "\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+                       "\"body\":{}}",
+                       session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "valid")));
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "records_inspected")), 3);
+    assert_true(json_is_null(json_object_get(body, "first_invalid_id")));
+    json_decref(response);
+
     assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
                      0);
     assert_true(verification.valid);

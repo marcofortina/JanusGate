@@ -840,6 +840,83 @@ static json_t *token_json(const struct jg_account_token_record *token)
     return body;
 }
 
+/** @brief Return the stable external name for one audit actor kind. */
+static const char *audit_actor_name(enum jg_audit_actor_type actor)
+{
+    switch (actor) {
+    case JG_AUDIT_ACTOR_SYSTEM:
+        return "system";
+    case JG_AUDIT_ACTOR_USER:
+        return "user";
+    case JG_AUDIT_ACTOR_TOKEN:
+        return "token";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Convert one immutable audit record to public JSON. */
+static json_t *audit_json(const struct jg_audit_record *record)
+{
+    char previous_hash[JG_AUDIT_HASH_SIZE * 2U + 1U];
+    char event_hash[JG_AUDIT_HASH_SIZE * 2U + 1U];
+    const char *actor = audit_actor_name(record->actor_type);
+    json_t *body = json_object();
+
+    (void)memset(previous_hash, 0, sizeof(previous_hash));
+    if (!record->first &&
+        sodium_bin2hex(previous_hash, sizeof(previous_hash),
+                       record->previous_hash, JG_AUDIT_HASH_SIZE) == NULL) {
+        json_decref(body);
+        return NULL;
+    }
+    if (actor == NULL ||
+        sodium_bin2hex(event_hash, sizeof(event_hash), record->event_hash,
+                       JG_AUDIT_HASH_SIZE) == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "id",
+                            json_integer((json_int_t)record->event_id)) != 0 ||
+        json_object_set_new(body, "occurred_at",
+                            json_integer((json_int_t)record->occurred_at)) !=
+            0 ||
+        json_object_set_new(body, "actor_type", json_string(actor)) != 0 ||
+        json_object_set_new(body, "actor_id",
+                            record->has_actor_id
+                                ? json_integer((json_int_t)record->actor_id)
+                                : json_null()) != 0 ||
+        json_object_set_new(body, "source", json_string(record->source)) != 0 ||
+        json_object_set_new(body, "action", json_string(record->action)) != 0 ||
+        json_object_set_new(body, "object_type",
+                            json_string(record->object_type)) != 0 ||
+        json_object_set_new(body, "object_id",
+                            record->object_id[0U] == '\0'
+                                ? json_null()
+                                : json_string(record->object_id)) != 0 ||
+        json_object_set_new(body, "details", json_string(record->details)) !=
+            0 ||
+        json_object_set_new(
+            body, "previous_revision",
+            record->has_previous_revision
+                ? json_integer((json_int_t)record->previous_revision)
+                : json_null()) != 0 ||
+        json_object_set_new(body, "new_revision",
+                            record->has_new_revision
+                                ? json_integer((json_int_t)record->new_revision)
+                                : json_null()) != 0 ||
+        json_object_set_new(body, "success", json_boolean(record->success)) !=
+            0 ||
+        json_object_set_new(body, "request_id",
+                            json_string(record->request_id)) != 0 ||
+        json_object_set_new(body, "previous_hash",
+                            record->first ? json_null()
+                                          : json_string(previous_hash)) != 0 ||
+        json_object_set_new(body, "event_hash", json_string(event_hash)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
 /** @brief Parse exact offset and limit parameters for one collection. */
 static int parse_collection_query(const char *query,
                                   size_t maximum_limit,
@@ -2213,6 +2290,141 @@ static int handle_token_revoke(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one authenticated page of immutable audit records. */
+static int handle_audit_list(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_audit_record *records = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t offset = 0U;
+    uint64_t total = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_AUDIT_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_collection_query(request->query, JG_AUDIT_PAGE_MAX, &offset,
+                               &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The audit pagination parameters are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    records = calloc(limit, sizeof(*records));
+    if (records == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_database_audit_list(management->database, offset, records,
+                                    limit, &count, &total);
+    if (result != 0) {
+        free(records);
+        return respond_error(500, "audit_unavailable",
+                             "The audit records could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = audit_json(&records[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "offset",
+                             json_integer((json_int_t)offset)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "total", json_integer((json_int_t)total)) !=
+             0 ||
+         json_object_set(body, "events", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        const uint64_t next = offset + (uint64_t)count;
+        json_t *next_value = count > 0U && next < total
+                                 ? json_integer((json_int_t)next)
+                                 : json_null();
+
+        if (json_object_set_new(body, "next_offset", next_value) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(records);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Verify and report the complete authenticated audit chain. */
+static int handle_audit_verify(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_audit_verification verification;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_AUDIT_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The audit verification request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_database_audit_verify(management->database, &verification);
+    if (result != 0) {
+        return respond_error(500, "audit_verification_failed",
+                             "The audit chain could not be verified.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "valid", json_boolean(verification.valid)) !=
+            0 ||
+        json_object_set_new(
+            body, "records_inspected",
+            json_integer((json_int_t)verification.records_inspected)) != 0 ||
+        json_object_set_new(
+            body, "first_invalid_id",
+            verification.first_invalid_id == 0U
+                ? json_null()
+                : json_integer((json_int_t)verification.first_invalid_id)) !=
+            0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return the current authenticated browser identity. */
 static int handle_session(struct jg_management *management,
                           const struct management_request *request,
@@ -2512,6 +2724,16 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/audit/verify") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_audit_verify(management, request, remote, now, output,
+                                   output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/audit") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_audit_list(management, request, remote, now, output,
+                                 output_size, written);
     }
     if (strcmp(request->path, "/api/v1/users") == 0 &&
         strcmp(request->method, "GET") == 0) {

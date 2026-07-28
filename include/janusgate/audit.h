@@ -45,7 +45,7 @@
 #define JG_AUDIT_REQUEST_ID_MAX 128U
 
 /** Largest audit page returned by one management query. */
-#define JG_AUDIT_PAGE_MAX 10U
+#define JG_AUDIT_PAGE_MAX 5U
 
 /** Opaque database connection declared by database.h. */
 struct jg_database;
