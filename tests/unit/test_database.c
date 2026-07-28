@@ -602,6 +602,71 @@ static void test_policy_round_trip(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify that enabled encrypted-DNS endpoints become block rules. */
+static void test_encrypted_dns_endpoint_policy(void **state)
+{
+    static const char endpoints[] =
+        "INSERT INTO encrypted_dns_sources(id,name,url,enabled,updated_at)"
+        " VALUES"
+        "(1,'trusted resolver feed','https://resolver.example/list',1,10),"
+        "(2,'disabled resolver feed','https://disabled.example/list',0,10);"
+        "INSERT INTO encrypted_dns_endpoints("
+        "source_id,family,address,port,transport"
+        ") VALUES"
+        "(1,4,x'CB007135',443,'tcp'),"
+        "(1,6,x'20010DB8000000000000000000000053',853,'udp'),"
+        "(2,4,x'C0000235',443,'tcp');";
+    char directory[64U];
+    char path[512U];
+    struct jg_policy_destination destination = {
+        .transport = JG_POLICY_TRANSPORT_TCP,
+        .address_family = JG_POLICY_ADDRESS_IPV4,
+        .address = {203U, 0U, 113U, 53U},
+        .port = 443U,
+    };
+    struct jg_policy_destination_match match;
+    struct jg_policy_snapshot_info info;
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_database *database = NULL;
+    sqlite3 *handle = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, endpoints, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+
+    database = NULL;
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 1U, &snapshot),
+                     0);
+    assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
+    assert_int_equal(info.destination_rule_count, 2U);
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_true(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.source, JG_POLICY_SOURCE_BLOCKLIST);
+    assert_true((match.rule_id & (UINT64_C(1) << 63U)) != 0U);
+    assert_string_equal(match.attribution, "trusted resolver feed");
+
+    destination.address[0U] = 192U;
+    destination.address[1U] = 0U;
+    destination.address[2U] = 2U;
+    assert_int_equal(
+        jg_policy_match_destination(snapshot, &destination, NULL, &match), 0);
+    assert_false(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify atomic network configuration persistence and validation. */
 static void test_network_configuration(void **state)
 {
@@ -705,6 +770,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_version_two_migration),
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_round_trip),
+        cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
         cmocka_unit_test(test_dns_response_configuration),
     };

@@ -2075,6 +2075,47 @@ static int read_destination_policy_size(sqlite3 *handle,
     return result;
 }
 
+/** @brief Read enabled encrypted-DNS endpoint count and attribution bytes. */
+static int read_encrypted_endpoint_size(sqlite3 *handle,
+                                        size_t *rule_count,
+                                        size_t *strings_size)
+{
+    static const char query[] =
+        "SELECT count(*),coalesce(sum(length(CAST(s.name AS BLOB))+1),0)"
+        " FROM encrypted_dns_endpoints e"
+        " JOIN encrypted_dns_sources s ON s.id=e.source_id"
+        " WHERE s.enabled=1;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(handle, query, -1, 0U, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        } else {
+            const sqlite3_int64 count = sqlite3_column_int64(statement, 0);
+            const sqlite3_int64 bytes = sqlite3_column_int64(statement, 1);
+
+            if (count < 0 ||
+                count > (sqlite3_int64)JG_DATABASE_POLICY_RULE_LIMIT ||
+                bytes < 0 || (uint64_t)bytes > (uint64_t)SIZE_MAX) {
+                result = -EOVERFLOW;
+            } else {
+                *rule_count = (size_t)count;
+                *strings_size = (size_t)bytes;
+            }
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
 /** @brief Copy one consistent active-rule view into caller-owned storage. */
 static int read_domain_rules(sqlite3 *handle,
                              struct jg_policy_rule_input *rules,
@@ -2160,6 +2201,97 @@ static int read_destination_rules(
     return result;
 }
 
+/** @brief Copy enabled encrypted-DNS endpoints into destination-rule input. */
+static int read_encrypted_endpoints(
+    sqlite3 *handle,
+    struct jg_policy_destination_rule_input *rules,
+    size_t rule_count,
+    char *strings,
+    size_t strings_size)
+{
+    static const char query[] =
+        "SELECT s.name,e.family,e.address,e.port,e.transport"
+        " FROM encrypted_dns_endpoints e"
+        " JOIN encrypted_dns_sources s ON s.id=e.source_id"
+        " WHERE s.enabled=1"
+        " ORDER BY s.id,e.family,e.address,e.port,e.transport;";
+    sqlite3_stmt *statement = NULL;
+    size_t index = 0U;
+    size_t cursor = 0U;
+    int status = sqlite3_prepare_v3(
+        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
+        const char *attribution = NULL;
+        const char *transport = NULL;
+        const void *address = sqlite3_column_blob(statement, 2);
+        const int address_size = sqlite3_column_bytes(statement, 2);
+        const int family = sqlite3_column_int(statement, 1);
+        const int port = sqlite3_column_int(statement, 3);
+        size_t attribution_size = 0U;
+        size_t text_size = 0U;
+
+        if (index >= rule_count ||
+            sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+            sqlite3_column_type(statement, 2) != SQLITE_BLOB ||
+            sqlite3_column_type(statement, 3) != SQLITE_INTEGER || port <= 0 ||
+            port > 65535 ||
+            !((family == 4 && address_size == 4) ||
+              (family == 6 && address_size == 16))) {
+            result = -EILSEQ;
+        }
+        if (result == 0) {
+            result =
+                required_text(statement, 0, &attribution, &attribution_size);
+        }
+        if (result == 0) {
+            result = required_text(statement, 4, &transport, &text_size);
+        }
+        if (result == 0) {
+            result = decode_transport(transport, &rules[index].transport);
+        }
+        if (result == 0 && rules[index].transport != JG_POLICY_TRANSPORT_TCP &&
+            rules[index].transport != JG_POLICY_TRANSPORT_UDP) {
+            result = -EILSEQ;
+        }
+        if (result == 0 &&
+            !jg_range_valid(cursor, attribution_size + 1U, strings_size)) {
+            result = -EOVERFLOW;
+        }
+        if (result == 0) {
+            rules[index].id = (UINT64_C(1) << 63U) | (uint64_t)(index + 1U);
+            rules[index].effect = JG_POLICY_BLOCK;
+            rules[index].source = JG_POLICY_SOURCE_BLOCKLIST;
+            rules[index].has_address = true;
+            rules[index].address_family = (enum jg_policy_address_family)family;
+            (void)memcpy(rules[index].address, address, (size_t)address_size);
+            rules[index].prefix_length = family == 4 ? 32U : 128U;
+            rules[index].has_port = true;
+            rules[index].port = (uint16_t)port;
+            rules[index].scope.type = JG_POLICY_SCOPE_GLOBAL;
+            rules[index].attribution = strings + cursor;
+            (void)memcpy(strings + cursor, attribution, attribution_size);
+            strings[cursor + attribution_size] = '\0';
+            cursor += attribution_size + 1U;
+            ++index;
+        }
+    }
+    if (result == 0 && status != SQLITE_DONE) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0 && (index != rule_count || cursor != strings_size)) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
 /** @brief Load active persistent rules into a new immutable snapshot. */
 int jg_database_load_policy_snapshot(struct jg_database *database,
                                      uint64_t generation,
@@ -2171,8 +2303,12 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
     char *destination_strings = NULL;
     size_t rule_count = 0U;
     size_t destination_rule_count = 0U;
+    size_t encrypted_endpoint_count = 0U;
+    size_t complete_destination_count = 0U;
     size_t strings_size = 0U;
     size_t destination_strings_size = 0U;
+    size_t encrypted_strings_size = 0U;
+    size_t complete_destination_strings_size = 0U;
     size_t rules_size = 0U;
     size_t destination_rules_size = 0U;
     int result = 0;
@@ -2193,13 +2329,26 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
                                               &destination_rule_count,
                                               &destination_strings_size);
     }
+    if (result == 0) {
+        result = read_encrypted_endpoint_size(database->handle,
+                                              &encrypted_endpoint_count,
+                                              &encrypted_strings_size);
+    }
+    if (result == 0 &&
+        (!jg_size_add(destination_rule_count, encrypted_endpoint_count,
+                      &complete_destination_count) ||
+         complete_destination_count > JG_DATABASE_POLICY_RULE_LIMIT ||
+         !jg_size_add(destination_strings_size, encrypted_strings_size,
+                      &complete_destination_strings_size))) {
+        result = -EOVERFLOW;
+    }
     if (result == 0 &&
         !jg_size_multiply(rule_count, sizeof(*rules), &rules_size)) {
         result = -EOVERFLOW;
     }
-    if (result == 0 &&
-        !jg_size_multiply(destination_rule_count, sizeof(*destination_rules),
-                          &destination_rules_size)) {
+    if (result == 0 && !jg_size_multiply(complete_destination_count,
+                                         sizeof(*destination_rules),
+                                         &destination_rules_size)) {
         result = -EOVERFLOW;
     }
     if (result == 0 && rule_count != 0U) {
@@ -2209,9 +2358,9 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
             result = -ENOMEM;
         }
     }
-    if (result == 0 && destination_rule_count != 0U) {
+    if (result == 0 && complete_destination_count != 0U) {
         destination_rules = calloc(1U, destination_rules_size);
-        destination_strings = malloc(destination_strings_size);
+        destination_strings = malloc(complete_destination_strings_size);
         if (destination_rules == NULL || destination_strings == NULL) {
             result = -ENOMEM;
         }
@@ -2225,6 +2374,13 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
             database->handle, destination_rules, destination_rule_count,
             destination_strings, destination_strings_size);
     }
+    if (result == 0 && encrypted_endpoint_count != 0U) {
+        result = read_encrypted_endpoints(
+            database->handle, destination_rules + destination_rule_count,
+            encrypted_endpoint_count,
+            destination_strings + destination_strings_size,
+            encrypted_strings_size);
+    }
     if (result == 0) {
         result = execute_sql(database->handle, "COMMIT;");
     } else {
@@ -2232,7 +2388,7 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
     }
     if (result == 0) {
         result = jg_policy_snapshot_build_complete(
-            rules, rule_count, destination_rules, destination_rule_count,
+            rules, rule_count, destination_rules, complete_destination_count,
             generation, snapshot);
     }
     free(destination_strings);
