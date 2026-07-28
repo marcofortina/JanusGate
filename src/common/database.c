@@ -1442,9 +1442,9 @@ static int bind_scope(sqlite3_stmt *statement,
     return jg_database_sqlite_result(status);
 }
 
-/** @brief Bind and insert one validated domain rule. */
-static int insert_domain_rule(sqlite3_stmt *statement,
-                              const struct jg_policy_rule_input *rule)
+/** @brief Bind one validated domain rule to a prepared write statement. */
+static int bind_domain_rule(sqlite3_stmt *statement,
+                            const struct jg_policy_rule_input *rule)
 {
     char normalized[JG_DOMAIN_NAME_MAX + 1U];
     const char *persistent_source = source_text(rule->source);
@@ -1460,7 +1460,9 @@ static int insert_domain_rule(sqlite3_stmt *statement,
             jg_domain_normalize(rule->domain, normalized, sizeof(normalized));
     }
     if (result == 0) {
-        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)rule->id);
+        status = rule->id == 0U ? sqlite3_bind_null(statement, 1)
+                                : sqlite3_bind_int64(statement, 1,
+                                                     (sqlite3_int64)rule->id);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
@@ -1501,10 +1503,6 @@ static int insert_domain_rule(sqlite3_stmt *statement,
     } else if (result == 0) {
         result = -EINVAL;
     }
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
     return result;
 }
 
@@ -1540,7 +1538,12 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         result = jg_database_sqlite_result(status);
     }
     for (index = 0U; result == 0 && index < rule_count; ++index) {
-        result = insert_domain_rule(statement, &rules[index]);
+        result = bind_domain_rule(statement, &rules[index]);
+        if (result == 0) {
+            status = sqlite3_step(statement);
+            result =
+                status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+        }
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -2189,6 +2192,295 @@ int jg_database_list_domain_rules(struct jg_database *database,
     if (result == 0) {
         *count = index;
         *has_more = more;
+    }
+    return result;
+}
+
+/** @brief Validate one new or replacement domain rule. */
+static int validate_domain_rule(const struct jg_policy_rule_input *rule,
+                                bool creating)
+{
+    struct jg_policy_rule_input validation;
+
+    if (rule == NULL) {
+        return -EINVAL;
+    }
+    if (creating && rule->id != 0U) {
+        return -EINVAL;
+    }
+    if (!creating && (rule->id == 0U || rule->id > (uint64_t)INT64_MAX)) {
+        return -EINVAL;
+    }
+    validation = *rule;
+    if (creating) {
+        validation.id = 1U;
+    }
+    return validate_domain_rules(&validation, 1U);
+}
+
+/** @brief Read one domain record by its exact identifier. */
+static int read_domain_record(struct jg_database *database,
+                              uint64_t rule_id,
+                              struct jg_database_domain_rule *record)
+{
+    size_t count = 0U;
+    bool has_more = false;
+    int result = jg_database_list_domain_rules(database, rule_id - 1U, 1U,
+                                               record, &count, &has_more);
+
+    (void)has_more;
+    if (result == 0 && (count != 1U || record->id != rule_id)) {
+        result = -ENOENT;
+    }
+    return result;
+}
+
+/** @brief Read one rule revision or report an absent identifier. */
+static int read_rule_revision(sqlite3 *handle,
+                              const char *query,
+                              uint64_t rule_id,
+                              uint64_t *revision)
+{
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(
+        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)rule_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else if (status != SQLITE_ROW ||
+                   sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+                   sqlite3_column_int64(statement, 0) <= 0) {
+            result = status == SQLITE_ROW ? -EILSEQ
+                                          : jg_database_sqlite_result(status);
+        } else {
+            *revision = (uint64_t)sqlite3_column_int64(statement, 0);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Classify a failed optimistic domain-rule write. */
+static int domain_write_conflict(sqlite3 *handle,
+                                 uint64_t rule_id,
+                                 uint64_t expected_revision,
+                                 bool revision_must_advance)
+{
+    static const char query[] =
+        "SELECT revision FROM domain_rules WHERE id=?1;";
+    uint64_t revision = 0U;
+    int result = read_rule_revision(handle, query, rule_id, &revision);
+
+    if (result == 0 && revision != expected_revision) {
+        result = -EAGAIN;
+    } else if (result == 0 && revision_must_advance) {
+        result = -EOVERFLOW;
+    } else if (result == 0) {
+        result = -EIO;
+    }
+    return result;
+}
+
+/** @brief Create one persistent domain rule with an assigned identifier. */
+int jg_database_create_domain_rule(struct jg_database *database,
+                                   const struct jg_policy_rule_input *rule,
+                                   bool enabled,
+                                   struct jg_database_domain_rule *created)
+{
+    static const char insert[] =
+        "INSERT INTO domain_rules("
+        "id,domain,match_type,effect,source,scope_type,scope_value,"
+        "prefix_length,vlan_id,attribution,enabled,updated_at,target"
+        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?12,unixepoch(),?11);";
+    struct jg_database_domain_rule record;
+    sqlite3_stmt *statement = NULL;
+    sqlite3_int64 identifier = 0;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || created == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(created, 0, sizeof(*created));
+    result = validate_domain_rule(rule, true);
+    if (result == 0) {
+        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, insert, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_domain_rule(statement, rule);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 12, enabled ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        identifier = sqlite3_last_insert_rowid(database->handle);
+        if (identifier <= 0) {
+            result = -EIO;
+        } else {
+            result =
+                read_domain_record(database, (uint64_t)identifier, &record);
+        }
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
+    }
+    if (result == 0) {
+        *created = record;
+    }
+    return result;
+}
+
+/** @brief Replace one domain rule at its expected revision. */
+int jg_database_update_domain_rule(struct jg_database *database,
+                                   const struct jg_policy_rule_input *rule,
+                                   bool enabled,
+                                   uint64_t expected_revision,
+                                   struct jg_database_domain_rule *updated)
+{
+    static const char update[] =
+        "UPDATE domain_rules SET domain=?2,match_type=?3,effect=?4,source=?5,"
+        "scope_type=?6,scope_value=?7,prefix_length=?8,vlan_id=?9,"
+        "attribution=?10,target=?11,enabled=?12,updated_at=unixepoch(),"
+        "revision=revision+1 WHERE id=?1 AND revision=?13"
+        " AND revision<9223372036854775807;";
+    struct jg_database_domain_rule record;
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || expected_revision == 0U ||
+        expected_revision > (uint64_t)INT64_MAX || updated == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(updated, 0, sizeof(*updated));
+    result = validate_domain_rule(rule, false);
+    if (result == 0) {
+        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, update, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_domain_rule(statement, rule);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 12, enabled ? 1 : 0);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 13,
+                                        (sqlite3_int64)expected_revision);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = domain_write_conflict(database->handle, rule->id,
+                                       expected_revision, true);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = read_domain_record(database, rule->id, &record);
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
+    }
+    if (result == 0) {
+        *updated = record;
+    }
+    return result;
+}
+
+/** @brief Delete one domain rule at its expected revision. */
+int jg_database_delete_domain_rule(struct jg_database *database,
+                                   uint64_t rule_id,
+                                   uint64_t expected_revision)
+{
+    static const char remove[] =
+        "DELETE FROM domain_rules WHERE id=?1 AND revision=?2;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || rule_id == 0U || rule_id > (uint64_t)INT64_MAX ||
+        expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, remove, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)rule_id);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 2,
+                                        (sqlite3_int64)expected_revision);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = domain_write_conflict(database->handle, rule_id,
+                                       expected_revision, false);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
     }
     return result;
 }

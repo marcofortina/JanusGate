@@ -276,6 +276,80 @@ JG_PUBLIC int jg_database_replace_domain_rules(
     size_t rule_count);
 
 /**
+ * @brief Create one persistent domain rule with an assigned identifier.
+ *
+ * The input identifier must be zero. The returned record contains revision
+ * one and the normalized domain.
+ *
+ * @param[in] database Open database.
+ * @param[in] rule Domain rule whose identifier is zero.
+ * @param[in] enabled Whether the rule participates in active policy.
+ * @param[out] created Created self-contained record.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or rule content.
+ * @return -ENOMEM when validation allocation fails.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts one persistent domain rule atomically.
+ */
+JG_PUBLIC int jg_database_create_domain_rule(
+    struct jg_database *database,
+    const struct jg_policy_rule_input *rule,
+    bool enabled,
+    struct jg_database_domain_rule *created);
+
+/**
+ * @brief Replace one domain rule at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] rule Complete replacement with the persistent identifier.
+ * @param[in] enabled Whether the rule participates in active policy.
+ * @param[in] expected_revision Revision observed by the caller.
+ * @param[out] updated Updated self-contained record.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or rule content.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces one rule and increments its revision atomically.
+ */
+JG_PUBLIC int jg_database_update_domain_rule(
+    struct jg_database *database,
+    const struct jg_policy_rule_input *rule,
+    bool enabled,
+    uint64_t expected_revision,
+    struct jg_database_domain_rule *updated);
+
+/**
+ * @brief Delete one domain rule at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] rule_id Persistent positive identifier.
+ * @param[in] expected_revision Revision observed by the caller.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Deletes one persistent rule atomically.
+ */
+JG_PUBLIC int jg_database_delete_domain_rule(struct jg_database *database,
+                                             uint64_t rule_id,
+                                             uint64_t expected_revision);
+
+/**
  * @brief Atomically replace every active persistent destination rule.
  *
  * @param[in] database Open database.

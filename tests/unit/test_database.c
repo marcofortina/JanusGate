@@ -511,9 +511,12 @@ static void test_policy_round_trip(void **state)
     char path[512U];
     struct jg_policy_rule_input rules[4U];
     struct jg_policy_rule_input invalid;
+    struct jg_policy_rule_input mutable_rule;
     struct jg_policy_destination_rule_input destination_rules[2U];
     struct jg_policy_destination_rule_input invalid_destination;
     struct jg_database_domain_rule domain_page[2U];
+    struct jg_database_domain_rule created_rule;
+    struct jg_database_domain_rule updated_rule;
     struct jg_database_destination_rule destination_page[1U];
     struct jg_policy_destination destination = {
         .transport = JG_POLICY_TRANSPORT_TCP,
@@ -668,6 +671,46 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(destination_match.rule_id, 20U);
 
     jg_policy_snapshot_destroy(snapshot);
+    mutable_rule = make_rule(0U, "New.Example.", false, JG_POLICY_BLOCK,
+                             JG_POLICY_SOURCE_EXPLICIT);
+    assert_int_equal(jg_database_create_domain_rule(database, &mutable_rule,
+                                                    false, &created_rule),
+                     0);
+    assert_true(created_rule.id > 12U);
+    assert_int_equal(created_rule.revision, 1U);
+    assert_string_equal(created_rule.domain, "new.example");
+    assert_false(created_rule.enabled);
+    mutable_rule.id = created_rule.id;
+    mutable_rule.domain = "Updated.Example.";
+    mutable_rule.include_subdomains = true;
+    assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
+                                                    true, created_rule.revision,
+                                                    &updated_rule),
+                     0);
+    assert_int_equal(updated_rule.id, created_rule.id);
+    assert_int_equal(updated_rule.revision, 2U);
+    assert_string_equal(updated_rule.domain, "updated.example");
+    assert_true(updated_rule.include_subdomains);
+    assert_true(updated_rule.enabled);
+    assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
+                                                    true, created_rule.revision,
+                                                    &updated_rule),
+                     -EAGAIN);
+    mutable_rule.id = INT64_MAX;
+    assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
+                                                    true, 1U, &updated_rule),
+                     -ENOENT);
+    assert_int_equal(jg_database_delete_domain_rule(database, created_rule.id,
+                                                    created_rule.revision),
+                     -EAGAIN);
+    assert_int_equal(
+        jg_database_delete_domain_rule(database, created_rule.id, 2U), 0);
+    assert_int_equal(
+        jg_database_delete_domain_rule(database, created_rule.id, 2U), -ENOENT);
+    mutable_rule.id = 1U;
+    assert_int_equal(jg_database_create_domain_rule(database, &mutable_rule,
+                                                    true, &created_rule),
+                     -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
 }
