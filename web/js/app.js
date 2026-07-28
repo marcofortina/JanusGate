@@ -14,15 +14,17 @@ const elements = {
   appView: document.querySelector("#app-view"),
   loginForm: document.querySelector("#login-form"),
   bootstrapForm: document.querySelector("#bootstrap-form"),
+  passwordForm: document.querySelector("#password-form"),
   secondFactor: document.querySelector("#second-factor"),
   loginError: document.querySelector("#login-error"),
   bootstrapError: document.querySelector("#bootstrap-error"),
+  passwordError: document.querySelector("#password-error"),
   dashboardError: document.querySelector("#dashboard-error"),
   refresh: document.querySelector("#refresh"),
   logout: document.querySelector("#logout"),
 };
 
-let csrfToken = sessionStorage.getItem("janusgate.csrf") || "";
+let csrfToken = localStorage.getItem("janusgate.csrf") || "";
 
 /**
  * Represent a structured API failure without exposing response internals.
@@ -99,14 +101,14 @@ async function api(path, options = {}) {
 }
 
 /**
- * Persist the CSRF value for the lifetime of this browser tab.
+ * Persist the CSRF value shared by tabs using the same session cookie.
  */
 function rememberCsrf(value) {
   csrfToken = typeof value === "string" ? value : "";
   if (csrfToken.length > 0) {
-    sessionStorage.setItem("janusgate.csrf", csrfToken);
+    localStorage.setItem("janusgate.csrf", csrfToken);
   } else {
-    sessionStorage.removeItem("janusgate.csrf");
+    localStorage.removeItem("janusgate.csrf");
   }
 }
 
@@ -116,8 +118,35 @@ function rememberCsrf(value) {
 function showApplication(user) {
   elements.authView.hidden = true;
   elements.appView.hidden = false;
+  elements.passwordForm.hidden = true;
   elements.accountState.hidden = false;
   elements.currentUser.textContent = user.username;
+}
+
+/**
+ * Restrict an authenticated identity to the required password form.
+ */
+function showPasswordChange(user) {
+  elements.appView.hidden = true;
+  elements.authView.hidden = false;
+  elements.loginForm.hidden = true;
+  elements.bootstrapForm.hidden = true;
+  elements.passwordForm.hidden = false;
+  elements.accountState.hidden = false;
+  elements.currentUser.textContent = user.username;
+  document.querySelector("#current-password").focus();
+}
+
+/**
+ * Display the only view permitted by the authenticated account state.
+ */
+async function showIdentity(user) {
+  if (user.force_password_change) {
+    showPasswordChange(user);
+    return;
+  }
+  showApplication(user);
+  await refreshStatus();
 }
 
 /**
@@ -129,7 +158,10 @@ function showAuthentication() {
   elements.authView.hidden = false;
   elements.loginForm.hidden = false;
   elements.bootstrapForm.hidden = true;
+  elements.passwordForm.hidden = true;
   elements.secondFactor.hidden = true;
+  elements.passwordForm.reset();
+  showError(elements.passwordError, "");
   rememberCsrf("");
 }
 
@@ -166,7 +198,8 @@ async function refreshStatus() {
     document.querySelector("#sni-count").textContent =
       formatCounter(status.dataplane.sni_inspected);
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
+    if (error instanceof ApiError &&
+        error.code === "authentication_required") {
       showAuthentication();
     } else {
       showError(elements.dashboardError, errorMessage(error));
@@ -204,8 +237,7 @@ async function submitLogin(event) {
     });
     rememberCsrf(session.csrf);
     elements.loginForm.reset();
-    showApplication(session.user);
-    await refreshStatus();
+    await showIdentity(session.user);
   } catch (error) {
     if (error instanceof ApiError && error.code === "mfa_required") {
       elements.secondFactor.hidden = false;
@@ -245,8 +277,7 @@ async function submitBootstrap(event) {
     });
     rememberCsrf(session.csrf);
     elements.bootstrapForm.reset();
-    showApplication(session.user);
-    await refreshStatus();
+    await showIdentity(session.user);
   } catch (error) {
     showError(elements.bootstrapError, errorMessage(error));
   } finally {
@@ -266,6 +297,54 @@ async function logout() {
   } finally {
     elements.logout.disabled = false;
     showAuthentication();
+  }
+}
+
+/**
+ * Change the current password and accept the rotated authenticated session.
+ */
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  showError(elements.passwordError, "");
+  const data = new FormData(elements.passwordForm);
+  const currentPassword = String(data.get("current"));
+  const password = String(data.get("password"));
+  const confirm = String(data.get("confirm"));
+
+  if (password !== confirm) {
+    showError(elements.passwordError,
+      "The password confirmation does not match.");
+    document.querySelector("#confirm-password").focus();
+    return;
+  }
+  if (password === currentPassword) {
+    showError(elements.passwordError,
+      "Choose a password different from the current password.");
+    document.querySelector("#new-password").focus();
+    return;
+  }
+  const submit = elements.passwordForm.querySelector("[type=submit]");
+  submit.disabled = true;
+  try {
+    const session = await api("/api/v1/auth/password", {
+      method: "POST",
+      body: {
+        current_password: currentPassword,
+        new_password: password,
+      },
+    });
+    rememberCsrf(session.csrf);
+    elements.passwordForm.reset();
+    await showIdentity(session.user);
+  } catch (error) {
+    if (error instanceof ApiError &&
+        error.code === "authentication_required") {
+      showAuthentication();
+    } else {
+      showError(elements.passwordError, errorMessage(error));
+    }
+  } finally {
+    submit.disabled = false;
   }
 }
 
@@ -291,8 +370,7 @@ async function initialize() {
   }
   try {
     const session = await api("/api/v1/auth/session");
-    showApplication(session.user);
-    await refreshStatus();
+    await showIdentity(session.user);
   } catch {
     showAuthentication();
   }
@@ -318,6 +396,7 @@ function showLoginForm() {
 
 elements.loginForm.addEventListener("submit", submitLogin);
 elements.bootstrapForm.addEventListener("submit", submitBootstrap);
+elements.passwordForm.addEventListener("submit", submitPasswordChange);
 elements.refresh.addEventListener("click", refreshStatus);
 elements.logout.addEventListener("click", logout);
 document.querySelector("#show-bootstrap").addEventListener(
