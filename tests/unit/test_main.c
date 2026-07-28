@@ -10,9 +10,13 @@
 #include <cmocka.h>
 
 int jg_test_checked(void);
+int jg_test_packet(void);
 
 /** @brief Run every unit-test group and combine their exit status. */
 int main(void)
 {
-    return jg_test_checked();
+    int result = jg_test_checked();
+
+    result |= jg_test_packet();
+    return result;
 }

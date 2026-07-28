@@ -37,7 +37,11 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   @ONLY)
 
-add_library(janusgate-common STATIC src/common/checked.c src/common/version.c)
+add_library(
+  janusgate-common STATIC
+  src/common/checked.c
+  src/common/packet.c
+  src/common/version.c)
 add_library(JanusGate::common ALIAS janusgate-common)
 target_include_directories(
   janusgate-common
@@ -52,6 +56,7 @@ install(
   ARCHIVE COMPONENT development)
 install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)

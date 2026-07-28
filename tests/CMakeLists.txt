@@ -3,10 +3,13 @@
 
 pkg_check_modules(CMOCKA REQUIRED IMPORTED_TARGET cmocka)
 
-add_executable(janusgate-unit-tests unit/test_main.c unit/test_checked.c)
+add_executable(
+  janusgate-unit-tests
+  unit/test_main.c
+  unit/test_checked.c
+  unit/test_packet.c)
 target_link_libraries(janusgate-unit-tests PRIVATE JanusGate::common PkgConfig::CMOCKA)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30)
-
