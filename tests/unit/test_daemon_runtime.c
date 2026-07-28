@@ -27,6 +27,7 @@ static void test_configuration(void **state)
     assert_string_equal(config.database_path, JG_DAEMON_DATABASE_PATH);
     assert_string_equal(config.totp_key_path, JG_DAEMON_TOTP_KEY_PATH);
     assert_string_equal(config.certificate_path, JG_CERTIFICATE_DEFAULT_PATH);
+    assert_string_equal(config.backup_directory, JG_BACKUP_DEFAULT_DIRECTORY);
     assert_int_equal(config.database_busy_timeout_ms, 5000U);
     assert_int_equal(config.queue_receive_buffer_size,
                      JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT);
@@ -42,6 +43,9 @@ static void test_configuration(void **state)
     config.certificate_path = "relative.pem";
     assert_int_equal(jg_daemon_runtime_config_validate(&config), -EINVAL);
     config.certificate_path = JG_CERTIFICATE_DEFAULT_PATH;
+    config.backup_directory = "relative";
+    assert_int_equal(jg_daemon_runtime_config_validate(&config), -EINVAL);
+    config.backup_directory = JG_BACKUP_DEFAULT_DIRECTORY;
     config.queue_receive_buffer_size = JG_NFQUEUE_RECEIVE_BUFFER_MAX + 1U;
     assert_int_equal(jg_daemon_runtime_config_validate(&config), -ERANGE);
     config.queue_receive_buffer_size = JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT;

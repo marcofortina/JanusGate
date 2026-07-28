@@ -91,7 +91,8 @@ static int setup_management(void **state)
     assert_int_equal(
         jg_database_open(fixture->database_path, 1000U, &fixture->database), 0);
     assert_int_equal(jg_management_create(fixture->database, fixture->key_path,
-                                          fixture->certificate_path, NULL,
+                                          fixture->certificate_path,
+                                          fixture->directory, NULL,
                                           &fixture->management),
                      0);
     *state = fixture;

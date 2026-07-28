@@ -74,6 +74,7 @@ struct jg_management {
     struct jg_auth_password_policy password_policy;
     struct token_rate_slot token_rates[MANAGEMENT_TOKEN_RATE_SLOT_COUNT];
     char certificate_path[PATH_MAX];
+    char backup_directory[PATH_MAX];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
 };
 
@@ -203,6 +204,7 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
                          const char *certificate_path,
+                         const char *backup_directory,
                          struct jg_daemon_runtime *runtime,
                          struct jg_management **management)
 {
@@ -215,7 +217,8 @@ int jg_management_create(struct jg_database *database,
     *management = NULL;
     if (database == NULL || totp_key_path == NULL ||
         !key_path_valid(certificate_path) ||
-        strlen(certificate_path) > PATH_MAX - sizeof(".pending-key")) {
+        strlen(certificate_path) > PATH_MAX - sizeof(".pending-key") ||
+        !key_path_valid(backup_directory)) {
         return -EINVAL;
     }
     created = calloc(1U, sizeof(*created));
@@ -226,6 +229,8 @@ int jg_management_create(struct jg_database *database,
     created->runtime = runtime;
     (void)memcpy(created->certificate_path, certificate_path,
                  strlen(certificate_path) + 1U);
+    (void)memcpy(created->backup_directory, backup_directory,
+                 strlen(backup_directory) + 1U);
     jg_auth_password_policy_default(&created->password_policy);
     result = load_totp_key(totp_key_path, created->totp_key);
     if (result != 0) {

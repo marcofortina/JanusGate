@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "dataplane_worker.h"
+#include "janusgate/backup.h"
 #include "janusgate/certificate.h"
 #include "janusgate/policy.h"
 #include "nfqueue.h"
@@ -36,6 +37,8 @@ struct jg_daemon_runtime_config {
     const char *totp_key_path;
     /** Absolute combined server certificate PEM path. */
     const char *certificate_path;
+    /** Absolute private backup archive directory. */
+    const char *backup_directory;
     /** SQLite busy timeout in milliseconds. */
     uint32_t database_busy_timeout_ms;
     /** Requested netlink receive-buffer bytes for every queue. */

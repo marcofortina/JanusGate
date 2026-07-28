@@ -29,6 +29,7 @@ struct jg_daemon_runtime;
  * @param[in] totp_key_path Secure regular file containing exactly one raw
  * TOTP protection key.
  * @param[in] certificate_path Absolute combined server certificate PEM path.
+ * @param[in] backup_directory Absolute owner-private archive directory.
  * @param[in] runtime Packet runtime borrowed for the complete lifetime; null
  * is accepted by isolated authentication tests.
  * @param[out] management Receives the owned management state.
@@ -43,6 +44,7 @@ struct jg_daemon_runtime;
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
                          const char *certificate_path,
+                         const char *backup_directory,
                          struct jg_daemon_runtime *runtime,
                          struct jg_management **management);
 
