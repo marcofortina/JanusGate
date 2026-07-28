@@ -4,7 +4,7 @@
 
 /**
  * @file checked.h
- * @brief Overflow-safe arithmetic and bounded byte access.
+ * @brief Overflow-safe arithmetic and bounded byte and text validation.
  *
  * Functions never allocate memory. Output pointers are written only after all
  * validation succeeds. Callers retain ownership of every input and output
@@ -175,6 +175,25 @@ JG_PUBLIC bool jg_write_u64_be(uint8_t *data,
                                size_t data_size,
                                size_t offset,
                                uint64_t value);
+
+/**
+ * @brief Validate bounded UTF-8 administrative text.
+ *
+ * The input must contain complete, shortest-form Unicode scalar encodings.
+ * ASCII control characters and DEL are rejected.
+ *
+ * @param[in] data Text bytes, or null only when @p data_size is zero.
+ * @param[in] data_size Number of bytes to validate.
+ * @param[in] allow_empty Whether an empty input is valid.
+ *
+ * @return `true` when the complete input is valid.
+ * @return `false` for invalid UTF-8, control characters, or arguments.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC bool jg_utf8_text_valid(const uint8_t *data,
+                                  size_t data_size,
+                                  bool allow_empty);
 
 /**
  * @brief Overwrite sensitive caller-owned storage.

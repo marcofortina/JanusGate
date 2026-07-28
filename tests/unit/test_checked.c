@@ -73,6 +73,25 @@ static void test_network_access(void **state)
     assert_false(jg_write_u64_be(wide_data, sizeof(wide_data), 1U, wide_value));
 }
 
+/** @brief Verify strict bounded UTF-8 administrative-text validation. */
+static void test_utf8_text(void **state)
+{
+    static const uint8_t valid[] = {'J', 'a',   'n',   'u',  's',
+                                    ' ', 0xe2U, 0x82U, 0xacU};
+    static const uint8_t overlong[] = {0xc0U, 0xafU};
+    static const uint8_t surrogate[] = {0xedU, 0xa0U, 0x80U};
+    static const uint8_t control[] = {'a', '\n'};
+
+    (void)state;
+    assert_true(jg_utf8_text_valid(valid, sizeof(valid), false));
+    assert_true(jg_utf8_text_valid(NULL, 0U, true));
+    assert_false(jg_utf8_text_valid(NULL, 0U, false));
+    assert_false(jg_utf8_text_valid(NULL, 1U, true));
+    assert_false(jg_utf8_text_valid(overlong, sizeof(overlong), false));
+    assert_false(jg_utf8_text_valid(surrogate, sizeof(surrogate), false));
+    assert_false(jg_utf8_text_valid(control, sizeof(control), false));
+}
+
 /** @brief Verify that secure clearing overwrites every requested byte. */
 static void test_secure_clear(void **state)
 {
@@ -94,6 +113,7 @@ int jg_test_checked(void)
         cmocka_unit_test(test_size_arithmetic),
         cmocka_unit_test(test_ranges),
         cmocka_unit_test(test_network_access),
+        cmocka_unit_test(test_utf8_text),
         cmocka_unit_test(test_secure_clear),
     };
 

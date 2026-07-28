@@ -142,55 +142,6 @@ static bool span_equals_case_insensitive(struct byte_span span,
     return true;
 }
 
-/** @brief Validate bounded UTF-8 text and reject control characters. */
-static bool utf8_text_valid(const uint8_t *data, size_t size, bool allow_empty)
-{
-    size_t index = 0U;
-
-    if ((!allow_empty && size == 0U) || (data == NULL && size != 0U)) {
-        return false;
-    }
-    while (index < size) {
-        const uint8_t first = data[index];
-        size_t sequence_size = 0U;
-
-        if (first <= UINT8_C(0x7f)) {
-            if (first < UINT8_C(0x20) || first == UINT8_C(0x7f)) {
-                return false;
-            }
-            ++index;
-            continue;
-        }
-        if (first >= UINT8_C(0xc2) && first <= UINT8_C(0xdf)) {
-            sequence_size = 2U;
-        } else if (first >= UINT8_C(0xe0) && first <= UINT8_C(0xef)) {
-            sequence_size = 3U;
-        } else if (first >= UINT8_C(0xf0) && first <= UINT8_C(0xf4)) {
-            sequence_size = 4U;
-        } else {
-            return false;
-        }
-        if (sequence_size > size - index) {
-            return false;
-        }
-        if ((data[index + 1U] & UINT8_C(0xc0)) != UINT8_C(0x80) ||
-            (sequence_size >= 3U &&
-             (data[index + 2U] & UINT8_C(0xc0)) != UINT8_C(0x80)) ||
-            (sequence_size == 4U &&
-             (data[index + 3U] & UINT8_C(0xc0)) != UINT8_C(0x80))) {
-            return false;
-        }
-        if ((first == UINT8_C(0xe0) && data[index + 1U] < UINT8_C(0xa0)) ||
-            (first == UINT8_C(0xed) && data[index + 1U] > UINT8_C(0x9f)) ||
-            (first == UINT8_C(0xf0) && data[index + 1U] < UINT8_C(0x90)) ||
-            (first == UINT8_C(0xf4) && data[index + 1U] > UINT8_C(0x8f))) {
-            return false;
-        }
-        index += sequence_size;
-    }
-    return true;
-}
-
 /** @brief Measure and validate a null-terminated attribution string. */
 static int attribution_size(const char *attribution, size_t *size)
 {
@@ -206,7 +157,7 @@ static int attribution_size(const char *attribution, size_t *size)
     if (length == 0U || length > JG_BLOCKLIST_ATTRIBUTION_MAX) {
         return -EINVAL;
     }
-    if (!utf8_text_valid((const uint8_t *)attribution, length, false)) {
+    if (!jg_utf8_text_valid((const uint8_t *)attribution, length, false)) {
         return -EILSEQ;
     }
     *size = length + 1U;
@@ -289,7 +240,7 @@ static int stage_entry(struct blocklist_stage *stage,
         category.size > JG_BLOCKLIST_CATEGORY_MAX) {
         return -EINVAL;
     }
-    if (!utf8_text_valid(category.data, category.size, true)) {
+    if (!jg_utf8_text_valid(category.data, category.size, true)) {
         return -EILSEQ;
     }
     (void)memcpy(input, domain.data, domain.size);

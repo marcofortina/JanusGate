@@ -121,6 +121,56 @@ bool jg_write_u64_be(uint8_t *data,
                            (uint32_t)(value & UINT64_C(0xffffffff)));
 }
 
+/** @brief Validate bounded UTF-8 text and reject ASCII controls. */
+bool jg_utf8_text_valid(const uint8_t *data, size_t data_size, bool allow_empty)
+{
+    size_t index = 0U;
+
+    if ((!allow_empty && data_size == 0U) ||
+        (data == NULL && data_size != 0U)) {
+        return false;
+    }
+    while (index < data_size) {
+        const uint8_t first = data[index];
+        size_t sequence_size = 0U;
+
+        if (first <= UINT8_C(0x7f)) {
+            if (first < UINT8_C(0x20) || first == UINT8_C(0x7f)) {
+                return false;
+            }
+            ++index;
+            continue;
+        }
+        if (first >= UINT8_C(0xc2) && first <= UINT8_C(0xdf)) {
+            sequence_size = 2U;
+        } else if (first >= UINT8_C(0xe0) && first <= UINT8_C(0xef)) {
+            sequence_size = 3U;
+        } else if (first >= UINT8_C(0xf0) && first <= UINT8_C(0xf4)) {
+            sequence_size = 4U;
+        } else {
+            return false;
+        }
+        if (sequence_size > data_size - index) {
+            return false;
+        }
+        if ((data[index + 1U] & UINT8_C(0xc0)) != UINT8_C(0x80) ||
+            (sequence_size >= 3U &&
+             (data[index + 2U] & UINT8_C(0xc0)) != UINT8_C(0x80)) ||
+            (sequence_size == 4U &&
+             (data[index + 3U] & UINT8_C(0xc0)) != UINT8_C(0x80))) {
+            return false;
+        }
+        if ((first == UINT8_C(0xe0) && data[index + 1U] < UINT8_C(0xa0)) ||
+            (first == UINT8_C(0xed) && data[index + 1U] > UINT8_C(0x9f)) ||
+            (first == UINT8_C(0xf0) && data[index + 1U] < UINT8_C(0x90)) ||
+            (first == UINT8_C(0xf4) && data[index + 1U] > UINT8_C(0x8f))) {
+            return false;
+        }
+        index += sequence_size;
+    }
+    return true;
+}
+
 /** @brief Clear caller-owned storage through a non-elidable access path. */
 void jg_secure_clear(void *data, size_t data_size)
 {
