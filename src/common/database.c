@@ -380,10 +380,24 @@ static const char *const migration_2[] = {
     migration_2_audit,
 };
 
+/** Separate DNS and visible-SNI rules in schema version three. */
+static const char migration_3_policy[] =
+    "ALTER TABLE domain_rules ADD COLUMN target TEXT NOT NULL DEFAULT 'dns' "
+    "CHECK(target IN ('dns','tls_sni'));"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(3,unixepoch());"
+    "PRAGMA user_version=3;";
+
+/** Ordered statement groups composing schema version three. */
+static const char *const migration_3[] = {
+    migration_3_policy,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
     {2U, migration_2, sizeof(migration_2) / sizeof(migration_2[0])},
+    {3U, migration_3, sizeof(migration_3) / sizeof(migration_3[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1066,6 +1080,19 @@ static const char *effect_text(enum jg_policy_effect effect)
     return effect == JG_POLICY_ALLOW ? "allow" : "block";
 }
 
+/** @brief Return the persistent text representation of a domain target. */
+static const char *target_text(enum jg_policy_domain_target target)
+{
+    switch (target) {
+    case JG_POLICY_DOMAIN_DNS:
+        return "dns";
+    case JG_POLICY_DOMAIN_TLS_SNI:
+        return "tls_sni";
+    default:
+        return NULL;
+    }
+}
+
 /** @brief Return the persistent text representation of a policy source. */
 static const char *source_text(enum jg_policy_source source)
 {
@@ -1203,6 +1230,7 @@ static int insert_domain_rule(sqlite3_stmt *statement,
 {
     char normalized[JG_DOMAIN_NAME_MAX + 1U];
     const char *persistent_source = source_text(rule->source);
+    const char *persistent_target = target_text(rule->target);
     int status = sqlite3_reset(statement);
     int result = jg_database_sqlite_result(status);
 
@@ -1248,6 +1276,13 @@ static int insert_domain_rule(sqlite3_stmt *statement,
                                    SQLITE_TRANSIENT);
         result = jg_database_sqlite_result(status);
     }
+    if (result == 0 && persistent_target != NULL) {
+        status = sqlite3_bind_text(statement, 11, persistent_target, -1,
+                                   SQLITE_STATIC);
+        result = jg_database_sqlite_result(status);
+    } else if (result == 0) {
+        result = -EINVAL;
+    }
     if (result == 0) {
         status = sqlite3_step(statement);
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
@@ -1263,8 +1298,8 @@ int jg_database_replace_domain_rules(struct jg_database *database,
     static const char insert[] =
         "INSERT INTO domain_rules("
         "id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution,enabled,updated_at"
-        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,unixepoch());";
+        "prefix_length,vlan_id,attribution,enabled,updated_at,target"
+        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,unixepoch(),?11);";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     int status;
@@ -1330,6 +1365,20 @@ static int decode_source(const char *text, enum jg_policy_source *source)
     }
     if (strcmp(text, "emergency") == 0) {
         *source = JG_POLICY_SOURCE_EMERGENCY;
+        return 0;
+    }
+    return -EILSEQ;
+}
+
+/** @brief Decode a persistent domain-policy target. */
+static int decode_target(const char *text, enum jg_policy_domain_target *target)
+{
+    if (strcmp(text, "dns") == 0) {
+        *target = JG_POLICY_DOMAIN_DNS;
+        return 0;
+    }
+    if (strcmp(text, "tls_sni") == 0) {
+        *target = JG_POLICY_DOMAIN_TLS_SNI;
         return 0;
     }
     return -EILSEQ;
@@ -1405,6 +1454,7 @@ static int decode_domain_rule(sqlite3_stmt *statement,
     const char *source = NULL;
     const char *scope = NULL;
     const char *attribution = NULL;
+    const char *target = NULL;
     size_t domain_length = 0U;
     size_t text_length = 0U;
     size_t attribution_length = 0U;
@@ -1452,6 +1502,12 @@ static int decode_domain_rule(sqlite3_stmt *statement,
     }
     if (result == 0) {
         result = required_text(statement, 9, &attribution, &attribution_length);
+    }
+    if (result == 0) {
+        result = required_text(statement, 10, &target, &text_length);
+    }
+    if (result == 0) {
+        result = decode_target(target, &rule->target);
     }
     if (result == 0 &&
         (!jg_range_valid(*cursor, domain_length + 1U, strings_size) ||
@@ -1522,7 +1578,7 @@ static int read_domain_rules(sqlite3 *handle,
 {
     static const char query[] =
         "SELECT id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution FROM domain_rules "
+        "prefix_length,vlan_id,attribution,target FROM domain_rules "
         "WHERE enabled=1 ORDER BY id;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;

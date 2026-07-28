@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <errno.h>
+
 #include <cmocka.h>
 
 #include "janusgate/policy.h"
@@ -205,6 +207,51 @@ static void test_empty_snapshot_and_invalid_rules(void **state)
     assert_null(snapshot);
 }
 
+/** @brief Verify strict isolation between DNS and visible-SNI rules. */
+static void test_domain_target_isolation(void **state)
+{
+    struct jg_policy_rule_input rules[3U];
+    struct jg_policy_rule_input invalid;
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_match match;
+
+    (void)state;
+    rules[0] = make_rule(1U, "example.org", true, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_BLOCKLIST);
+    rules[1] = make_rule(2U, "resolver.example", true, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_EXPLICIT);
+    rules[1].target = JG_POLICY_DOMAIN_TLS_SNI;
+    rules[2] = make_rule(3U, "resolver.example", true, JG_POLICY_ALLOW,
+                         JG_POLICY_SOURCE_EXPLICIT);
+
+    assert_int_equal(jg_policy_snapshot_build(rules, 3U, 1U, &snapshot), 0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "doh.resolver.example", NULL, &match),
+        0);
+    assert_true(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(match.rule_id, 3U);
+    assert_int_equal(jg_policy_match_visible_sni(
+                         snapshot, "doh.resolver.example", NULL, &match),
+                     0);
+    assert_true(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.rule_id, 2U);
+    assert_int_equal(
+        jg_policy_match_visible_sni(snapshot, "ads.example.org", NULL, &match),
+        0);
+    assert_false(match.matched);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+
+    invalid = rules[0];
+    invalid.target = JG_POLICY_DOMAIN_TLS_SNI;
+    snapshot = NULL;
+    assert_int_equal(jg_policy_snapshot_build(&invalid, 1U, 1U, &snapshot),
+                     -EINVAL);
+    assert_null(snapshot);
+}
+
 /** @brief Run the immutable policy snapshot and matcher test group. */
 int jg_test_policy(void)
 {
@@ -212,6 +259,7 @@ int jg_test_policy(void)
         cmocka_unit_test(test_precedence_and_scopes),
         cmocka_unit_test(test_deduplication_and_canonical_checksum),
         cmocka_unit_test(test_empty_snapshot_and_invalid_rules),
+        cmocka_unit_test(test_domain_target_isolation),
     };
 
     return cmocka_run_group_tests_name("policy", tests, NULL, NULL);

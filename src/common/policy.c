@@ -23,6 +23,7 @@ struct build_rule {
     bool include_subdomains;
     enum jg_policy_effect effect;
     enum jg_policy_source source;
+    enum jg_policy_domain_target target;
     struct jg_policy_scope scope;
 };
 
@@ -35,6 +36,7 @@ struct stored_rule {
     bool include_subdomains;
     enum jg_policy_effect effect;
     enum jg_policy_source source;
+    enum jg_policy_domain_target target;
     struct jg_policy_scope scope;
 };
 
@@ -94,6 +96,14 @@ static int attribution_length(const char *value, size_t *length)
 static bool rule_class_valid(const struct jg_policy_rule_input *rule)
 {
     if (rule->effect != JG_POLICY_ALLOW && rule->effect != JG_POLICY_BLOCK) {
+        return false;
+    }
+    if (rule->target != JG_POLICY_DOMAIN_DNS &&
+        rule->target != JG_POLICY_DOMAIN_TLS_SNI) {
+        return false;
+    }
+    if (rule->target == JG_POLICY_DOMAIN_TLS_SNI &&
+        rule->source != JG_POLICY_SOURCE_EXPLICIT) {
         return false;
     }
     switch (rule->source) {
@@ -228,6 +238,9 @@ static int build_rule_compare(const void *left_value, const void *right_value)
     if (left->include_subdomains != right->include_subdomains) {
         return left->include_subdomains ? 1 : -1;
     }
+    if (left->target != right->target) {
+        return left->target < right->target ? -1 : 1;
+    }
     if (left->source != right->source) {
         return left->source < right->source ? -1 : 1;
     }
@@ -257,7 +270,8 @@ static bool build_rule_same_content(const struct build_rule *left,
 {
     return strcmp(left->domain, right->domain) == 0 &&
            left->include_subdomains == right->include_subdomains &&
-           left->source == right->source && left->effect == right->effect &&
+           left->target == right->target && left->source == right->source &&
+           left->effect == right->effect &&
            scope_compare(&left->scope, &right->scope) == 0 &&
            strcmp(left->attribution, right->attribution) == 0;
 }
@@ -348,6 +362,7 @@ static int prepare_rules(const struct jg_policy_rule_input *input,
         build[index].include_subdomains = input[index].include_subdomains;
         build[index].effect = input[index].effect;
         build[index].source = input[index].source;
+        build[index].target = input[index].target;
         (void)scope_normalize(&input[index].scope, &build[index].scope);
     }
 
@@ -481,7 +496,7 @@ static void checksum_scope(crypto_hash_sha256_state *state,
 /** Compute the canonical digest independently of random table placement. */
 static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
 {
-    static const uint8_t format[] = "JanusGate policy snapshot 1";
+    static const uint8_t format[] = "JanusGate policy snapshot 2";
     crypto_hash_sha256_state state;
     size_t index = 0U;
 
@@ -493,12 +508,14 @@ static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
         const uint8_t include_subdomains = rule->include_subdomains ? 1U : 0U;
         const uint8_t effect = (uint8_t)rule->effect;
         const uint8_t source = (uint8_t)rule->source;
+        const uint8_t target = (uint8_t)rule->target;
 
         checksum_u64(&state, rule->id);
         checksum_string(&state, snapshot->strings + rule->domain_offset);
         (void)crypto_hash_sha256_update(&state, &include_subdomains, 1U);
         (void)crypto_hash_sha256_update(&state, &effect, 1U);
         (void)crypto_hash_sha256_update(&state, &source, 1U);
+        (void)crypto_hash_sha256_update(&state, &target, 1U);
         checksum_scope(&state, &rule->scope);
         checksum_string(&state, snapshot->strings + rule->attribution_offset);
     }
@@ -564,6 +581,7 @@ static int snapshot_populate(struct jg_policy_snapshot *snapshot,
         stored->include_subdomains = rules[index].include_subdomains;
         stored->effect = rules[index].effect;
         stored->source = rules[index].source;
+        stored->target = rules[index].target;
         stored->scope = rules[index].scope;
     }
 
@@ -780,7 +798,8 @@ static const struct stored_rule *match_slot(
     const struct jg_policy_snapshot *snapshot,
     const struct policy_slot *slot,
     const struct jg_policy_client *client,
-    bool exact_domain)
+    bool exact_domain,
+    enum jg_policy_domain_target target)
 {
     const struct stored_rule *best = NULL;
     size_t index = 0U;
@@ -792,7 +811,8 @@ static const struct stored_rule *match_slot(
         const struct stored_rule *rule =
             &snapshot->rules[(size_t)slot->first_rule + index];
 
-        if ((!exact_domain && !rule->include_subdomains) ||
+        if (rule->target != target ||
+            (!exact_domain && !rule->include_subdomains) ||
             !scope_matches(&rule->scope, client)) {
             continue;
         }
@@ -804,12 +824,12 @@ static const struct stored_rule *match_slot(
     return best;
 }
 
-/** @brief Match a normalized domain using policy precedence and client scope.
- */
-int jg_policy_match_domain(const struct jg_policy_snapshot *snapshot,
-                           const char *domain,
-                           const struct jg_policy_client *client,
-                           struct jg_policy_match *match)
+/** @brief Match one normalized domain in a selected protocol context. */
+static int match_domain_target(const struct jg_policy_snapshot *snapshot,
+                               const char *domain,
+                               const struct jg_policy_client *client,
+                               enum jg_policy_domain_target target,
+                               struct jg_policy_match *match)
 {
     const struct stored_rule *best = NULL;
     const char *candidate = domain;
@@ -825,7 +845,7 @@ int jg_policy_match_domain(const struct jg_policy_snapshot *snapshot,
     while (candidate != NULL) {
         const struct policy_slot *slot = find_slot(snapshot, candidate);
         const struct stored_rule *current =
-            match_slot(snapshot, slot, client, exact_domain);
+            match_slot(snapshot, slot, client, exact_domain, target);
         const char *separator = NULL;
 
         if (current != NULL &&
@@ -846,4 +866,24 @@ int jg_policy_match_domain(const struct jg_policy_snapshot *snapshot,
         match->attribution = snapshot->strings + best->attribution_offset;
     }
     return 0;
+}
+
+/** @brief Match a normalized DNS name using precedence and client scope. */
+int jg_policy_match_domain(const struct jg_policy_snapshot *snapshot,
+                           const char *domain,
+                           const struct jg_policy_client *client,
+                           struct jg_policy_match *match)
+{
+    return match_domain_target(snapshot, domain, client, JG_POLICY_DOMAIN_DNS,
+                               match);
+}
+
+/** @brief Match a normalized visible TLS SNI using explicit SNI rules. */
+int jg_policy_match_visible_sni(const struct jg_policy_snapshot *snapshot,
+                                const char *server_name,
+                                const struct jg_policy_client *client,
+                                struct jg_policy_match *match)
+{
+    return match_domain_target(snapshot, server_name, client,
+                               JG_POLICY_DOMAIN_TLS_SNI, match);
 }

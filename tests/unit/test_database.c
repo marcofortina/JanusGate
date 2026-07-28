@@ -106,13 +106,32 @@ static bool column_exists(sqlite3 *handle,
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
     sqlite3_stmt *statement = NULL;
-    const char *sql = version == 3U ? "PRAGMA user_version=3;" : NULL;
+    const char *sql = version == 4U ? "PRAGMA user_version=4;" : NULL;
 
     assert_non_null(sql);
     assert_int_equal(sqlite3_prepare_v2(handle, sql, -1, &statement, NULL),
                      SQLITE_OK);
     assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+}
+
+/** @brief Add the retained pre-version-three domain-rule table. */
+static void add_legacy_domain_rules(sqlite3 *handle)
+{
+    static const char schema[] =
+        "CREATE TABLE domain_rules ("
+        "id INTEGER PRIMARY KEY,group_id INTEGER,blocklist_source_id INTEGER,"
+        "domain TEXT NOT NULL,match_type TEXT NOT NULL,effect TEXT NOT NULL,"
+        "source TEXT NOT NULL,scope_type TEXT NOT NULL,scope_value BLOB,"
+        "prefix_length INTEGER,vlan_id INTEGER,attribution TEXT NOT NULL,"
+        "enabled INTEGER NOT NULL,updated_at INTEGER NOT NULL) STRICT;"
+        "INSERT INTO domain_rules("
+        "id,domain,match_type,effect,source,scope_type,attribution,enabled,"
+        "updated_at) VALUES("
+        "1,'legacy.example','exact','block','explicit','global','legacy',1,10"
+        ");";
+
+    assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
 }
 
 /** @brief Create the retained version-one identity schema fixture. */
@@ -159,6 +178,27 @@ static void create_version_one_fixture(const char *path)
                                      NULL),
                      SQLITE_OK);
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
+    add_legacy_domain_rules(handle);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+    assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
+}
+
+/** @brief Create the retained version-two policy schema fixture. */
+static void create_version_two_fixture(const char *path)
+{
+    static const char schema[] =
+        "CREATE TABLE schema_migrations ("
+        "version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT;"
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(1,10),(2,20);"
+        "PRAGMA user_version=2;";
+    sqlite3 *handle = NULL;
+
+    assert_int_equal(sqlite3_open_v2(path, &handle,
+                                     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                                     NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
+    add_legacy_domain_rules(handle);
     assert_int_equal(sqlite3_close(handle), SQLITE_OK);
     assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
 }
@@ -317,6 +357,7 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "users", "session_epoch"));
     assert_true(column_exists(inspection, "api_tokens", "source_address"));
     assert_true(column_exists(inspection, "audit_events", "request_id"));
+    assert_true(column_exists(inspection, "domain_rules", "target"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));
@@ -331,6 +372,48 @@ static void test_version_one_migration(void **state)
     assert_int_equal(sqlite3_column_type(statement, 1), SQLITE_NULL);
     assert_int_equal(sqlite3_column_int(statement, 2), 1);
     assert_int_equal(sqlite3_column_int(statement, 3), 1);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    assert_int_equal(
+        sqlite3_prepare_v2(inspection,
+                           "SELECT target FROM domain_rules WHERE id=1;", -1,
+                           &statement, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_string_equal((const char *)sqlite3_column_text(statement, 0), "dns");
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
+    remove_database(directory, path);
+}
+
+/** @brief Verify the retained version-two policy migration. */
+static void test_version_two_migration(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_database *database = NULL;
+    sqlite3_stmt *statement = NULL;
+    sqlite3 *inspection = NULL;
+    uint32_t version = 0U;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    create_version_two_fixture(path);
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_schema_version(database, &version), 0);
+    assert_int_equal(version, JG_DATABASE_SCHEMA_VERSION);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &inspection, SQLITE_OPEN_READONLY, NULL),
+        SQLITE_OK);
+    assert_true(column_exists(inspection, "domain_rules", "target"));
+    assert_int_equal(
+        sqlite3_prepare_v2(inspection,
+                           "SELECT target FROM domain_rules WHERE id=1;", -1,
+                           &statement, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_string_equal((const char *)sqlite3_column_text(statement, 0), "dns");
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
     remove_database(directory, path);
@@ -364,7 +447,7 @@ static void test_policy_round_trip(void **state)
 {
     char directory[64U];
     char path[512U];
-    struct jg_policy_rule_input rules[3U];
+    struct jg_policy_rule_input rules[4U];
     struct jg_policy_rule_input invalid;
     struct jg_policy_snapshot *snapshot = NULL;
     struct jg_policy_snapshot_info info;
@@ -384,12 +467,15 @@ static void test_policy_round_trip(void **state)
                          JG_POLICY_SOURCE_EXPLICIT);
     rules[2].scope.type = JG_POLICY_SCOPE_VLAN;
     rules[2].scope.value.vlan_id = 7U;
-    assert_int_equal(jg_database_replace_domain_rules(database, rules, 3U), 0);
+    rules[3] = make_rule(12U, "resolver.example", true, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_EXPLICIT);
+    rules[3].target = JG_POLICY_DOMAIN_TLS_SNI;
+    assert_int_equal(jg_database_replace_domain_rules(database, rules, 4U), 0);
     assert_int_equal(jg_database_load_policy_snapshot(database, 9U, &snapshot),
                      0);
     assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
     assert_int_equal(info.generation, 9U);
-    assert_int_equal(info.rule_count, 3U);
+    assert_int_equal(info.rule_count, 4U);
 
     assert_int_equal(
         jg_policy_match_domain(snapshot, "host.example.org", NULL, &match), 0);
@@ -409,6 +495,11 @@ static void test_policy_round_trip(void **state)
                      0);
     assert_int_equal(match.effect, JG_POLICY_ALLOW);
     assert_int_equal(match.rule_id, 3U);
+    assert_int_equal(jg_policy_match_visible_sni(
+                         snapshot, "doh.resolver.example", NULL, &match),
+                     0);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.rule_id, 12U);
     jg_policy_snapshot_destroy(snapshot);
 
     invalid = make_rule(1U, "invalid.example", false, JG_POLICY_ALLOW,
@@ -472,6 +563,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_initial_migration),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_version_one_migration),
+        cmocka_unit_test(test_version_two_migration),
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_network_configuration),

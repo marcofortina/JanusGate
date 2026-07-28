@@ -57,6 +57,14 @@ enum jg_policy_source {
     JG_POLICY_SOURCE_EMERGENCY = 3
 };
 
+/** Protocol context in which a domain rule may match. */
+enum jg_policy_domain_target {
+    /** Classic DNS question name. */
+    JG_POLICY_DOMAIN_DNS = 0,
+    /** Visible TLS ClientHello server name. */
+    JG_POLICY_DOMAIN_TLS_SNI = 1
+};
+
 /**
  * @brief Address family used by client identity data.
  */
@@ -139,6 +147,8 @@ struct jg_policy_rule_input {
     enum jg_policy_effect effect;
     /** Rule origin and precedence class. */
     enum jg_policy_source source;
+    /** DNS or visible TLS-SNI matching context. */
+    enum jg_policy_domain_target target;
     /** Global or client-specific applicability. */
     struct jg_policy_scope scope;
     /** Nonempty source description copied into the snapshot. */
@@ -257,5 +267,27 @@ JG_PUBLIC int jg_policy_match_domain(const struct jg_policy_snapshot *snapshot,
                                      const char *domain,
                                      const struct jg_policy_client *client,
                                      struct jg_policy_match *match);
+
+/**
+ * @brief Evaluate a visible normalized TLS SNI for one client.
+ *
+ * Only rules explicitly configured for JG_POLICY_DOMAIN_TLS_SNI participate.
+ * DNS rules and imported DNS blocklists remain isolated.
+ *
+ * @param[in] snapshot Immutable policy snapshot.
+ * @param[in] server_name Lowercase normalized visible SNI.
+ * @param[in] client Client properties, or null when unavailable.
+ * @param[out] match Verdict and its explanation.
+ *
+ * @return 0 on success, including a default-allow verdict.
+ * @return -EINVAL for a null argument, malformed name, or invalid client.
+ *
+ * @thread_safety Safe for concurrent calls on the same snapshot.
+ */
+JG_PUBLIC int jg_policy_match_visible_sni(
+    const struct jg_policy_snapshot *snapshot,
+    const char *server_name,
+    const struct jg_policy_client *client,
+    struct jg_policy_match *match);
 
 #endif
