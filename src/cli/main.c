@@ -103,6 +103,18 @@ static void print_usage(FILE *output)
                 "       janusgatectl [OPTIONS] domain block DOMAIN\n"
                 "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
                 "       janusgatectl [OPTIONS] domain remove ID\n"
+                "       janusgatectl [OPTIONS] blocklist list\n"
+                "       janusgatectl [OPTIONS] blocklist import SOURCE FILE\n"
+                "       janusgatectl [OPTIONS] blocklist export\n"
+                "       janusgatectl [OPTIONS] source list\n"
+                "       janusgatectl [OPTIONS] source add FILE\n"
+                "       janusgatectl [OPTIONS] source update ID FILE\n"
+                "       janusgatectl [OPTIONS] source refresh ID\n"
+                "       janusgatectl [OPTIONS] source enable ID\n"
+                "       janusgatectl [OPTIONS] source disable ID\n"
+                "       janusgatectl [OPTIONS] events [QUERY]\n"
+                "       janusgatectl [OPTIONS] audit [QUERY]\n"
+                "       janusgatectl [OPTIONS] audit verify\n"
                 "       janusgatectl [--socket PATH] [--json] ping\n"
                 "       janusgatectl [--socket PATH] [--json] policy reload\n"
                 "       janusgatectl --version\n"
@@ -605,6 +617,50 @@ static json_t *read_json_object(const char *path, int *result)
         free(data);
     }
     return object;
+}
+
+/** @brief Read one bounded text file or standard input. */
+static char *read_text(const char *path, size_t *text_size, int *result)
+{
+    FILE *input = NULL;
+    char *text = NULL;
+    size_t size = 0U;
+
+    *text_size = 0U;
+    *result = 0;
+    input = strcmp(path, "-") == 0 ? stdin : fopen(path, "rb");
+    if (input == NULL) {
+        *result = -errno;
+        return NULL;
+    }
+    text = malloc(JG_IPC_MAX_BODY_SIZE + 1U);
+    if (text == NULL) {
+        *result = -ENOMEM;
+    }
+    if (*result == 0) {
+        size = fread(text, 1U, JG_IPC_MAX_BODY_SIZE + 1U, input);
+        if (ferror(input) != 0) {
+            *result = -EIO;
+        } else if (size == 0U || size > JG_IPC_MAX_BODY_SIZE ||
+                   memchr(text, '\0', size) != NULL) {
+            *result = -EMSGSIZE;
+        } else {
+            text[size] = '\0';
+        }
+    }
+    if (input != stdin && fclose(input) != 0 && *result == 0) {
+        *result = -errno;
+    }
+    if (*result != 0) {
+        if (text != NULL) {
+            sodium_memzero(text, size);
+            free(text);
+            text = NULL;
+        }
+    } else {
+        *text_size = size;
+    }
+    return text;
 }
 
 /** @brief Load the current persistent network revision through the API. */
@@ -1179,6 +1235,367 @@ static int run_domain_command(const struct cli_options *options, char **argv)
     return result;
 }
 
+/** @brief Fetch one exact blocklist source and return an owned object. */
+static int fetch_source(const struct cli_options *options,
+                        const char *token,
+                        uint64_t identifier,
+                        json_t **source)
+{
+    char query[96U];
+    json_t *page = NULL;
+    json_t *sources = NULL;
+    json_t *candidate = NULL;
+    json_t *value = NULL;
+    int result = 0;
+
+    *source = NULL;
+    (void)snprintf(query, sizeof(query), "after_id=%llu&limit=1",
+                   (unsigned long long)(identifier - 1U));
+    result = fetch_api_object(options, token, "/api/v1/sources", query, &page);
+    if (result == CLI_EXIT_SUCCESS) {
+        sources = json_object_get(page, "sources");
+        candidate = json_array_get(sources, 0U);
+        value = json_object_get(candidate, "id");
+        if (!json_is_integer(value) ||
+            (uint64_t)json_integer_value(value) != identifier) {
+            (void)fprintf(stderr, "janusgatectl: blocklist source not found\n");
+            result = CLI_EXIT_FAILURE;
+        } else {
+            *source = json_deep_copy(candidate);
+            if (*source == NULL) {
+                result = CLI_EXIT_FAILURE;
+            }
+        }
+    }
+    json_decref(page);
+    return result;
+}
+
+/** @brief Remove read-only source-state fields before an update. */
+static void retain_source_configuration(json_t *source)
+{
+    static const char *const read_only[] = {
+        "id",
+        "created_at",
+        "updated_at",
+        "etag",
+        "last_modified",
+        "last_attempt_at",
+        "last_success_at",
+        "next_attempt_at",
+        "consecutive_failures",
+        "active_checksum",
+        "active_entries",
+        "rejected_entries",
+        "health",
+        "last_error",
+    };
+
+    for (size_t index = 0U; index < sizeof(read_only) / sizeof(read_only[0U]);
+         ++index) {
+        json_object_del(source, read_only[index]);
+    }
+}
+
+/** @brief List blocklist-source configuration and update health. */
+static int run_source_list(const struct cli_options *options, const char *token)
+{
+    json_t *body = NULL;
+    int result =
+        fetch_api_object(options, token, "/api/v1/sources", NULL, &body);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Add or replace one blocklist-source JSON configuration. */
+static int run_source_write(const struct cli_options *options,
+                            const char *token,
+                            const char *operation,
+                            const char *identifier_text,
+                            const char *file)
+{
+    char path[96U];
+    json_t *body = NULL;
+    json_t *source = NULL;
+    json_t *revision = NULL;
+    uint64_t identifier = 0U;
+    int result = 0;
+
+    if (identifier_text != NULL &&
+        parse_identifier(identifier_text, &identifier) != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    body = read_json_object(file, &result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: source document: %s\n",
+                      strerror(-result));
+        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
+                                                        : CLI_EXIT_FAILURE;
+    }
+    if (identifier_text == NULL) {
+        (void)snprintf(path, sizeof(path), "/api/v1/sources");
+    } else {
+        result = fetch_source(options, token, identifier, &source);
+        revision = json_object_get(source, "revision");
+        if (result == CLI_EXIT_SUCCESS &&
+            (!json_is_integer(revision) ||
+             json_object_set(body, "revision", revision) != 0)) {
+            result = CLI_EXIT_FAILURE;
+        }
+        (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu",
+                       (unsigned long long)identifier);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(
+            options, token,
+            strcmp(operation, "add") == 0 ? "source add" : "source update",
+            strcmp(operation, "add") == 0 ? "POST" : "PATCH", path, body);
+    }
+    json_decref(source);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Refresh, enable, or disable one blocklist source. */
+static int run_source_operation(const struct cli_options *options,
+                                const char *token,
+                                const char *operation,
+                                const char *identifier_text)
+{
+    char path[128U];
+    json_t *source = NULL;
+    json_t *revision = NULL;
+    json_t *body = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    result = fetch_source(options, token, identifier, &source);
+    revision = json_object_get(source, "revision");
+    if (result == CLI_EXIT_SUCCESS && !json_is_integer(revision)) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS && strcmp(operation, "refresh") == 0) {
+        body = json_object();
+        if (body == NULL || json_object_set(body, "revision", revision) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+        (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu/refresh",
+                       (unsigned long long)identifier);
+    } else if (result == CLI_EXIT_SUCCESS) {
+        body = json_deep_copy(source);
+        if (body == NULL) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            retain_source_configuration(body);
+            if (json_object_set_new(
+                    body, "enabled",
+                    json_boolean(strcmp(operation, "enable") == 0)) != 0) {
+                result = CLI_EXIT_FAILURE;
+            }
+        }
+        (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu",
+                       (unsigned long long)identifier);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(
+            options, token, operation,
+            strcmp(operation, "refresh") == 0 ? "POST" : "PATCH", path, body);
+    }
+    json_decref(body);
+    json_decref(source);
+    return result;
+}
+
+/** @brief Run one recognized blocklist-source administration command. */
+static int run_source_command(const struct cli_options *options,
+                              int argc,
+                              char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (argc == 2) {
+        result = run_source_list(options, token);
+    } else if (strcmp(argv[1], "add") == 0) {
+        result = run_source_write(options, token, "add", NULL, argv[2]);
+    } else if (strcmp(argv[1], "update") == 0) {
+        result = run_source_write(options, token, "update", argv[2], argv[3]);
+    } else {
+        result = run_source_operation(options, token, argv[1], argv[2]);
+    }
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
+/** @brief Import one local source payload with its current revision. */
+static int run_blocklist_import(const struct cli_options *options,
+                                const char *token,
+                                const char *identifier_text,
+                                const char *file)
+{
+    char *text = NULL;
+    json_t *source = NULL;
+    json_t *revision = NULL;
+    json_t *body = NULL;
+    size_t text_size = 0U;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    result = fetch_source(options, token, identifier, &source);
+    if (result == CLI_EXIT_SUCCESS) {
+        text = read_text(file, &text_size, &result);
+        if (text == NULL) {
+            (void)fprintf(stderr, "janusgatectl: blocklist input: %s\n",
+                          strerror(-result));
+            result = result == -EINVAL || result == -EMSGSIZE
+                         ? CLI_EXIT_USAGE
+                         : CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        revision = json_object_get(source, "revision");
+        body = json_object();
+        if (!json_is_integer(revision) || body == NULL ||
+            json_object_set_new(body, "source_id",
+                                json_integer((json_int_t)identifier)) != 0 ||
+            json_object_set(body, "revision", revision) != 0 ||
+            json_object_set_new(body, "content",
+                                json_stringn(text, text_size)) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "blocklist import", "POST",
+                                  "/api/v1/blocklists", body);
+    }
+    json_decref(body);
+    json_decref(source);
+    if (text != NULL) {
+        sodium_memzero(text, text_size);
+        free(text);
+    }
+    return result;
+}
+
+/** @brief Export active blocklist-derived domain rules as JSON. */
+static int run_blocklist_export(const struct cli_options *options,
+                                const char *token)
+{
+    json_t *exported = json_object();
+    json_t *domains = json_array();
+    uint64_t after_id = 0U;
+    bool more = true;
+    int result = exported == NULL || domains == NULL ? CLI_EXIT_FAILURE
+                                                     : CLI_EXIT_SUCCESS;
+
+    while (result == CLI_EXIT_SUCCESS && more) {
+        char query[96U];
+        json_t *page = NULL;
+        json_t *items = NULL;
+        json_t *next = NULL;
+
+        (void)snprintf(query, sizeof(query), "after_id=%llu&limit=100",
+                       (unsigned long long)after_id);
+        result =
+            fetch_api_object(options, token, "/api/v1/domains", query, &page);
+        if (result == CLI_EXIT_SUCCESS) {
+            items = json_object_get(page, "domains");
+            for (size_t index = 0U; index < json_array_size(items); ++index) {
+                json_t *item = json_array_get(items, index);
+                const char *source =
+                    json_string_value(json_object_get(item, "source"));
+
+                if (source != NULL && strcmp(source, "blocklist") == 0 &&
+                    json_array_append(domains, item) != 0) {
+                    result = CLI_EXIT_FAILURE;
+                    break;
+                }
+            }
+            more = json_is_true(json_object_get(page, "has_more"));
+            next = json_object_get(page, "next_after_id");
+            if (result == CLI_EXIT_SUCCESS && more &&
+                (!json_is_integer(next) ||
+                 json_integer_value(next) <= (json_int_t)after_id)) {
+                result = CLI_EXIT_FAILURE;
+            } else if (result == CLI_EXIT_SUCCESS && more) {
+                after_id = (uint64_t)json_integer_value(next);
+            }
+        }
+        json_decref(page);
+    }
+    if (result == CLI_EXIT_SUCCESS &&
+        json_object_set(exported, "domains", domains) != 0) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, exported);
+    }
+    json_decref(domains);
+    json_decref(exported);
+    return result;
+}
+
+/** @brief Run one recognized blocklist administration command. */
+static int run_blocklist_command(const struct cli_options *options,
+                                 int argc,
+                                 char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "list") == 0) {
+        result = run_source_list(options, token);
+    } else if (strcmp(argv[1], "export") == 0) {
+        result = run_blocklist_export(options, token);
+    } else {
+        result = run_blocklist_import(options, token, argv[2], argv[3]);
+    }
+    (void)argc;
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
+/** @brief Query operational events or immutable audit records. */
+static int run_record_command(const struct cli_options *options,
+                              int argc,
+                              char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    const bool audit = strcmp(argv[0], "audit") == 0;
+    const bool verify = audit && argc == 2 && strcmp(argv[1], "verify") == 0;
+    const char *path = verify ? "/api/v1/audit/verify"
+                              : (audit ? "/api/v1/audit" : "/api/v1/events");
+    const char *query = argc == 2 && !verify ? argv[1] : NULL;
+    json_t *body = NULL;
+    int result = load_token(options, token);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = fetch_api_object(options, token, path, query, &body);
+    }
+    sodium_memzero(token, sizeof(token));
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
 /** @brief Run one recognized CLI command. */
 static int run_command(const struct cli_options *options,
                        int argc,
@@ -1215,6 +1632,25 @@ static int run_command(const struct cli_options *options,
         (strcmp(argv[1], "block") == 0 || strcmp(argv[1], "allow") == 0 ||
          strcmp(argv[1], "remove") == 0)) {
         return run_domain_command(options, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "source") == 0 &&
+        ((argc == 2 && strcmp(argv[1], "list") == 0) ||
+         (argc == 3 &&
+          (strcmp(argv[1], "add") == 0 || strcmp(argv[1], "refresh") == 0 ||
+           strcmp(argv[1], "enable") == 0 ||
+           strcmp(argv[1], "disable") == 0)) ||
+         (argc == 4 && strcmp(argv[1], "update") == 0))) {
+        return run_source_command(options, argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "blocklist") == 0 &&
+        ((argc == 2 &&
+          (strcmp(argv[1], "list") == 0 || strcmp(argv[1], "export") == 0)) ||
+         (argc == 4 && strcmp(argv[1], "import") == 0))) {
+        return run_blocklist_command(options, argc, argv);
+    }
+    if ((argc == 1 || argc == 2) &&
+        (strcmp(argv[0], "events") == 0 || strcmp(argv[0], "audit") == 0)) {
+        return run_record_command(options, argc, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
