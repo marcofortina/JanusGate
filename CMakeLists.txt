@@ -17,6 +17,8 @@ include(CTest)
 include(CompilerOptions)
 include(ProjectMetadata)
 
+find_package(PkgConfig REQUIRED)
+
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -35,7 +37,7 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   @ONLY)
 
-add_library(janusgate-common STATIC src/common/version.c)
+add_library(janusgate-common STATIC src/common/checked.c src/common/version.c)
 add_library(JanusGate::common ALIAS janusgate-common)
 target_include_directories(
   janusgate-common
@@ -49,7 +51,8 @@ install(
   EXPORT JanusGateTargets
   ARCHIVE COMPONENT development)
 install(
-  FILES "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
+        "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)
 install(
@@ -67,8 +70,12 @@ add_custom_target(
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-common
+  DEPENDS janusgate-common janusgate-unit-tests
   USES_TERMINAL)
+
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()
 
 set(CPACK_PACKAGE_NAME "janusgate")
 set(CPACK_PACKAGE_VENDOR "Marco Fortina")
