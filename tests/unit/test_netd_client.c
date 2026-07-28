@@ -67,7 +67,7 @@ static void test_exchange(void **state)
     assert_int_equal(exchange_request(JG_IPC_PING), 0);
     assert_int_equal(exchange_request(JG_IPC_NETWORK_CONFIRM), -EBUSY);
     assert_int_equal(exchange_request(JG_IPC_NETWORK_ROLLBACK), -EBUSY);
-    assert_int_equal(exchange_request(JG_IPC_NETWORK_STATE), -ENOTSUP);
+    assert_int_equal(exchange_request(JG_IPC_NETWORK_STATE), -ENOSPC);
 }
 
 /** @brief Verify conservative client argument and encoding rejection. */
@@ -85,6 +85,7 @@ static void test_arguments(void **state)
     assert_int_equal(jg_netd_client_validate(NULL), -EINVAL);
     assert_int_equal(jg_netd_client_apply(&config), -EINVAL);
     assert_int_equal(jg_netd_client_apply(NULL), -EINVAL);
+    assert_int_equal(jg_netd_client_state(NULL), -EINVAL);
 }
 
 /** @brief Run the privileged helper client test group. */

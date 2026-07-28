@@ -95,4 +95,18 @@ int jg_netd_client_confirm(void);
  */
 int jg_netd_client_rollback(void);
 
+/**
+ * @brief Read the helper's confirmed and optional pending network state.
+ *
+ * @param[out] state Receives a decoded self-contained state snapshot.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null output.
+ * @return A negative errno-style connection, protocol, decoding, or remote
+ * operation error otherwise.
+ *
+ * @thread_safety Calls use independent short-lived connections.
+ */
+int jg_netd_client_state(struct jg_network_state *state);
+
 #endif

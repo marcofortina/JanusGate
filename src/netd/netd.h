@@ -25,6 +25,8 @@
  *
  * @param[in] request Decoded request message.
  * @param[out] response Receives a protocol response.
+ * @param[out] response_body Storage for an operation-specific response body.
+ * @param[in] response_body_size Available response-body bytes.
  *
  * @return 0 when a response was produced.
  * @return -EINVAL when the arguments or request envelope are unusable.
@@ -36,7 +38,9 @@
  * short-lived rtnetlink socket.
  */
 int jg_netd_process_request(const struct jg_ipc_message *request,
-                            struct jg_ipc_message *response);
+                            struct jg_ipc_message *response,
+                            uint8_t *response_body,
+                            size_t response_body_size);
 
 /**
  * @brief Authenticate and service one connected local peer.
@@ -115,6 +119,19 @@ int jg_netd_rollback_network(void);
  * @side_effects May restore JanusGate-owned kernel network state.
  */
 int jg_netd_expire_network(void);
+
+/**
+ * @brief Read the confirmed and optional pending network transaction state.
+ *
+ * @param[out] state Receives a self-contained state snapshot.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null output.
+ * @return A negative errno-style monotonic-clock error otherwise.
+ *
+ * @thread_safety Calls require external serialization with state changes.
+ */
+int jg_netd_get_network_state(struct jg_network_state *state);
 
 /**
  * @brief Run the fixed-path privileged network-helper server.

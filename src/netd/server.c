@@ -58,7 +58,9 @@ static enum jg_ipc_error body_error(int result)
 
 /** @brief Validate and dispatch one decoded helper request. */
 int jg_netd_process_request(const struct jg_ipc_message *request,
-                            struct jg_ipc_message *response)
+                            struct jg_ipc_message *response,
+                            uint8_t *response_body,
+                            size_t response_body_size)
 {
     struct jg_network_config config;
     int result;
@@ -67,7 +69,8 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
         request->operation < JG_IPC_PING ||
         request->operation > JG_IPC_DAEMON_STATUS ||
         request->body_size > JG_IPC_MAX_BODY_SIZE ||
-        (request->body_size != 0U && request->body == NULL)) {
+        (request->body_size != 0U && request->body == NULL) ||
+        (response_body_size != 0U && response_body == NULL)) {
         return -EINVAL;
     }
 
@@ -106,6 +109,25 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
                          ? jg_netd_confirm_network()
                          : jg_netd_rollback_network();
             if (result != 0) {
+                response->error = body_error(result);
+            }
+        }
+    } else if (request->operation == JG_IPC_NETWORK_STATE) {
+        struct jg_network_state state;
+        size_t encoded_size = 0U;
+
+        if (request->body_size != 0U) {
+            response->error = JG_IPC_ERROR_MALFORMED;
+        } else {
+            result = jg_netd_get_network_state(&state);
+            if (result == 0) {
+                result = jg_network_state_encode(
+                    &state, response_body, response_body_size, &encoded_size);
+            }
+            if (result == 0) {
+                response->body = response_body;
+                response->body_size = encoded_size;
+            } else {
                 response->error = body_error(result);
             }
         }
@@ -203,6 +225,7 @@ int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid)
 {
     uint8_t request_data[JG_IPC_MAX_MESSAGE_SIZE];
     uint8_t response_data[JG_IPC_MAX_MESSAGE_SIZE];
+    uint8_t response_body[JG_NETWORK_STATE_WIRE_SIZE];
     struct jg_ipc_message request;
     struct jg_ipc_message response;
     size_t request_size = 0U;
@@ -223,7 +246,8 @@ int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid)
         result = jg_ipc_decode(request_data, request_size, &request);
     }
     if (result == 0) {
-        result = jg_netd_process_request(&request, &response);
+        result = jg_netd_process_request(&request, &response, response_body,
+                                         sizeof(response_body));
     }
     if (result == 0) {
         result = jg_ipc_encode(&response, response_data, sizeof(response_data),

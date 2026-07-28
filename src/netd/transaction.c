@@ -138,3 +138,32 @@ int jg_netd_expire_network(void)
     }
     return result;
 }
+
+/** @brief Read one self-contained transactional helper state snapshot. */
+int jg_netd_get_network_state(struct jg_network_state *state)
+{
+    uint64_t now = 0U;
+    int result = 0;
+
+    if (state == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(state, 0, sizeof(*state));
+    if (transaction.current_valid) {
+        state->confirmed = transaction.current;
+        state->has_confirmed = true;
+    }
+    if (transaction.pending_valid) {
+        result = monotonic_seconds(&now);
+        if (result == 0) {
+            const uint64_t remaining = transaction.expires_at > now
+                                           ? transaction.expires_at - now
+                                           : 0U;
+
+            state->pending_config = transaction.pending;
+            state->confirmation_seconds_remaining = (uint32_t)remaining;
+            state->pending = true;
+        }
+    }
+    return result;
+}

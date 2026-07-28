@@ -70,6 +70,7 @@ static void test_request_dispatch(void **state)
 {
     const struct jg_network_config config = test_config();
     uint8_t body[JG_NETWORK_CONFIG_WIRE_SIZE] = {0U};
+    uint8_t response_body[JG_NETWORK_STATE_WIRE_SIZE] = {0U};
     struct jg_ipc_message request = {
         .kind = JG_IPC_REQUEST,
         .operation = JG_IPC_PING,
@@ -77,50 +78,74 @@ static void test_request_dispatch(void **state)
         .error = JG_IPC_ERROR_NONE,
     };
     struct jg_ipc_message response;
+    struct jg_network_state network_state;
     size_t body_size = 0U;
 
     (void)state;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.kind, JG_IPC_RESPONSE);
     assert_int_equal(response.request_id, request.request_id);
     assert_int_equal(response.error, JG_IPC_ERROR_NONE);
 
     request.body = body;
     request.body_size = 1U;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_MALFORMED);
 
     assert_int_equal(
         jg_network_config_encode(&config, body, sizeof(body), &body_size), 0);
     request.operation = JG_IPC_NETWORK_VALIDATE;
     request.body_size = body_size;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_INVALID);
 
     request.operation = JG_IPC_NETWORK_APPLY;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_INVALID);
 
     request.body = NULL;
     request.body_size = 0U;
     request.operation = JG_IPC_NETWORK_CONFIRM;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_CONFLICT);
 
     request.operation = JG_IPC_NETWORK_ROLLBACK;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_CONFLICT);
 
     request.body = body;
     request.body_size = body_size;
     request.operation = JG_IPC_NETWORK_VALIDATE;
     body[1] = 2U;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_VERSION);
 
     request.operation = JG_IPC_NETWORK_STATE;
-    assert_int_equal(jg_netd_process_request(&request, &response), 0);
-    assert_int_equal(response.error, JG_IPC_ERROR_UNSUPPORTED);
+    request.body = NULL;
+    request.body_size = 0U;
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
+    assert_int_equal(response.error, JG_IPC_ERROR_NONE);
+    assert_int_equal(jg_network_state_decode(response.body, response.body_size,
+                                             &network_state),
+                     0);
+    assert_false(network_state.has_confirmed);
+    assert_false(network_state.pending);
 }
 
 /** @brief Verify bounded ruleset generation and failure-mode queue flags. */

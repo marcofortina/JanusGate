@@ -4,8 +4,10 @@
 
 #include "netd_client.h"
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "janusgate/ipc_client.h"
 
@@ -69,4 +71,23 @@ int jg_netd_client_confirm(void)
 int jg_netd_client_rollback(void)
 {
     return call_empty_operation(JG_IPC_NETWORK_ROLLBACK);
+}
+
+/** @brief Read and decode the helper's transactional network state. */
+int jg_netd_client_state(struct jg_network_state *state)
+{
+    uint8_t body[JG_NETWORK_STATE_WIRE_SIZE];
+    size_t body_size = 0U;
+    int result = 0;
+
+    if (state == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(state, 0, sizeof(*state));
+    result = jg_ipc_client_call(JG_NETD_SOCKET_PATH, JG_IPC_NETWORK_STATE, NULL,
+                                0U, body, sizeof(body), &body_size);
+    if (result == 0) {
+        result = jg_network_state_decode(body, body_size, state);
+    }
+    return result;
 }
