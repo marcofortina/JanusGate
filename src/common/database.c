@@ -3035,6 +3035,289 @@ int jg_database_delete_blocklist_source(struct jg_database *database,
     return result;
 }
 
+/** @brief Validate one retained HTTP validator against header injection. */
+static bool blocklist_validator_valid(const char *value, size_t maximum)
+{
+    size_t length = 0U;
+
+    if (value == NULL) {
+        return false;
+    }
+    while (length <= maximum && value[length] != '\0') {
+        const uint8_t byte = (uint8_t)value[length];
+
+        if (byte < UINT8_C(0x20) || byte > UINT8_C(0x7e)) {
+            return false;
+        }
+        ++length;
+    }
+    return length <= maximum;
+}
+
+/** @brief Validate one successful blocklist update before persistence. */
+static int validate_blocklist_activation(
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const struct jg_blocklist *blocklist,
+    const struct jg_blocklist_remote_state *state,
+    const struct jg_blocklist_report *report,
+    struct jg_blocklist_info *info)
+{
+    int result = 0;
+
+    if (source_id == 0U || source_id > (uint64_t)INT64_MAX ||
+        expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX ||
+        blocklist == NULL || state == NULL || report == NULL || info == NULL ||
+        state->last_attempt_at == 0U ||
+        state->last_success_at != state->last_attempt_at ||
+        state->next_attempt_at < state->last_success_at ||
+        state->consecutive_failures != 0U ||
+        !blocklist_validator_valid(state->etag, JG_BLOCKLIST_ETAG_MAX) ||
+        !blocklist_validator_valid(state->last_modified,
+                                   JG_BLOCKLIST_LAST_MODIFIED_MAX)) {
+        return -EINVAL;
+    }
+    if (state->last_attempt_at > (uint64_t)INT64_MAX ||
+        state->next_attempt_at > (uint64_t)INT64_MAX) {
+        return -EOVERFLOW;
+    }
+    result = jg_blocklist_get_info(blocklist, info);
+    if (result == 0 && (info->entry_count > JG_DATABASE_POLICY_RULE_LIMIT ||
+                        info->entry_count > (size_t)INT64_MAX ||
+                        report->records_rejected > (size_t)INT64_MAX)) {
+        result = -EOVERFLOW;
+    }
+    if (result == 0) {
+        result = validate_source_text(info->attribution,
+                                      JG_BLOCKLIST_ATTRIBUTION_MAX, NULL);
+    }
+    return result;
+}
+
+/** @brief Bind and execute one imported blocklist domain-rule insert. */
+static int insert_blocklist_entry(sqlite3_stmt *statement,
+                                  uint64_t source_id,
+                                  uint64_t updated_at,
+                                  const char *attribution,
+                                  const struct jg_blocklist_entry *entry)
+{
+    int status = sqlite3_reset(statement);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        result = jg_database_sqlite_result(sqlite3_clear_bindings(statement));
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)source_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 2, entry->domain, -1,
+                                   SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_text(statement, 3, attribution, -1, SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 4, entry->category, -1,
+                                   SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 5, (sqlite3_int64)updated_at);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    return result;
+}
+
+/** @brief Persist successful remote state and active-list metadata. */
+static int store_blocklist_success(
+    sqlite3 *handle,
+    uint64_t source_id,
+    const struct jg_blocklist_remote_state *state,
+    const struct jg_blocklist_info *info,
+    const struct jg_blocklist_report *report)
+{
+    static const char update[] =
+        "INSERT INTO blocklist_source_status("
+        "source_id,etag,last_modified,last_attempt_at,last_success_at,"
+        "next_attempt_at,consecutive_failures,active_checksum,active_entries,"
+        "rejected_entries,health,last_error"
+        ") VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8,?9,'healthy',NULL)"
+        " ON CONFLICT(source_id) DO UPDATE SET etag=excluded.etag,"
+        "last_modified=excluded.last_modified,"
+        "last_attempt_at=excluded.last_attempt_at,"
+        "last_success_at=excluded.last_success_at,"
+        "next_attempt_at=excluded.next_attempt_at,consecutive_failures=0,"
+        "active_checksum=excluded.active_checksum,"
+        "active_entries=excluded.active_entries,"
+        "rejected_entries=excluded.rejected_entries,health='healthy',"
+        "last_error=NULL;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(
+        handle, update, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)source_id);
+    }
+    if (status == SQLITE_OK) {
+        status = state->etag[0U] == '\0'
+                     ? sqlite3_bind_null(statement, 2)
+                     : sqlite3_bind_text(statement, 2, state->etag, -1,
+                                         SQLITE_TRANSIENT);
+    }
+    if (status == SQLITE_OK) {
+        status = state->last_modified[0U] == '\0'
+                     ? sqlite3_bind_null(statement, 3)
+                     : sqlite3_bind_text(statement, 3, state->last_modified, -1,
+                                         SQLITE_TRANSIENT);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 4,
+                                    (sqlite3_int64)state->last_attempt_at);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 5,
+                                    (sqlite3_int64)state->last_success_at);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 6,
+                                    (sqlite3_int64)state->next_attempt_at);
+    }
+    if (status == SQLITE_OK) {
+        status =
+            sqlite3_bind_blob(statement, 7, info->checksum,
+                              (int)sizeof(info->checksum), SQLITE_TRANSIENT);
+    }
+    if (status == SQLITE_OK) {
+        status =
+            sqlite3_bind_int64(statement, 8, (sqlite3_int64)info->entry_count);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(statement, 9,
+                                    (sqlite3_int64)report->records_rejected);
+    }
+    if (result == 0) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Atomically activate one completely imported blocklist. */
+int jg_database_activate_blocklist(
+    struct jg_database *database,
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const struct jg_blocklist *blocklist,
+    const struct jg_blocklist_remote_state *state,
+    const struct jg_blocklist_report *report)
+{
+    static const char revision_query[] =
+        "SELECT revision FROM blocklist_sources WHERE id=?1;";
+    static const char insert[] =
+        "INSERT INTO domain_rules("
+        "blocklist_source_id,domain,match_type,effect,source,scope_type,"
+        "attribution,enabled,updated_at,target,category"
+        ") VALUES(?1,?2,'suffix','block','blocklist','global',?3,1,?5,'dns',"
+        "?4);";
+    static const char remove[] =
+        "DELETE FROM domain_rules WHERE blocklist_source_id=?1;";
+    struct jg_blocklist_info info;
+    sqlite3_stmt *insert_statement = NULL;
+    sqlite3_stmt *remove_statement = NULL;
+    size_t index = 0U;
+    uint64_t revision = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    result = validate_blocklist_activation(source_id, expected_revision,
+                                           blocklist, state, report, &info);
+    if (result == 0) {
+        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        result = read_revision(database->handle, revision_query, source_id,
+                               &revision);
+    }
+    if (result == 0 && revision != expected_revision) {
+        result = -EAGAIN;
+    }
+    if (result == 0) {
+        status = sqlite3_prepare_v3(database->handle, remove, -1,
+                                    SQLITE_PREPARE_PERSISTENT,
+                                    &remove_statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_int64(remove_statement, 1, (sqlite3_int64)source_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(remove_statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_prepare_v3(database->handle, insert, -1,
+                                    SQLITE_PREPARE_PERSISTENT,
+                                    &insert_statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    for (index = 0U; result == 0 && index < info.entry_count; ++index) {
+        struct jg_blocklist_entry entry;
+
+        result = jg_blocklist_get_entry(blocklist, index, &entry);
+        if (result == 0) {
+            result = insert_blocklist_entry(insert_statement, source_id,
+                                            state->last_success_at,
+                                            info.attribution, &entry);
+        }
+    }
+    if (result == 0) {
+        result = store_blocklist_success(database->handle, source_id, state,
+                                         &info, report);
+    }
+    if (insert_statement != NULL) {
+        status = sqlite3_finalize(insert_statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (remove_statement != NULL) {
+        status = sqlite3_finalize(remove_statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
+    }
+    return result;
+}
+
 /** @brief Read one stable identifier-ordered page of domain rules. */
 int jg_database_list_domain_rules(struct jg_database *database,
                                   uint64_t after_id,

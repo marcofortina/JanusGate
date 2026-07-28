@@ -673,6 +673,39 @@ JG_PUBLIC int jg_database_delete_blocklist_source(struct jg_database *database,
                                                   uint64_t expected_revision);
 
 /**
+ * @brief Atomically activate one completely imported blocklist.
+ *
+ * Existing entries for the source remain active unless every replacement row
+ * and the successful update state can be committed together.
+ *
+ * @param[in] database Open database.
+ * @param[in] source_id Persistent positive source identifier.
+ * @param[in] expected_revision Source revision used for the import.
+ * @param[in] blocklist Fully validated immutable blocklist.
+ * @param[in] state Successful remote scheduling and validator state.
+ * @param[in] report Import report associated with @p blocklist.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or inconsistent successful state.
+ * @return -ENOENT when the source does not exist.
+ * @return -EAGAIN when the source configuration changed during the import.
+ * @return -EOVERFLOW when values cannot be represented persistently.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces the source's domain rules and successful update state
+ * in one transaction.
+ */
+JG_PUBLIC int jg_database_activate_blocklist(
+    struct jg_database *database,
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const struct jg_blocklist *blocklist,
+    const struct jg_blocklist_remote_state *state,
+    const struct jg_blocklist_report *report);
+
+/**
  * @brief Read one stable identifier-ordered page of blocklist sources.
  *
  * Pass the last identifier returned by the preceding page as @p after_id, or

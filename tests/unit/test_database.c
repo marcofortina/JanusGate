@@ -1167,6 +1167,86 @@ static void test_blocklist_source_creation(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify atomic imported-entry and last-known-good activation. */
+static void test_blocklist_activation(void **state)
+{
+    static const uint8_t input[] = "alpha.example,advertising\n"
+                                   "bad domain\n"
+                                   "beta.example,tracking\n";
+    char directory[64U];
+    char path[512U];
+    struct jg_database_blocklist_source_config config = make_blocklist_source();
+    struct jg_database_blocklist_source source;
+    struct jg_database_blocklist_source updated;
+    struct jg_database_domain_rule rules[2U];
+    struct jg_blocklist_remote_state remote;
+    struct jg_blocklist_report report;
+    struct jg_blocklist_limits limits;
+    struct jg_blocklist *blocklist = NULL;
+    struct jg_database *database = NULL;
+    size_t count = 0U;
+    bool has_more = false;
+
+    (void)state;
+    config.name = "Activation source";
+    config.signature_url = NULL;
+    config.has_signature = false;
+    config.has_sha256_pin = false;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &source), 0);
+    jg_blocklist_limits_default(&limits);
+    assert_int_equal(jg_blocklist_import(input, sizeof(input) - 1U,
+                                         JG_BLOCKLIST_FORMAT_CATEGORY,
+                                         JG_BLOCKLIST_TOLERANT, source.name,
+                                         &limits, &blocklist, &report),
+                     0);
+    assert_int_equal(report.records_rejected, 1U);
+    jg_blocklist_remote_state_init(&remote);
+    (void)snprintf(remote.etag, sizeof(remote.etag), "%s", "\"active-1\"");
+    remote.last_attempt_at = 100U;
+    remote.last_success_at = 100U;
+    remote.next_attempt_at = 3700U;
+    assert_int_equal(jg_database_activate_blocklist(database, source.id,
+                                                    source.revision, blocklist,
+                                                    &remote, &report),
+                     0);
+    assert_int_equal(jg_database_list_domain_rules(database, 0U, 2U, rules,
+                                                   &count, &has_more),
+                     0);
+    assert_int_equal(count, 2U);
+    assert_false(has_more);
+    assert_string_equal(rules[0U].domain, "alpha.example");
+    assert_string_equal(rules[0U].category, "advertising");
+    assert_string_equal(rules[0U].attribution, source.name);
+    assert_true(rules[0U].include_subdomains);
+    assert_int_equal(rules[0U].source, JG_POLICY_SOURCE_BLOCKLIST);
+    assert_string_equal(rules[1U].domain, "beta.example");
+    assert_string_equal(rules[1U].category, "tracking");
+    assert_int_equal(jg_database_list_blocklist_sources(
+                         database, 0U, 1U, &updated, &count, &has_more),
+                     0);
+    assert_true(updated.has_active_checksum);
+    assert_int_equal(updated.active_entries, 2U);
+    assert_int_equal(updated.rejected_entries, 1U);
+    assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_HEALTHY);
+    assert_string_equal(updated.etag, "\"active-1\"");
+
+    config.enabled = false;
+    assert_int_equal(
+        jg_database_update_blocklist_source(database, source.id, &config,
+                                            source.revision, &updated),
+        0);
+    assert_int_equal(jg_database_activate_blocklist(database, source.id,
+                                                    source.revision, blocklist,
+                                                    &remote, &report),
+                     -EAGAIN);
+    jg_blocklist_destroy(blocklist);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the SQLite lifecycle and migration test group. */
 int jg_test_database(void)
 {
@@ -1182,6 +1262,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_dns_response_configuration),
         cmocka_unit_test(test_blocklist_source_page),
         cmocka_unit_test(test_blocklist_source_creation),
+        cmocka_unit_test(test_blocklist_activation),
     };
 
     return cmocka_run_group_tests_name("database", tests, NULL, NULL);
