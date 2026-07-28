@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "dataplane_worker.h"
+#include "janusgate/policy.h"
 #include "nfqueue.h"
 #include "packet_output.h"
 
@@ -184,6 +185,31 @@ int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime);
 int jg_daemon_runtime_get_policy_generation(
     const struct jg_daemon_runtime *runtime,
     uint64_t *generation);
+
+/**
+ * @brief Simulate policy against the currently published snapshot.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[in] target DNS or visible-SNI domain context.
+ * @param[in] domain UTF-8 domain to normalize and evaluate.
+ * @param[in] client Optional client attributes used by scoped rules.
+ * @param[in] destination Optional destination address, port, and transport.
+ * @param[out] simulation Receives a self-contained policy explanation.
+ *
+ * @return 0 on success, including a default-allow result.
+ * @return -EINVAL for a null or invalid argument.
+ * @return A negative errno-style normalization error otherwise.
+ *
+ * @thread_safety Safe while packet workers evaluate policy and one control
+ * writer reloads it.
+ */
+int jg_daemon_runtime_simulate_policy(
+    struct jg_daemon_runtime *runtime,
+    enum jg_policy_domain_target target,
+    const char *domain,
+    const struct jg_policy_client *client,
+    const struct jg_policy_destination *destination,
+    struct jg_policy_simulation *simulation);
 
 /**
  * @brief Aggregate current queue and packet-path counters.

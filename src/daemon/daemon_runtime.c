@@ -285,7 +285,7 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
             jg_database_load_policy_snapshot(started->database, 1U, &snapshot);
     }
     if (result == 0) {
-        result = jg_policy_store_create(snapshot, network.queue_count,
+        result = jg_policy_store_create(snapshot, network.queue_count + 1U,
                                         &started->policies);
         if (result == 0) {
             snapshot = NULL;
@@ -364,6 +364,32 @@ int jg_daemon_runtime_get_policy_generation(
     *generation =
         atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
     return 0;
+}
+
+/** @brief Simulate policy through a management-only protected reader slot. */
+int jg_daemon_runtime_simulate_policy(
+    struct jg_daemon_runtime *runtime,
+    enum jg_policy_domain_target target,
+    const char *domain,
+    const struct jg_policy_client *client,
+    const struct jg_policy_destination *destination,
+    struct jg_policy_simulation *simulation)
+{
+    const struct jg_policy_snapshot *snapshot = NULL;
+    int result = 0;
+
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    snapshot =
+        jg_policy_store_acquire(runtime->policies, runtime->worker_count);
+    if (snapshot == NULL) {
+        return -EIO;
+    }
+    result = jg_policy_simulate(snapshot, target, domain, client, destination,
+                                simulation);
+    jg_policy_store_release(runtime->policies, runtime->worker_count);
+    return result;
 }
 
 /** @brief Aggregate relaxed queue and packet-path counter snapshots. */

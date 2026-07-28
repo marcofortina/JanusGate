@@ -14,10 +14,11 @@
 #include <stdint.h>
 
 #include "janusgate/database.h"
+#include "janusgate/network.h"
 #include "janusgate/policy.h"
 
-/** Largest supported number of independent policy readers. */
-#define JG_POLICY_STORE_READER_MAX 64U
+/** Packet workers plus one serialized management policy reader. */
+#define JG_POLICY_STORE_READER_MAX (JG_NETWORK_QUEUE_COUNT_MAX + 1U)
 
 /** Opaque owner of one current immutable policy snapshot. */
 struct jg_policy_store;
