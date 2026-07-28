@@ -10,6 +10,7 @@ add_executable(
   unit/test_main.c
   unit/test_checked.c
   unit/test_database.c
+  unit/test_dataplane.c
   unit/test_dns.c
   unit/test_domain.c
   unit/test_ipc.c

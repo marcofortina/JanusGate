@@ -13,6 +13,7 @@ int jg_test_blocklist(void);
 int jg_test_blocklist_remote(void);
 int jg_test_checked(void);
 int jg_test_database(void);
+int jg_test_dataplane(void);
 int jg_test_dns(void);
 int jg_test_domain(void);
 int jg_test_ipc(void);
@@ -30,6 +31,7 @@ int main(void)
     result |= jg_test_blocklist_remote();
     result |= jg_test_checked();
     result |= jg_test_database();
+    result |= jg_test_dataplane();
     result |= jg_test_dns();
     result |= jg_test_domain();
     result |= jg_test_ipc();

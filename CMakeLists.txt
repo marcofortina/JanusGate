@@ -73,6 +73,7 @@ janusgate_apply_compiler_options(janusgate-common)
 
 add_library(
   janusgate-daemon-core STATIC
+  src/daemon/dataplane.c
   src/daemon/nfqueue.c
   src/daemon/nfqueue_group.c)
 target_include_directories(
