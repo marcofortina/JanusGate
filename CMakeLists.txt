@@ -78,7 +78,8 @@ add_library(
   src/daemon/fragment.c
   src/daemon/nfqueue.c
   src/daemon/nfqueue_group.c
-  src/daemon/policy_store.c)
+  src/daemon/policy_store.c
+  src/daemon/tcp_stream.c)
 target_include_directories(
   janusgate-daemon-core
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")
