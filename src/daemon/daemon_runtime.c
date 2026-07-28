@@ -262,7 +262,7 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     }
     if (result == 0) {
         result = jg_management_create(started->database, config->totp_key_path,
-                                      &started->management);
+                                      started, &started->management);
     }
     if (result == 0) {
         result = jg_database_load_network_config(started->database, &network);

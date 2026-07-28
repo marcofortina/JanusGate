@@ -19,12 +19,17 @@
 /** Opaque owner of management authentication state. */
 struct jg_management;
 
+/** Packet runtime borrowed for status and operational actions. */
+struct jg_daemon_runtime;
+
 /**
  * @brief Create management state around a borrowed database.
  *
  * @param[in,out] database Open database borrowed for the complete lifetime.
  * @param[in] totp_key_path Secure regular file containing exactly one raw
  * TOTP protection key.
+ * @param[in] runtime Packet runtime borrowed for the complete lifetime; null
+ * is accepted by isolated authentication tests.
  * @param[out] management Receives the owned management state.
  *
  * @return 0 on success.
@@ -36,6 +41,7 @@ struct jg_management;
  */
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
+                         struct jg_daemon_runtime *runtime,
                          struct jg_management **management);
 
 /**

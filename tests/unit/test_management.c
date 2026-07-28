@@ -80,7 +80,7 @@ static int setup_management(void **state)
     assert_int_equal(
         jg_database_open(fixture->database_path, 1000U, &fixture->database), 0);
     assert_int_equal(jg_management_create(fixture->database, fixture->key_path,
-                                          &fixture->management),
+                                          NULL, &fixture->management),
                      0);
     *state = fixture;
     return 0;
@@ -142,10 +142,17 @@ static void test_browser_authentication(void **state)
     char request[2048U];
     char session[JG_AUTH_SECRET_TEXT_SIZE];
     char csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_account_token_config token_config = {
+        .name = "status test",
+        .permissions = JG_ACCESS_STATUS_READ,
+        .requests_per_minute = 1U,
+    };
+    struct jg_account_api_token api_token;
     json_t *response = NULL;
     json_t *body = NULL;
     json_t *value = NULL;
     const time_t now = time(NULL);
+    uint64_t user_id = 0U;
     int written = 0;
 
     assert_true(now > 0);
@@ -171,9 +178,32 @@ static void test_browser_authentication(void **state)
     assert_int_equal(json_string_length(value), JG_AUTH_SECRET_TEXT_SIZE - 1U);
     (void)snprintf(session, sizeof(session), "%s", json_string_value(value));
     body = json_object_get(response, "body");
+    user_id = (uint64_t)json_integer_value(
+        json_object_get(json_object_get(body, "user"), "id"));
     value = json_object_get(body, "csrf");
     assert_true(json_is_string(value));
     (void)snprintf(csrf, sizeof(csrf), "%s", json_string_value(value));
+    json_decref(response);
+
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &api_token),
+                     0);
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"status-token-1\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{}}",
+                       api_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     429);
     json_decref(response);
 
     written =

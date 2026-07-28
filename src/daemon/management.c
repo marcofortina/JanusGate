@@ -26,6 +26,8 @@
 #include <jansson.h>
 #include <sodium.h>
 
+#include "daemon_runtime.h"
+#include "janusgate/access.h"
 #include "janusgate/account.h"
 
 /** Absolute authenticated web-session lifetime. */
@@ -43,10 +45,23 @@
 /** Maximum management route bytes excluding its terminator. */
 #define MANAGEMENT_PATH_MAX 256U
 
+/** Maximum distinct API-token rate windows retained in memory. */
+#define MANAGEMENT_TOKEN_RATE_SLOT_COUNT 256U
+
+/** One bounded fixed-window token request counter. */
+struct token_rate_slot {
+    uint64_t token_id;
+    uint64_t minute;
+    uint64_t last_request;
+    uint32_t requests;
+};
+
 /** Complete borrowed and secret state for serialized request processing. */
 struct jg_management {
     struct jg_database *database;
+    struct jg_daemon_runtime *runtime;
     struct jg_auth_password_policy password_policy;
+    struct token_rate_slot token_rates[MANAGEMENT_TOKEN_RATE_SLOT_COUNT];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
 };
 
@@ -74,6 +89,13 @@ struct remote_address {
 struct session_result {
     const char *set_session;
     bool clear_session;
+};
+
+/** Authenticated session or token actor used for backend authorization. */
+struct authenticated_actor {
+    struct jg_account_identity identity;
+    uint64_t actor_id;
+    bool token;
 };
 
 /** @brief Return a bounded string length or one past the maximum. */
@@ -167,6 +189,7 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
 /** @brief Create management state and load the appliance-local TOTP key. */
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
+                         struct jg_daemon_runtime *runtime,
                          struct jg_management **management)
 {
     struct jg_management *created = NULL;
@@ -184,6 +207,7 @@ int jg_management_create(struct jg_database *database,
         return -ENOMEM;
     }
     created->database = database;
+    created->runtime = runtime;
     jg_auth_password_policy_default(&created->password_policy);
     result = load_totp_key(totp_key_path, created->totp_key);
     if (result != 0) {
@@ -747,6 +771,255 @@ static int authenticate_session(struct jg_management *management,
         identity);
 }
 
+/** @brief Enforce one bounded fixed-window API-token request limit. */
+static int token_rate_accept(struct jg_management *management,
+                             uint64_t token_id,
+                             uint32_t requests_per_minute,
+                             uint64_t now)
+{
+    struct token_rate_slot *slot = NULL;
+    struct token_rate_slot *oldest = &management->token_rates[0U];
+    const uint64_t minute = now / 60U;
+
+    for (size_t index = 0U; index < MANAGEMENT_TOKEN_RATE_SLOT_COUNT; ++index) {
+        struct token_rate_slot *candidate = &management->token_rates[index];
+
+        if (candidate->token_id == token_id || candidate->token_id == 0U) {
+            slot = candidate;
+            break;
+        }
+        if (candidate->last_request < oldest->last_request) {
+            oldest = candidate;
+        }
+    }
+    if (slot == NULL) {
+        slot = oldest;
+    }
+    if (slot->token_id != token_id || slot->minute != minute) {
+        *slot = (struct token_rate_slot){
+            .token_id = token_id,
+            .minute = minute,
+            .last_request = now,
+            .requests = 1U,
+        };
+        return 0;
+    }
+    slot->last_request = now;
+    if (slot->requests >= requests_per_minute) {
+        return -EAGAIN;
+    }
+    ++slot->requests;
+    return 0;
+}
+
+/** @brief Authenticate a session or bearer token and enforce permissions. */
+static int authenticate_actor(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              bool state_change,
+                              uint32_t required_permissions,
+                              uint64_t now,
+                              struct authenticated_actor *actor)
+{
+    const bool has_session = request->session[0U] != '\0';
+    const bool has_bearer = request->bearer[0U] != '\0';
+    uint32_t requests_per_minute = 0U;
+    uint64_t token_id = 0U;
+    int result = 0;
+
+    (void)memset(actor, 0, sizeof(*actor));
+    if (has_session == has_bearer) {
+        return -EACCES;
+    }
+    if (has_bearer) {
+        if (strlen(request->bearer) != JG_AUTH_SECRET_TEXT_SIZE - 1U) {
+            return -EACCES;
+        }
+        result = jg_account_token_validate(
+            management->database, (const uint8_t *)request->bearer,
+            strlen(request->bearer), now, remote->family, remote->address,
+            &actor->identity, &token_id, &requests_per_minute);
+        if (result == 0) {
+            result = token_rate_accept(management, token_id,
+                                       requests_per_minute, now);
+        }
+        actor->token = true;
+        actor->actor_id = token_id;
+    } else {
+        result = authenticate_session(management, request, remote, state_change,
+                                      now, &actor->identity);
+        actor->actor_id = actor->identity.user_id;
+    }
+    if (result == 0 && actor->identity.force_password_change) {
+        result = -EKEYEXPIRED;
+    }
+    if (result == 0 &&
+        !jg_access_grants(actor->identity.permissions, required_permissions)) {
+        result = -EPERM;
+    }
+    if (result != 0) {
+        sodium_memzero(actor, sizeof(*actor));
+    }
+    return result;
+}
+
+/** @brief Add one nonnegative runtime counter to a JSON object. */
+static int set_counter(json_t *object, const char *name, uint64_t value)
+{
+    if (value > (uint64_t)INT64_MAX) {
+        return -EOVERFLOW;
+    }
+    return json_object_set_new(object, name, json_integer((json_int_t)value)) ==
+                   0
+               ? 0
+               : -ENOMEM;
+}
+
+/** @brief Attach one borrowed child object and preserve caller ownership. */
+static int set_object(json_t *parent, const char *name, json_t *child)
+{
+    return json_object_set(parent, name, child) == 0 ? 0 : -ENOMEM;
+}
+
+/** @brief Serialize every current packet-runtime counter for the status API. */
+static json_t *status_body(const struct jg_daemon_runtime_stats *stats)
+{
+    json_t *body = json_object();
+    json_t *queues = json_object();
+    json_t *dataplane = json_object();
+    json_t *fragments = json_object();
+    json_t *streams = json_object();
+    json_t *output = json_object();
+    int result = 0;
+
+    if (body == NULL || queues == NULL || dataplane == NULL ||
+        fragments == NULL || streams == NULL || output == NULL) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "ready", json_true()) != 0 ||
+         set_counter(body, "policy_generation", stats->policy_generation) !=
+             0 ||
+         set_counter(queues, "packets", stats->queues.packets) != 0 ||
+         set_counter(queues, "accepted", stats->queues.accepted) != 0 ||
+         set_counter(queues, "dropped", stats->queues.dropped) != 0 ||
+         set_counter(queues, "malformed", stats->queues.malformed) != 0 ||
+         set_counter(queues, "overflows", stats->queues.overflows) != 0 ||
+         set_counter(queues, "message_errors", stats->queues.message_errors) !=
+             0 ||
+         set_counter(queues, "verdict_errors", stats->queues.verdict_errors) !=
+             0)) {
+        result = -EOVERFLOW;
+    }
+    if (result == 0 &&
+        (set_counter(dataplane, "packets", stats->dataplane.packets) != 0 ||
+         set_counter(dataplane, "accepted", stats->dataplane.accepted) != 0 ||
+         set_counter(dataplane, "blocked", stats->dataplane.blocked) != 0 ||
+         set_counter(dataplane, "malformed", stats->dataplane.malformed) != 0 ||
+         set_counter(dataplane, "fragments", stats->dataplane.fragments) != 0 ||
+         set_counter(dataplane, "streams", stats->dataplane.streams) != 0 ||
+         set_counter(dataplane, "tcp_resets", stats->dataplane.tcp_resets) !=
+             0 ||
+         set_counter(dataplane, "internal_errors",
+                     stats->dataplane.internal_errors) != 0 ||
+         set_counter(dataplane, "sni_inspected",
+                     stats->dataplane.sni_inspected) != 0 ||
+         set_counter(dataplane, "sni_encrypted_or_unavailable",
+                     stats->dataplane.sni_encrypted_or_unavailable) != 0 ||
+         set_counter(dataplane, "dns_dropped", stats->dataplane.dns_dropped) !=
+             0 ||
+         set_counter(dataplane, "dns_refused", stats->dataplane.dns_refused) !=
+             0 ||
+         set_counter(dataplane, "dns_nxdomain",
+                     stats->dataplane.dns_nxdomain) != 0 ||
+         set_counter(dataplane, "dns_sinkholed",
+                     stats->dataplane.dns_sinkholed) != 0)) {
+        result = -EOVERFLOW;
+    }
+    if (result == 0 &&
+        (set_counter(fragments, "stored", stats->fragments.stored) != 0 ||
+         set_counter(fragments, "duplicates", stats->fragments.duplicates) !=
+             0 ||
+         set_counter(fragments, "completed", stats->fragments.completed) != 0 ||
+         set_counter(fragments, "malformed", stats->fragments.malformed) != 0 ||
+         set_counter(fragments, "overlaps", stats->fragments.overlaps) != 0 ||
+         set_counter(fragments, "exhausted", stats->fragments.exhausted) != 0 ||
+         set_counter(fragments, "timeouts", stats->fragments.timeouts) != 0 ||
+         set_counter(streams, "buffered", stats->tcp_streams.buffered) != 0 ||
+         set_counter(streams, "duplicates", stats->tcp_streams.duplicates) !=
+             0 ||
+         set_counter(streams, "messages", stats->tcp_streams.messages) != 0 ||
+         set_counter(streams, "closed", stats->tcp_streams.closed) != 0 ||
+         set_counter(streams, "malformed", stats->tcp_streams.malformed) != 0 ||
+         set_counter(streams, "conflicts", stats->tcp_streams.conflicts) != 0 ||
+         set_counter(streams, "exhausted", stats->tcp_streams.exhausted) != 0 ||
+         set_counter(streams, "timeouts", stats->tcp_streams.timeouts) != 0 ||
+         set_counter(output, "sent", stats->output.sent) != 0 ||
+         set_counter(output, "errors", stats->output.errors) != 0)) {
+        result = -EOVERFLOW;
+    }
+    if (result == 0 && (set_object(body, "queues", queues) != 0 ||
+                        set_object(body, "dataplane", dataplane) != 0 ||
+                        set_object(body, "fragments", fragments) != 0 ||
+                        set_object(body, "tcp_streams", streams) != 0 ||
+                        set_object(body, "output", output) != 0)) {
+        result = -ENOMEM;
+    }
+    json_decref(output);
+    json_decref(streams);
+    json_decref(fragments);
+    json_decref(dataplane);
+    json_decref(queues);
+    if (result != 0) {
+        json_decref(body);
+        body = NULL;
+    }
+    return body;
+}
+
+/** @brief Return authenticated daemon readiness and packet counters. */
+static int handle_status(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_daemon_runtime_stats stats;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_STATUS_READ, now, &actor);
+
+    if (result == -EAGAIN) {
+        return respond_error(429, "rate_limited",
+                             "The API token request limit was exceeded.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EPERM || result == -EKEYEXPIRED) {
+        return respond_error(403, "forbidden",
+                             "The authenticated identity is not authorized.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(401, "authentication_required",
+                             "Valid authentication is required.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL ||
+        jg_daemon_runtime_get_stats(management->runtime, &stats) != 0) {
+        return respond_error(503, "status_unavailable",
+                             "Runtime status is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    body = status_body(&stats);
+    if (body == NULL) {
+        return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return the current authenticated browser identity. */
 static int handle_session(struct jg_management *management,
                           const struct management_request *request,
@@ -1030,6 +1303,11 @@ static int dispatch_request(struct jg_management *management,
         return respond_error(403, "invalid_origin",
                              "The request origin is not permitted.",
                              request->request_id, output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/status") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_status(management, request, remote, now, output,
+                             output_size, written);
     }
     if (strcmp(request->path, "/api/v1/auth/bootstrap") == 0 && post) {
         return handle_bootstrap(management, request, remote, now, output,
