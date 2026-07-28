@@ -17,6 +17,7 @@ int jg_test_dataplane(void);
 int jg_test_dataplane_worker(void);
 int jg_test_dns(void);
 int jg_test_domain(void);
+int jg_test_fragment(void);
 int jg_test_ipc(void);
 int jg_test_network(void);
 int jg_test_netd(void);
@@ -37,6 +38,7 @@ int main(void)
     result |= jg_test_dataplane_worker();
     result |= jg_test_dns();
     result |= jg_test_domain();
+    result |= jg_test_fragment();
     result |= jg_test_ipc();
     result |= jg_test_network();
     result |= jg_test_netd();

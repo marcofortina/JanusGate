@@ -14,6 +14,7 @@ add_executable(
   unit/test_dataplane_worker.c
   unit/test_dns.c
   unit/test_domain.c
+  unit/test_fragment.c
   unit/test_ipc.c
   unit/test_network.c
   unit/test_netd.c
