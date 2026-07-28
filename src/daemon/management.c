@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -29,6 +30,7 @@
 #include "daemon_runtime.h"
 #include "janusgate/access.h"
 #include "janusgate/account.h"
+#include "janusgate/audit.h"
 
 /** Absolute authenticated web-session lifetime. */
 #define MANAGEMENT_SESSION_LIFETIME 43200U
@@ -44,6 +46,9 @@
 
 /** Maximum management route bytes excluding its terminator. */
 #define MANAGEMENT_PATH_MAX 256U
+
+/** Maximum management query bytes excluding its terminator. */
+#define MANAGEMENT_QUERY_MAX 256U
 
 /** Maximum distinct API-token rate windows retained in memory. */
 #define MANAGEMENT_TOKEN_RATE_SLOT_COUNT 256U
@@ -70,6 +75,7 @@ struct management_request {
     const char *request_id;
     const char *method;
     const char *path;
+    const char *query;
     const char *host;
     const char *origin;
     const char *remote_address;
@@ -339,7 +345,7 @@ static int parse_request(const uint8_t *data,
                          struct management_request *request)
 {
     static const char *const fields[] = {
-        "request_id",     "method",  "path", "host",   "origin",
+        "request_id",     "method",  "path", "query",  "host", "origin",
         "remote_address", "session", "csrf", "bearer", "body",
     };
     json_error_t error;
@@ -363,6 +369,7 @@ static int parse_request(const uint8_t *data,
         request->method = required_string(parsed, "method", 3U, 8U);
         request->path =
             required_string(parsed, "path", 1U, MANAGEMENT_PATH_MAX);
+        request->query = optional_string(parsed, "query", MANAGEMENT_QUERY_MAX);
         request->host = required_string(parsed, "host", 1U, 128U);
         request->origin = optional_string(parsed, "origin", 256U);
         request->remote_address =
@@ -375,10 +382,11 @@ static int parse_request(const uint8_t *data,
             optional_string(parsed, "bearer", JG_AUTH_SECRET_TEXT_SIZE - 1U);
         request->body = json_object_get(parsed, "body");
         if (!request_id_valid(request->request_id) || request->method == NULL ||
-            request->path == NULL || !host_valid(request->host) ||
-            request->origin == NULL || request->remote_address == NULL ||
-            request->session == NULL || request->csrf == NULL ||
-            request->bearer == NULL || !json_is_object(request->body)) {
+            request->path == NULL || request->query == NULL ||
+            !host_valid(request->host) || request->origin == NULL ||
+            request->remote_address == NULL || request->session == NULL ||
+            request->csrf == NULL || request->bearer == NULL ||
+            !json_is_object(request->body)) {
             result = -EINVAL;
         }
     }
@@ -538,6 +546,285 @@ static json_t *identity_json(const struct jg_account_identity *identity)
         return NULL;
     }
     return user;
+}
+
+/** @brief Return the stable external name for one fixed backend role. */
+static const char *role_name(enum jg_access_role role)
+{
+    switch (role) {
+    case JG_ACCESS_ROLE_ADMINISTRATOR:
+        return "administrator";
+    case JG_ACCESS_ROLE_OPERATOR:
+        return "operator";
+    case JG_ACCESS_ROLE_AUDITOR:
+        return "auditor";
+    case JG_ACCESS_ROLE_NONE:
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Parse one exact fixed backend role name. */
+static enum jg_access_role parse_role(const char *name)
+{
+    if (name == NULL) {
+        return JG_ACCESS_ROLE_NONE;
+    }
+    if (strcmp(name, "administrator") == 0) {
+        return JG_ACCESS_ROLE_ADMINISTRATOR;
+    }
+    if (strcmp(name, "operator") == 0) {
+        return JG_ACCESS_ROLE_OPERATOR;
+    }
+    if (strcmp(name, "auditor") == 0) {
+        return JG_ACCESS_ROLE_AUDITOR;
+    }
+    return JG_ACCESS_ROLE_NONE;
+}
+
+/** @brief Read one required JSON boolean. */
+static bool required_boolean(const json_t *object,
+                             const char *name,
+                             bool *value)
+{
+    json_t *field = json_object_get(object, name);
+
+    if (!json_is_boolean(field)) {
+        return false;
+    }
+    *value = json_is_true(field);
+    return true;
+}
+
+/** @brief Read one required positive JSON integer as an unsigned value. */
+static bool required_identifier(const json_t *object,
+                                const char *name,
+                                uint64_t *value)
+{
+    json_t *field = json_object_get(object, name);
+    const json_int_t number =
+        json_is_integer(field) ? json_integer_value(field) : 0;
+
+    if (number <= 0) {
+        return false;
+    }
+    *value = (uint64_t)number;
+    return true;
+}
+
+/** @brief Add a timestamp or JSON null to one response object. */
+static int set_optional_timestamp(json_t *object,
+                                  const char *name,
+                                  uint64_t value)
+{
+    return json_object_set_new(object, name,
+                               value == 0U ? json_null()
+                                           : json_integer((json_int_t)value));
+}
+
+/** @brief Convert one administrative user record to public JSON fields. */
+static json_t *user_json(const struct jg_account_user *user)
+{
+    const char *role = role_name(user->role);
+    json_t *body = json_object();
+
+    if (role == NULL || body == NULL ||
+        json_object_set_new(body, "id",
+                            json_integer((json_int_t)user->user_id)) != 0 ||
+        json_object_set_new(body, "username", json_string(user->username)) !=
+            0 ||
+        json_object_set_new(body, "role", json_string(role)) != 0 ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)user->revision)) != 0 ||
+        json_object_set_new(body, "enabled", json_boolean(user->enabled)) !=
+            0 ||
+        json_object_set_new(body, "force_password_change",
+                            json_boolean(user->force_password_change)) != 0 ||
+        json_object_set_new(body, "totp_enabled",
+                            json_boolean(user->totp_enabled)) != 0 ||
+        json_object_set_new(body, "failed_logins",
+                            json_integer((json_int_t)user->failed_logins)) !=
+            0 ||
+        json_object_set_new(body, "created_at",
+                            json_integer((json_int_t)user->created_at)) != 0 ||
+        json_object_set_new(
+            body, "password_changed_at",
+            json_integer((json_int_t)user->password_changed_at)) != 0 ||
+        set_optional_timestamp(body, "last_login_at", user->last_login_at) !=
+            0 ||
+        set_optional_timestamp(body, "locked_until", user->locked_until) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Parse one bounded unsigned decimal text span. */
+static int parse_decimal(const char *text,
+                         size_t size,
+                         uint64_t maximum,
+                         uint64_t *value)
+{
+    uint64_t parsed = 0U;
+
+    if (text == NULL || size == 0U || value == NULL) {
+        return -EINVAL;
+    }
+    for (size_t index = 0U; index < size; ++index) {
+        const uint8_t digit = (uint8_t)text[index];
+
+        if (digit < (uint8_t)'0' || digit > (uint8_t)'9' ||
+            parsed > (maximum - (uint64_t)(digit - (uint8_t)'0')) / 10U) {
+            return -EINVAL;
+        }
+        parsed = parsed * 10U + (uint64_t)(digit - (uint8_t)'0');
+    }
+    *value = parsed;
+    return 0;
+}
+
+/** @brief Parse exact offset and limit parameters for the user collection. */
+static int parse_user_query(const char *query, uint64_t *offset, size_t *limit)
+{
+    const char *cursor = query;
+    bool have_offset = false;
+    bool have_limit = false;
+    int result = 0;
+
+    *offset = 0U;
+    *limit = 50U;
+    while (result == 0 && cursor != NULL && *cursor != '\0') {
+        const char *end = strchr(cursor, '&');
+        const char *equals = strchr(cursor, '=');
+        const size_t field_size =
+            end == NULL ? strlen(cursor) : (size_t)(end - cursor);
+        uint64_t parsed = 0U;
+
+        if (equals == NULL || (size_t)(equals - cursor) >= field_size) {
+            result = -EINVAL;
+        } else if ((size_t)(equals - cursor) == sizeof("offset") - 1U &&
+                   memcmp(cursor, "offset", sizeof("offset") - 1U) == 0 &&
+                   !have_offset) {
+            result = parse_decimal(equals + 1,
+                                   field_size - (size_t)(equals + 1 - cursor),
+                                   (uint64_t)INT64_MAX, &parsed);
+            if (result == 0) {
+                *offset = parsed;
+                have_offset = true;
+            }
+        } else if ((size_t)(equals - cursor) == sizeof("limit") - 1U &&
+                   memcmp(cursor, "limit", sizeof("limit") - 1U) == 0 &&
+                   !have_limit) {
+            result = parse_decimal(equals + 1,
+                                   field_size - (size_t)(equals + 1 - cursor),
+                                   JG_ACCOUNT_USER_PAGE_MAX, &parsed);
+            if (result == 0 && parsed > 0U) {
+                *limit = (size_t)parsed;
+                have_limit = true;
+            } else {
+                result = -EINVAL;
+            }
+        } else {
+            result = -EINVAL;
+        }
+        cursor = end == NULL ? NULL : end + 1;
+        if (end != NULL && end[1] == '\0') {
+            result = -EINVAL;
+        }
+    }
+    return result;
+}
+
+/** @brief Parse one user identifier from an exact collection subpath. */
+static bool user_path_identifier(const char *path,
+                                 const char *suffix,
+                                 uint64_t *user_id)
+{
+    static const char prefix[] = "/api/v1/users/";
+    const size_t prefix_size = sizeof(prefix) - 1U;
+    const size_t suffix_size = strlen(suffix);
+    const size_t path_size = strlen(path);
+    const char *identifier = NULL;
+    size_t identifier_size = 0U;
+
+    if (path_size <= prefix_size + suffix_size ||
+        memcmp(path, prefix, prefix_size) != 0 ||
+        (suffix_size > 0U &&
+         memcmp(path + path_size - suffix_size, suffix, suffix_size) != 0)) {
+        return false;
+    }
+    identifier = path + prefix_size;
+    identifier_size = path_size - prefix_size - suffix_size;
+    return parse_decimal(identifier, identifier_size, (uint64_t)INT64_MAX,
+                         user_id) == 0 &&
+           *user_id > 0U;
+}
+
+/** @brief Append one successful user lifecycle event without credentials. */
+static int append_user_audit(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             const struct authenticated_actor *actor,
+                             const char *action,
+                             bool has_previous_revision,
+                             uint64_t previous_revision,
+                             const struct jg_account_user *user,
+                             uint64_t now)
+{
+    char object_id[32U];
+    char source[INET6_ADDRSTRLEN];
+    const char *role = role_name(user->role);
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = 0;
+    int result = 0;
+
+    written = snprintf(object_id, sizeof(object_id), "%llu",
+                       (unsigned long long)user->user_id);
+    if (written <= 0 || (size_t)written >= sizeof(object_id) || role == NULL ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "username", json_string(user->username)) !=
+            0 ||
+        json_object_set_new(details, "role", json_string(role)) != 0 ||
+        json_object_set_new(details, "enabled", json_boolean(user->enabled)) !=
+            0 ||
+        json_object_set_new(details, "force_password_change",
+                            json_boolean(user->force_password_change)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = action,
+            .object_type = "user",
+            .object_id = object_id,
+            .details = encoded,
+            .has_previous_revision = has_previous_revision,
+            .previous_revision = previous_revision,
+            .has_new_revision = true,
+            .new_revision = user->revision,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
 }
 
 /** @brief Issue a remote-address-bound session response. */
@@ -863,6 +1150,28 @@ static int authenticate_actor(struct jg_management *management,
     return result;
 }
 
+/** @brief Convert one actor-authentication result to a public API error. */
+static int respond_actor_error(int result,
+                               const struct management_request *request,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written)
+{
+    if (result == -EAGAIN) {
+        return respond_error(429, "rate_limited",
+                             "The API token request limit was exceeded.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EPERM || result == -EKEYEXPIRED) {
+        return respond_error(403, "forbidden",
+                             "The authenticated identity is not authorized.",
+                             request->request_id, output, output_size, written);
+    }
+    return respond_error(401, "authentication_required",
+                         "Valid authentication is required.",
+                         request->request_id, output, output_size, written);
+}
+
 /** @brief Add one nonnegative runtime counter to a JSON object. */
 static int set_counter(json_t *object, const char *name, uint64_t value)
 {
@@ -1017,6 +1326,352 @@ static int handle_status(struct jg_management *management,
     if (body == NULL) {
         return -ENOMEM;
     }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Return one authenticated stable page of local users. */
+static int handle_users_list(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_account_user *users = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t offset = 0U;
+    uint64_t total = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_user_query(request->query, &offset, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The user pagination parameters are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    users = calloc(limit, sizeof(*users));
+    if (users == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_account_user_list(management->database, offset, users, limit,
+                                  &count, &total);
+    if (result != 0) {
+        free(users);
+        return respond_error(500, "users_unavailable",
+                             "The local users could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = user_json(&users[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "offset",
+                             json_integer((json_int_t)offset)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "total", json_integer((json_int_t)total)) !=
+             0 ||
+         json_object_set(body, "users", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        const uint64_t next = offset + (uint64_t)count;
+        json_t *next_value = count > 0U && next < total
+                                 ? json_integer((json_int_t)next)
+                                 : json_null();
+
+        if (json_object_set_new(body, "next_offset", next_value) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(users);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Create one local user through an authorized API request. */
+static int handle_user_create(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written)
+{
+    static const char *const fields[] = {
+        "username",
+        "password",
+        "role",
+        "force_password_change",
+    };
+    struct authenticated_actor actor;
+    struct jg_account_user user;
+    const char *username = NULL;
+    const char *password = NULL;
+    const char *role_text = NULL;
+    enum jg_access_role role = JG_ACCESS_ROLE_NONE;
+    bool force_password_change = false;
+    json_t *body = NULL;
+    json_t *user_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    username =
+        required_string(request->body, "username", 1U, JG_ACCOUNT_USERNAME_MAX);
+    password = required_string(request->body, "password", JG_AUTH_PASSWORD_MIN,
+                               JG_AUTH_PASSWORD_MAX);
+    role_text = required_string(request->body, "role", 1U, 13U);
+    role = parse_role(role_text);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        username == NULL || password == NULL || role == JG_ACCESS_ROLE_NONE ||
+        !required_boolean(request->body, "force_password_change",
+                          &force_password_change)) {
+        return respond_error(400, "invalid_body",
+                             "The local-user request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_user_create(management->database, username,
+                                    (const uint8_t *)password, strlen(password),
+                                    &management->password_policy, role,
+                                    force_password_change, now, &user);
+    if (result == -EEXIST) {
+        return respond_error(409, "username_exists",
+                             "The local username is already in use.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -ERANGE) {
+        return respond_error(400, "invalid_user",
+                             "The local-user properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "user_create_failed",
+                             "The local user could not be created.",
+                             request->request_id, output, output_size, written);
+    }
+    result = append_user_audit(management, request, remote, &actor,
+                               "user.create", false, 0U, &user, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The user was created, but its audit record could not be stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    user_body = user_json(&user);
+    if (body == NULL || user_body == NULL ||
+        json_object_set(body, "user", user_body) != 0) {
+        json_decref(user_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(user_body);
+    return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Replace one local user's mutable administration state. */
+static int handle_user_update(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t user_id,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written)
+{
+    static const char *const fields[] = {
+        "revision",
+        "role",
+        "enabled",
+        "force_password_change",
+    };
+    struct authenticated_actor actor;
+    struct jg_account_user_update update;
+    struct jg_account_user user;
+    const char *role_text = NULL;
+    uint64_t revision = 0U;
+    json_t *body = NULL;
+    json_t *user_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    (void)memset(&update, 0, sizeof(update));
+    role_text = required_string(request->body, "role", 1U, 13U);
+    update.role = parse_role(role_text);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "revision", &revision) ||
+        update.role == JG_ACCESS_ROLE_NONE ||
+        !required_boolean(request->body, "enabled", &update.enabled) ||
+        !required_boolean(request->body, "force_password_change",
+                          &update.force_password_change)) {
+        return respond_error(400, "invalid_body",
+                             "The local-user update is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_user_update(management->database, user_id, revision,
+                                    &update, now, &user);
+    if (result == -ENOENT) {
+        return respond_error(404, "user_not_found",
+                             "The local user was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -ESTALE) {
+        return respond_error(409, "revision_conflict",
+                             "The local user has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EPERM) {
+        return respond_error(409, "administrator_required",
+                             "At least one enabled administrator must remain.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "user_update_failed",
+                             "The local user could not be updated.",
+                             request->request_id, output, output_size, written);
+    }
+    result = append_user_audit(management, request, remote, &actor,
+                               "user.update", true, revision, &user, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The user was updated, but its audit record could not be stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    user_body = user_json(&user);
+    if (body == NULL || user_body == NULL ||
+        json_object_set(body, "user", user_body) != 0) {
+        json_decref(user_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(user_body);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Reset one local user's password without echoing credential data. */
+static int handle_user_password_reset(struct jg_management *management,
+                                      const struct management_request *request,
+                                      const struct remote_address *remote,
+                                      uint64_t user_id,
+                                      uint64_t now,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written)
+{
+    static const char *const fields[] = {
+        "revision",
+        "password",
+        "force_password_change",
+    };
+    struct authenticated_actor actor;
+    struct jg_account_user user;
+    const char *password = NULL;
+    uint64_t revision = 0U;
+    bool force_password_change = false;
+    json_t *body = NULL;
+    json_t *user_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_ACCESS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    password = required_string(request->body, "password", JG_AUTH_PASSWORD_MIN,
+                               JG_AUTH_PASSWORD_MAX);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "revision", &revision) ||
+        password == NULL ||
+        !required_boolean(request->body, "force_password_change",
+                          &force_password_change)) {
+        return respond_error(400, "invalid_body",
+                             "The password-reset request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_user_reset_password(
+        management->database, user_id, revision, (const uint8_t *)password,
+        strlen(password), &management->password_policy, force_password_change,
+        now, &user);
+    if (result == -ENOENT) {
+        return respond_error(404, "user_not_found",
+                             "The local user was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -ESTALE) {
+        return respond_error(409, "revision_conflict",
+                             "The local user has changed; reload and retry.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -ERANGE) {
+        return respond_error(400, "invalid_password",
+                             "The replacement password is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "password_reset_failed",
+                             "The password could not be replaced.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        append_user_audit(management, request, remote, &actor,
+                          "user.password_reset", true, revision, &user, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The password was replaced, but its audit record could not be "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    user_body = user_json(&user);
+    if (body == NULL || user_body == NULL ||
+        json_object_set(body, "user", user_body) != 0) {
+        json_decref(user_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(user_body);
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
@@ -1298,8 +1953,13 @@ static int dispatch_request(struct jg_management *management,
                             size_t *written)
 {
     const bool post = strcmp(request->method, "POST") == 0;
+    const bool state_change = strcmp(request->method, "GET") != 0;
+    const bool authentication_path = strncmp(request->path, "/api/v1/auth/",
+                                             sizeof("/api/v1/auth/") - 1U) == 0;
+    uint64_t user_id = 0U;
 
-    if (post && !origin_valid(request->origin, request->host)) {
+    if (state_change && (request->bearer[0U] == '\0' || authentication_path) &&
+        !origin_valid(request->origin, request->host)) {
         return respond_error(403, "invalid_origin",
                              "The request origin is not permitted.",
                              request->request_id, output, output_size, written);
@@ -1308,6 +1968,24 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_status(management, request, remote, now, output,
                              output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/users") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_users_list(management, request, remote, now, output,
+                                 output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/users") == 0 && post) {
+        return handle_user_create(management, request, remote, now, output,
+                                  output_size, written);
+    }
+    if (post && user_path_identifier(request->path, "/password", &user_id)) {
+        return handle_user_password_reset(management, request, remote, user_id,
+                                          now, output, output_size, written);
+    }
+    if (strcmp(request->method, "PATCH") == 0 &&
+        user_path_identifier(request->path, "", &user_id)) {
+        return handle_user_update(management, request, remote, user_id, now,
+                                  output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/auth/bootstrap") == 0 && post) {
         return handle_bootstrap(management, request, remote, now, output,

@@ -20,6 +20,7 @@
 #include <jansson.h>
 
 #include "janusgate/account.h"
+#include "janusgate/audit.h"
 #include "janusgate/ipc.h"
 #include "management.h"
 
@@ -254,6 +255,165 @@ static void test_browser_authentication(void **state)
     json_decref(response);
 }
 
+/** @brief Verify authorized user CRUD, pagination, and audit chaining. */
+static void test_user_api(void **state)
+{
+    static const char administrator_password[] = "correct horse battery staple";
+    static const char operator_password[] =
+        "operator password is suitably long";
+    static const char replacement_password[] =
+        "replacement password is suitably long";
+    struct management_fixture *fixture = *state;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[4096U];
+    char session[JG_AUTH_SECRET_TEXT_SIZE];
+    char csrf[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_audit_verification verification;
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    json_t *user = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    uint64_t revision = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"users-bootstrap\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/auth/bootstrap\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"body\":{"
+        "\"token\":\"%s\",\"username\":\"administrator\","
+        "\"password\":\"%s\"}}",
+        bootstrap, administrator_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    value = json_object_get(response, "set_session");
+    assert_true(json_is_string(value));
+    (void)snprintf(session, sizeof(session), "%s", json_string_value(value));
+    body = json_object_get(response, "body");
+    value = json_object_get(body, "csrf");
+    assert_true(json_is_string(value));
+    (void)snprintf(csrf, sizeof(csrf), "%s", json_string_value(value));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"user-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/users\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{"
+        "\"username\":\"operator\",\"password\":\"%s\","
+        "\"role\":\"operator\",\"force_password_change\":false}}",
+        session, csrf, operator_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    user = json_object_get(json_object_get(response, "body"), "user");
+    user_id = (uint64_t)json_integer_value(json_object_get(user, "id"));
+    revision = (uint64_t)json_integer_value(json_object_get(user, "revision"));
+    assert_true(user_id > 0U);
+    assert_int_equal(revision, 1U);
+    assert_string_equal(json_string_value(json_object_get(user, "role")),
+                        "operator");
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"users-list\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/users\",\"query\":\"offset=1&limit=1\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "total")), 2);
+    assert_int_equal(json_array_size(json_object_get(body, "users")), 1U);
+    user = json_array_get(json_object_get(body, "users"), 0U);
+    assert_string_equal(json_string_value(json_object_get(user, "username")),
+                        "operator");
+    assert_true(json_is_null(json_object_get(body, "next_offset")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"user-update\",\"method\":\"PATCH\","
+        "\"path\":\"/api/v1/users/%llu\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{"
+        "\"revision\":%llu,\"role\":\"auditor\",\"enabled\":true,"
+        "\"force_password_change\":true}}",
+        (unsigned long long)user_id, session, csrf,
+        (unsigned long long)revision);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    user = json_object_get(json_object_get(response, "body"), "user");
+    revision = (uint64_t)json_integer_value(json_object_get(user, "revision"));
+    assert_int_equal(revision, 2U);
+    assert_true(json_is_true(json_object_get(user, "force_password_change")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"user-password\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/users/%llu/password\","
+        "\"host\":\"192.168.77.1\",\"origin\":\"https://192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+        "\"csrf\":\"%s\",\"body\":{"
+        "\"revision\":%llu,\"password\":\"%s\","
+        "\"force_password_change\":false}}",
+        (unsigned long long)user_id, session, csrf,
+        (unsigned long long)revision, replacement_password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    user = json_object_get(json_object_get(response, "body"), "user");
+    assert_int_equal(json_integer_value(json_object_get(user, "revision")), 3);
+    assert_false(json_is_true(json_object_get(user, "force_password_change")));
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"users-query-invalid\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/users\",\"query\":\"limit=0\","
+                 "\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+                 "\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+
+    assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
+                     0);
+    assert_true(verification.valid);
+    assert_int_equal(verification.records_inspected, 3U);
+}
+
 /** @brief Verify malformed and cross-origin requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -281,6 +441,8 @@ int jg_test_management(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_browser_authentication,
                                         setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_user_api, setup_management,
+                                        teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
     };

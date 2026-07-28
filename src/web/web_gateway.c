@@ -22,6 +22,9 @@
 /** Exact name of the browser session cookie. */
 static const char session_cookie_name[] = "janusgate_session";
 
+/** Largest raw API query string forwarded to the daemon. */
+#define WEB_QUERY_SIZE_MAX 256U
+
 /** @brief Return a bounded string length or one past the maximum. */
 static size_t bounded_length(const char *text, size_t maximum)
 {
@@ -193,6 +196,26 @@ static int optional_header(const struct mg_connection *connection,
     return bounded_length(*value, maximum) <= maximum ? 0 : -EINVAL;
 }
 
+/** @brief Validate a bounded visible-ASCII API query string. */
+static bool query_valid(const char *query)
+{
+    const size_t length =
+        query == NULL ? 0U : bounded_length(query, WEB_QUERY_SIZE_MAX);
+
+    if (length > WEB_QUERY_SIZE_MAX) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        const uint8_t character = (uint8_t)query[index];
+
+        if (character <= UINT8_C(0x20) || character >= UINT8_C(0x7f) ||
+            character == (uint8_t)'#') {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** @brief Parse exactly one named cookie while rejecting duplicates. */
 static int find_session_cookie(const struct mg_connection *connection,
                                char session[JG_AUTH_SECRET_TEXT_SIZE])
@@ -269,6 +292,8 @@ static int build_envelope(const struct mg_connection *connection,
                           size_t *encoded_size)
 {
     const char *host = mg_get_header(connection, "Host");
+    const char *query =
+        request->query_string == NULL ? "" : request->query_string;
     const char *origin = NULL;
     const char *csrf = NULL;
     char session[JG_AUTH_SECRET_TEXT_SIZE];
@@ -289,7 +314,8 @@ static int build_envelope(const struct mg_connection *connection,
         result = find_bearer_token(connection, bearer);
     }
     if (result == 0 && (host == NULL || bounded_length(host, 128U) > 128U ||
-                        bounded_length(request->remote_addr, 47U) > 47U)) {
+                        bounded_length(request->remote_addr, 47U) > 47U ||
+                        !query_valid(query))) {
         result = -EINVAL;
     }
     if (result == 0) {
@@ -301,6 +327,7 @@ static int build_envelope(const struct mg_connection *connection,
                                 json_string(request->request_method)) != 0 ||
             json_object_set_new(envelope, "path",
                                 json_string(request->local_uri)) != 0 ||
+            json_object_set_new(envelope, "query", json_string(query)) != 0 ||
             json_object_set_new(envelope, "host", json_string(host)) != 0 ||
             json_object_set_new(envelope, "origin", json_string(origin)) != 0 ||
             json_object_set_new(envelope, "remote_address",
@@ -458,8 +485,7 @@ int jg_web_gateway_process(struct mg_connection *connection,
     }
     request = mg_get_request_info(connection);
     if (request == NULL || request->local_uri == NULL ||
-        !method_valid(request->request_method) ||
-        request->query_string != NULL) {
+        !method_valid(request->request_method)) {
         return set_error_response(response, 400, "invalid_request",
                                   "The API request is not valid.");
     }
