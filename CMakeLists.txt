@@ -74,7 +74,10 @@ target_link_libraries(
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
 
-add_library(janusgate-control-protocol STATIC src/daemon/control_protocol.c)
+add_library(
+  janusgate-control-protocol STATIC
+  src/daemon/control_protocol.c
+  src/daemon/metrics.c)
 target_include_directories(
   janusgate-control-protocol
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")

@@ -22,6 +22,7 @@ add_executable(
   unit/test_fragment.c
   unit/test_ipc.c
   unit/test_ipc_client.c
+  unit/test_metrics.c
   unit/test_netd_client.c
   unit/test_network.c
   unit/test_netd.c
