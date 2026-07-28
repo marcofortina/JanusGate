@@ -86,6 +86,12 @@ static void print_usage(FILE *output)
         output, "usage: janusgatectl [OPTIONS] status\n"
                 "       janusgatectl [OPTIONS] health\n"
                 "       janusgatectl [OPTIONS] stats\n"
+                "       janusgatectl [OPTIONS] network show\n"
+                "       janusgatectl [OPTIONS] network validate FILE\n"
+                "       janusgatectl [OPTIONS] network apply FILE\n"
+                "       janusgatectl [OPTIONS] network set FILE\n"
+                "       janusgatectl [OPTIONS] network confirm\n"
+                "       janusgatectl [OPTIONS] network rollback\n"
                 "       janusgatectl [--socket PATH] [--json] ping\n"
                 "       janusgatectl [--socket PATH] [--json] policy reload\n"
                 "       janusgatectl --version\n"
@@ -158,7 +164,7 @@ static int parse_options(int argc,
 
     opterr = 0;
     while (result == 0 &&
-           (option = getopt_long(argc, argv, "", long_options, NULL)) != -1) {
+           (option = getopt_long(argc, argv, "+", long_options, NULL)) != -1) {
         switch (option) {
         case CLI_OPTION_SOCKET:
             if (options->socket_set) {
@@ -435,35 +441,27 @@ static int present_api_response(const struct cli_options *options,
     return result;
 }
 
-/** @brief Execute one API-backed CLI command through the selected transport. */
-static int run_api_command(const struct cli_options *options,
-                           const char *command)
+/** @brief Perform one request through the selected authenticated transport. */
+static int request_api(const struct cli_options *options,
+                       const char *token,
+                       const char *method,
+                       const char *path,
+                       const char *query,
+                       json_t *body,
+                       struct jg_cli_response *response)
 {
     struct jg_cli_remote_config remote;
-    struct jg_cli_response response = {0};
-    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
-    json_t *body = NULL;
-    const char *path =
-        strcmp(command, "health") == 0 ? "/api/v1/health" : "/api/v1/status";
-    int result = read_token_file(options->token_file, token);
+    int result = 0;
 
-    if (result != 0) {
-        (void)fprintf(stderr, "janusgatectl: token file: %s\n",
-                      strerror(-result));
-        return result == -EINVAL ? CLI_EXIT_USAGE : CLI_EXIT_FAILURE;
-    }
-    body = json_object();
-    if (body == NULL) {
-        sodium_memzero(token, sizeof(token));
-        return CLI_EXIT_FAILURE;
-    }
     if (options->verbose) {
-        (void)fprintf(stderr, "janusgatectl: %s GET %s\n",
-                      options->endpoint == NULL ? "local" : "remote", path);
+        (void)fprintf(stderr, "janusgatectl: %s %s %s%s%s\n",
+                      options->endpoint == NULL ? "local" : "remote", method,
+                      path, query == NULL ? "" : "?",
+                      query == NULL ? "" : query);
     }
     if (options->endpoint == NULL) {
-        result = jg_cli_local_request(options->socket_path, token, "GET", path,
-                                      NULL, body, &response);
+        result = jg_cli_local_request(options->socket_path, token, method, path,
+                                      query, body, response);
     } else {
         jg_cli_remote_config_default(&remote);
         remote.endpoint = options->endpoint;
@@ -473,8 +471,54 @@ static int run_api_command(const struct cli_options *options,
         remote.ca_file = options->ca_file;
         remote.timeout_seconds = options->timeout_seconds;
         result =
-            jg_cli_remote_request(&remote, "GET", path, NULL, body, &response);
+            jg_cli_remote_request(&remote, method, path, query, body, response);
     }
+    if (result == 0 && options->verbose) {
+        (void)fprintf(stderr, "janusgatectl: response %d [request %s]\n",
+                      response->status, response->request_id);
+    }
+    return result;
+}
+
+/** @brief Read and report the configured private API token. */
+static int load_token(const struct cli_options *options,
+                      char token[JG_AUTH_SECRET_TEXT_SIZE])
+{
+    int result = 0;
+
+    if (options->token_file == NULL) {
+        (void)fprintf(stderr, "janusgatectl: --token-file is required\n");
+        return CLI_EXIT_USAGE;
+    }
+    result = read_token_file(options->token_file, token);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgatectl: token file: %s\n",
+                      strerror(-result));
+        return result == -EINVAL ? CLI_EXIT_USAGE : CLI_EXIT_FAILURE;
+    }
+    return CLI_EXIT_SUCCESS;
+}
+
+/** @brief Execute one API-backed CLI command through the selected transport. */
+static int run_api_command(const struct cli_options *options,
+                           const char *command)
+{
+    struct jg_cli_response response = {0};
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    json_t *body = NULL;
+    const char *path =
+        strcmp(command, "health") == 0 ? "/api/v1/health" : "/api/v1/status";
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    body = json_object();
+    if (body == NULL) {
+        sodium_memzero(token, sizeof(token));
+        return CLI_EXIT_FAILURE;
+    }
+    result = request_api(options, token, "GET", path, NULL, body, &response);
     sodium_memzero(token, sizeof(token));
     json_decref(body);
     if (result != 0) {
@@ -482,12 +526,215 @@ static int run_api_command(const struct cli_options *options,
                       strerror(-result));
         return CLI_EXIT_FAILURE;
     }
-    if (options->verbose) {
-        (void)fprintf(stderr, "janusgatectl: response %d [request %s]\n",
-                      response.status, response.request_id);
+    result = present_api_response(options, command, &response);
+    jg_cli_response_clear(&response);
+    return result;
+}
+
+/** @brief Read one bounded JSON object from a file or standard input. */
+static json_t *read_json_object(const char *path, int *result)
+{
+    FILE *input = NULL;
+    char *data = NULL;
+    size_t size = 0U;
+    json_error_t error;
+    json_t *object = NULL;
+
+    *result = 0;
+    input = strcmp(path, "-") == 0 ? stdin : fopen(path, "rb");
+    if (input == NULL) {
+        *result = -errno;
+        return NULL;
+    }
+    data = malloc(JG_IPC_MAX_BODY_SIZE + 1U);
+    if (data == NULL) {
+        *result = -ENOMEM;
+    }
+    if (*result == 0) {
+        size = fread(data, 1U, JG_IPC_MAX_BODY_SIZE + 1U, input);
+        if (ferror(input) != 0) {
+            *result = -EIO;
+        } else if (size == 0U || size > JG_IPC_MAX_BODY_SIZE) {
+            *result = -EMSGSIZE;
+        }
+    }
+    if (input != stdin && fclose(input) != 0 && *result == 0) {
+        *result = -errno;
+    }
+    if (*result == 0) {
+        object = json_loadb(data, size, JSON_REJECT_DUPLICATES, &error);
+        if (!json_is_object(object)) {
+            json_decref(object);
+            object = NULL;
+            *result = -EINVAL;
+        }
+    }
+    free(data);
+    return object;
+}
+
+/** @brief Load the current persistent network revision through the API. */
+static int load_network_revision(const struct cli_options *options,
+                                 const char *token,
+                                 uint64_t *revision)
+{
+    struct jg_cli_response response = {0};
+    json_error_t error;
+    json_t *request_body = json_object();
+    json_t *response_body = NULL;
+    json_t *value = NULL;
+    int result = 0;
+
+    if (request_body == NULL) {
+        return CLI_EXIT_FAILURE;
+    }
+    result = request_api(options, token, "GET", "/api/v1/network", NULL,
+                         request_body, &response);
+    json_decref(request_body);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgatectl: request failed: %s\n",
+                      strerror(-result));
+        return CLI_EXIT_FAILURE;
+    }
+    if (response.status < 200 || response.status >= 300) {
+        result = report_api_failure(&response);
+    } else {
+        response_body = json_loadb(response.body, response.body_size,
+                                   JSON_REJECT_DUPLICATES, &error);
+        value = json_object_get(response_body, "revision");
+        if (!json_is_integer(value) || json_integer_value(value) <= 0) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            *revision = (uint64_t)json_integer_value(value);
+        }
+        json_decref(response_body);
+    }
+    jg_cli_response_clear(&response);
+    return result;
+}
+
+/** @brief Send and present one network management request. */
+static int send_network_request(const struct cli_options *options,
+                                const char *token,
+                                const char *command,
+                                const char *method,
+                                const char *path,
+                                json_t *body)
+{
+    struct jg_cli_response response = {0};
+    int result =
+        request_api(options, token, method, path, NULL, body, &response);
+
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgatectl: request failed: %s\n",
+                      strerror(-result));
+        return CLI_EXIT_FAILURE;
     }
     result = present_api_response(options, command, &response);
     jg_cli_response_clear(&response);
+    return result;
+}
+
+/** @brief Validate or stage one complete network configuration document. */
+static int run_network_configuration(const struct cli_options *options,
+                                     const char *token,
+                                     const char *operation,
+                                     const char *path)
+{
+    json_t *configuration = NULL;
+    json_t *body = NULL;
+    uint64_t revision = 0U;
+    int result = 0;
+
+    configuration = read_json_object(path, &result);
+    if (configuration == NULL) {
+        (void)fprintf(stderr, "janusgatectl: network configuration: %s\n",
+                      strerror(-result));
+        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
+                                                        : CLI_EXIT_FAILURE;
+    }
+    if (strcmp(operation, "validate") == 0) {
+        result =
+            send_network_request(options, token, "network validate", "POST",
+                                 "/api/v1/network/validate", configuration);
+        json_decref(configuration);
+        return result;
+    }
+    result = load_network_revision(options, token, &revision);
+    if (result == CLI_EXIT_SUCCESS) {
+        body = json_object();
+        if (body == NULL ||
+            json_object_set_new(body, "revision",
+                                json_integer((json_int_t)revision)) != 0 ||
+            json_object_set(body, "configuration", configuration) != 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_network_request(
+            options, token,
+            strcmp(operation, "set") == 0 ? "network set" : "network apply",
+            "POST", "/api/v1/network/apply", body);
+    }
+    json_decref(body);
+    json_decref(configuration);
+    return result;
+}
+
+/** @brief Confirm or roll back the current pending network transaction. */
+static int run_network_transaction(const struct cli_options *options,
+                                   const char *token,
+                                   const char *operation)
+{
+    json_t *body = NULL;
+    char path[sizeof("/api/v1/network/rollback")];
+    uint64_t revision = 0U;
+    int result = load_network_revision(options, token, &revision);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)revision)) != 0) {
+        json_decref(body);
+        return CLI_EXIT_FAILURE;
+    }
+    (void)snprintf(path, sizeof(path), "/api/v1/network/%s", operation);
+    result =
+        send_network_request(options, token, operation, "POST", path, body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Run one recognized network administration command. */
+static int run_network_command(const struct cli_options *options,
+                               int argc,
+                               char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    json_t *body = NULL;
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (argc == 2 && strcmp(argv[1], "show") == 0) {
+        body = json_object();
+        if (body == NULL) {
+            result = CLI_EXIT_FAILURE;
+        } else {
+            result = send_network_request(options, token, "network show", "GET",
+                                          "/api/v1/network", body);
+        }
+        json_decref(body);
+    } else if (argc == 3) {
+        result = run_network_configuration(options, token, argv[1], argv[2]);
+    } else {
+        result = run_network_transaction(options, token, argv[1]);
+    }
+    sodium_memzero(token, sizeof(token));
     return result;
 }
 
@@ -503,11 +750,16 @@ static int run_command(const struct cli_options *options,
     if (argc == 1 &&
         (strcmp(argv[0], "status") == 0 || strcmp(argv[0], "health") == 0 ||
          strcmp(argv[0], "stats") == 0)) {
-        if (options->token_file == NULL) {
-            (void)fprintf(stderr, "janusgatectl: --token-file is required\n");
-            return CLI_EXIT_USAGE;
-        }
         return run_api_command(options, argv[0]);
+    }
+    if (argc >= 2 && strcmp(argv[0], "network") == 0 &&
+        ((argc == 2 &&
+          (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "confirm") == 0 ||
+           strcmp(argv[1], "rollback") == 0)) ||
+         (argc == 3 &&
+          (strcmp(argv[1], "validate") == 0 || strcmp(argv[1], "apply") == 0 ||
+           strcmp(argv[1], "set") == 0)))) {
+        return run_network_command(options, argc, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
