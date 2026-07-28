@@ -1351,6 +1351,119 @@ static int parse_domain_rule_request(json_t *body,
     return result;
 }
 
+/** @brief Parse one destination-rule transport selector. */
+static bool parse_policy_transport_selector(const char *text,
+                                            enum jg_policy_transport *transport)
+{
+    if (text == NULL || transport == NULL) {
+        return false;
+    }
+    if (strcmp(text, "any") == 0) {
+        *transport = JG_POLICY_TRANSPORT_ANY;
+        return true;
+    }
+    if (strcmp(text, "tcp") == 0) {
+        *transport = JG_POLICY_TRANSPORT_TCP;
+        return true;
+    }
+    if (strcmp(text, "udp") == 0) {
+        *transport = JG_POLICY_TRANSPORT_UDP;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Parse one complete explicit destination-rule request body. */
+static int parse_destination_rule_request(
+    json_t *body,
+    uint64_t rule_id,
+    bool updating,
+    struct jg_policy_destination_rule_input *rule,
+    bool *enabled,
+    uint64_t *revision)
+{
+    static const char *const create_fields[] = {
+        "action", "transport", "address",     "prefix_length",
+        "port",   "scope",     "attribution", "enabled",
+    };
+    static const char *const update_fields[] = {
+        "revision", "action", "transport",   "address", "prefix_length",
+        "port",     "scope",  "attribution", "enabled",
+    };
+    const char *action = required_string(body, "action", 5U, 5U);
+    const char *transport = required_string(body, "transport", 3U, 3U);
+    const char *attribution =
+        required_string(body, "attribution", 1U, JG_POLICY_ATTRIBUTION_MAX);
+    json_t *address_value = json_object_get(body, "address");
+    json_t *prefix_value = json_object_get(body, "prefix_length");
+    json_t *port_value = json_object_get(body, "port");
+    json_t *scope = json_object_get(body, "scope");
+    const char *address =
+        json_is_string(address_value) ? json_string_value(address_value) : NULL;
+    json_int_t prefix =
+        json_is_integer(prefix_value) ? json_integer_value(prefix_value) : -1;
+    json_int_t port =
+        json_is_integer(port_value) ? json_integer_value(port_value) : -1;
+    int result = 0;
+
+    (void)memset(rule, 0, sizeof(*rule));
+    *revision = 0U;
+    if ((updating &&
+         !fields_allowed(body, update_fields,
+                         sizeof(update_fields) / sizeof(update_fields[0U]))) ||
+        (!updating &&
+         !fields_allowed(body, create_fields,
+                         sizeof(create_fields) / sizeof(create_fields[0U]))) ||
+        action == NULL || transport == NULL || attribution == NULL ||
+        address_value == NULL || prefix_value == NULL || port_value == NULL ||
+        !required_boolean(body, "enabled", enabled) ||
+        !parse_policy_effect(action, &rule->effect) ||
+        !parse_policy_transport_selector(transport, &rule->transport)) {
+        return -EINVAL;
+    }
+    if (updating && !required_identifier(body, "revision", revision)) {
+        return -EINVAL;
+    }
+    if (json_is_string(address_value)) {
+        if (bounded_length(address, INET6_ADDRSTRLEN - 1U) >=
+            INET6_ADDRSTRLEN) {
+            return -EINVAL;
+        }
+        if (inet_pton(AF_INET, address, rule->address) == 1 && prefix >= 0 &&
+            prefix <= 32) {
+            rule->address_family = JG_POLICY_ADDRESS_IPV4;
+        } else if (inet_pton(AF_INET6, address, rule->address) == 1 &&
+                   prefix >= 0 && prefix <= 128) {
+            rule->address_family = JG_POLICY_ADDRESS_IPV6;
+        } else {
+            return -EINVAL;
+        }
+        rule->has_address = true;
+        rule->prefix_length = (uint8_t)prefix;
+    } else if (!json_is_null(address_value) || !json_is_null(prefix_value)) {
+        return -EINVAL;
+    }
+    if (json_is_integer(port_value)) {
+        if (port <= 0 || port > 65535) {
+            return -EINVAL;
+        }
+        rule->has_port = true;
+        rule->port = (uint16_t)port;
+    } else if (!json_is_null(port_value)) {
+        return -EINVAL;
+    }
+    if (!rule->has_address && !rule->has_port) {
+        return -EINVAL;
+    }
+    result = parse_policy_scope(scope, &rule->scope);
+    if (result == 0) {
+        rule->id = rule_id;
+        rule->source = JG_POLICY_SOURCE_EXPLICIT;
+        rule->attribution = attribution;
+    }
+    return result;
+}
+
 /** @brief Parse one external TCP or UDP policy transport. */
 static bool parse_policy_transport(const char *text,
                                    enum jg_policy_transport *transport)
@@ -1655,6 +1768,73 @@ static int append_domain_rule_audit(struct jg_management *management,
             .source = source_address,
             .action = action,
             .object_type = "domain_rule",
+            .object_id = object_id,
+            .details = encoded,
+            .has_previous_revision = has_previous_revision,
+            .previous_revision = previous_revision,
+            .has_new_revision = has_new_revision,
+            .new_revision = rule->revision,
+            .success = published,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Append one destination-rule mutation and publication outcome. */
+static int append_destination_rule_audit(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    bool has_previous_revision,
+    uint64_t previous_revision,
+    bool has_new_revision,
+    const struct jg_database_destination_rule *rule,
+    bool published,
+    uint64_t generation,
+    uint64_t now)
+{
+    char object_id[32U];
+    char source_address[INET6_ADDRSTRLEN];
+    json_t *details = destination_rule_json(rule);
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = snprintf(object_id, sizeof(object_id), "%llu",
+                           (unsigned long long)rule->id);
+    int result = 0;
+
+    if (written <= 0 || (size_t)written >= sizeof(object_id) ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source_address,
+                  sizeof(source_address)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "published", json_boolean(published)) !=
+            0 ||
+        json_object_set_new(details, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source_address,
+            .action = action,
+            .object_type = "destination_rule",
             .object_id = object_id,
             .details = encoded,
             .has_previous_revision = has_previous_revision,
@@ -3093,6 +3273,313 @@ static int handle_domain_rule_delete(struct jg_management *management,
                            output_size, written);
 }
 
+/** @brief Publish policy and audit one destination-rule change. */
+static int publish_destination_rule_change(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    bool has_previous_revision,
+    uint64_t previous_revision,
+    bool has_new_revision,
+    const struct jg_database_destination_rule *rule,
+    uint64_t now,
+    bool *published,
+    uint64_t *generation)
+{
+    int result = jg_daemon_runtime_reload_policy(management->runtime);
+    int audit_result = 0;
+
+    *published = result == 0;
+    audit_result = jg_daemon_runtime_get_policy_generation(management->runtime,
+                                                           generation);
+    if (audit_result == 0) {
+        audit_result = append_destination_rule_audit(
+            management, request, remote, actor, action, has_previous_revision,
+            previous_revision, has_new_revision, rule, *published, *generation,
+            now);
+    }
+    return audit_result;
+}
+
+/** @brief Encode one created or updated destination-rule result. */
+static int respond_destination_rule(
+    int status,
+    const struct jg_database_destination_rule *rule,
+    bool published,
+    uint64_t generation,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    json_t *body = json_object();
+    json_t *item = destination_rule_json(rule);
+
+    if (body == NULL || item == NULL ||
+        json_object_set(body, "destination_rule", item) != 0 ||
+        json_object_set_new(body, "published", json_boolean(published)) != 0 ||
+        json_object_set_new(body, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        json_decref(item);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(item);
+    return encode_response(status, body, NULL, output, output_size, written);
+}
+
+/** @brief Read one exact destination rule for guarded mutation. */
+static int get_destination_rule(struct jg_database *database,
+                                uint64_t rule_id,
+                                struct jg_database_destination_rule *rule)
+{
+    size_t count = 0U;
+    bool has_more = false;
+    int result = jg_database_list_destination_rules(database, rule_id - 1U, 1U,
+                                                    rule, &count, &has_more);
+
+    (void)has_more;
+    return result == 0 && (count != 1U || rule->id != rule_id) ? -ENOENT
+                                                               : result;
+}
+
+/** @brief Create one explicit destination rule and publish a snapshot. */
+static int handle_destination_rule_create(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_policy_destination_rule_input rule;
+    struct jg_database_destination_rule created;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool enabled = false;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = parse_destination_rule_request(request->body, 0U, false, &rule,
+                                            &enabled, &revision);
+    if (request->query[0U] != '\0' || result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The destination-rule request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_database_create_destination_rule(management->database, &rule,
+                                                 enabled, &created);
+    if (result == -EINVAL || result == -ERANGE || result == -ENOSPC) {
+        return respond_error(400, "invalid_destination_rule",
+                             "The destination-rule properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "destination_create_failed",
+                             "The destination rule could not be created.",
+                             request->request_id, output, output_size, written);
+    }
+    result = publish_destination_rule_change(
+        management, request, remote, &actor, "policy.destination.create", false,
+        0U, true, &created, now, &published, &generation);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The destination rule changed, but its audit record was not "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_destination_rule(published ? 201 : 202, &created, published,
+                                    generation, output, output_size, written);
+}
+
+/** @brief Update one explicit destination rule and publish a snapshot. */
+static int handle_destination_rule_update(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t rule_id,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_policy_destination_rule_input rule;
+    struct jg_database_destination_rule previous;
+    struct jg_database_destination_rule updated;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool enabled = false;
+    bool published = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = parse_destination_rule_request(request->body, rule_id, true, &rule,
+                                            &enabled, &revision);
+    if (request->query[0U] != '\0' || result != 0) {
+        return respond_error(400, "invalid_body",
+                             "The destination-rule update is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = get_destination_rule(management->database, rule_id, &previous);
+    if (result == 0 && previous.source != JG_POLICY_SOURCE_EXPLICIT) {
+        return respond_error(
+            409, "managed_destination_rule",
+            "This rule is managed by its policy source and cannot be edited.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_database_update_destination_rule(
+            management->database, &rule, enabled, revision, &updated);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "destination_not_found",
+                             "The destination rule was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(
+            409, "revision_conflict",
+            "The destination rule has changed; reload and retry.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -ERANGE || result == -ENOSPC) {
+        return respond_error(400, "invalid_destination_rule",
+                             "The destination-rule properties are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "destination_update_failed",
+                             "The destination rule could not be updated.",
+                             request->request_id, output, output_size, written);
+    }
+    result = publish_destination_rule_change(
+        management, request, remote, &actor, "policy.destination.update", true,
+        revision, true, &updated, now, &published, &generation);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The destination rule changed, but its audit record was not "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_destination_rule(published ? 200 : 202, &updated, published,
+                                    generation, output, output_size, written);
+}
+
+/** @brief Delete one explicit destination rule and publish a snapshot. */
+static int handle_destination_rule_delete(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t rule_id,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    static const char *const fields[] = {"revision"};
+    struct authenticated_actor actor;
+    struct jg_database_destination_rule removed;
+    uint64_t revision = 0U;
+    uint64_t generation = 0U;
+    bool published = false;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_POLICY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_identifier(request->body, "revision", &revision)) {
+        return respond_error(400, "invalid_body",
+                             "The destination-rule deletion is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(503, "policy_unavailable",
+                             "The active policy is temporarily unavailable.",
+                             request->request_id, output, output_size, written);
+    }
+    result = get_destination_rule(management->database, rule_id, &removed);
+    if (result == 0 && removed.source != JG_POLICY_SOURCE_EXPLICIT) {
+        return respond_error(
+            409, "managed_destination_rule",
+            "This rule is managed by its policy source and cannot be deleted.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_database_delete_destination_rule(management->database,
+                                                     rule_id, revision);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "destination_not_found",
+                             "The destination rule was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(
+            409, "revision_conflict",
+            "The destination rule has changed; reload and retry.",
+            request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "destination_delete_failed",
+                             "The destination rule could not be deleted.",
+                             request->request_id, output, output_size, written);
+    }
+    result = publish_destination_rule_change(
+        management, request, remote, &actor, "policy.destination.delete", true,
+        revision, false, &removed, now, &published, &generation);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The destination rule changed, but its audit record was not "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "id", json_integer((json_int_t)rule_id)) !=
+            0 ||
+        json_object_set_new(body, "deleted", json_true()) != 0 ||
+        json_object_set_new(body, "published", json_boolean(published)) != 0 ||
+        json_object_set_new(body, "policy_generation",
+                            json_integer((json_int_t)generation)) != 0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    return encode_response(published ? 200 : 202, body, NULL, output,
+                           output_size, written);
+}
+
 /** @brief Return one authenticated stable page of local users. */
 static int handle_users_list(struct jg_management *management,
                              const struct management_request *request,
@@ -4113,6 +4600,7 @@ static int dispatch_request(struct jg_management *management,
     const bool state_change = strcmp(request->method, "GET") != 0;
     const bool authentication_path = strncmp(request->path, "/api/v1/auth/",
                                              sizeof("/api/v1/auth/") - 1U) == 0;
+    uint64_t destination_rule_id = 0U;
     uint64_t domain_rule_id = 0U;
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
@@ -4142,6 +4630,26 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_destination_rules_list(management, request, remote, now,
                                              output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/destinations") == 0 && post) {
+        return handle_destination_rule_create(management, request, remote, now,
+                                              output, output_size, written);
+    }
+    if (strcmp(request->method, "PATCH") == 0 &&
+        collection_path_identifier(request->path,
+                                   "/api/v1/policies/destinations/", "",
+                                   &destination_rule_id)) {
+        return handle_destination_rule_update(management, request, remote,
+                                              destination_rule_id, now, output,
+                                              output_size, written);
+    }
+    if (strcmp(request->method, "DELETE") == 0 &&
+        collection_path_identifier(request->path,
+                                   "/api/v1/policies/destinations/", "",
+                                   &destination_rule_id)) {
+        return handle_destination_rule_delete(management, request, remote,
+                                              destination_rule_id, now, output,
+                                              output_size, written);
     }
     if (strcmp(request->path, "/api/v1/domains") == 0 && post) {
         return handle_domain_rule_create(management, request, remote, now,
