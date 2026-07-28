@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "janusgate/network.h"
+#include "rtnetlink.h"
 
 /** Runtime directory containing privileged local-control sockets. */
 #define JG_RUNTIME_DIRECTORY "/run/janusgate"
@@ -41,7 +42,11 @@ static enum jg_ipc_error body_error(int result)
     if (result == -EPROTO || result == -EMSGSIZE) {
         return JG_IPC_ERROR_MALFORMED;
     }
-    return JG_IPC_ERROR_INVALID;
+    if (result == -EINVAL || result == -ERANGE || result == -ENODEV ||
+        result == -EEXIST || result == -EBUSY || result == -EACCES) {
+        return JG_IPC_ERROR_INVALID;
+    }
+    return JG_IPC_ERROR_SYSTEM;
 }
 
 /** @brief Validate and dispatch one decoded helper request. */
@@ -76,6 +81,9 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
     } else if (request->operation == JG_IPC_NETWORK_VALIDATE) {
         result = jg_network_config_decode(request->body, request->body_size,
                                           &config);
+        if (result == 0) {
+            result = jg_netd_validate_live_config(&config, NULL);
+        }
         if (result != 0) {
             response->error = body_error(result);
         }

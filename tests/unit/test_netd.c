@@ -18,6 +18,7 @@
 #include "janusgate/ipc.h"
 #include "janusgate/network.h"
 #include "netd.h"
+#include "rtnetlink.h"
 
 int jg_test_netd(void);
 
@@ -25,10 +26,10 @@ int jg_test_netd(void);
 static struct jg_network_config test_config(void)
 {
     const struct jg_network_config config = {
-        .bridge = "br-data",
-        .ingress = "eth0",
-        .egress = "eth1",
-        .management = "eth2",
+        .bridge = "jg-test-br",
+        .ingress = "jg-test-in",
+        .egress = "jg-test-out",
+        .management = "jg-test-mgmt",
         .bridge_mtu = 1500U,
         .queue_first = 100U,
         .queue_count = 2U,
@@ -94,7 +95,7 @@ static void test_request_dispatch(void **state)
     request.operation = JG_IPC_NETWORK_VALIDATE;
     request.body_size = body_size;
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
-    assert_int_equal(response.error, JG_IPC_ERROR_NONE);
+    assert_int_equal(response.error, JG_IPC_ERROR_INVALID);
 
     body[1] = 2U;
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
@@ -104,6 +105,19 @@ static void test_request_dispatch(void **state)
     request.operation = JG_IPC_NETWORK_APPLY;
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
     assert_int_equal(response.error, JG_IPC_ERROR_UNSUPPORTED);
+}
+
+/** @brief Verify bounded rtnetlink lookup and missing-link reporting. */
+static void test_link_query(void **state)
+{
+    struct jg_netd_link loopback;
+
+    (void)state;
+    assert_int_equal(jg_netd_query_link("lo", &loopback), 0);
+    assert_true(loopback.index > 0U);
+    assert_true(loopback.mtu > 0U);
+    assert_int_equal(jg_netd_query_link("jg-missing-link", &loopback), -ENODEV);
+    assert_int_equal(jg_netd_query_link(NULL, &loopback), -EINVAL);
 }
 
 /** @brief Verify authenticated `SOCK_SEQPACKET` request exchange. */
@@ -204,6 +218,7 @@ int jg_test_netd(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_request_dispatch),
+        cmocka_unit_test(test_link_query),
         cmocka_unit_test(test_authenticated_connection),
         cmocka_unit_test(test_unauthorized_connection),
         cmocka_unit_test(test_transport_boundaries),

@@ -29,6 +29,9 @@
  * @return -EINVAL when the arguments or request envelope are unusable.
  *
  * @thread_safety This function is reentrant.
+ *
+ * @side_effects Network-validation requests inspect current links through a
+ * short-lived rtnetlink socket.
  */
 int jg_netd_process_request(const struct jg_ipc_message *request,
                             struct jg_ipc_message *response);
