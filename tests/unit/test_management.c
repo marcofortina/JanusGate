@@ -1104,6 +1104,106 @@ static void test_token_api(void **state)
     assert_int_equal(verification.records_inspected, 2U);
 }
 
+/** @brief Verify authenticated network inspection and proposal validation. */
+static void test_network_api(void **state)
+{
+    static const char password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    const struct jg_account_token_config token_config = {
+        .name = "network administrator",
+        .permissions = JG_ACCESS_STATUS_READ | JG_ACCESS_NETWORK_WRITE,
+        .requests_per_minute = 100U,
+    };
+    const struct jg_network_config config = {
+        .bridge = "br-data",
+        .ingress = "eth0",
+        .egress = "eth1",
+        .management = "eth2",
+        .queue_first = 100U,
+        .queue_count = 4U,
+        .queue_length = 4096U,
+        .failure_mode = JG_NETWORK_FAIL_OPEN,
+        .multicast_snooping = true,
+        .queue_cpu_fanout = true,
+    };
+    struct jg_account_api_token token;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[2048U];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *configuration = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+    assert_int_equal(
+        jg_database_store_network_config(fixture->database, &config), 0);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"network-get\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/network\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 1);
+    configuration = json_object_get(body, "configuration");
+    assert_string_equal(
+        json_string_value(json_object_get(configuration, "bridge")), "br-data");
+    assert_string_equal(
+        json_string_value(json_object_get(configuration, "failure_mode")),
+        "fail_open");
+    assert_int_equal(
+        json_integer_value(json_object_get(configuration, "queue_count")), 4);
+    assert_true(
+        json_is_true(json_object_get(configuration, "queue_cpu_fanout")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"network-invalid\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/network/validate\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
+        "\"bridge\":\"eth0\",\"ingress\":\"eth0\",\"egress\":\"eth1\","
+        "\"management\":\"eth2\",\"bridge_mtu\":0,\"queue_first\":100,"
+        "\"queue_count\":4,\"queue_length\":4096,"
+        "\"failure_mode\":\"fail_open\",\"stp\":false,"
+        "\"multicast_snooping\":true,\"queue_cpu_fanout\":true}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "invalid_network");
+    json_decref(response);
+}
+
 /** @brief Verify authenticated blocklist-source paging and state JSON. */
 static void test_source_api(void **state)
 {
@@ -1617,6 +1717,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_user_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_token_api, setup_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_network_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_source_api, setup_management,
                                         teardown_management),

@@ -35,6 +35,7 @@
 #include "janusgate/event.h"
 #include "janusgate/ipc.h"
 #include "metrics.h"
+#include "netd_client.h"
 
 /** Absolute authenticated web-session lifetime. */
 #define MANAGEMENT_SESSION_LIFETIME 43200U
@@ -1134,6 +1135,69 @@ static json_t *event_json(const struct jg_event_record *record)
     return body;
 }
 
+/** @brief Return the stable external name for one network failure mode. */
+static const char *network_failure_mode_name(
+    enum jg_network_failure_mode failure_mode)
+{
+    if (failure_mode == JG_NETWORK_FAIL_OPEN) {
+        return "fail_open";
+    }
+    if (failure_mode == JG_NETWORK_FAIL_CLOSED) {
+        return "fail_closed";
+    }
+    return NULL;
+}
+
+/** @brief Parse one stable external network failure mode. */
+static enum jg_network_failure_mode parse_network_failure_mode(const char *name)
+{
+    if (name != NULL && strcmp(name, "fail_open") == 0) {
+        return JG_NETWORK_FAIL_OPEN;
+    }
+    if (name != NULL && strcmp(name, "fail_closed") == 0) {
+        return JG_NETWORK_FAIL_CLOSED;
+    }
+    return 0;
+}
+
+/** @brief Convert one validated network configuration to public JSON. */
+static json_t *network_config_json(const struct jg_network_config *config)
+{
+    const char *failure_mode = network_failure_mode_name(config->failure_mode);
+    json_t *body = json_object();
+
+    if (failure_mode == NULL || body == NULL ||
+        json_object_set_new(body, "bridge", json_string(config->bridge)) != 0 ||
+        json_object_set_new(body, "ingress", json_string(config->ingress)) !=
+            0 ||
+        json_object_set_new(body, "egress", json_string(config->egress)) != 0 ||
+        json_object_set_new(body, "management",
+                            json_string(config->management)) != 0 ||
+        json_object_set_new(body, "bridge_mtu",
+                            json_integer((json_int_t)config->bridge_mtu)) !=
+            0 ||
+        json_object_set_new(body, "queue_first",
+                            json_integer((json_int_t)config->queue_first)) !=
+            0 ||
+        json_object_set_new(body, "queue_count",
+                            json_integer((json_int_t)config->queue_count)) !=
+            0 ||
+        json_object_set_new(body, "queue_length",
+                            json_integer((json_int_t)config->queue_length)) !=
+            0 ||
+        json_object_set_new(body, "failure_mode", json_string(failure_mode)) !=
+            0 ||
+        json_object_set_new(body, "stp", json_boolean(config->stp)) != 0 ||
+        json_object_set_new(body, "multicast_snooping",
+                            json_boolean(config->multicast_snooping)) != 0 ||
+        json_object_set_new(body, "queue_cpu_fanout",
+                            json_boolean(config->queue_cpu_fanout)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
 /** @brief Return the stable external name for one policy action. */
 static const char *policy_effect_name(enum jg_policy_effect effect)
 {
@@ -1535,6 +1599,66 @@ static json_t *destination_rule_json(
     }
     json_decref(scope);
     return body;
+}
+
+/** @brief Parse one complete proposed inline-network configuration. */
+static int parse_network_config_request(json_t *body,
+                                        struct jg_network_config *config)
+{
+    static const char *const fields[] = {
+        "bridge",
+        "ingress",
+        "egress",
+        "management",
+        "bridge_mtu",
+        "queue_first",
+        "queue_count",
+        "queue_length",
+        "failure_mode",
+        "stp",
+        "multicast_snooping",
+        "queue_cpu_fanout",
+    };
+    const char *bridge =
+        required_string(body, "bridge", 1U, JG_INTERFACE_NAME_MAX);
+    const char *ingress =
+        required_string(body, "ingress", 1U, JG_INTERFACE_NAME_MAX);
+    const char *egress =
+        required_string(body, "egress", 1U, JG_INTERFACE_NAME_MAX);
+    const char *management =
+        required_string(body, "management", 1U, JG_INTERFACE_NAME_MAX);
+    const char *failure_mode = required_string(body, "failure_mode", 1U, 11U);
+    uint64_t bridge_mtu = 0U;
+    uint64_t queue_first = 0U;
+    uint64_t queue_count = 0U;
+    uint64_t queue_length = 0U;
+
+    (void)memset(config, 0, sizeof(*config));
+    if (!fields_allowed(body, fields, sizeof(fields) / sizeof(fields[0U])) ||
+        bridge == NULL || ingress == NULL || egress == NULL ||
+        management == NULL ||
+        !required_unsigned(body, "bridge_mtu", UINT32_MAX, &bridge_mtu) ||
+        !required_unsigned(body, "queue_first", UINT16_MAX, &queue_first) ||
+        !required_unsigned(body, "queue_count", UINT16_MAX, &queue_count) ||
+        !required_unsigned(body, "queue_length", UINT32_MAX, &queue_length) ||
+        failure_mode == NULL || !required_boolean(body, "stp", &config->stp) ||
+        !required_boolean(body, "multicast_snooping",
+                          &config->multicast_snooping) ||
+        !required_boolean(body, "queue_cpu_fanout",
+                          &config->queue_cpu_fanout)) {
+        return -EINVAL;
+    }
+    (void)snprintf(config->bridge, sizeof(config->bridge), "%s", bridge);
+    (void)snprintf(config->ingress, sizeof(config->ingress), "%s", ingress);
+    (void)snprintf(config->egress, sizeof(config->egress), "%s", egress);
+    (void)snprintf(config->management, sizeof(config->management), "%s",
+                   management);
+    config->bridge_mtu = (uint32_t)bridge_mtu;
+    config->queue_first = (uint16_t)queue_first;
+    config->queue_count = (uint16_t)queue_count;
+    config->queue_length = (uint32_t)queue_length;
+    config->failure_mode = parse_network_failure_mode(failure_mode);
+    return jg_network_config_validate(config);
 }
 
 /** @brief Parse one external blocklist syntax name. */
@@ -3212,6 +3336,113 @@ static int respond_actor_error(int result,
     return respond_error(401, "authentication_required",
                          "Valid authentication is required.",
                          request->request_id, output, output_size, written);
+}
+
+/** @brief Return the persistent inline-network configuration. */
+static int handle_network_get(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_network_config record;
+    json_t *body = NULL;
+    json_t *configuration = NULL;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_STATUS_READ, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The network request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        jg_database_load_network_config_record(management->database, &record);
+    if (result == -ENOENT) {
+        return respond_error(404, "network_unconfigured",
+                             "Network configuration has not been initialized.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "network_unavailable",
+                             "Network configuration could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    configuration = network_config_json(&record.config);
+    if (body == NULL || configuration == NULL ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)record.revision)) != 0 ||
+        json_object_set_new(body, "updated_at",
+                            json_integer((json_int_t)record.updated_at)) != 0 ||
+        json_object_set(body, "configuration", configuration) != 0) {
+        json_decref(configuration);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(configuration);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Validate a proposed network configuration without applying it. */
+static int handle_network_validate(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_network_config config;
+    json_t *body = NULL;
+    json_t *configuration = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_NETWORK_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    result = request->query[0U] == '\0'
+                 ? parse_network_config_request(request->body, &config)
+                 : -EINVAL;
+    if (result != 0) {
+        return respond_error(400, "invalid_network",
+                             "The proposed network configuration is invalid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_netd_client_validate(&config);
+    if (result == -EINVAL) {
+        return respond_error(
+            422, "network_validation_failed",
+            "The proposed configuration is not valid on this system.",
+            request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(
+            503, "network_validation_unavailable",
+            "Live network validation is temporarily unavailable.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    configuration = network_config_json(&config);
+    if (body == NULL || configuration == NULL ||
+        json_object_set_new(body, "valid", json_true()) != 0 ||
+        json_object_set(body, "configuration", configuration) != 0) {
+        json_decref(configuration);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(configuration);
+    return encode_response(200, body, NULL, output, output_size, written);
 }
 
 /** @brief Add one nonnegative runtime counter to a JSON object. */
@@ -6149,6 +6380,15 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/network") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_network_get(management, request, remote, now, output,
+                                  output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/network/validate") == 0 && post) {
+        return handle_network_validate(management, request, remote, now, output,
+                                       output_size, written);
     }
     if (strcmp(request->path, "/api/v1/blocklists") == 0 && post) {
         return handle_blocklist_import(management, request, remote, now, output,
