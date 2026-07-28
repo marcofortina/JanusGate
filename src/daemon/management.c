@@ -32,6 +32,7 @@
 #include "janusgate/access.h"
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
+#include "janusgate/backup.h"
 #include "janusgate/certificate.h"
 #include "janusgate/event.h"
 #include "janusgate/ipc.h"
@@ -860,6 +861,100 @@ static json_t *certificate_json(const struct jg_certificate_info *certificate)
                             json_boolean(certificate->self_signed)) != 0 ||
         json_object_set_new(body, "private_key_available",
                             json_boolean(certificate->private_key_matches)) !=
+            0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Return the stable external name for one backup kind. */
+static const char *backup_kind_name(enum jg_backup_kind kind)
+{
+    if (kind == JG_BACKUP_CONFIGURATION) {
+        return "configuration";
+    }
+    if (kind == JG_BACKUP_FULL) {
+        return "full";
+    }
+    return NULL;
+}
+
+/** @brief Parse one stable external backup kind. */
+static enum jg_backup_kind parse_backup_kind(const char *name)
+{
+    if (name != NULL && strcmp(name, "configuration") == 0) {
+        return JG_BACKUP_CONFIGURATION;
+    }
+    if (name != NULL && strcmp(name, "full") == 0) {
+        return JG_BACKUP_FULL;
+    }
+    return 0;
+}
+
+/** @brief Convert persistent backup metadata to public JSON fields. */
+static json_t *backup_json(const struct jg_database_backup *backup)
+{
+    char checksum[sizeof(backup->checksum) * 2U + 1U];
+    const char *kind = backup_kind_name(backup->kind);
+    json_t *body = json_object();
+
+    if (kind == NULL ||
+        sodium_bin2hex(checksum, sizeof(checksum), backup->checksum,
+                       sizeof(backup->checksum)) == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "id", json_integer((json_int_t)backup->id)) !=
+            0 ||
+        json_object_set_new(body, "created_at",
+                            json_integer((json_int_t)backup->created_at)) !=
+            0 ||
+        json_object_set_new(body, "kind", json_string(kind)) != 0 ||
+        json_object_set_new(body, "encrypted",
+                            json_boolean(backup->kind == JG_BACKUP_FULL)) !=
+            0 ||
+        json_object_set_new(body, "checksum_sha256", json_string(checksum)) !=
+            0 ||
+        json_object_set_new(body, "schema_version",
+                            json_integer((json_int_t)backup->schema_version)) !=
+            0 ||
+        json_object_set_new(body, "size_bytes",
+                            json_integer((json_int_t)backup->size_bytes)) !=
+            0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Convert a validated archive manifest to public JSON fields. */
+static json_t *backup_manifest_json(const struct jg_backup_info *info)
+{
+    const char *kind = backup_kind_name(info->kind);
+    json_t *body = json_object();
+
+    if (kind == NULL || body == NULL ||
+        json_object_set_new(body, "kind", json_string(kind)) != 0 ||
+        json_object_set_new(body, "format_version",
+                            json_integer(info->format_version)) != 0 ||
+        json_object_set_new(body, "compatible_version_min",
+                            json_integer(info->compatible_version_min)) != 0 ||
+        json_object_set_new(body, "compatible_version_max",
+                            json_integer(info->compatible_version_max)) != 0 ||
+        json_object_set_new(body, "schema_version",
+                            json_integer((json_int_t)info->schema_version)) !=
+            0 ||
+        json_object_set_new(body, "created_at",
+                            json_integer((json_int_t)info->created_at)) != 0 ||
+        json_object_set_new(body, "database_size",
+                            json_integer((json_int_t)info->database_size)) !=
+            0 ||
+        json_object_set_new(body, "certificate_size",
+                            json_integer((json_int_t)info->certificate_size)) !=
+            0 ||
+        json_object_set_new(body, "archive_size",
+                            json_integer((json_int_t)info->archive_size)) !=
+            0 ||
+        json_object_set_new(body, "encrypted", json_boolean(info->encrypted)) !=
             0) {
         json_decref(body);
         return NULL;
@@ -3134,6 +3229,213 @@ static int append_certificate_audit(
     }
     free(encoded);
     json_decref(details);
+    return result;
+}
+
+/** @brief Append one successful backup lifecycle event without secrets. */
+static int append_backup_audit(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               const struct authenticated_actor *actor,
+                               const char *action,
+                               const struct jg_database_backup *backup,
+                               const struct jg_database_restore_report *report,
+                               bool dry_run,
+                               uint64_t now)
+{
+    char object_id[32U];
+    char source[INET6_ADDRSTRLEN];
+    char checksum[sizeof(backup->checksum) * 2U + 1U];
+    const char *kind = backup_kind_name(backup->kind);
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = snprintf(object_id, sizeof(object_id), "%llu",
+                           (unsigned long long)backup->id);
+    int result = 0;
+
+    if (written <= 0 || (size_t)written >= sizeof(object_id) || kind == NULL ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL ||
+        sodium_bin2hex(checksum, sizeof(checksum), backup->checksum,
+                       sizeof(backup->checksum)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "kind", json_string(kind)) != 0 ||
+        json_object_set_new(details, "checksum_sha256",
+                            json_string(checksum)) != 0 ||
+        json_object_set_new(details, "schema_version",
+                            json_integer((json_int_t)backup->schema_version)) !=
+            0 ||
+        json_object_set_new(details, "size_bytes",
+                            json_integer((json_int_t)backup->size_bytes)) !=
+            0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && report != NULL &&
+        (json_object_set_new(details, "dry_run", json_boolean(dry_run)) != 0 ||
+         json_object_set_new(details, "changes",
+                             json_boolean(report->changes)) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = action,
+            .object_type = "backup",
+            .object_id = object_id,
+            .details = encoded,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Create, store, and record one complete backup archive. */
+static int create_backup(struct jg_management *management,
+                         enum jg_backup_kind kind,
+                         bool include_private_key,
+                         const char *passphrase,
+                         size_t passphrase_size,
+                         uint64_t now,
+                         struct jg_database_backup *created)
+{
+    uint8_t suffix[8U];
+    char suffix_text[sizeof(suffix) * 2U + 1U];
+    char *certificate = NULL;
+    uint8_t *database = NULL;
+    uint8_t *archive = NULL;
+    size_t certificate_size = 0U;
+    size_t database_size = 0U;
+    size_t archive_size = 0U;
+    struct jg_backup_info info;
+    struct jg_database_backup metadata;
+    bool stored = false;
+    int result = 0;
+    int written = 0;
+
+    if (management == NULL || created == NULL ||
+        (kind == JG_BACKUP_CONFIGURATION && include_private_key)) {
+        return -EINVAL;
+    }
+    (void)memset(created, 0, sizeof(*created));
+    (void)memset(&metadata, 0, sizeof(metadata));
+    result = jg_database_export(management->database, kind == JG_BACKUP_FULL,
+                                &database, &database_size);
+    if (result == 0) {
+        result = jg_certificate_export_file(management->certificate_path,
+                                            include_private_key, &certificate,
+                                            &certificate_size);
+        if (result == -ENOENT) {
+            result = 0;
+        }
+    }
+    if (result == 0) {
+        result = jg_backup_create(
+            kind, database, database_size, (const uint8_t *)certificate,
+            certificate_size, passphrase, passphrase_size, now,
+            JG_DATABASE_SCHEMA_VERSION, &archive, &archive_size);
+    }
+    if (result == 0) {
+        result = jg_backup_inspect(archive, archive_size, &info);
+    }
+    if (result == 0) {
+        randombytes_buf(suffix, sizeof(suffix));
+        if (sodium_bin2hex(suffix_text, sizeof(suffix_text), suffix,
+                           sizeof(suffix)) == NULL) {
+            result = -EIO;
+        }
+    }
+    if (result == 0) {
+        written = snprintf(metadata.filename, sizeof(metadata.filename),
+                           "backup-%llu-%s.jgb", (unsigned long long)now,
+                           suffix_text);
+        if (written <= 0 || (size_t)written >= sizeof(metadata.filename)) {
+            result = -EOVERFLOW;
+        }
+    }
+    if (result == 0) {
+        result = jg_backup_store(management->backup_directory,
+                                 metadata.filename, archive, archive_size);
+        stored = result == 0;
+    }
+    if (result == 0) {
+        metadata.created_at = info.created_at;
+        metadata.kind = info.kind;
+        (void)memcpy(metadata.checksum, info.checksum,
+                     sizeof(metadata.checksum));
+        metadata.schema_version = info.schema_version;
+        metadata.size_bytes = archive_size;
+        result =
+            jg_database_create_backup(management->database, &metadata, created);
+    }
+    if (result != 0 && stored &&
+        jg_backup_remove(management->backup_directory, metadata.filename) !=
+            0) {
+        result = -EIO;
+    }
+    sodium_memzero(suffix, sizeof(suffix));
+    jg_backup_data_clear(archive, archive_size);
+    jg_database_export_clear(database, database_size);
+    jg_certificate_pem_clear(certificate, certificate_size);
+    return result;
+}
+
+/** @brief Load and cross-check one recorded backup archive. */
+static int load_backup(struct jg_management *management,
+                       uint64_t backup_id,
+                       struct jg_database_backup *metadata,
+                       uint8_t **archive,
+                       size_t *archive_size,
+                       struct jg_backup_info *info)
+{
+    int result = 0;
+
+    if (management == NULL || metadata == NULL || archive == NULL ||
+        archive_size == NULL || info == NULL) {
+        return -EINVAL;
+    }
+    *archive = NULL;
+    *archive_size = 0U;
+    (void)memset(metadata, 0, sizeof(*metadata));
+    (void)memset(info, 0, sizeof(*info));
+    result = jg_database_load_backup(management->database, backup_id, metadata);
+    if (result == 0) {
+        result = jg_backup_load(management->backup_directory,
+                                metadata->filename, archive, archive_size);
+    }
+    if (result == 0) {
+        result = jg_backup_inspect(*archive, *archive_size, info);
+    }
+    if (result == 0 && (*archive_size != metadata->size_bytes ||
+                        info->archive_size != metadata->size_bytes ||
+                        info->created_at != metadata->created_at ||
+                        info->kind != metadata->kind ||
+                        info->schema_version != metadata->schema_version ||
+                        sodium_memcmp(info->checksum, metadata->checksum,
+                                      sizeof(metadata->checksum)) != 0)) {
+        result = -EBADMSG;
+    }
+    if (result != 0) {
+        jg_backup_data_clear(*archive, *archive_size);
+        *archive = NULL;
+        *archive_size = 0U;
+        (void)memset(info, 0, sizeof(*info));
+    }
     return result;
 }
 
@@ -6993,6 +7295,229 @@ static int handle_certificate_install(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one authenticated stable page of backup metadata. */
+static int handle_backups_list(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_backup *backups = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t after_id = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_BACKUPS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_page_query(request->query, "after_id",
+                         JG_DATABASE_BACKUP_PAGE_MAX, &after_id, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The backup pagination parameters are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    backups = calloc(limit, sizeof(*backups));
+    if (backups == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_database_list_backups(management->database, after_id, limit,
+                                      backups, &count, &has_more);
+    if (result != 0) {
+        free(backups);
+        return respond_error(500, "backups_unavailable",
+                             "The backup records could not be read.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = backup_json(&backups[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "after_id",
+                             json_integer((json_int_t)after_id)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "has_more", json_boolean(has_more)) != 0 ||
+         json_object_set(body, "backups", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        json_t *next = has_more && count > 0U
+                           ? json_integer((json_int_t)backups[count - 1U].id)
+                           : json_null();
+
+        if (json_object_set_new(body, "next_after_id", next) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(backups);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Create one configuration or encrypted full backup. */
+static int handle_backup_create(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                uint64_t now,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written)
+{
+    static const char *const fields[] = {
+        "kind",
+        "include_private_key",
+        "passphrase",
+    };
+    struct authenticated_actor actor;
+    struct jg_database_backup created;
+    const char *kind_text = NULL;
+    const char *passphrase = NULL;
+    enum jg_backup_kind kind = 0;
+    bool include_private_key = false;
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_BACKUPS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    kind_text = required_string(request->body, "kind", 4U, 13U);
+    kind = parse_backup_kind(kind_text);
+    if (request->query[0U] != '\0' ||
+        json_object_size(request->body) !=
+            sizeof(fields) / sizeof(fields[0U]) ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        kind == 0 ||
+        !required_boolean(request->body, "include_private_key",
+                          &include_private_key) ||
+        !required_nullable_string(request->body, "passphrase",
+                                  JG_BACKUP_PASSPHRASE_MAX, &passphrase) ||
+        (kind == JG_BACKUP_CONFIGURATION &&
+         (include_private_key || passphrase != NULL)) ||
+        (kind == JG_BACKUP_FULL &&
+         (passphrase == NULL ||
+          strlen(passphrase) < JG_BACKUP_PASSPHRASE_MIN))) {
+        return respond_error(
+            400, "invalid_body",
+            "The backup kind, private-key choice, or passphrase is not valid.",
+            request->request_id, output, output_size, written);
+    }
+    result = create_backup(management, kind, include_private_key, passphrase,
+                           passphrase == NULL ? 0U : strlen(passphrase), now,
+                           &created);
+    if (result != 0) {
+        return respond_error(500, "backup_create_failed",
+                             "The backup archive could not be created.",
+                             request->request_id, output, output_size, written);
+    }
+    result = append_backup_audit(management, request, remote, &actor,
+                                 "backup.create", &created, NULL, false, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The backup was created, but its audit record was not stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    backup = backup_json(&created);
+    if (body == NULL || backup == NULL ||
+        json_object_set(body, "backup", backup) != 0) {
+        json_decref(backup);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(backup);
+    return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Inspect one recorded backup and its validated manifest. */
+static int handle_backup_inspect(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const struct remote_address *remote,
+                                 uint64_t backup_id,
+                                 uint64_t now,
+                                 uint8_t *output,
+                                 size_t output_size,
+                                 size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_backup metadata;
+    struct jg_backup_info info;
+    uint8_t *archive = NULL;
+    size_t archive_size = 0U;
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    json_t *manifest = NULL;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_BACKUPS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "Backup inspection accepts no query or body.",
+                             request->request_id, output, output_size, written);
+    }
+    result = load_backup(management, backup_id, &metadata, &archive,
+                         &archive_size, &info);
+    if (result != 0) {
+        const bool missing = result == -ENOENT && metadata.id == 0U;
+
+        return respond_error(
+            missing ? 404 : 409,
+            missing ? "backup_not_found" : "backup_invalid",
+            missing ? "The requested backup does not exist."
+                    : "The recorded backup archive is missing or invalid.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    backup = backup_json(&metadata);
+    manifest = backup_manifest_json(&info);
+    if (body == NULL || backup == NULL || manifest == NULL ||
+        json_object_set(body, "backup", backup) != 0 ||
+        json_object_set(body, "manifest", manifest) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(backup);
+    json_decref(manifest);
+    jg_backup_data_clear(archive, archive_size);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated filtered page of operational events. */
 static int handle_events_list(struct jg_management *management,
                               const struct management_request *request,
@@ -7502,6 +8027,7 @@ static int dispatch_request(struct jg_management *management,
     const bool state_change = strcmp(request->method, "GET") != 0;
     const bool authentication_path = strncmp(request->path, "/api/v1/auth/",
                                              sizeof("/api/v1/auth/") - 1U) == 0;
+    uint64_t backup_id = 0U;
     uint64_t destination_rule_id = 0U;
     uint64_t domain_rule_id = 0U;
     uint64_t source_id = 0U;
@@ -7680,6 +8206,21 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/certificates/csr") == 0 && post) {
         return handle_certificate_csr(management, request, remote, now, output,
                                       output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/backups") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_backups_list(management, request, remote, now, output,
+                                   output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/backups") == 0 && post) {
+        return handle_backup_create(management, request, remote, now, output,
+                                    output_size, written);
+    }
+    if (strcmp(request->method, "GET") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/backups/", "",
+                                   &backup_id)) {
+        return handle_backup_inspect(management, request, remote, backup_id,
+                                     now, output, output_size, written);
     }
     if (strcmp(request->method, "DELETE") == 0 &&
         collection_path_identifier(request->path, "/api/v1/tokens/", "",
