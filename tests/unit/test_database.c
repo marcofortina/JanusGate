@@ -103,6 +103,40 @@ static bool column_exists(sqlite3 *handle,
     return exists;
 }
 
+/** @brief Open one serialized SQLite snapshot without taking ownership. */
+static sqlite3 *open_snapshot(uint8_t *data, size_t data_size)
+{
+    sqlite3 *snapshot = NULL;
+
+    assert_true(data_size <= (size_t)INT64_MAX);
+    assert_int_equal(sqlite3_open(":memory:", &snapshot), SQLITE_OK);
+    assert_int_equal(sqlite3_deserialize(snapshot, "main", data,
+                                         (sqlite3_int64)data_size,
+                                         (sqlite3_int64)data_size, 0U),
+                     SQLITE_OK);
+    return snapshot;
+}
+
+/** @brief Count every record in one trusted table. */
+static sqlite3_int64 row_count(sqlite3 *handle, const char *table)
+{
+    char query[128U];
+    sqlite3_stmt *statement = NULL;
+    sqlite3_int64 count = 0;
+    int written =
+        snprintf(query, sizeof(query), "SELECT count(*) FROM %s;", table);
+
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(query));
+    assert_int_equal(sqlite3_prepare_v2(handle, query, -1, &statement, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    count = sqlite3_column_int64(statement, 0);
+    assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    return count;
+}
+
 /** @brief Set user_version through a prepared SQLite statement. */
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
@@ -373,6 +407,104 @@ static void test_initial_migration(void **state)
 
     database = NULL;
     assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify full and secret-free in-memory database snapshots. */
+static void test_database_export(void **state)
+{
+    static const char sensitive_records[] =
+        "INSERT INTO system_settings(key,value,updated_at)"
+        " VALUES('appliance.name','gateway',10);"
+        "INSERT INTO users(id,username,password_hash,created_at,"
+        "password_changed_at) VALUES(1,'admin','secret-hash',10,10);"
+        "INSERT INTO user_roles(user_id,role_id) VALUES(1,1);"
+        "INSERT INTO api_tokens(id,user_id,name,token_hash,scopes,created_at)"
+        " VALUES(1,1,'automation',zeroblob(32),'all',10);"
+        "INSERT INTO web_sessions(id,user_id,session_hash,csrf_hash,created_at,"
+        "expires_at,last_seen_at) VALUES(1,1,zeroblob(32),zeroblob(32),10,"
+        "20,10);"
+        "INSERT INTO totp_credentials(user_id,secret_ciphertext,nonce,"
+        "created_at) VALUES(1,zeroblob(16),zeroblob(24),10);"
+        "INSERT INTO recovery_codes(user_id,code_hash,created_at)"
+        " VALUES(1,zeroblob(32),10);"
+        "INSERT INTO mtls_mappings(id,fingerprint_sha256,user_id,created_at)"
+        " VALUES(1,zeroblob(32),1,10);"
+        "INSERT INTO bootstrap_credentials(id,token_hash,created_at,expires_at)"
+        " VALUES(1,zeroblob(32),10,20);"
+        "INSERT INTO audit_events(id,occurred_at,actor_type,action,"
+        "object_type,details,event_hash) "
+        "VALUES(1,10,'system','test','database',"
+        "'{}',zeroblob(32));"
+        "INSERT INTO operational_events(id,occurred_at,severity,component,"
+        "code,message,details) VALUES(1,10,'info','database','test','test',"
+        "'{}');"
+        "INSERT INTO backup_metadata(id,created_at,kind,path,checksum,"
+        "schema_version,size_bytes) VALUES(1,10,'configuration','/backup',"
+        "zeroblob(32),1,100);";
+    static const char *const private_tables[] = {
+        "users",
+        "user_roles",
+        "api_tokens",
+        "web_sessions",
+        "totp_credentials",
+        "recovery_codes",
+        "mtls_mappings",
+        "bootstrap_credentials",
+        "audit_events",
+        "operational_events",
+        "backup_metadata",
+    };
+    char directory[64U];
+    char path[512U];
+    struct jg_database *database = NULL;
+    sqlite3 *writer = NULL;
+    sqlite3 *snapshot = NULL;
+    uint8_t *data = NULL;
+    size_t data_size = 0U;
+    size_t index = 0U;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    jg_database_close(database);
+    database = NULL;
+    assert_int_equal(sqlite3_open(path, &writer), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(writer, sensitive_records, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(writer), SQLITE_OK);
+    writer = NULL;
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+
+    assert_int_equal(jg_database_export(database, true, &data, &data_size), 0);
+    snapshot = open_snapshot(data, data_size);
+    for (index = 0U;
+         index < sizeof(private_tables) / sizeof(private_tables[0U]); ++index) {
+        assert_int_equal(row_count(snapshot, private_tables[index]), 1);
+    }
+    assert_int_equal(row_count(snapshot, "system_settings"), 1);
+    assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
+    snapshot = NULL;
+    jg_database_export_clear(data, data_size);
+    data = NULL;
+    data_size = 0U;
+
+    assert_int_equal(jg_database_export(database, false, &data, &data_size), 0);
+    snapshot = open_snapshot(data, data_size);
+    for (index = 0U;
+         index < sizeof(private_tables) / sizeof(private_tables[0U]); ++index) {
+        assert_int_equal(row_count(snapshot, private_tables[index]), 0);
+    }
+    assert_int_equal(row_count(snapshot, "system_settings"), 1);
+    assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
+    jg_database_export_clear(data, data_size);
+
+    assert_int_equal(jg_database_export(NULL, false, &data, &data_size),
+                     -EINVAL);
+    assert_int_equal(jg_database_export(database, false, NULL, &data_size),
+                     -EINVAL);
+    assert_int_equal(jg_database_export(database, false, &data, NULL), -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
 }
@@ -1395,6 +1527,7 @@ int jg_test_database(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_initial_migration),
+        cmocka_unit_test(test_database_export),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_version_two_migration),

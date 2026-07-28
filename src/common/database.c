@@ -797,11 +797,32 @@ static char *path_with_suffix(const char *path, const char *suffix)
     return combined;
 }
 
+/** @brief Copy one complete SQLite database into another connection. */
+static int copy_database(sqlite3 *target, sqlite3 *source)
+{
+    sqlite3_backup *backup =
+        sqlite3_backup_init(target, "main", source, "main");
+    int result = 0;
+    int status;
+
+    if (backup == NULL) {
+        return jg_database_sqlite_result(sqlite3_errcode(target));
+    }
+    status = sqlite3_backup_step(backup, -1);
+    if (status != SQLITE_DONE) {
+        result = jg_database_sqlite_result(status);
+    }
+    status = sqlite3_backup_finish(backup);
+    if (result == 0) {
+        result = jg_database_sqlite_result(status);
+    }
+    return result;
+}
+
 /** @brief Atomically write a last-known-good SQLite backup. */
 static int backup_database(const struct jg_database *database)
 {
     sqlite3 *target = NULL;
-    sqlite3_backup *backup = NULL;
     char *backup_path = path_with_suffix(database->path, ".lkg");
     char *temporary_path = path_with_suffix(database->path, ".lkg.XXXXXX");
     int descriptor = -1;
@@ -833,22 +854,7 @@ static int backup_database(const struct jg_database *database)
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        backup = sqlite3_backup_init(target, "main", database->handle, "main");
-        if (backup == NULL) {
-            result = jg_database_sqlite_result(sqlite3_errcode(target));
-        }
-    }
-    if (result == 0) {
-        status = sqlite3_backup_step(backup, -1);
-        if (status != SQLITE_DONE) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    if (backup != NULL) {
-        status = sqlite3_backup_finish(backup);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
+        result = copy_database(target, database->handle);
     }
     if (target != NULL) {
         status = sqlite3_close(target);
@@ -941,6 +947,88 @@ int jg_database_check_integrity(struct jg_database *database)
         }
     }
     return result;
+}
+
+/** @brief Export a consistent full or configuration-only SQLite snapshot. */
+int jg_database_export(struct jg_database *database,
+                       bool include_sensitive,
+                       uint8_t **data,
+                       size_t *data_size)
+{
+    static const char scrub_sensitive_data[] =
+        "DELETE FROM web_sessions;"
+        "DELETE FROM api_tokens;"
+        "DELETE FROM recovery_codes;"
+        "DELETE FROM totp_credentials;"
+        "DELETE FROM mtls_mappings;"
+        "DELETE FROM user_roles;"
+        "DELETE FROM users;"
+        "DELETE FROM bootstrap_credentials;"
+        "DELETE FROM audit_events;"
+        "DELETE FROM operational_events;"
+        "DELETE FROM backup_metadata;";
+    sqlite3 *snapshot = NULL;
+    sqlite3_int64 serialized_size = 0;
+    unsigned char *serialized = NULL;
+    int status;
+    int result = 0;
+
+    if (database == NULL || data == NULL || data_size == NULL) {
+        return -EINVAL;
+    }
+    *data = NULL;
+    *data_size = 0U;
+    status = sqlite3_open_v2(":memory:", &snapshot,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                                 SQLITE_OPEN_FULLMUTEX,
+                             NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        result = copy_database(snapshot, database->handle);
+    }
+    if (result == 0 && !include_sensitive) {
+        result = execute_sql(snapshot, scrub_sensitive_data);
+    }
+    if (result == 0) {
+        serialized = sqlite3_serialize(snapshot, "main", &serialized_size, 0U);
+        if (serialized == NULL) {
+            result = -ENOMEM;
+        } else if (serialized_size < 100) {
+            result = -EILSEQ;
+        } else if ((uint64_t)serialized_size > (uint64_t)SIZE_MAX) {
+            result = -EOVERFLOW;
+        } else {
+            /* Mark the snapshot as independent from an external WAL file. */
+            serialized[18U] = 1U;
+            serialized[19U] = 1U;
+        }
+    }
+    if (snapshot != NULL) {
+        status = sqlite3_close(snapshot);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *data = serialized;
+        *data_size = (size_t)serialized_size;
+    } else if (serialized != NULL) {
+        if (serialized_size > 0 &&
+            (uint64_t)serialized_size <= (uint64_t)SIZE_MAX) {
+            jg_secure_clear(serialized, (size_t)serialized_size);
+        }
+        sqlite3_free(serialized);
+    }
+    return result;
+}
+
+/** @brief Securely erase and release an exported database snapshot. */
+void jg_database_export_clear(uint8_t *data, size_t data_size)
+{
+    if (data != NULL) {
+        jg_secure_clear(data, data_size);
+        sqlite3_free(data);
+    }
 }
 
 /** @brief Open, secure, configure, and migrate a persistent database. */

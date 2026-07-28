@@ -331,6 +331,43 @@ JG_PUBLIC int jg_database_schema_version(struct jg_database *database,
 JG_PUBLIC int jg_database_check_integrity(struct jg_database *database);
 
 /**
+ * @brief Export a consistent SQLite snapshot directly into memory.
+ *
+ * Configuration snapshots retain appliance settings while excluding users,
+ * credentials, sessions, tokens, events, and backup history. Full snapshots
+ * retain every database record. No plaintext temporary file is created.
+ *
+ * @param[in] database Open database.
+ * @param[in] include_sensitive Whether to retain authentication and event data.
+ * @param[out] data Receives the SQLite snapshot.
+ * @param[out] data_size Receives the snapshot size in bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EILSEQ when SQLite produces an invalid snapshot.
+ * @return -EOVERFLOW when the snapshot does not fit in memory address space.
+ * @return -ENOMEM when allocation fails.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Allocates @p data, which must be released with
+ * jg_database_export_clear().
+ */
+JG_PUBLIC int jg_database_export(struct jg_database *database,
+                                 bool include_sensitive,
+                                 uint8_t **data,
+                                 size_t *data_size);
+
+/**
+ * @brief Securely erase and release an exported database snapshot.
+ *
+ * @param[in,out] data Snapshot returned by jg_database_export(), or null.
+ * @param[in] data_size Snapshot size in bytes.
+ */
+JG_PUBLIC void jg_database_export_clear(uint8_t *data, size_t data_size);
+
+/**
  * @brief Atomically persist the complete inline-network configuration.
  *
  * The validated, versioned wire representation is stored as canonical
