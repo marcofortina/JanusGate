@@ -49,3 +49,24 @@ int jg_netd_client_apply(const struct jg_network_config *config)
 {
     return call_network_operation(JG_IPC_NETWORK_APPLY, config);
 }
+
+/** @brief Send one bodyless operation through a short-lived connection. */
+static int call_empty_operation(enum jg_ipc_operation operation)
+{
+    size_t response_size = 0U;
+
+    return jg_ipc_client_call(JG_NETD_SOCKET_PATH, operation, NULL, 0U, NULL,
+                              0U, &response_size);
+}
+
+/** @brief Confirm the current pending helper transaction. */
+int jg_netd_client_confirm(void)
+{
+    return call_empty_operation(JG_IPC_NETWORK_CONFIRM);
+}
+
+/** @brief Roll back the current pending helper transaction. */
+int jg_netd_client_rollback(void)
+{
+    return call_empty_operation(JG_IPC_NETWORK_ROLLBACK);
+}

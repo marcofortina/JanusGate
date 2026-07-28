@@ -73,4 +73,26 @@ int jg_netd_client_validate(const struct jg_network_config *config);
  */
 int jg_netd_client_apply(const struct jg_network_config *config);
 
+/**
+ * @brief Confirm the pending helper network transaction.
+ *
+ * @return 0 when the helper consumes the pending checkpoint.
+ * @return A negative errno-style connection, protocol, conflict, or remote
+ * operation error otherwise.
+ *
+ * @thread_safety Calls use independent short-lived connections.
+ */
+int jg_netd_client_confirm(void);
+
+/**
+ * @brief Roll back the pending helper network transaction.
+ *
+ * @return 0 when the helper restores and consumes the pending checkpoint.
+ * @return A negative errno-style connection, protocol, conflict, or remote
+ * operation error otherwise.
+ *
+ * @thread_safety Calls use independent short-lived connections.
+ */
+int jg_netd_client_rollback(void);
+
 #endif

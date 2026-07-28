@@ -299,6 +299,12 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
         result = jg_netd_client_apply(&network);
     }
     if (result == 0) {
+        result = jg_netd_client_confirm();
+        if (result != 0) {
+            (void)jg_netd_client_rollback();
+        }
+    }
+    if (result == 0) {
         result = start_queues(started, config, &network, ingress_index);
     }
     jg_policy_snapshot_destroy(snapshot);

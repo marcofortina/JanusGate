@@ -65,6 +65,8 @@ static void test_exchange(void **state)
 {
     (void)state;
     assert_int_equal(exchange_request(JG_IPC_PING), 0);
+    assert_int_equal(exchange_request(JG_IPC_NETWORK_CONFIRM), -EBUSY);
+    assert_int_equal(exchange_request(JG_IPC_NETWORK_ROLLBACK), -EBUSY);
     assert_int_equal(exchange_request(JG_IPC_NETWORK_STATE), -ENOTSUP);
 }
 

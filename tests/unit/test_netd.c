@@ -101,6 +101,18 @@ static void test_request_dispatch(void **state)
     assert_int_equal(jg_netd_process_request(&request, &response), 0);
     assert_int_equal(response.error, JG_IPC_ERROR_INVALID);
 
+    request.body = NULL;
+    request.body_size = 0U;
+    request.operation = JG_IPC_NETWORK_CONFIRM;
+    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(response.error, JG_IPC_ERROR_CONFLICT);
+
+    request.operation = JG_IPC_NETWORK_ROLLBACK;
+    assert_int_equal(jg_netd_process_request(&request, &response), 0);
+    assert_int_equal(response.error, JG_IPC_ERROR_CONFLICT);
+
+    request.body = body;
+    request.body_size = body_size;
     request.operation = JG_IPC_NETWORK_VALIDATE;
     body[1] = 2U;
     assert_int_equal(jg_netd_process_request(&request, &response), 0);

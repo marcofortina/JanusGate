@@ -5,22 +5,89 @@
 #include "netd.h"
 
 #include <errno.h>
+#include <stdbool.h>
+#include <string.h>
 
 #include "nftables.h"
 #include "rtnetlink.h"
 
-/** @brief Apply bridge and nftables state as one rollback-safe transaction. */
+/** Single serialized network transaction owned by the helper process. */
+static struct {
+    struct jg_netd_bridge_checkpoint checkpoint;
+    struct jg_network_config current;
+    struct jg_network_config pending;
+    bool current_valid;
+    bool pending_valid;
+} transaction;
+
+/** @brief Discard a completed pending transaction without kernel changes. */
+static void clear_pending_transaction(void)
+{
+    (void)memset(&transaction.checkpoint, 0, sizeof(transaction.checkpoint));
+    (void)memset(&transaction.pending, 0, sizeof(transaction.pending));
+    transaction.pending_valid = false;
+}
+
+/** @brief Apply bridge and nftables state as one pending transaction. */
 int jg_netd_apply_network(const struct jg_network_config *config)
 {
-    struct jg_netd_bridge_checkpoint checkpoint;
+    struct jg_netd_bridge_checkpoint checkpoint = {0};
     int rollback_result = 0;
-    int result = jg_netd_apply_bridge(config, &checkpoint);
+    int result = 0;
 
+    if (transaction.pending_valid) {
+        return -EBUSY;
+    }
+    result = jg_netd_apply_bridge(config, &checkpoint);
     if (result == 0) {
         result = jg_netd_apply_nft_rules(config);
     }
     if (result != 0 && checkpoint.valid) {
         rollback_result = jg_netd_restore_bridge(&checkpoint);
     }
-    return rollback_result == 0 ? result : -EUCLEAN;
+    if (rollback_result != 0) {
+        return -EUCLEAN;
+    }
+    if (result == 0) {
+        transaction.checkpoint = checkpoint;
+        transaction.pending = *config;
+        transaction.pending_valid = true;
+    }
+    return result;
+}
+
+/** @brief Confirm and consume the current pending network transaction. */
+int jg_netd_confirm_network(void)
+{
+    if (!transaction.pending_valid) {
+        return -EBUSY;
+    }
+    transaction.current = transaction.pending;
+    transaction.current_valid = true;
+    clear_pending_transaction();
+    return 0;
+}
+
+/** @brief Restore and consume the current pending network transaction. */
+int jg_netd_rollback_network(void)
+{
+    int rules_result = 0;
+    int bridge_result = 0;
+
+    if (!transaction.pending_valid) {
+        return -EBUSY;
+    }
+    rules_result = transaction.current_valid
+                       ? jg_netd_apply_nft_rules(&transaction.current)
+                       : jg_netd_remove_nft_rules();
+    bridge_result = jg_netd_restore_bridge(&transaction.checkpoint);
+    if (rules_result == 0 && bridge_result == 0) {
+        clear_pending_transaction();
+        return 0;
+    }
+    if (bridge_result == 0) {
+        transaction.current_valid = false;
+        clear_pending_transaction();
+    }
+    return -EUCLEAN;
 }

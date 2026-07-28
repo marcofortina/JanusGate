@@ -42,9 +42,11 @@ static enum jg_ipc_error body_error(int result)
     if (result == -EPROTO || result == -EMSGSIZE) {
         return JG_IPC_ERROR_MALFORMED;
     }
+    if (result == -EBUSY || result == -ENOENT) {
+        return JG_IPC_ERROR_CONFLICT;
+    }
     if (result == -EINVAL || result == -ERANGE || result == -ENODEV ||
-        result == -EEXIST || result == -EBUSY || result == -EACCES ||
-        result == -EADDRINUSE) {
+        result == -EEXIST || result == -EACCES || result == -EADDRINUSE) {
         return JG_IPC_ERROR_INVALID;
     }
     return JG_IPC_ERROR_SYSTEM;
@@ -90,6 +92,18 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
         }
         if (result != 0) {
             response->error = body_error(result);
+        }
+    } else if (request->operation == JG_IPC_NETWORK_CONFIRM ||
+               request->operation == JG_IPC_NETWORK_ROLLBACK) {
+        if (request->body_size != 0U) {
+            response->error = JG_IPC_ERROR_MALFORMED;
+        } else {
+            result = request->operation == JG_IPC_NETWORK_CONFIRM
+                         ? jg_netd_confirm_network()
+                         : jg_netd_rollback_network();
+            if (result != 0) {
+                response->error = body_error(result);
+            }
         }
     } else {
         response->error = JG_IPC_ERROR_UNSUPPORTED;
