@@ -20,9 +20,11 @@
 #ifndef JANUSGATE_ACCOUNT_H
 #define JANUSGATE_ACCOUNT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/access.h"
 #include "janusgate/auth.h"
 #include "janusgate/database.h"
 #include "janusgate/version.h"
@@ -35,6 +37,32 @@
 
 /** Largest accepted bootstrap-token lifetime in seconds. */
 #define JG_ACCOUNT_BOOTSTRAP_LIFETIME_MAX 86400U
+
+/** Maximum persistent consecutive login failures. */
+#define JG_ACCOUNT_FAILED_LOGIN_MAX 1000000U
+
+/** Maximum account lock delay in seconds. */
+#define JG_ACCOUNT_LOCK_DELAY_MAX 3600U
+
+/**
+ * @brief Authenticated local identity returned to management services.
+ */
+struct jg_account_identity {
+    /** Persistent nonzero user identifier. */
+    uint64_t user_id;
+    /** Canonical local username. */
+    char username[JG_ACCOUNT_USERNAME_MAX + 1U];
+    /** Union of permissions assigned by persistent roles. */
+    uint32_t permissions;
+    /** Current optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Epoch copied into new sessions for global revocation. */
+    uint64_t session_epoch;
+    /** Whether the user must change the password before other operations. */
+    bool force_password_change;
+    /** Whether TOTP is required for this user. */
+    bool totp_enabled;
+};
 
 /**
  * @brief Issue or rotate the one-time first-boot bootstrap credential.
@@ -100,5 +128,41 @@ JG_PUBLIC int jg_account_create_initial_administrator(
     const struct jg_auth_password_policy *password_policy,
     uint64_t now,
     uint64_t *user_id);
+
+/**
+ * @brief Authenticate one enabled local user with persistent rate limiting.
+ *
+ * An incorrect password increments the failure counter and applies an
+ * exponentially increasing lock delay capped at
+ * @ref JG_ACCOUNT_LOCK_DELAY_MAX. Successful authentication clears failure
+ * state, records the login time, and upgrades an obsolete Argon2id hash.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] username Candidate local username.
+ * @param[in] password Candidate password bytes.
+ * @param[in] password_size Number of bytes in @p password.
+ * @param[in] password_policy Current Argon2id password policy.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] identity Receives the authenticated identity.
+ *
+ * @return 0 on successful password authentication.
+ * @return -EINVAL for a null or malformed input.
+ * @return -ERANGE when the candidate exceeds the absolute password bound.
+ * @return -EACCES for an unknown, disabled, or incorrectly authenticated user.
+ * @return -EAGAIN while the account lock delay is active.
+ * @return A negative errno-style hashing or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Updates login failure or success state transactionally.
+ */
+JG_PUBLIC int jg_account_authenticate(
+    struct jg_database *database,
+    const char *username,
+    const uint8_t *password,
+    size_t password_size,
+    const struct jg_auth_password_policy *password_policy,
+    uint64_t now,
+    struct jg_account_identity *identity);
 
 #endif

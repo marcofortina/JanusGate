@@ -158,12 +158,83 @@ static void test_bootstrap_expiration(void **state)
     remove_account_database(directory, path);
 }
 
+/** @brief Verify login state, role loading, and exponential account locks. */
+static void test_password_authentication(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    static const uint8_t incorrect[] = "incorrect horse battery staple";
+    char directory[64U];
+    char path[512U];
+    char token[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_identity identity;
+    struct jg_database *database = NULL;
+    sqlite3_stmt *statement = NULL;
+    sqlite3 *inspection = NULL;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_account_bootstrap_issue(database, 100U, 300U, token),
+                     0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)token, strlen(token),
+                         "administrator", password, sizeof(password) - 1U,
+                         &password_policy, 101U, &user_id),
+                     0);
+    assert_int_equal(jg_account_authenticate(database, "administrator",
+                                             incorrect, sizeof(incorrect) - 1U,
+                                             &password_policy, 110U, &identity),
+                     -EACCES);
+    assert_int_equal(jg_account_authenticate(database, "administrator",
+                                             password, sizeof(password) - 1U,
+                                             &password_policy, 110U, &identity),
+                     -EAGAIN);
+    assert_int_equal(jg_account_authenticate(database, "administrator",
+                                             password, sizeof(password) - 1U,
+                                             &password_policy, 111U, &identity),
+                     0);
+    assert_int_equal(identity.user_id, user_id);
+    assert_string_equal(identity.username, "administrator");
+    assert_int_equal(identity.permissions, JG_ACCESS_PERMISSION_ALL);
+    assert_false(identity.force_password_change);
+    assert_false(identity.totp_enabled);
+    assert_int_equal(jg_account_authenticate(database, "missing", password,
+                                             sizeof(password) - 1U,
+                                             &password_policy, 112U, &identity),
+                     -EACCES);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &inspection, SQLITE_OPEN_READONLY, NULL),
+        SQLITE_OK);
+    assert_int_equal(
+        sqlite3_prepare_v2(inspection,
+                           "SELECT failed_logins,locked_until,last_login_at"
+                           " FROM users WHERE id=?1;",
+                           -1, &statement, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_bind_int64(statement, 1, (sqlite3_int64)user_id),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_int_equal(sqlite3_column_int(statement, 0), 0);
+    assert_int_equal(sqlite3_column_type(statement, 1), SQLITE_NULL);
+    assert_int_equal(sqlite3_column_int64(statement, 2), 111);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
+    remove_account_database(directory, path);
+}
+
 /** @brief Run the first-boot account unit-test group. */
 int jg_test_account(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_initial_administrator),
         cmocka_unit_test(test_bootstrap_expiration),
+        cmocka_unit_test(test_password_authentication),
     };
 
     return cmocka_run_group_tests_name("account", tests, NULL, NULL);
