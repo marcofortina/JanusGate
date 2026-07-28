@@ -16,6 +16,7 @@ int jg_test_auth(void);
 int jg_test_blocklist(void);
 int jg_test_blocklist_remote(void);
 int jg_test_blocklist_update(void);
+int jg_test_certificate(void);
 int jg_test_checked(void);
 int jg_test_cli_client(void);
 int jg_test_control_protocol(void);
@@ -57,6 +58,7 @@ int main(void)
     result |= jg_test_blocklist();
     result |= jg_test_blocklist_remote();
     result |= jg_test_blocklist_update();
+    result |= jg_test_certificate();
     result |= jg_test_checked();
     result |= jg_test_cli_client();
     result |= jg_test_control_protocol();

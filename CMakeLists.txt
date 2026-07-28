@@ -18,6 +18,7 @@ include(CompilerOptions)
 include(ProjectMetadata)
 
 find_package(Threads REQUIRED)
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(PkgConfig REQUIRED)
 find_path(CIVETWEB_INCLUDE_DIR NAMES civetweb.h REQUIRED)
 find_library(CIVETWEB_LIBRARY NAMES civetweb REQUIRED)
@@ -56,6 +57,7 @@ add_library(
   src/common/auth.c
   src/common/blocklist.c
   src/common/blocklist_remote.c
+  src/common/certificate.c
   src/common/checked.c
   src/common/database.c
   src/common/dns.c
@@ -75,7 +77,8 @@ target_include_directories(
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
          "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-target_link_libraries(janusgate-common PUBLIC PkgConfig::IDN2 PkgConfig::SODIUM)
+target_link_libraries(
+  janusgate-common PUBLIC OpenSSL::Crypto PkgConfig::IDN2 PkgConfig::SODIUM)
 target_link_libraries(
   janusgate-common
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
@@ -189,6 +192,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist_remote.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/certificate.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/database.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/dns.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/dns_policy.h"
