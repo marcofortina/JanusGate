@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/backup.h"
 #include "janusgate/blocklist.h"
 #include "janusgate/blocklist_remote.h"
 #include "janusgate/dns_policy.h"
@@ -51,6 +52,9 @@
 
 /** Maximum stored blocklist update error bytes excluding the terminator. */
 #define JG_DATABASE_BLOCKLIST_ERROR_MAX 2048U
+
+/** Maximum backup metadata records returned by one page. */
+#define JG_DATABASE_BACKUP_PAGE_MAX 100U
 
 /**
  * @brief Persistent health classification for one blocklist source.
@@ -85,6 +89,23 @@ struct jg_database_restore_report {
     bool changes;
 };
 
+/** Self-contained persistent backup metadata. */
+struct jg_database_backup {
+    /** Stable positive backup identifier. */
+    uint64_t id;
+    /** Archive creation time as Unix seconds. */
+    uint64_t created_at;
+    /** Configuration or encrypted full backup. */
+    enum jg_backup_kind kind;
+    /** Plain archive filename in the configured backup directory. */
+    char filename[JG_BACKUP_FILENAME_MAX + 1U];
+    /** SHA-256 archive checksum. */
+    uint8_t checksum[32U];
+    /** Source database schema version. */
+    uint32_t schema_version;
+    /** Complete archive bytes. */
+    size_t size_bytes;
+};
 /**
  * @brief Self-contained persistent network-configuration record.
  */
@@ -417,6 +438,68 @@ JG_PUBLIC int jg_database_restore(struct jg_database *database,
                                   bool include_sensitive,
                                   bool dry_run,
                                   struct jg_database_restore_report *report);
+
+/**
+ * @brief Record one successfully stored backup archive.
+ *
+ * @param[in] database Open database.
+ * @param[in] backup Validated metadata with a zero identifier.
+ * @param[out] created Receives metadata with its assigned identifier.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or metadata.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts one backup metadata record.
+ */
+JG_PUBLIC int jg_database_create_backup(struct jg_database *database,
+                                        const struct jg_database_backup *backup,
+                                        struct jg_database_backup *created);
+
+/**
+ * @brief Load one backup metadata record by identifier.
+ *
+ * @param[in] database Open database.
+ * @param[in] backup_id Positive persistent identifier.
+ * @param[out] backup Receives the self-contained metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_load_backup(struct jg_database *database,
+                                      uint64_t backup_id,
+                                      struct jg_database_backup *backup);
+
+/**
+ * @brief Read one stable identifier-ordered page of backup metadata.
+ *
+ * @param[in] database Open database.
+ * @param[in] after_id Exclusive identifier cursor, or zero.
+ * @param[in] limit Page size from one through JG_DATABASE_BACKUP_PAGE_MAX.
+ * @param[out] backups Array with room for at least @p limit records.
+ * @param[out] count Number of records written.
+ * @param[out] has_more Whether another record follows the page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_list_backups(struct jg_database *database,
+                                       uint64_t after_id,
+                                       size_t limit,
+                                       struct jg_database_backup *backups,
+                                       size_t *count,
+                                       bool *has_more);
 
 /**
  * @brief Atomically persist the complete inline-network configuration.

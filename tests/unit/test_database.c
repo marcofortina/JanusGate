@@ -635,6 +635,71 @@ static void test_database_export(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify persistent backup metadata creation and pagination. */
+static void test_backup_metadata(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_database *database = NULL;
+    struct jg_database_backup input = {
+        .id = 0U,
+        .created_at = 100U,
+        .kind = JG_BACKUP_CONFIGURATION,
+        .filename = "backup-1.jgb",
+        .schema_version = JG_DATABASE_SCHEMA_VERSION,
+        .size_bytes = 4096U,
+    };
+    struct jg_database_backup created;
+    struct jg_database_backup loaded;
+    struct jg_database_backup page[1U];
+    size_t count = 0U;
+    bool has_more = false;
+    size_t index = 0U;
+
+    (void)state;
+    for (index = 0U; index < sizeof(input.checksum); ++index) {
+        input.checksum[index] = (uint8_t)index;
+    }
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_create_backup(database, &input, &created), 0);
+    assert_true(created.id > 0U);
+    assert_string_equal(created.filename, input.filename);
+    assert_int_equal(jg_database_load_backup(database, created.id, &loaded), 0);
+    assert_int_equal(loaded.id, created.id);
+    assert_int_equal(loaded.kind, JG_BACKUP_CONFIGURATION);
+    assert_int_equal(loaded.created_at, input.created_at);
+    assert_int_equal(loaded.schema_version, input.schema_version);
+    assert_int_equal(loaded.size_bytes, input.size_bytes);
+    assert_memory_equal(loaded.checksum, input.checksum,
+                        sizeof(input.checksum));
+
+    input.created_at = 200U;
+    input.kind = JG_BACKUP_FULL;
+    (void)snprintf(input.filename, sizeof(input.filename), "backup-2.jgb");
+    assert_int_equal(jg_database_create_backup(database, &input, &created), 0);
+    assert_int_equal(
+        jg_database_list_backups(database, 0U, 1U, page, &count, &has_more), 0);
+    assert_int_equal(count, 1U);
+    assert_true(has_more);
+    assert_int_equal(page[0U].kind, JG_BACKUP_CONFIGURATION);
+    assert_int_equal(jg_database_list_backups(database, page[0U].id, 1U, page,
+                                              &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(page[0U].kind, JG_BACKUP_FULL);
+    assert_int_equal(jg_database_load_backup(database, UINT64_MAX, &loaded),
+                     -EINVAL);
+    assert_int_equal(
+        jg_database_load_backup(database, created.id + 1U, &loaded), -ENOENT);
+    input.id = 1U;
+    assert_int_equal(jg_database_create_backup(database, &input, &created),
+                     -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify rejection of a database created by a newer release. */
 static void test_newer_schema_rejected(void **state)
 {
@@ -1654,6 +1719,7 @@ int jg_test_database(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_initial_migration),
         cmocka_unit_test(test_database_export),
+        cmocka_unit_test(test_backup_metadata),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_version_two_migration),
