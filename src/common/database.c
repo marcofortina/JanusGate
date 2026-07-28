@@ -2738,6 +2738,63 @@ static int read_blocklist_source(struct jg_database *database,
     return result;
 }
 
+/** @brief Read one record revision or report an absent identifier. */
+static int read_revision(sqlite3 *handle,
+                         const char *query,
+                         uint64_t identifier,
+                         uint64_t *revision)
+{
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(
+        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)identifier);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else if (status != SQLITE_ROW ||
+                   sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+                   sqlite3_column_int64(statement, 0) <= 0) {
+            result = status == SQLITE_ROW ? -EILSEQ
+                                          : jg_database_sqlite_result(status);
+        } else {
+            *revision = (uint64_t)sqlite3_column_int64(statement, 0);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Classify a failed optimistic record write. */
+static int write_conflict(sqlite3 *handle,
+                          const char *query,
+                          uint64_t identifier,
+                          uint64_t expected_revision,
+                          bool revision_must_advance)
+{
+    uint64_t revision = 0U;
+    int result = read_revision(handle, query, identifier, &revision);
+
+    if (result == 0 && revision != expected_revision) {
+        result = -EAGAIN;
+    } else if (result == 0 && revision_must_advance) {
+        result = -EOVERFLOW;
+    } else if (result == 0) {
+        result = -EIO;
+    }
+    return result;
+}
+
 /** @brief Create one blocklist source and its empty update state. */
 int jg_database_create_blocklist_source(
     struct jg_database *database,
@@ -2811,6 +2868,144 @@ int jg_database_create_blocklist_source(
     }
     if (result == 0) {
         *created = source;
+    }
+    return result;
+}
+
+/** @brief Replace one blocklist source at its expected revision. */
+int jg_database_update_blocklist_source(
+    struct jg_database *database,
+    uint64_t source_id,
+    const struct jg_database_blocklist_source_config *config,
+    uint64_t expected_revision,
+    struct jg_database_blocklist_source *updated)
+{
+    static const char revision_query[] =
+        "SELECT revision FROM blocklist_sources WHERE id=?1;";
+    static const char update[] =
+        "UPDATE blocklist_sources SET name=?1,url=?2,signature_url=?3,"
+        "format=?4,strict_mode=?5,enabled=?6,update_interval=?7,"
+        "max_download_bytes=?8,max_decompressed_bytes=?9,"
+        "connect_timeout_ms=?10,transfer_timeout_ms=?11,redirect_limit=?12,"
+        "retry_base_seconds=?13,retry_max_seconds=?14,sha256_pin=?15,"
+        "ed25519_public_key=?16,updated_at=unixepoch(),revision=revision+1 "
+        "WHERE id=?17 AND revision=?18 AND revision<9223372036854775807;";
+    struct jg_database_blocklist_source source;
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || source_id == 0U ||
+        source_id > (uint64_t)INT64_MAX || expected_revision == 0U ||
+        expected_revision > (uint64_t)INT64_MAX || updated == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(updated, 0, sizeof(*updated));
+    result = validate_blocklist_source_config(config);
+    if (result == 0) {
+        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, update, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_blocklist_source_config(statement, config);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 17, (sqlite3_int64)source_id);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 18,
+                                        (sqlite3_int64)expected_revision);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_CONSTRAINT_UNIQUE) {
+            result = -EEXIST;
+        } else {
+            result =
+                status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = write_conflict(database->handle, revision_query, source_id,
+                                expected_revision, true);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = read_blocklist_source(database, source_id, &source);
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
+    }
+    if (result == 0) {
+        *updated = source;
+    }
+    return result;
+}
+
+/** @brief Delete one blocklist source at its expected revision. */
+int jg_database_delete_blocklist_source(struct jg_database *database,
+                                        uint64_t source_id,
+                                        uint64_t expected_revision)
+{
+    static const char revision_query[] =
+        "SELECT revision FROM blocklist_sources WHERE id=?1;";
+    static const char remove[] =
+        "DELETE FROM blocklist_sources WHERE id=?1 AND revision=?2;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || source_id == 0U ||
+        source_id > (uint64_t)INT64_MAX || expected_revision == 0U ||
+        expected_revision > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, remove, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)source_id);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 2,
+                                        (sqlite3_int64)expected_revision);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = write_conflict(database->handle, revision_query, source_id,
+                                expected_revision, false);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = execute_sql(database->handle, "COMMIT;");
+    } else {
+        (void)execute_sql(database->handle, "ROLLBACK;");
     }
     return result;
 }
@@ -2910,63 +3105,6 @@ static int read_domain_record(struct jg_database *database,
     (void)has_more;
     if (result == 0 && (count != 1U || record->id != rule_id)) {
         result = -ENOENT;
-    }
-    return result;
-}
-
-/** @brief Read one rule revision or report an absent identifier. */
-static int read_rule_revision(sqlite3 *handle,
-                              const char *query,
-                              uint64_t rule_id,
-                              uint64_t *revision)
-{
-    sqlite3_stmt *statement = NULL;
-    int status = sqlite3_prepare_v3(
-        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
-
-    if (result == 0) {
-        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)rule_id);
-        result = jg_database_sqlite_result(status);
-    }
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        if (status == SQLITE_DONE) {
-            result = -ENOENT;
-        } else if (status != SQLITE_ROW ||
-                   sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
-                   sqlite3_column_int64(statement, 0) <= 0) {
-            result = status == SQLITE_ROW ? -EILSEQ
-                                          : jg_database_sqlite_result(status);
-        } else {
-            *revision = (uint64_t)sqlite3_column_int64(statement, 0);
-        }
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    return result;
-}
-
-/** @brief Classify a failed optimistic rule write. */
-static int rule_write_conflict(sqlite3 *handle,
-                               const char *query,
-                               uint64_t rule_id,
-                               uint64_t expected_revision,
-                               bool revision_must_advance)
-{
-    uint64_t revision = 0U;
-    int result = read_rule_revision(handle, query, rule_id, &revision);
-
-    if (result == 0 && revision != expected_revision) {
-        result = -EAGAIN;
-    } else if (result == 0 && revision_must_advance) {
-        result = -EOVERFLOW;
-    } else if (result == 0) {
-        result = -EIO;
     }
     return result;
 }
@@ -3090,8 +3228,8 @@ int jg_database_update_domain_rule(struct jg_database *database,
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = rule_write_conflict(database->handle, revision_query, rule->id,
-                                     expected_revision, true);
+        result = write_conflict(database->handle, revision_query, rule->id,
+                                expected_revision, true);
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -3150,8 +3288,8 @@ int jg_database_delete_domain_rule(struct jg_database *database,
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = rule_write_conflict(database->handle, revision_query, rule_id,
-                                     expected_revision, false);
+        result = write_conflict(database->handle, revision_query, rule_id,
+                                expected_revision, false);
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -3393,8 +3531,8 @@ int jg_database_update_destination_rule(
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = rule_write_conflict(database->handle, revision_query, rule->id,
-                                     expected_revision, true);
+        result = write_conflict(database->handle, revision_query, rule->id,
+                                expected_revision, true);
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -3453,8 +3591,8 @@ int jg_database_delete_destination_rule(struct jg_database *database,
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = rule_write_conflict(database->handle, revision_query, rule_id,
-                                     expected_revision, false);
+        result = write_conflict(database->handle, revision_query, rule_id,
+                                expected_revision, false);
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);

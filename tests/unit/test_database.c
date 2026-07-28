@@ -1087,6 +1087,7 @@ static void test_blocklist_source_creation(void **state)
     struct jg_database_blocklist_source_config config = make_blocklist_source();
     struct jg_database_blocklist_source created;
     struct jg_database_blocklist_source duplicate;
+    struct jg_database_blocklist_source updated;
     struct jg_database *database = NULL;
 
     (void)state;
@@ -1130,6 +1131,35 @@ static void test_blocklist_source_creation(void **state)
         jg_database_create_blocklist_source(database, &config, &duplicate), 0);
     assert_string_equal(duplicate.url, "");
     assert_false(duplicate.has_signature);
+
+    config = make_blocklist_source();
+    config.name = "Updated threat domains";
+    config.enabled = false;
+    config.update_interval_seconds = 7200U;
+    assert_int_equal(
+        jg_database_update_blocklist_source(database, created.id, &config,
+                                            created.revision, &updated),
+        0);
+    assert_int_equal(updated.id, created.id);
+    assert_int_equal(updated.revision, 2U);
+    assert_string_equal(updated.name, config.name);
+    assert_false(updated.enabled);
+    assert_int_equal(updated.update_interval_seconds, 7200U);
+    assert_int_equal(
+        jg_database_update_blocklist_source(database, created.id, &config,
+                                            created.revision, &updated),
+        -EAGAIN);
+    config.name = duplicate.name;
+    assert_int_equal(jg_database_update_blocklist_source(database, created.id,
+                                                         &config, 2U, &updated),
+                     -EEXIST);
+    assert_int_equal(jg_database_delete_blocklist_source(database, created.id,
+                                                         created.revision),
+                     -EAGAIN);
+    assert_int_equal(
+        jg_database_delete_blocklist_source(database, created.id, 2U), 0);
+    assert_int_equal(
+        jg_database_delete_blocklist_source(database, created.id, 2U), -ENOENT);
     jg_database_close(database);
     remove_database(directory, path);
 }

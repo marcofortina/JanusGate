@@ -614,6 +614,63 @@ JG_PUBLIC int jg_database_create_blocklist_source(
     struct jg_database_blocklist_source *created);
 
 /**
+ * @brief Replace one blocklist source at its expected revision.
+ *
+ * Operational update state and active last-known-good entries are preserved.
+ *
+ * @param[in] database Open database.
+ * @param[in] source_id Persistent positive source identifier.
+ * @param[in] config Complete replacement configuration.
+ * @param[in] expected_revision Revision observed by the caller.
+ * @param[out] updated Updated self-contained source and state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments, bounds, or relationships.
+ * @return -EILSEQ for invalid UTF-8 administrative text.
+ * @return -EEXIST when another source already uses the requested name.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces one source configuration and advances its revision
+ * atomically.
+ */
+JG_PUBLIC int jg_database_update_blocklist_source(
+    struct jg_database *database,
+    uint64_t source_id,
+    const struct jg_database_blocklist_source_config *config,
+    uint64_t expected_revision,
+    struct jg_database_blocklist_source *updated);
+
+/**
+ * @brief Delete one blocklist source at its expected revision.
+ *
+ * Associated update state and imported blocklist rules are removed through
+ * referential cascades in the same transaction.
+ *
+ * @param[in] database Open database.
+ * @param[in] source_id Persistent positive source identifier.
+ * @param[in] expected_revision Revision observed by the caller.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Deletes the source, status, and associated imported rules
+ * atomically.
+ */
+JG_PUBLIC int jg_database_delete_blocklist_source(struct jg_database *database,
+                                                  uint64_t source_id,
+                                                  uint64_t expected_revision);
+
+/**
  * @brief Read one stable identifier-ordered page of blocklist sources.
  *
  * Pass the last identifier returned by the preceding page as @p after_id, or
