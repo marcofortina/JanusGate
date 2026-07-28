@@ -32,7 +32,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 8U
+#define JG_DATABASE_SCHEMA_VERSION 9U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -68,6 +68,18 @@ enum jg_database_blocklist_health {
 
 /** Opaque owned database connection. */
 struct jg_database;
+
+/**
+ * @brief Self-contained persistent network-configuration record.
+ */
+struct jg_database_network_config {
+    /** Complete validated inline-network configuration. */
+    struct jg_network_config config;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Last modification time as Unix seconds. */
+    uint64_t updated_at;
+};
 
 /**
  * @brief Self-contained persistent domain-rule record.
@@ -355,6 +367,50 @@ JG_PUBLIC int jg_database_store_network_config(
  */
 JG_PUBLIC int jg_database_load_network_config(struct jg_database *database,
                                               struct jg_network_config *config);
+
+/**
+ * @brief Load a network configuration with concurrency metadata.
+ *
+ * @param[in] database Open database.
+ * @param[out] record Receives the validated configuration and metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -ENOENT when setup has not stored a network configuration.
+ * @return -EILSEQ when persistent data is malformed.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_load_network_config_record(
+    struct jg_database *database,
+    struct jg_database_network_config *record);
+
+/**
+ * @brief Replace a network configuration at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] config Complete validated replacement configuration.
+ * @param[in] expected_revision Revision observed by the caller.
+ * @param[out] updated Receives the replacement and advanced revision.
+ *
+ * @return 0 on success.
+ * @return -EINVAL or -ERANGE for invalid input.
+ * @return -ENOENT when no configuration has been stored.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces the configuration and advances its revision
+ * atomically.
+ */
+JG_PUBLIC int jg_database_replace_network_config(
+    struct jg_database *database,
+    const struct jg_network_config *config,
+    uint64_t expected_revision,
+    struct jg_database_network_config *updated);
 
 /**
  * @brief Atomically persist blocked UDP DNS response policy.

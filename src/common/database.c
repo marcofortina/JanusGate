@@ -526,6 +526,32 @@ static const char *const migration_8[] = {
     migration_8_blocklists,
 };
 
+/** Normalize network configuration with optimistic-concurrency metadata. */
+static const char migration_9_settings[] =
+    "CREATE TABLE IF NOT EXISTS system_settings ("
+    "key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 128),"
+    "value TEXT NOT NULL,"
+    "updated_at INTEGER NOT NULL CHECK(updated_at >= 0)"
+    ") STRICT;"
+    "CREATE TABLE network_configuration ("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "value TEXT NOT NULL CHECK(length(value)=168),"
+    "revision INTEGER NOT NULL CHECK(revision > 0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at >= 0)"
+    ") STRICT;"
+    "INSERT INTO network_configuration(id,value,revision,updated_at) "
+    "SELECT 1,value,1,updated_at FROM system_settings "
+    "WHERE key='network.configuration';"
+    "DELETE FROM system_settings WHERE key='network.configuration';"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(9,unixepoch());"
+    "PRAGMA user_version=9;";
+
+/** Ordered statement groups composing schema version nine. */
+static const char *const migration_9[] = {
+    migration_9_settings,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -536,6 +562,7 @@ static const struct database_migration migrations[] = {
     {6U, migration_6, sizeof(migration_6) / sizeof(migration_6[0])},
     {7U, migration_7, sizeof(migration_7) / sizeof(migration_7[0])},
     {8U, migration_8, sizeof(migration_8) / sizeof(migration_8[0])},
+    {9U, migration_9, sizeof(migration_9) / sizeof(migration_9[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1147,10 +1174,11 @@ int jg_database_store_network_config(struct jg_database *database,
                                      const struct jg_network_config *config)
 {
     static const char statement_text[] =
-        "INSERT INTO system_settings(key,value,updated_at)"
-        " VALUES('network.configuration',?1,unixepoch())"
-        " ON CONFLICT(key) DO UPDATE SET"
-        " value=excluded.value,updated_at=excluded.updated_at;";
+        "INSERT INTO network_configuration(id,value,revision,updated_at)"
+        " VALUES(1,?1,1,unixepoch())"
+        " ON CONFLICT(id) DO UPDATE SET"
+        " value=excluded.value,updated_at=excluded.updated_at,"
+        " revision=revision+1 WHERE revision<9223372036854775807;";
     char text[JG_NETWORK_CONFIG_WIRE_SIZE * 2U + 1U];
     uint8_t wire[JG_NETWORK_CONFIG_WIRE_SIZE];
     sqlite3_stmt *statement = NULL;
@@ -1181,6 +1209,9 @@ int jg_database_store_network_config(struct jg_database *database,
         status = sqlite3_step(statement);
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EOVERFLOW;
+    }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
@@ -1190,21 +1221,25 @@ int jg_database_store_network_config(struct jg_database *database,
     return result;
 }
 
-/** @brief Load one validated persistent network configuration. */
-int jg_database_load_network_config(struct jg_database *database,
-                                    struct jg_network_config *config)
+/** @brief Load one validated network record and its concurrency metadata. */
+int jg_database_load_network_config_record(
+    struct jg_database *database,
+    struct jg_database_network_config *record)
 {
-    static const char query[] = "SELECT value FROM system_settings"
-                                " WHERE key='network.configuration';";
+    static const char query[] =
+        "SELECT value,updated_at,revision FROM network_configuration"
+        " WHERE id=1;";
     uint8_t wire[JG_NETWORK_CONFIG_WIRE_SIZE];
-    struct jg_network_config loaded;
+    struct jg_database_network_config loaded;
     sqlite3_stmt *statement = NULL;
     const char *text = NULL;
     size_t text_size = 0U;
+    sqlite3_int64 updated_at = 0;
+    sqlite3_int64 revision = 0;
     int status = SQLITE_OK;
     int result = 0;
 
-    if (database == NULL || config == NULL) {
+    if (database == NULL || record == NULL) {
         return -EINVAL;
     }
     status = sqlite3_prepare_v3(database->handle, query, -1,
@@ -1225,8 +1260,20 @@ int jg_database_load_network_config(struct jg_database *database,
         result = decode_hex(text, text_size, wire, sizeof(wire));
     }
     if (result == 0 &&
-        jg_network_config_decode(wire, sizeof(wire), &loaded) != 0) {
+        jg_network_config_decode(wire, sizeof(wire), &loaded.config) != 0) {
         result = -EILSEQ;
+    }
+    if (result == 0) {
+        updated_at = sqlite3_column_int64(statement, 1);
+        revision = sqlite3_column_int64(statement, 2);
+        if (sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+            sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
+            updated_at < 0 || revision <= 0) {
+            result = -EILSEQ;
+        } else {
+            loaded.updated_at = (uint64_t)updated_at;
+            loaded.revision = (uint64_t)revision;
+        }
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -1235,7 +1282,97 @@ int jg_database_load_network_config(struct jg_database *database,
         }
     }
     if (result == 0) {
-        *config = loaded;
+        *record = loaded;
+    }
+    return result;
+}
+
+/** @brief Load only the validated persistent network configuration. */
+int jg_database_load_network_config(struct jg_database *database,
+                                    struct jg_network_config *config)
+{
+    struct jg_database_network_config record;
+    int result = 0;
+
+    if (config == NULL) {
+        return -EINVAL;
+    }
+    result = jg_database_load_network_config_record(database, &record);
+    if (result == 0) {
+        *config = record.config;
+    }
+    return result;
+}
+
+/** @brief Replace one network configuration at its expected revision. */
+int jg_database_replace_network_config(
+    struct jg_database *database,
+    const struct jg_network_config *config,
+    uint64_t expected_revision,
+    struct jg_database_network_config *updated)
+{
+    static const char update[] =
+        "UPDATE network_configuration SET value=?1,updated_at=unixepoch(),"
+        "revision=revision+1 WHERE id=1"
+        " AND revision=?2 AND revision<9223372036854775807;";
+    char text[JG_NETWORK_CONFIG_WIRE_SIZE * 2U + 1U];
+    uint8_t wire[JG_NETWORK_CONFIG_WIRE_SIZE];
+    struct jg_database_network_config current;
+    sqlite3_stmt *statement = NULL;
+    size_t encoded_size = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || expected_revision == 0U ||
+        expected_revision > (uint64_t)INT64_MAX || updated == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(updated, 0, sizeof(*updated));
+    result =
+        jg_network_config_encode(config, wire, sizeof(wire), &encoded_size);
+    if (result != 0) {
+        return result;
+    }
+    if (encoded_size != sizeof(wire)) {
+        return -EIO;
+    }
+    encode_hex(wire, sizeof(wire), text);
+    status = sqlite3_prepare_v3(database->handle, update, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 1, text, -1, SQLITE_TRANSIENT);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 2,
+                                        (sqlite3_int64)expected_revision);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = jg_database_load_network_config_record(database, &current);
+        if (result == 0 && current.revision != expected_revision) {
+            result = -EAGAIN;
+        } else if (result == 0 && current.revision == (uint64_t)INT64_MAX) {
+            result = -EOVERFLOW;
+        } else if (result == 0) {
+            result = -EIO;
+        }
+    }
+    if (result == 0) {
+        result = jg_database_load_network_config_record(database, &current);
+    }
+    if (result == 0) {
+        *updated = current;
     }
     return result;
 }

@@ -367,6 +367,8 @@ static void test_initial_migration(void **state)
         column_exists(inspection, "blocklist_sources", "signature_url"));
     assert_true(column_exists(inspection, "blocklist_source_status",
                               "rejected_entries"));
+    assert_true(table_exists(inspection, "network_configuration"));
+    assert_true(column_exists(inspection, "network_configuration", "revision"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -445,6 +447,8 @@ static void test_version_one_migration(void **state)
         column_exists(inspection, "blocklist_sources", "signature_url"));
     assert_true(column_exists(inspection, "blocklist_source_status",
                               "rejected_entries"));
+    assert_true(table_exists(inspection, "network_configuration"));
+    assert_true(column_exists(inspection, "network_configuration", "revision"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));
@@ -876,12 +880,17 @@ static void test_encrypted_dns_endpoint_policy(void **state)
 /** @brief Verify atomic network configuration persistence and validation. */
 static void test_network_configuration(void **state)
 {
-    static const char corrupt[] = "UPDATE system_settings SET value='invalid'"
-                                  " WHERE key='network.configuration';";
+    static const char corrupt[] =
+        "UPDATE network_configuration SET value="
+        "'00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000' WHERE id=1;";
     char directory[64U];
     char path[512U];
     struct jg_network_config expected = make_network_config();
     struct jg_network_config loaded;
+    struct jg_database_network_config record;
+    struct jg_database_network_config updated;
     struct jg_database *database = NULL;
     sqlite3 *handle = NULL;
 
@@ -890,9 +899,24 @@ static void test_network_configuration(void **state)
     assert_int_equal(jg_database_open(path, 1000U, &database), 0);
     assert_int_equal(jg_database_load_network_config(database, &loaded),
                      -ENOENT);
+    assert_int_equal(jg_database_load_network_config_record(database, &record),
+                     -ENOENT);
     assert_int_equal(jg_database_store_network_config(database, &expected), 0);
     assert_int_equal(jg_database_load_network_config(database, &loaded), 0);
     assert_network_config_equal(&loaded, &expected);
+    assert_int_equal(jg_database_load_network_config_record(database, &record),
+                     0);
+    assert_int_equal(record.revision, 1U);
+    assert_network_config_equal(&record.config, &expected);
+    expected.queue_length = 8192U;
+    assert_int_equal(jg_database_replace_network_config(
+                         database, &expected, record.revision, &updated),
+                     0);
+    assert_int_equal(updated.revision, 2U);
+    assert_network_config_equal(&updated.config, &expected);
+    assert_int_equal(jg_database_replace_network_config(
+                         database, &record.config, record.revision, &updated),
+                     -EAGAIN);
     jg_database_close(database);
 
     assert_int_equal(
@@ -908,6 +932,51 @@ static void test_network_configuration(void **state)
     assert_int_equal(jg_database_store_network_config(database, NULL), -EINVAL);
     assert_int_equal(jg_database_load_network_config(NULL, &loaded), -EINVAL);
     assert_int_equal(jg_database_load_network_config(database, NULL), -EINVAL);
+    assert_int_equal(jg_database_load_network_config_record(NULL, &record),
+                     -EINVAL);
+    assert_int_equal(jg_database_load_network_config_record(database, NULL),
+                     -EINVAL);
+    assert_int_equal(
+        jg_database_replace_network_config(database, &expected, 0U, &updated),
+        -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify migration of a retained version-eight network setting. */
+static void test_network_configuration_migration(void **state)
+{
+    static const char downgrade[] =
+        "INSERT INTO system_settings(key,value,updated_at) "
+        "SELECT 'network.configuration',value,updated_at "
+        "FROM network_configuration WHERE id=1;"
+        "DROP TABLE network_configuration;"
+        "DELETE FROM schema_migrations WHERE version=9;"
+        "PRAGMA user_version=8;";
+    char directory[64U];
+    char path[512U];
+    const struct jg_network_config expected = make_network_config();
+    struct jg_database_network_config record;
+    struct jg_database *database = NULL;
+    sqlite3 *handle = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_store_network_config(database, &expected), 0);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, downgrade, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_network_config_record(database, &record),
+                     0);
+    assert_int_equal(record.revision, 1U);
+    assert_network_config_equal(&record.config, &expected);
     jg_database_close(database);
     remove_database(directory, path);
 }
@@ -1333,6 +1402,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
+        cmocka_unit_test(test_network_configuration_migration),
         cmocka_unit_test(test_dns_response_configuration),
         cmocka_unit_test(test_blocklist_source_page),
         cmocka_unit_test(test_blocklist_source_creation),
