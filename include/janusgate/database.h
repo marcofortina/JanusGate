@@ -28,7 +28,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 3U
+#define JG_DATABASE_SCHEMA_VERSION 4U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -170,6 +170,30 @@ JG_PUBLIC int jg_database_load_network_config(struct jg_database *database,
 JG_PUBLIC int jg_database_replace_domain_rules(
     struct jg_database *database,
     const struct jg_policy_rule_input *rules,
+    size_t rule_count);
+
+/**
+ * @brief Atomically replace every active persistent destination rule.
+ *
+ * @param[in] database Open database.
+ * @param[in] rules Rules to persist, or null when @p rule_count is zero.
+ * @param[in] rule_count Number of input rules, bounded by
+ * JG_DATABASE_POLICY_RULE_LIMIT.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or rule content.
+ * @return -EOVERFLOW for unsupported identifiers or packed sizes.
+ * @return -ENOMEM when allocation fails.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces the complete active `destination_rules` table in one
+ * transaction.
+ */
+JG_PUBLIC int jg_database_replace_destination_rules(
+    struct jg_database *database,
+    const struct jg_policy_destination_rule_input *rules,
     size_t rule_count);
 
 /**

@@ -106,7 +106,7 @@ static bool column_exists(sqlite3 *handle,
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
     sqlite3_stmt *statement = NULL;
-    const char *sql = version == 4U ? "PRAGMA user_version=4;" : NULL;
+    const char *sql = version == 5U ? "PRAGMA user_version=5;" : NULL;
 
     assert_non_null(sql);
     assert_int_equal(sqlite3_prepare_v2(handle, sql, -1, &statement, NULL),
@@ -115,10 +115,11 @@ static void set_schema_version(sqlite3 *handle, uint32_t version)
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
 }
 
-/** @brief Add the retained pre-version-three domain-rule table. */
-static void add_legacy_domain_rules(sqlite3 *handle)
+/** @brief Add retained policy tables predating current migrations. */
+static void add_legacy_policy_rules(sqlite3 *handle)
 {
     static const char schema[] =
+        "CREATE TABLE policy_groups(id INTEGER PRIMARY KEY) STRICT;"
         "CREATE TABLE domain_rules ("
         "id INTEGER PRIMARY KEY,group_id INTEGER,blocklist_source_id INTEGER,"
         "domain TEXT NOT NULL,match_type TEXT NOT NULL,effect TEXT NOT NULL,"
@@ -129,7 +130,15 @@ static void add_legacy_domain_rules(sqlite3 *handle)
         "id,domain,match_type,effect,source,scope_type,attribution,enabled,"
         "updated_at) VALUES("
         "1,'legacy.example','exact','block','explicit','global','legacy',1,10"
-        ");";
+        ");"
+        "CREATE TABLE destination_rules ("
+        "id INTEGER PRIMARY KEY,group_id INTEGER,effect TEXT NOT NULL,"
+        "protocol TEXT NOT NULL,family INTEGER,address BLOB,"
+        "prefix_length INTEGER,port INTEGER,attribution TEXT NOT NULL,"
+        "enabled INTEGER NOT NULL) STRICT;"
+        "INSERT INTO destination_rules("
+        "id,effect,protocol,port,attribution,enabled"
+        ") VALUES(2,'block','tcp',853,'legacy',1);";
 
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
 }
@@ -178,7 +187,7 @@ static void create_version_one_fixture(const char *path)
                                      NULL),
                      SQLITE_OK);
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
-    add_legacy_domain_rules(handle);
+    add_legacy_policy_rules(handle);
     assert_int_equal(sqlite3_close(handle), SQLITE_OK);
     assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
 }
@@ -198,7 +207,7 @@ static void create_version_two_fixture(const char *path)
                                      NULL),
                      SQLITE_OK);
     assert_int_equal(sqlite3_exec(handle, schema, NULL, NULL, NULL), SQLITE_OK);
-    add_legacy_domain_rules(handle);
+    add_legacy_policy_rules(handle);
     assert_int_equal(sqlite3_close(handle), SQLITE_OK);
     assert_int_equal(chmod(path, S_IRUSR | S_IWUSR), 0);
 }
@@ -218,6 +227,23 @@ static struct jg_policy_rule_input make_rule(uint64_t id,
     rule.include_subdomains = include_subdomains;
     rule.effect = effect;
     rule.source = source;
+    rule.scope.type = JG_POLICY_SCOPE_GLOBAL;
+    rule.attribution = "database test";
+    return rule;
+}
+
+/** @brief Construct a valid global destination rule for database tests. */
+static struct jg_policy_destination_rule_input make_destination_rule(
+    uint64_t id,
+    enum jg_policy_effect effect)
+{
+    struct jg_policy_destination_rule_input rule;
+
+    (void)memset(&rule, 0, sizeof(rule));
+    rule.id = id;
+    rule.effect = effect;
+    rule.source = JG_POLICY_SOURCE_EXPLICIT;
+    rule.transport = JG_POLICY_TRANSPORT_ANY;
     rule.scope.type = JG_POLICY_SCOPE_GLOBAL;
     rule.attribution = "database test";
     return rule;
@@ -358,6 +384,8 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "api_tokens", "source_address"));
     assert_true(column_exists(inspection, "audit_events", "request_id"));
     assert_true(column_exists(inspection, "domain_rules", "target"));
+    assert_true(column_exists(inspection, "destination_rules", "source"));
+    assert_true(column_exists(inspection, "destination_rules", "scope_type"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));
@@ -380,6 +408,18 @@ static void test_version_one_migration(void **state)
         SQLITE_OK);
     assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
     assert_string_equal((const char *)sqlite3_column_text(statement, 0), "dns");
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+    assert_int_equal(
+        sqlite3_prepare_v2(inspection,
+                           "SELECT source,scope_type FROM destination_rules "
+                           "WHERE id=2;",
+                           -1, &statement, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_string_equal((const char *)sqlite3_column_text(statement, 0),
+                        "explicit");
+    assert_string_equal((const char *)sqlite3_column_text(statement, 1),
+                        "global");
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
     remove_database(directory, path);
@@ -449,10 +489,19 @@ static void test_policy_round_trip(void **state)
     char path[512U];
     struct jg_policy_rule_input rules[4U];
     struct jg_policy_rule_input invalid;
+    struct jg_policy_destination_rule_input destination_rules[2U];
+    struct jg_policy_destination_rule_input invalid_destination;
+    struct jg_policy_destination destination = {
+        .transport = JG_POLICY_TRANSPORT_TCP,
+        .address_family = JG_POLICY_ADDRESS_IPV4,
+        .address = {203U, 0U, 113U, 53U},
+        .port = 853U,
+    };
     struct jg_policy_snapshot *snapshot = NULL;
     struct jg_policy_snapshot_info info;
     struct jg_policy_client client;
     struct jg_policy_match match;
+    struct jg_policy_destination_match destination_match;
     struct jg_database *database = NULL;
 
     (void)state;
@@ -471,11 +520,28 @@ static void test_policy_round_trip(void **state)
                          JG_POLICY_SOURCE_EXPLICIT);
     rules[3].target = JG_POLICY_DOMAIN_TLS_SNI;
     assert_int_equal(jg_database_replace_domain_rules(database, rules, 4U), 0);
+    destination_rules[0] = make_destination_rule(20U, JG_POLICY_BLOCK);
+    destination_rules[0].has_port = true;
+    destination_rules[0].port = 853U;
+    destination_rules[1] = make_destination_rule(21U, JG_POLICY_ALLOW);
+    destination_rules[1].transport = JG_POLICY_TRANSPORT_TCP;
+    destination_rules[1].has_address = true;
+    destination_rules[1].address_family = JG_POLICY_ADDRESS_IPV4;
+    (void)memcpy(destination_rules[1].address, destination.address, 4U);
+    destination_rules[1].prefix_length = 32U;
+    destination_rules[1].has_port = true;
+    destination_rules[1].port = 853U;
+    destination_rules[1].scope.type = JG_POLICY_SCOPE_VLAN;
+    destination_rules[1].scope.value.vlan_id = 7U;
+    assert_int_equal(
+        jg_database_replace_destination_rules(database, destination_rules, 2U),
+        0);
     assert_int_equal(jg_database_load_policy_snapshot(database, 9U, &snapshot),
                      0);
     assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
     assert_int_equal(info.generation, 9U);
     assert_int_equal(info.rule_count, 4U);
+    assert_int_equal(info.destination_rule_count, 2U);
 
     assert_int_equal(
         jg_policy_match_domain(snapshot, "host.example.org", NULL, &match), 0);
@@ -500,17 +566,36 @@ static void test_policy_round_trip(void **state)
                      0);
     assert_int_equal(match.effect, JG_POLICY_BLOCK);
     assert_int_equal(match.rule_id, 12U);
+    assert_int_equal(jg_policy_match_destination(snapshot, &destination,
+                                                 &client, &destination_match),
+                     0);
+    assert_int_equal(destination_match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(destination_match.rule_id, 21U);
+    client.vlan_id = 8U;
+    assert_int_equal(jg_policy_match_destination(snapshot, &destination,
+                                                 &client, &destination_match),
+                     0);
+    assert_int_equal(destination_match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(destination_match.rule_id, 20U);
     jg_policy_snapshot_destroy(snapshot);
 
     invalid = make_rule(1U, "invalid.example", false, JG_POLICY_ALLOW,
                         JG_POLICY_SOURCE_BLOCKLIST);
     assert_true(jg_database_replace_domain_rules(database, &invalid, 1U) < 0);
+    invalid_destination = destination_rules[0];
+    invalid_destination.has_port = false;
+    assert_true(jg_database_replace_destination_rules(
+                    database, &invalid_destination, 1U) < 0);
     snapshot = NULL;
     assert_int_equal(jg_database_load_policy_snapshot(database, 10U, &snapshot),
                      0);
     assert_int_equal(
         jg_policy_match_domain(snapshot, "host.example.org", NULL, &match), 0);
     assert_int_equal(match.rule_id, 10U);
+    assert_int_equal(jg_policy_match_destination(snapshot, &destination, NULL,
+                                                 &destination_match),
+                     0);
+    assert_int_equal(destination_match.rule_id, 20U);
 
     jg_policy_snapshot_destroy(snapshot);
     jg_database_close(database);
