@@ -16,6 +16,9 @@
 
 int jg_test_control_protocol(void);
 
+/** Exact bytes in the legacy version-one status representation. */
+#define STATUS_VERSION_ONE_WIRE_SIZE (8U + 33U * sizeof(uint64_t))
+
 /** @brief Construct distinctive values across every status counter group. */
 static struct jg_daemon_runtime_stats make_status(void)
 {
@@ -41,6 +44,8 @@ static struct jg_daemon_runtime_stats make_status(void)
                 .streams = 14U,
                 .tcp_resets = 15U,
                 .internal_errors = 16U,
+                .sni_inspected = 34U,
+                .sni_encrypted_or_unavailable = 35U,
             },
         .fragments =
             {
@@ -91,6 +96,8 @@ static void test_round_trip(void **state)
     assert_int_equal(decoded.policy_generation, 1U);
     assert_int_equal(decoded.queues.verdict_errors, 8U);
     assert_int_equal(decoded.dataplane.tcp_resets, 15U);
+    assert_int_equal(decoded.dataplane.sni_inspected, 34U);
+    assert_int_equal(decoded.dataplane.sni_encrypted_or_unavailable, 35U);
     assert_int_equal(decoded.fragments.timeouts, 23U);
     assert_int_equal(decoded.tcp_streams.timeouts, 31U);
     assert_int_equal(decoded.output.errors, 33U);
@@ -99,6 +106,29 @@ static void test_round_trip(void **state)
                      0);
     assert_int_equal(repeated_size, wire_size);
     assert_memory_equal(repeated, wire, wire_size);
+}
+
+/** @brief Verify backward decoding of a version-one status body. */
+static void test_version_one_decode(void **state)
+{
+    uint8_t current[JG_DAEMON_STATUS_WIRE_SIZE];
+    uint8_t legacy[STATUS_VERSION_ONE_WIRE_SIZE];
+    struct jg_daemon_runtime_stats stats = make_status();
+    struct jg_daemon_runtime_stats decoded;
+    size_t current_size = 0U;
+
+    (void)state;
+    assert_int_equal(jg_daemon_status_encode(&stats, current, sizeof(current),
+                                             &current_size),
+                     0);
+    (void)memcpy(legacy, current, sizeof(legacy));
+    legacy[1U] = 1U;
+    legacy[7U] = 33U;
+    assert_int_equal(jg_daemon_status_decode(legacy, sizeof(legacy), &decoded),
+                     0);
+    assert_int_equal(decoded.output.errors, 33U);
+    assert_int_equal(decoded.dataplane.sni_inspected, 0U);
+    assert_int_equal(decoded.dataplane.sni_encrypted_or_unavailable, 0U);
 }
 
 /** @brief Verify rejection of malformed status bodies and arguments. */
@@ -118,10 +148,10 @@ static void test_errors(void **state)
         -ENOSPC);
     assert_int_equal(jg_daemon_status_decode(wire, sizeof(wire) - 1U, &stats),
                      -EMSGSIZE);
-    wire[1U] = 2U;
+    wire[1U] = 3U;
     assert_int_equal(jg_daemon_status_decode(wire, sizeof(wire), &stats),
                      -EPROTONOSUPPORT);
-    wire[1U] = 1U;
+    wire[1U] = 2U;
     wire[3U] = 1U;
     assert_int_equal(jg_daemon_status_decode(wire, sizeof(wire), &stats),
                      -EPROTO);
@@ -134,6 +164,7 @@ int jg_test_control_protocol(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_round_trip),
+        cmocka_unit_test(test_version_one_decode),
         cmocka_unit_test(test_errors),
     };
 

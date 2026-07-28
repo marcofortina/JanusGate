@@ -11,11 +11,22 @@
 
 #include "janusgate/checked.h"
 
-/** Version of the fixed daemon status body. */
-#define DAEMON_STATUS_VERSION 1U
+/** Version of the current fixed daemon status body. */
+#define DAEMON_STATUS_VERSION 2U
+
+/** Version of the original fixed daemon status body. */
+#define DAEMON_STATUS_VERSION_ONE 1U
+
+/** Ordered counter count in a version-one status body. */
+#define DAEMON_STATUS_VERSION_ONE_COUNTER_COUNT 33U
 
 /** Fixed metadata bytes preceding ordered status counters. */
 #define DAEMON_STATUS_HEADER_SIZE 8U
+
+/** Exact bytes in a version-one daemon status body. */
+#define DAEMON_STATUS_VERSION_ONE_WIRE_SIZE                                    \
+    (DAEMON_STATUS_HEADER_SIZE +                                               \
+     DAEMON_STATUS_VERSION_ONE_COUNTER_COUNT * sizeof(uint64_t))
 
 /** @brief Copy semantic status fields into their stable wire order. */
 static void collect_counters(const struct jg_daemon_runtime_stats *stats,
@@ -54,6 +65,8 @@ static void collect_counters(const struct jg_daemon_runtime_stats *stats,
     values[30U] = stats->tcp_streams.timeouts;
     values[31U] = stats->output.sent;
     values[32U] = stats->output.errors;
+    values[33U] = stats->dataplane.sni_inspected;
+    values[34U] = stats->dataplane.sni_encrypted_or_unavailable;
 }
 
 /** @brief Restore semantic status fields from stable wire order. */
@@ -95,7 +108,7 @@ static void restore_counters(const uint64_t *values,
     stats->output.errors = values[32U];
 }
 
-/** @brief Encode one fixed version-one daemon status body. */
+/** @brief Encode one fixed current-version daemon status body. */
 int jg_daemon_status_encode(const struct jg_daemon_runtime_stats *stats,
                             uint8_t *output,
                             size_t output_size,
@@ -125,7 +138,7 @@ int jg_daemon_status_encode(const struct jg_daemon_runtime_stats *stats,
     return 0;
 }
 
-/** @brief Decode one exact version-one daemon status body. */
+/** @brief Decode one exact supported daemon status body. */
 int jg_daemon_status_decode(const uint8_t *data,
                             size_t data_size,
                             struct jg_daemon_runtime_stats *stats)
@@ -135,12 +148,14 @@ int jg_daemon_status_decode(const uint8_t *data,
     uint32_t counter_count = 0U;
     uint16_t version = 0U;
     uint16_t reserved = 0U;
+    size_t expected_size = 0U;
+    size_t expected_count = 0U;
     size_t index = 0U;
 
     if (data == NULL || stats == NULL) {
         return -EINVAL;
     }
-    if (data_size != JG_DAEMON_STATUS_WIRE_SIZE) {
+    if (data_size < DAEMON_STATUS_HEADER_SIZE) {
         return -EMSGSIZE;
     }
     if (!jg_read_u16_be(data, data_size, 0U, &version) ||
@@ -148,13 +163,22 @@ int jg_daemon_status_decode(const uint8_t *data,
         !jg_read_u32_be(data, data_size, 4U, &counter_count)) {
         return -EPROTO;
     }
-    if (version != DAEMON_STATUS_VERSION) {
+    if (version == DAEMON_STATUS_VERSION_ONE) {
+        expected_size = DAEMON_STATUS_VERSION_ONE_WIRE_SIZE;
+        expected_count = DAEMON_STATUS_VERSION_ONE_COUNTER_COUNT;
+    } else if (version == DAEMON_STATUS_VERSION) {
+        expected_size = JG_DAEMON_STATUS_WIRE_SIZE;
+        expected_count = JG_DAEMON_STATUS_COUNTER_COUNT;
+    } else {
         return -EPROTONOSUPPORT;
     }
-    if (reserved != 0U || counter_count != JG_DAEMON_STATUS_COUNTER_COUNT) {
+    if (data_size != expected_size) {
+        return -EMSGSIZE;
+    }
+    if (reserved != 0U || (size_t)counter_count != expected_count) {
         return -EPROTO;
     }
-    for (index = 0U; index < JG_DAEMON_STATUS_COUNTER_COUNT; ++index) {
+    for (index = 0U; index < expected_count; ++index) {
         if (!jg_read_u64_be(data, data_size,
                             DAEMON_STATUS_HEADER_SIZE +
                                 index * sizeof(uint64_t),
@@ -163,6 +187,10 @@ int jg_daemon_status_decode(const uint8_t *data,
         }
     }
     restore_counters(values, &decoded);
+    if (version == DAEMON_STATUS_VERSION) {
+        decoded.dataplane.sni_inspected = values[33U];
+        decoded.dataplane.sni_encrypted_or_unavailable = values[34U];
+    }
     *stats = decoded;
     return 0;
 }
