@@ -9,7 +9,8 @@ add_executable(
   unit/test_checked.c
   unit/test_dns.c
   unit/test_domain.c
-  unit/test_packet.c)
+  unit/test_packet.c
+  unit/test_policy.c)
 target_link_libraries(janusgate-unit-tests PRIVATE JanusGate::common PkgConfig::CMOCKA)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
