@@ -15,12 +15,13 @@ add_executable(
   unit/test_ipc.c
   unit/test_network.c
   unit/test_netd.c
+  unit/test_nfqueue.c
   unit/test_packet.c
   unit/test_policy.c)
 target_link_libraries(
   janusgate-unit-tests
-  PRIVATE JanusGate::common janusgate-netd-core PkgConfig::CMOCKA
-          PkgConfig::SQLITE3)
+  PRIVATE JanusGate::common janusgate-daemon-core janusgate-netd-core
+          PkgConfig::CMOCKA PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)

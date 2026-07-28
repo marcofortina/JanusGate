@@ -22,6 +22,7 @@ pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
 pkg_check_modules(MNL REQUIRED IMPORTED_TARGET libmnl)
+pkg_check_modules(NETFILTER_QUEUE REQUIRED IMPORTED_TARGET libnetfilter_queue)
 pkg_check_modules(NFTABLES REQUIRED IMPORTED_TARGET libnftables)
 pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
@@ -68,6 +69,16 @@ target_link_libraries(
   janusgate-common
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
+
+add_library(janusgate-daemon-core STATIC src/daemon/nfqueue.c)
+target_include_directories(
+  janusgate-daemon-core
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")
+target_link_libraries(
+  janusgate-daemon-core
+  PUBLIC JanusGate::common
+  PRIVATE PkgConfig::NETFILTER_QUEUE)
+janusgate_apply_compiler_options(janusgate-daemon-core)
 
 add_library(
   janusgate-netd-core STATIC
