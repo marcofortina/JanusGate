@@ -2035,6 +2035,226 @@ static int decode_destination_rule(
     return result;
 }
 
+/** @brief Decode enabled, modification time, and revision columns. */
+static int decode_rule_metadata(sqlite3_stmt *statement,
+                                int enabled_column,
+                                int updated_at_column,
+                                int revision_column,
+                                bool *enabled,
+                                uint64_t *updated_at,
+                                uint64_t *revision)
+{
+    sqlite3_int64 persistent_updated_at = 0;
+    sqlite3_int64 persistent_revision = 0;
+    int persistent_enabled = 0;
+
+    if (sqlite3_column_type(statement, enabled_column) != SQLITE_INTEGER ||
+        sqlite3_column_type(statement, updated_at_column) != SQLITE_INTEGER ||
+        sqlite3_column_type(statement, revision_column) != SQLITE_INTEGER) {
+        return -EILSEQ;
+    }
+    persistent_enabled = sqlite3_column_int(statement, enabled_column);
+    persistent_updated_at = sqlite3_column_int64(statement, updated_at_column);
+    persistent_revision = sqlite3_column_int64(statement, revision_column);
+    if ((persistent_enabled != 0 && persistent_enabled != 1) ||
+        persistent_updated_at < 0 || persistent_revision <= 0) {
+        return -EILSEQ;
+    }
+    *enabled = persistent_enabled != 0;
+    *updated_at = (uint64_t)persistent_updated_at;
+    *revision = (uint64_t)persistent_revision;
+    return 0;
+}
+
+/** @brief Decode one persistent domain rule into an owned record. */
+static int decode_domain_record(sqlite3_stmt *statement,
+                                struct jg_database_domain_rule *record)
+{
+    char strings[JG_DOMAIN_NAME_MAX + JG_POLICY_ATTRIBUTION_MAX + 2U];
+    struct jg_policy_rule_input rule;
+    size_t cursor = 0U;
+    int result = 0;
+
+    (void)memset(&rule, 0, sizeof(rule));
+    (void)memset(record, 0, sizeof(*record));
+    result =
+        decode_domain_rule(statement, &rule, strings, sizeof(strings), &cursor);
+    if (result == 0) {
+        result = decode_rule_metadata(statement, 11, 12, 13, &record->enabled,
+                                      &record->updated_at, &record->revision);
+    }
+    if (result == 0) {
+        record->id = rule.id;
+        record->include_subdomains = rule.include_subdomains;
+        record->effect = rule.effect;
+        record->source = rule.source;
+        record->target = rule.target;
+        record->scope = rule.scope;
+        (void)memcpy(record->domain, rule.domain, strlen(rule.domain) + 1U);
+        (void)memcpy(record->attribution, rule.attribution,
+                     strlen(rule.attribution) + 1U);
+    }
+    return result;
+}
+
+/** @brief Decode one persistent destination rule into an owned record. */
+static int decode_destination_record(
+    sqlite3_stmt *statement,
+    struct jg_database_destination_rule *record)
+{
+    char strings[JG_POLICY_ATTRIBUTION_MAX + 1U];
+    struct jg_policy_destination_rule_input rule;
+    size_t cursor = 0U;
+    int result = 0;
+
+    (void)memset(&rule, 0, sizeof(rule));
+    (void)memset(record, 0, sizeof(*record));
+    result = decode_destination_rule(statement, &rule, strings, sizeof(strings),
+                                     &cursor);
+    if (result == 0) {
+        result = decode_rule_metadata(statement, 13, 14, 15, &record->enabled,
+                                      &record->updated_at, &record->revision);
+    }
+    if (result == 0) {
+        record->id = rule.id;
+        record->effect = rule.effect;
+        record->source = rule.source;
+        record->transport = rule.transport;
+        record->has_address = rule.has_address;
+        record->address_family = rule.address_family;
+        (void)memcpy(record->address, rule.address, sizeof(record->address));
+        record->prefix_length = rule.prefix_length;
+        record->has_port = rule.has_port;
+        record->port = rule.port;
+        record->scope = rule.scope;
+        (void)memcpy(record->attribution, rule.attribution,
+                     strlen(rule.attribution) + 1U);
+    }
+    return result;
+}
+
+/** @brief Read one stable identifier-ordered page of domain rules. */
+int jg_database_list_domain_rules(struct jg_database *database,
+                                  uint64_t after_id,
+                                  size_t limit,
+                                  struct jg_database_domain_rule *rules,
+                                  size_t *count,
+                                  bool *has_more)
+{
+    static const char query[] =
+        "SELECT id,domain,match_type,effect,source,scope_type,scope_value,"
+        "prefix_length,vlan_id,attribution,target,enabled,updated_at,revision"
+        " FROM domain_rules WHERE id>?1 ORDER BY id LIMIT ?2;";
+    sqlite3_stmt *statement = NULL;
+    size_t index = 0U;
+    bool more = false;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || after_id > (uint64_t)INT64_MAX || limit == 0U ||
+        limit > JG_DATABASE_POLICY_PAGE_MAX || rules == NULL || count == NULL ||
+        has_more == NULL) {
+        return -EINVAL;
+    }
+    *count = 0U;
+    *has_more = false;
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)after_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 2, (int)(limit + 1U));
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
+        if (index == limit) {
+            more = true;
+            break;
+        }
+        result = decode_domain_record(statement, &rules[index]);
+        ++index;
+    }
+    if (result == 0 && !more && status != SQLITE_DONE) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *count = index;
+        *has_more = more;
+    }
+    return result;
+}
+
+/** @brief Read one stable identifier-ordered page of destination rules. */
+int jg_database_list_destination_rules(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_destination_rule *rules,
+    size_t *count,
+    bool *has_more)
+{
+    static const char query[] =
+        "SELECT id,effect,source,protocol,family,address,prefix_length,port,"
+        "scope_type,scope_value,scope_prefix_length,scope_vlan_id,attribution,"
+        "enabled,updated_at,revision FROM destination_rules WHERE id>?1"
+        " ORDER BY id LIMIT ?2;";
+    sqlite3_stmt *statement = NULL;
+    size_t index = 0U;
+    bool more = false;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || after_id > (uint64_t)INT64_MAX || limit == 0U ||
+        limit > JG_DATABASE_POLICY_PAGE_MAX || rules == NULL || count == NULL ||
+        has_more == NULL) {
+        return -EINVAL;
+    }
+    *count = 0U;
+    *has_more = false;
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)after_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 2, (int)(limit + 1U));
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
+        if (index == limit) {
+            more = true;
+            break;
+        }
+        result = decode_destination_record(statement, &rules[index]);
+        ++index;
+    }
+    if (result == 0 && !more && status != SQLITE_DONE) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *count = index;
+        *has_more = more;
+    }
+    return result;
+}
+
 /** @brief Read active rule counts and packed-string bytes. */
 static int read_policy_size(sqlite3 *handle,
                             size_t *rule_count,

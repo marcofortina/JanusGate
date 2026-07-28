@@ -20,6 +20,7 @@
 #ifndef JANUSGATE_DATABASE_H
 #define JANUSGATE_DATABASE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -37,8 +38,75 @@
 /** Maximum active domain rules accepted from persistent storage. */
 #define JG_DATABASE_POLICY_RULE_LIMIT 1000000U
 
+/** Maximum number of policy records returned by one database page. */
+#define JG_DATABASE_POLICY_PAGE_MAX 100U
+
 /** Opaque owned database connection. */
 struct jg_database;
+
+/**
+ * @brief Self-contained persistent domain-rule record.
+ */
+struct jg_database_domain_rule {
+    /** Stable positive rule identifier. */
+    uint64_t id;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Last modification time as Unix seconds. */
+    uint64_t updated_at;
+    /** Canonical IDNA2008 A-label domain. */
+    char domain[JG_DOMAIN_NAME_MAX + 1U];
+    /** Human-readable rule provenance. */
+    char attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
+    /** Whether descendants at DNS label boundaries also match. */
+    bool include_subdomains;
+    /** Whether the rule participates in active policy. */
+    bool enabled;
+    /** Allow or block action. */
+    enum jg_policy_effect effect;
+    /** Rule origin and precedence class. */
+    enum jg_policy_source source;
+    /** DNS or visible TLS-SNI matching context. */
+    enum jg_policy_domain_target target;
+    /** Global or client-specific applicability. */
+    struct jg_policy_scope scope;
+};
+
+/**
+ * @brief Self-contained persistent destination-rule record.
+ */
+struct jg_database_destination_rule {
+    /** Stable positive rule identifier. */
+    uint64_t id;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Last modification time as Unix seconds. */
+    uint64_t updated_at;
+    /** Human-readable rule provenance. */
+    char attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
+    /** Allow or block action. */
+    enum jg_policy_effect effect;
+    /** Rule origin and precedence class. */
+    enum jg_policy_source source;
+    /** Any, TCP, or UDP transport selector. */
+    enum jg_policy_transport transport;
+    /** Whether an address prefix participates in matching. */
+    bool has_address;
+    /** Address family when @ref has_address is true. */
+    enum jg_policy_address_family address_family;
+    /** Canonical network address; IPv4 uses the first four bytes. */
+    uint8_t address[16U];
+    /** Significant leading address bits. */
+    uint8_t prefix_length;
+    /** Whether a destination port participates in matching. */
+    bool has_port;
+    /** Destination port when @ref has_port is true. */
+    uint16_t port;
+    /** Global or client-specific applicability. */
+    struct jg_policy_scope scope;
+    /** Whether the rule participates in active policy. */
+    bool enabled;
+};
 
 /**
  * @brief Open, validate, and migrate a persistent database.
@@ -230,6 +298,64 @@ JG_PUBLIC int jg_database_replace_destination_rules(
     struct jg_database *database,
     const struct jg_policy_destination_rule_input *rules,
     size_t rule_count);
+
+/**
+ * @brief Read one stable identifier-ordered page of persistent domain rules.
+ *
+ * Pass the last identifier returned by the preceding page as @p after_id, or
+ * zero for the first page. Disabled rules are included.
+ *
+ * @param[in] database Open database.
+ * @param[in] after_id Exclusive identifier cursor.
+ * @param[in] limit Requested page size from one through
+ * JG_DATABASE_POLICY_PAGE_MAX.
+ * @param[out] rules Array with room for at least @p limit records.
+ * @param[out] count Number of records written to @p rules.
+ * @param[out] has_more Whether another record follows this page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_list_domain_rules(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_domain_rule *rules,
+    size_t *count,
+    bool *has_more);
+
+/**
+ * @brief Read one stable identifier-ordered page of destination rules.
+ *
+ * Pass the last identifier returned by the preceding page as @p after_id, or
+ * zero for the first page. Disabled rules are included.
+ *
+ * @param[in] database Open database.
+ * @param[in] after_id Exclusive identifier cursor.
+ * @param[in] limit Requested page size from one through
+ * JG_DATABASE_POLICY_PAGE_MAX.
+ * @param[out] rules Array with room for at least @p limit records.
+ * @param[out] count Number of records written to @p rules.
+ * @param[out] has_more Whether another record follows this page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_list_destination_rules(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_destination_rule *rules,
+    size_t *count,
+    bool *has_more);
 
 /**
  * @brief Load active rules into a new immutable policy snapshot.

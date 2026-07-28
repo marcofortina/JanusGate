@@ -513,6 +513,8 @@ static void test_policy_round_trip(void **state)
     struct jg_policy_rule_input invalid;
     struct jg_policy_destination_rule_input destination_rules[2U];
     struct jg_policy_destination_rule_input invalid_destination;
+    struct jg_database_domain_rule domain_page[2U];
+    struct jg_database_destination_rule destination_page[1U];
     struct jg_policy_destination destination = {
         .transport = JG_POLICY_TRANSPORT_TCP,
         .address_family = JG_POLICY_ADDRESS_IPV4,
@@ -525,6 +527,8 @@ static void test_policy_round_trip(void **state)
     struct jg_policy_match match;
     struct jg_policy_destination_match destination_match;
     struct jg_database *database = NULL;
+    size_t page_count = 0U;
+    bool has_more = false;
 
     (void)state;
     make_database_path(directory, sizeof(directory), path, sizeof(path));
@@ -558,6 +562,50 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(
         jg_database_replace_destination_rules(database, destination_rules, 2U),
         0);
+    assert_int_equal(jg_database_list_domain_rules(
+                         database, 0U, 2U, domain_page, &page_count, &has_more),
+                     0);
+    assert_int_equal(page_count, 2U);
+    assert_true(has_more);
+    assert_int_equal(domain_page[0U].id, 3U);
+    assert_int_equal(domain_page[0U].revision, 1U);
+    assert_true(domain_page[0U].updated_at > 0U);
+    assert_int_equal(domain_page[0U].scope.type, JG_POLICY_SCOPE_VLAN);
+    assert_int_equal(domain_page[0U].scope.value.vlan_id, 7U);
+    assert_int_equal(domain_page[1U].id, 5U);
+    assert_string_equal(domain_page[1U].domain, "safe.example.org");
+    assert_string_equal(domain_page[1U].attribution, "database test");
+    assert_int_equal(jg_database_list_domain_rules(
+                         database, 5U, 2U, domain_page, &page_count, &has_more),
+                     0);
+    assert_int_equal(page_count, 2U);
+    assert_false(has_more);
+    assert_int_equal(domain_page[0U].id, 10U);
+    assert_string_equal(domain_page[0U].domain, "example.org");
+    assert_int_equal(domain_page[1U].id, 12U);
+    assert_int_equal(domain_page[1U].target, JG_POLICY_DOMAIN_TLS_SNI);
+    assert_int_equal(jg_database_list_destination_rules(database, 0U, 1U,
+                                                        destination_page,
+                                                        &page_count, &has_more),
+                     0);
+    assert_int_equal(page_count, 1U);
+    assert_true(has_more);
+    assert_int_equal(destination_page[0U].id, 20U);
+    assert_int_equal(destination_page[0U].revision, 1U);
+    assert_true(destination_page[0U].has_port);
+    assert_int_equal(destination_page[0U].port, 853U);
+    assert_int_equal(jg_database_list_destination_rules(database, 20U, 1U,
+                                                        destination_page,
+                                                        &page_count, &has_more),
+                     0);
+    assert_int_equal(page_count, 1U);
+    assert_false(has_more);
+    assert_int_equal(destination_page[0U].id, 21U);
+    assert_true(destination_page[0U].has_address);
+    assert_int_equal(destination_page[0U].scope.type, JG_POLICY_SCOPE_VLAN);
+    assert_int_equal(jg_database_list_domain_rules(
+                         database, 0U, 0U, domain_page, &page_count, &has_more),
+                     -EINVAL);
     assert_int_equal(jg_database_load_policy_snapshot(database, 9U, &snapshot),
                      0);
     assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
