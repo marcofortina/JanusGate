@@ -12,6 +12,17 @@
 
 #include <sodium.h>
 
+_Static_assert(JG_AUTH_TOTP_KEY_SIZE ==
+                   crypto_aead_xchacha20poly1305_ietf_KEYBYTES,
+               "TOTP key size must match XChaCha20-Poly1305");
+_Static_assert(JG_AUTH_TOTP_NONCE_SIZE ==
+                   crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
+               "TOTP nonce size must match XChaCha20-Poly1305");
+_Static_assert(JG_AUTH_TOTP_CIPHERTEXT_SIZE ==
+                   JG_AUTH_TOTP_SECRET_SIZE +
+                       crypto_aead_xchacha20poly1305_ietf_ABYTES,
+               "TOTP ciphertext must include its authentication tag");
+
 /** Alphabet used by canonical unpadded TOTP secret encoding. */
 static const char base32_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
@@ -399,4 +410,64 @@ int jg_auth_totp_verify(const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
     }
     sodium_memzero(expected, sizeof(expected));
     return result;
+}
+
+/** @brief Encrypt one TOTP secret with a fresh XChaCha20-Poly1305 nonce. */
+int jg_auth_totp_encrypt(const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+                         const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+                         uint8_t nonce[JG_AUTH_TOTP_NONCE_SIZE],
+                         uint8_t ciphertext[JG_AUTH_TOTP_CIPHERTEXT_SIZE])
+{
+    unsigned long long ciphertext_size = 0U;
+    int result = 0;
+
+    if (key == NULL || secret == NULL || nonce == NULL || ciphertext == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(nonce, 0, JG_AUTH_TOTP_NONCE_SIZE);
+    (void)memset(ciphertext, 0, JG_AUTH_TOTP_CIPHERTEXT_SIZE);
+    result = initialize_crypto();
+    if (result != 0) {
+        return result;
+    }
+    randombytes_buf(nonce, JG_AUTH_TOTP_NONCE_SIZE);
+    if (crypto_aead_xchacha20poly1305_ietf_encrypt(
+            ciphertext, &ciphertext_size, secret, JG_AUTH_TOTP_SECRET_SIZE,
+            NULL, 0U, NULL, nonce, key) != 0 ||
+        ciphertext_size != JG_AUTH_TOTP_CIPHERTEXT_SIZE) {
+        sodium_memzero(nonce, JG_AUTH_TOTP_NONCE_SIZE);
+        sodium_memzero(ciphertext, JG_AUTH_TOTP_CIPHERTEXT_SIZE);
+        return -EIO;
+    }
+    return 0;
+}
+
+/** @brief Authenticate and decrypt one persistent TOTP secret. */
+int jg_auth_totp_decrypt(const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+                         const uint8_t nonce[JG_AUTH_TOTP_NONCE_SIZE],
+                         const uint8_t ciphertext[JG_AUTH_TOTP_CIPHERTEXT_SIZE],
+                         uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE])
+{
+    unsigned long long secret_size = 0U;
+    int result = 0;
+
+    if (key == NULL || nonce == NULL || ciphertext == NULL || secret == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(secret, 0, JG_AUTH_TOTP_SECRET_SIZE);
+    result = initialize_crypto();
+    if (result != 0) {
+        return result;
+    }
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt(
+            secret, &secret_size, NULL, ciphertext,
+            JG_AUTH_TOTP_CIPHERTEXT_SIZE, NULL, 0U, nonce, key) != 0) {
+        sodium_memzero(secret, JG_AUTH_TOTP_SECRET_SIZE);
+        return -EBADMSG;
+    }
+    if (secret_size != JG_AUTH_TOTP_SECRET_SIZE) {
+        sodium_memzero(secret, JG_AUTH_TOTP_SECRET_SIZE);
+        return -EIO;
+    }
+    return 0;
 }

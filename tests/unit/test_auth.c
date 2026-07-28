@@ -155,6 +155,31 @@ static void test_totp_validation(void **state)
                      -ERANGE);
 }
 
+/** @brief Verify authenticated TOTP storage and tamper rejection. */
+static void test_totp_encryption(void **state)
+{
+    static const uint8_t empty[JG_AUTH_TOTP_SECRET_SIZE] = {0};
+    uint8_t key[JG_AUTH_TOTP_KEY_SIZE] = {0};
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE] = {0};
+    uint8_t decrypted[JG_AUTH_TOTP_SECRET_SIZE];
+    uint8_t nonce[JG_AUTH_TOTP_NONCE_SIZE];
+    uint8_t ciphertext[JG_AUTH_TOTP_CIPHERTEXT_SIZE];
+
+    (void)state;
+    key[0U] = 1U;
+    secret[0U] = 2U;
+    secret[sizeof(secret) - 1U] = 3U;
+    assert_int_equal(jg_auth_totp_encrypt(key, secret, nonce, ciphertext), 0);
+    assert_int_equal(jg_auth_totp_decrypt(key, nonce, ciphertext, decrypted),
+                     0);
+    assert_memory_equal(decrypted, secret, sizeof(secret));
+
+    ciphertext[0U] ^= UINT8_C(0x01);
+    assert_int_equal(jg_auth_totp_decrypt(key, nonce, ciphertext, decrypted),
+                     -EBADMSG);
+    assert_memory_equal(decrypted, empty, sizeof(decrypted));
+}
+
 /** @brief Run the authentication primitive test group. */
 int jg_test_auth(void)
 {
@@ -164,6 +189,7 @@ int jg_test_auth(void)
         cmocka_unit_test(test_opaque_secrets),
         cmocka_unit_test(test_totp),
         cmocka_unit_test(test_totp_validation),
+        cmocka_unit_test(test_totp_encryption),
     };
 
     return cmocka_run_group_tests_name("auth", tests, NULL, NULL);

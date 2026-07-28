@@ -57,6 +57,15 @@
 /** Largest accepted verification window on either side of the current step. */
 #define JG_AUTH_TOTP_WINDOW_MAX 10U
 
+/** Bytes in the appliance-local key used to protect TOTP secrets. */
+#define JG_AUTH_TOTP_KEY_SIZE 32U
+
+/** Bytes in one independently random TOTP encryption nonce. */
+#define JG_AUTH_TOTP_NONCE_SIZE 24U
+
+/** Bytes in one authenticated encrypted TOTP secret. */
+#define JG_AUTH_TOTP_CIPHERTEXT_SIZE 48U
+
 /** Minimum accepted Argon2id memory cost. */
 #define JG_AUTH_MEMORY_MIN (8U * 1024U * 1024U)
 
@@ -269,5 +278,52 @@ JG_PUBLIC int jg_auth_totp_verify(
     uint32_t code,
     uint32_t window,
     bool *valid);
+
+/**
+ * @brief Encrypt one TOTP secret for persistent storage.
+ *
+ * XChaCha20-Poly1305 authenticates the ciphertext and a fresh random nonce.
+ * The appliance-local key must be stored separately from the database with
+ * mode 0600 and must never be exposed through administration responses.
+ *
+ * @param[in] key Exact appliance-local encryption key.
+ * @param[in] secret Exact raw TOTP secret.
+ * @param[out] nonce Receives the random public nonce.
+ * @param[out] ciphertext Receives the authenticated ciphertext.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EIO when the cryptographic provider cannot initialize or encrypt.
+ *
+ * @thread_safety This function is reentrant.
+ *
+ * @side_effects Obtains a random nonce from the operating system.
+ */
+JG_PUBLIC int jg_auth_totp_encrypt(
+    const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+    const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
+    uint8_t nonce[JG_AUTH_TOTP_NONCE_SIZE],
+    uint8_t ciphertext[JG_AUTH_TOTP_CIPHERTEXT_SIZE]);
+
+/**
+ * @brief Authenticate and decrypt one persistent TOTP secret.
+ *
+ * @param[in] key Exact appliance-local encryption key.
+ * @param[in] nonce Persistent public nonce.
+ * @param[in] ciphertext Persistent authenticated ciphertext.
+ * @param[out] secret Receives the plaintext only after authentication.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EBADMSG when authentication fails.
+ * @return -EIO when the cryptographic provider cannot initialize.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_auth_totp_decrypt(
+    const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+    const uint8_t nonce[JG_AUTH_TOTP_NONCE_SIZE],
+    const uint8_t ciphertext[JG_AUTH_TOTP_CIPHERTEXT_SIZE],
+    uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE]);
 
 #endif
