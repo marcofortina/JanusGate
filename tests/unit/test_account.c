@@ -576,7 +576,11 @@ static void test_multifactor_authentication(void **state)
     struct jg_auth_password_policy password_policy;
     struct jg_account_identity password_identity;
     struct jg_account_identity mfa_identity;
+    struct jg_account_user users[1U];
+    struct jg_account_user updated;
     struct jg_database *database = NULL;
+    size_t count = 0U;
+    uint64_t total = 0U;
     uint64_t user_id = 0U;
     uint32_t code = 0U;
 
@@ -644,6 +648,13 @@ static void test_multifactor_authentication(void **state)
                          (const uint8_t *)recovery_codes.codes[0U],
                          strlen(recovery_codes.codes[0U]), 123U, &mfa_identity),
                      -EACCES);
+    assert_int_equal(
+        jg_account_user_list(database, 0U, users, 1U, &count, &total), 0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(total, 1U);
+    assert_int_equal(jg_account_user_disable_totp(
+                         database, user_id, users[0U].revision + 1U, &updated),
+                     -ESTALE);
     assert_int_equal(jg_account_totp_disable(database, user_id), 0);
     assert_int_equal(jg_account_authenticate(database, "administrator",
                                              password, sizeof(password) - 1U,
@@ -652,6 +663,26 @@ static void test_multifactor_authentication(void **state)
                      0);
     assert_false(password_identity.totp_enabled);
     assert_true(password_identity.mfa_complete);
+
+    assert_int_equal(
+        jg_account_totp_provision(database, user_id, key, 130U, &provisioning),
+        0);
+    assert_int_equal(jg_auth_totp_secret_decode(provisioning.secret, secret),
+                     0);
+    assert_int_equal(jg_auth_totp_generate(secret, 150U, &code), 0);
+    assert_int_equal(jg_account_totp_confirm(database, user_id, key, code, 150U,
+                                             &recovery_codes),
+                     0);
+    assert_int_equal(
+        jg_account_user_list(database, 0U, users, 1U, &count, &total), 0);
+    assert_true(users[0U].totp_enabled);
+    assert_int_equal(
+        jg_account_user_disable_totp(database, user_id, 0U, &updated), -EINVAL);
+    assert_int_equal(jg_account_user_disable_totp(database, user_id,
+                                                  users[0U].revision, &updated),
+                     0);
+    assert_false(updated.totp_enabled);
+    assert_int_equal(updated.revision, users[0U].revision + 1U);
     jg_database_close(database);
     remove_account_database(directory, path);
 }

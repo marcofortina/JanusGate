@@ -431,6 +431,30 @@ JG_PUBLIC int jg_account_user_reset_password(
     struct jg_account_user *user);
 
 /**
+ * @brief Remove one local user's TOTP and recovery credentials.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Existing nonzero user identifier.
+ * @param[in] expected_revision Current revision supplied by the caller.
+ * @param[out] user Receives the updated persistent state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null or malformed input.
+ * @return -ENOENT when the user or TOTP credential does not exist.
+ * @return -ESTALE when @p expected_revision is no longer current.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Deletes TOTP and recovery material and invalidates every web
+ * session transactionally.
+ */
+JG_PUBLIC int jg_account_user_disable_totp(struct jg_database *database,
+                                           uint64_t user_id,
+                                           uint64_t expected_revision,
+                                           struct jg_account_user *user);
+
+/**
  * @brief Authenticate one enabled local user with persistent rate limiting.
  *
  * An incorrect password increments the failure counter and applies an

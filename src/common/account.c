@@ -3229,7 +3229,7 @@ static int advance_user_epoch(sqlite3 *handle, uint64_t user_id)
 {
     static const char update_user[] =
         "UPDATE users SET session_epoch=session_epoch+1,revision=revision+1"
-        " WHERE id=?1 AND enabled=1;";
+        " WHERE id=?1;";
     static const char delete_sessions[] =
         "DELETE FROM web_sessions WHERE user_id=?1;";
     sqlite3_stmt *statement = NULL;
@@ -3246,7 +3246,7 @@ static int advance_user_epoch(sqlite3 *handle, uint64_t user_id)
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     if (result == 0 && sqlite3_changes(handle) != 1) {
-        result = -EACCES;
+        result = -ENOENT;
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -3595,21 +3595,36 @@ int jg_account_recovery_authenticate(
     return result;
 }
 
-/** @brief Delete TOTP state and invalidate every user session. */
-int jg_account_totp_disable(struct jg_database *database, uint64_t user_id)
+/** @brief Delete TOTP state with optional revision and result handling. */
+static int disable_totp(struct jg_database *database,
+                        uint64_t user_id,
+                        uint64_t expected_revision,
+                        struct jg_account_user *user)
 {
     static const char delete_totp[] =
         "DELETE FROM totp_credentials WHERE user_id=?1;";
+    struct jg_account_user current;
     sqlite3_stmt *statement = NULL;
     bool transaction_open = false;
     int status = SQLITE_OK;
     int result = 0;
 
-    if (database == NULL || user_id == 0U || user_id > (uint64_t)INT64_MAX) {
+    if (user != NULL) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    if (database == NULL || user_id == 0U || user_id > (uint64_t)INT64_MAX ||
+        expected_revision > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
     result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
     transaction_open = result == 0;
+    if (result == 0) {
+        result = load_user(database->handle, user_id, &current);
+    }
+    if (result == 0 && expected_revision != 0U &&
+        current.revision != expected_revision) {
+        result = -ESTALE;
+    }
     if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, delete_totp, -1,
@@ -3639,6 +3654,9 @@ int jg_account_totp_disable(struct jg_database *database, uint64_t user_id)
     if (result == 0) {
         result = advance_user_epoch(database->handle, user_id);
     }
+    if (result == 0 && user != NULL) {
+        result = load_user(database->handle, user_id, user);
+    }
     if (result == 0) {
         result = execute_fixed(database->handle, "COMMIT;");
         if (result == 0) {
@@ -3648,5 +3666,26 @@ int jg_account_totp_disable(struct jg_database *database, uint64_t user_id)
     if (result != 0 && transaction_open) {
         (void)execute_fixed(database->handle, "ROLLBACK;");
     }
+    if (result != 0 && user != NULL) {
+        (void)memset(user, 0, sizeof(*user));
+    }
     return result;
+}
+
+/** @brief Administratively remove one user's TOTP credentials. */
+int jg_account_user_disable_totp(struct jg_database *database,
+                                 uint64_t user_id,
+                                 uint64_t expected_revision,
+                                 struct jg_account_user *user)
+{
+    if (expected_revision == 0U || user == NULL) {
+        return -EINVAL;
+    }
+    return disable_totp(database, user_id, expected_revision, user);
+}
+
+/** @brief Delete TOTP state and invalidate every user session. */
+int jg_account_totp_disable(struct jg_database *database, uint64_t user_id)
+{
+    return disable_totp(database, user_id, 0U, NULL);
 }
