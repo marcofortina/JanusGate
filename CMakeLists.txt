@@ -61,6 +61,7 @@ add_library(
   src/common/network.c
   src/common/packet.c
   src/common/policy.c
+  src/common/tls_client_hello.c
   src/common/version.c)
 add_library(JanusGate::common ALIAS janusgate-common)
 target_include_directories(
@@ -155,6 +156,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/network.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/policy.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/tls_client_hello.h"
         "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)
