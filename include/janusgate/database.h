@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/network.h"
 #include "janusgate/policy.h"
 #include "janusgate/version.h"
 
@@ -104,6 +105,44 @@ JG_PUBLIC int jg_database_schema_version(struct jg_database *database,
  * @thread_safety The caller must serialize access to @p database.
  */
 JG_PUBLIC int jg_database_check_integrity(struct jg_database *database);
+
+/**
+ * @brief Atomically persist the complete inline-network configuration.
+ *
+ * The validated, versioned wire representation is stored as canonical
+ * lowercase hexadecimal text in the settings table.
+ *
+ * @param[in] database Open database.
+ * @param[in] config Network configuration to validate and persist.
+ *
+ * @return 0 on success.
+ * @return -EINVAL or -ERANGE for invalid arguments or configuration.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts or replaces one persistent setting atomically.
+ */
+JG_PUBLIC int jg_database_store_network_config(
+    struct jg_database *database,
+    const struct jg_network_config *config);
+
+/**
+ * @brief Load and validate the persistent inline-network configuration.
+ *
+ * @param[in] database Open database.
+ * @param[out] config Receives the complete validated configuration.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -ENOENT when setup has not stored a network configuration.
+ * @return -EILSEQ when the persistent representation is not canonical.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_load_network_config(struct jg_database *database,
+                                              struct jg_network_config *config);
 
 /**
  * @brief Atomically replace every active persistent domain rule.

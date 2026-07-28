@@ -542,7 +542,7 @@ static int backup_database(const struct jg_database *database)
     char *backup_path = path_with_suffix(database->path, ".lkg");
     char *temporary_path = path_with_suffix(database->path, ".lkg.XXXXXX");
     int descriptor = -1;
-    int status = SQLITE_OK;
+    int status;
     int result = 0;
 
     if (backup_path == NULL || temporary_path == NULL) {
@@ -561,7 +561,6 @@ static int backup_database(const struct jg_database *database)
         if (close(descriptor) != 0 && result == 0) {
             result = -errno;
         }
-        descriptor = -1;
     }
     if (result == 0) {
         status = sqlite3_open_v2(temporary_path, &target,
@@ -647,7 +646,7 @@ static int migrate_database(struct jg_database *database,
 int jg_database_check_integrity(struct jg_database *database)
 {
     sqlite3_stmt *statement = NULL;
-    int status = SQLITE_OK;
+    int status;
     int result = 0;
 
     if (database == NULL) {
@@ -690,7 +689,6 @@ int jg_database_open(const char *path,
     uint32_t version = 0U;
     bool created = false;
     bool empty = false;
-    int status = SQLITE_OK;
     int result = 0;
 
     if (database == NULL) {
@@ -718,10 +716,12 @@ int jg_database_open(const char *path,
         }
     }
     if (result == 0) {
-        status = sqlite3_open_v2(path, &opened->handle,
-                                 SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX |
-                                     SQLITE_OPEN_NOFOLLOW,
-                                 NULL);
+        const int status =
+            sqlite3_open_v2(path, &opened->handle,
+                            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX |
+                                SQLITE_OPEN_NOFOLLOW,
+                            NULL);
+
         result = sqlite_result(status);
     }
     if (result == 0) {
@@ -796,6 +796,184 @@ int jg_database_schema_version(struct jg_database *database, uint32_t *version)
         return -EINVAL;
     }
     return read_version(database->handle, version);
+}
+
+/** @brief Parse a required SQLite text column without embedded null bytes. */
+static int required_text(sqlite3_stmt *statement,
+                         int column,
+                         const char **text,
+                         size_t *length)
+{
+    const unsigned char *value = NULL;
+    int byte_count = 0;
+
+    if (sqlite3_column_type(statement, column) != SQLITE_TEXT) {
+        return -EILSEQ;
+    }
+    value = sqlite3_column_text(statement, column);
+    byte_count = sqlite3_column_bytes(statement, column);
+    if (value == NULL || byte_count <= 0 ||
+        memchr(value, '\0', (size_t)byte_count) != NULL) {
+        return -EILSEQ;
+    }
+    *text = (const char *)value;
+    *length = (size_t)byte_count;
+    return 0;
+}
+
+/** @brief Return one lowercase hexadecimal digit. */
+static char hex_digit(uint8_t value)
+{
+    static const char digits[] = "0123456789abcdef";
+
+    return digits[value & UINT8_C(0x0f)];
+}
+
+/** @brief Encode one fixed-size network body as canonical hexadecimal text. */
+static void encode_network_config(const uint8_t *wire, char *text)
+{
+    size_t index = 0U;
+
+    for (index = 0U; index < JG_NETWORK_CONFIG_WIRE_SIZE; ++index) {
+        text[index * 2U] = hex_digit((uint8_t)(wire[index] >> 4U));
+        text[index * 2U + 1U] = hex_digit(wire[index]);
+    }
+    text[JG_NETWORK_CONFIG_WIRE_SIZE * 2U] = '\0';
+}
+
+/** @brief Decode one lowercase hexadecimal digit. */
+static bool decode_hex_digit(char digit, uint8_t *value)
+{
+    if (digit >= '0' && digit <= '9') {
+        *value = (uint8_t)(digit - '0');
+        return true;
+    }
+    if (digit >= 'a' && digit <= 'f') {
+        *value = (uint8_t)(digit - 'a') + 10U;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Decode canonical network configuration text into its wire body. */
+static int decode_network_config(const char *text,
+                                 size_t text_size,
+                                 uint8_t *wire)
+{
+    size_t index = 0U;
+
+    if (text_size != JG_NETWORK_CONFIG_WIRE_SIZE * 2U) {
+        return -EILSEQ;
+    }
+    for (index = 0U; index < JG_NETWORK_CONFIG_WIRE_SIZE; ++index) {
+        uint8_t high = 0U;
+        uint8_t low = 0U;
+
+        if (!decode_hex_digit(text[index * 2U], &high) ||
+            !decode_hex_digit(text[index * 2U + 1U], &low)) {
+            return -EILSEQ;
+        }
+        wire[index] = (uint8_t)((uint8_t)(high << 4U) | low);
+    }
+    return 0;
+}
+
+/** @brief Atomically persist one validated network configuration. */
+int jg_database_store_network_config(struct jg_database *database,
+                                     const struct jg_network_config *config)
+{
+    static const char statement_text[] =
+        "INSERT INTO system_settings(key,value,updated_at)"
+        " VALUES('network.configuration',?1,unixepoch())"
+        " ON CONFLICT(key) DO UPDATE SET"
+        " value=excluded.value,updated_at=excluded.updated_at;";
+    char text[JG_NETWORK_CONFIG_WIRE_SIZE * 2U + 1U];
+    uint8_t wire[JG_NETWORK_CONFIG_WIRE_SIZE];
+    sqlite3_stmt *statement = NULL;
+    size_t encoded_size = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    result =
+        jg_network_config_encode(config, wire, sizeof(wire), &encoded_size);
+    if (result != 0) {
+        return result;
+    }
+    if (encoded_size != sizeof(wire)) {
+        return -EIO;
+    }
+    encode_network_config(wire, text);
+    status = sqlite3_prepare_v3(database->handle, statement_text, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 1, text, -1, SQLITE_TRANSIENT);
+        result = sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Load one validated persistent network configuration. */
+int jg_database_load_network_config(struct jg_database *database,
+                                    struct jg_network_config *config)
+{
+    static const char query[] = "SELECT value FROM system_settings"
+                                " WHERE key='network.configuration';";
+    uint8_t wire[JG_NETWORK_CONFIG_WIRE_SIZE];
+    struct jg_network_config loaded;
+    sqlite3_stmt *statement = NULL;
+    const char *text = NULL;
+    size_t text_size = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || config == NULL) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else if (status != SQLITE_ROW) {
+            result = sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = required_text(statement, 0, &text, &text_size);
+    }
+    if (result == 0) {
+        result = decode_network_config(text, text_size, wire);
+    }
+    if (result == 0 &&
+        jg_network_config_decode(wire, sizeof(wire), &loaded) != 0) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *config = loaded;
+    }
+    return result;
 }
 
 /** @brief Return the persistent text representation of a policy effect. */
@@ -1005,7 +1183,7 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,unixepoch());";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
-    int status = SQLITE_OK;
+    int status;
     int result = 0;
 
     if (database == NULL) {
@@ -1039,29 +1217,6 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         (void)execute_sql(database->handle, "ROLLBACK;");
     }
     return result;
-}
-
-/** @brief Parse a required SQLite text column without embedded null bytes. */
-static int required_text(sqlite3_stmt *statement,
-                         int column,
-                         const char **text,
-                         size_t *length)
-{
-    const unsigned char *value = NULL;
-    int byte_count = 0;
-
-    if (sqlite3_column_type(statement, column) != SQLITE_TEXT) {
-        return -EILSEQ;
-    }
-    value = sqlite3_column_text(statement, column);
-    byte_count = sqlite3_column_bytes(statement, column);
-    if (value == NULL || byte_count <= 0 ||
-        memchr(value, '\0', (size_t)byte_count) != NULL) {
-        return -EILSEQ;
-    }
-    *text = (const char *)value;
-    *length = (size_t)byte_count;
-    return 0;
 }
 
 /** @brief Decode a persistent policy effect. */

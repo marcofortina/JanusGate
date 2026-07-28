@@ -114,6 +114,44 @@ static struct jg_policy_rule_input make_rule(uint64_t id,
     return rule;
 }
 
+/** @brief Construct a complete inline-network configuration for storage. */
+static struct jg_network_config make_network_config(void)
+{
+    struct jg_network_config config = {
+        .bridge = "br-data",
+        .ingress = "eth0",
+        .egress = "eth1",
+        .management = "eth2",
+        .queue_first = 100U,
+        .queue_count = 4U,
+        .queue_length = 4096U,
+        .failure_mode = JG_NETWORK_FAIL_OPEN,
+        .multicast_snooping = true,
+        .queue_cpu_fanout = true,
+    };
+
+    return config;
+}
+
+/** @brief Assert equality of every semantic network configuration field. */
+static void assert_network_config_equal(
+    const struct jg_network_config *actual,
+    const struct jg_network_config *expected)
+{
+    assert_string_equal(actual->bridge, expected->bridge);
+    assert_string_equal(actual->ingress, expected->ingress);
+    assert_string_equal(actual->egress, expected->egress);
+    assert_string_equal(actual->management, expected->management);
+    assert_int_equal(actual->bridge_mtu, expected->bridge_mtu);
+    assert_int_equal(actual->queue_first, expected->queue_first);
+    assert_int_equal(actual->queue_count, expected->queue_count);
+    assert_int_equal(actual->queue_length, expected->queue_length);
+    assert_int_equal(actual->failure_mode, expected->failure_mode);
+    assert_int_equal(actual->stp, expected->stp);
+    assert_int_equal(actual->multicast_snooping, expected->multicast_snooping);
+    assert_int_equal(actual->queue_cpu_fanout, expected->queue_cpu_fanout);
+}
+
 /** @brief Verify initial migration, permissions, schema, and reopening. */
 static void test_initial_migration(void **state)
 {
@@ -266,6 +304,45 @@ static void test_policy_round_trip(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify atomic network configuration persistence and validation. */
+static void test_network_configuration(void **state)
+{
+    static const char corrupt[] = "UPDATE system_settings SET value='invalid'"
+                                  " WHERE key='network.configuration';";
+    char directory[64U];
+    char path[512U];
+    struct jg_network_config expected = make_network_config();
+    struct jg_network_config loaded;
+    struct jg_database *database = NULL;
+    sqlite3 *handle = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_network_config(database, &loaded),
+                     -ENOENT);
+    assert_int_equal(jg_database_store_network_config(database, &expected), 0);
+    assert_int_equal(jg_database_load_network_config(database, &loaded), 0);
+    assert_network_config_equal(&loaded, &expected);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, corrupt, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+
+    database = NULL;
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_network_config(database, &loaded),
+                     -EILSEQ);
+    assert_int_equal(jg_database_store_network_config(database, NULL), -EINVAL);
+    assert_int_equal(jg_database_load_network_config(NULL, &loaded), -EINVAL);
+    assert_int_equal(jg_database_load_network_config(database, NULL), -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the SQLite lifecycle and migration test group. */
 int jg_test_database(void)
 {
@@ -274,6 +351,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_round_trip),
+        cmocka_unit_test(test_network_configuration),
     };
 
     return cmocka_run_group_tests_name("database", tests, NULL, NULL);
