@@ -62,6 +62,13 @@ struct reset_capture {
     size_t calls;
 };
 
+/** Captured synchronous client-facing frame output from one worker. */
+struct frame_capture {
+    uint8_t frame[JG_DNS_RESPONSE_FRAME_MAX];
+    size_t size;
+    size_t calls;
+};
+
 /** @brief Capture one reset pair without transmitting it. */
 static int capture_resets(const struct jg_tcp_reset_pair *resets, void *context)
 {
@@ -70,6 +77,20 @@ static int capture_resets(const struct jg_tcp_reset_pair *resets, void *context)
     assert_non_null(resets);
     assert_non_null(capture);
     capture->resets = *resets;
+    ++capture->calls;
+    return 0;
+}
+
+/** @brief Capture one synthetic client-facing frame without transmitting it. */
+static int capture_frame(const uint8_t *frame, size_t frame_size, void *context)
+{
+    struct frame_capture *capture = context;
+
+    assert_non_null(frame);
+    assert_non_null(capture);
+    assert_true(frame_size <= sizeof(capture->frame));
+    (void)memcpy(capture->frame, frame, frame_size);
+    capture->size = frame_size;
     ++capture->calls;
     return 0;
 }
@@ -246,12 +267,18 @@ static void test_fragmented_dns(void **state)
     };
     struct jg_policy_store *store = build_blocking_store();
     struct jg_dataplane_worker *worker = NULL;
+    struct jg_dns_response_config config;
     struct jg_dataplane_stats stats;
     struct jg_fragment_stats fragment_stats;
+    struct frame_capture capture = {0};
 
     (void)state;
     assert_int_equal(
         jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    jg_dns_response_config_default(&config);
+    assert_int_equal(jg_dataplane_worker_set_dns_response(
+                         worker, &config, capture_frame, &capture),
+                     0);
     packet.data = first_frame;
     packet.size =
         build_fragment(first_frame, sizeof(first_frame), 0U, 24U, true);
@@ -263,6 +290,9 @@ static void test_fragmented_dns(void **state)
         build_fragment(last_frame, sizeof(last_frame), 24U, 14U, false);
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
+    assert_int_equal(capture.frame[44U], 0x81U);
+    assert_int_equal(capture.frame[45U], 0x85U);
     assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
     assert_int_equal(stats.packets, 2U);
     assert_int_equal(stats.accepted, 1U);
@@ -273,6 +303,46 @@ static void test_fragmented_dns(void **state)
         jg_dataplane_worker_get_fragment_stats(worker, &fragment_stats), 0);
     assert_int_equal(fragment_stats.stored, 1U);
     assert_int_equal(fragment_stats.completed, 1U);
+    jg_dataplane_worker_destroy(worker);
+    jg_policy_store_destroy(store);
+}
+
+/** @brief Verify configured REFUSED output for a blocked UDP DNS query. */
+static void test_udp_dns_response(void **state)
+{
+    uint8_t frame[sizeof(fragmented_query) + 34U];
+    struct jg_nfqueue_packet packet = {
+        .queue_number = 100U,
+        .ingress_index = 2U,
+        .data = frame,
+    };
+    struct jg_dns_response_config config;
+    struct jg_policy_store *store = build_blocking_store();
+    struct jg_dataplane_worker *worker = NULL;
+    struct frame_capture capture = {0};
+
+    (void)state;
+    packet.size = build_fragment(frame, sizeof(frame), 0U,
+                                 sizeof(fragmented_query), false);
+    assert_int_equal(
+        jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    jg_dns_response_config_default(&config);
+    assert_int_equal(jg_dataplane_worker_set_dns_response(
+                         worker, &config, capture_frame, &capture),
+                     0);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
+    assert_int_equal(capture.size, packet.size);
+    assert_int_equal(capture.frame[44U], 0x81U);
+    assert_int_equal(capture.frame[45U], 0x85U);
+
+    config.action = JG_DNS_BLOCK_DROP;
+    assert_int_equal(
+        jg_dataplane_worker_set_dns_response(worker, &config, NULL, NULL), 0);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
     jg_dataplane_worker_destroy(worker);
     jg_policy_store_destroy(store);
 }
@@ -461,6 +531,8 @@ static void test_arguments(void **state)
         jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
     assert_int_equal(jg_dataplane_worker_set_reset_sender(worker, NULL, NULL),
                      -EINVAL);
+    assert_int_equal(
+        jg_dataplane_worker_set_dns_response(NULL, NULL, NULL, NULL), -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_stats(NULL, NULL), -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_fragment_stats(NULL, NULL),
                      -EINVAL);
@@ -476,6 +548,7 @@ int jg_test_dataplane_worker(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_processing),
         cmocka_unit_test(test_fragmented_dns),
+        cmocka_unit_test(test_udp_dns_response),
         cmocka_unit_test(test_tcp_dns),
         cmocka_unit_test(test_tls_sni),
         cmocka_unit_test(test_unavailable_sni),

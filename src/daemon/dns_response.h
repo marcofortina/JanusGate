@@ -16,6 +16,9 @@
 
 #include "janusgate/packet.h"
 
+/** Maximum complete synthetic DNS response frame size. */
+#define JG_DNS_RESPONSE_FRAME_MAX 8192U
+
 /**
  * @brief Action applied to a blocked UDP DNS query.
  */

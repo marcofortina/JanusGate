@@ -234,6 +234,7 @@ int jg_dataplane_evaluate_reassembled_udp(
     struct jg_dataplane_result *result)
 {
     struct jg_packet_view packet_copy = {0};
+    uint16_t source_port = 0U;
     uint16_t destination_port = 0U;
     uint16_t udp_size = 0U;
 
@@ -252,11 +253,20 @@ int jg_dataplane_evaluate_reassembled_udp(
     result->packet = packet_copy;
     result->packet_result = JG_PACKET_OK;
     if (payload_size < UDP_HEADER_SIZE ||
+        !jg_read_u16_be(payload, payload_size, 0U, &source_port) ||
         !jg_read_u16_be(payload, payload_size, 2U, &destination_port) ||
         !jg_read_u16_be(payload, payload_size, 4U, &udp_size) ||
         (size_t)udp_size != payload_size) {
         return 0;
     }
+    packet_copy.fragmented = false;
+    packet_copy.more_fragments = false;
+    packet_copy.fragment_offset = 0U;
+    packet_copy.transport = JG_TRANSPORT_UDP;
+    packet_copy.source_port = source_port;
+    packet_copy.destination_port = destination_port;
+    packet_copy.transport_complete = true;
+    result->packet = packet_copy;
     if (destination_port != 53U) {
         result->verdict = JG_NFQUEUE_ACCEPT;
         result->reason = JG_DATAPLANE_PASS;

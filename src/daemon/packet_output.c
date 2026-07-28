@@ -56,7 +56,7 @@ static int send_frame(struct jg_packet_output *output,
     ssize_t sent = 0;
 
     if (frame == NULL || frame_size < ETH_HLEN ||
-        frame_size > JG_TCP_RESET_FRAME_MAX) {
+        frame_size > JG_PACKET_OUTPUT_FRAME_MAX) {
         increment(&output->errors);
         return -EINVAL;
     }
@@ -164,6 +164,20 @@ int jg_packet_output_send_tcp_resets(const struct jg_tcp_reset_pair *resets,
     server_result = send_frame(output, output->config.server_interface_index,
                                resets->to_server, resets->to_server_size);
     return client_result != 0 ? client_result : server_result;
+}
+
+/** @brief Send one complete synthetic frame toward the policy client. */
+int jg_packet_output_send_client_frame(const uint8_t *frame,
+                                       size_t frame_size,
+                                       void *context)
+{
+    struct jg_packet_output *output = context;
+
+    if (output == NULL) {
+        return -EINVAL;
+    }
+    return send_frame(output, output->config.client_interface_index, frame,
+                      frame_size);
 }
 
 /** @brief Copy one relaxed snapshot of raw output counters. */

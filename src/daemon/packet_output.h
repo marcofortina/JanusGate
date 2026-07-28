@@ -21,6 +21,9 @@
 /** Largest accepted raw packet socket send-buffer request. */
 #define JG_PACKET_OUTPUT_BUFFER_MAX 4194304U
 
+/** Largest complete Ethernet frame accepted from packet workers. */
+#define JG_PACKET_OUTPUT_FRAME_MAX 8192U
+
 /**
  * @brief Configuration for one raw packet output socket.
  */
@@ -106,6 +109,26 @@ int jg_packet_output_open(const struct jg_packet_output_config *config,
  */
 int jg_packet_output_send_tcp_resets(const struct jg_tcp_reset_pair *resets,
                                      void *context);
+
+/**
+ * @brief Send one synthetic frame toward the policy client.
+ *
+ * This signature can be registered directly as a data-plane frame sender.
+ *
+ * @param[in] frame Complete Ethernet frame.
+ * @param[in] frame_size Number of frame bytes.
+ * @param[in,out] context Open @ref jg_packet_output.
+ *
+ * @return 0 when the complete frame was sent.
+ * @return A negative errno-style validation or socket error otherwise.
+ *
+ * @thread_safety Exactly one packet worker may use an output socket.
+ *
+ * @side_effects Transmits one raw frame on the configured client interface.
+ */
+int jg_packet_output_send_client_frame(const uint8_t *frame,
+                                       size_t frame_size,
+                                       void *context);
 
 /**
  * @brief Read a relaxed snapshot of raw output counters.

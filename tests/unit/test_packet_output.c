@@ -50,6 +50,8 @@ static void test_operations(void **state)
     (void)state;
     assert_int_equal(jg_packet_output_send_tcp_resets(&resets, NULL), -EINVAL);
     assert_int_equal(jg_packet_output_send_tcp_resets(NULL, NULL), -EINVAL);
+    assert_int_equal(jg_packet_output_send_client_frame(NULL, 0U, NULL),
+                     -EINVAL);
     assert_int_equal(jg_packet_output_get_stats(NULL, NULL), -EINVAL);
     jg_packet_output_close(NULL);
 }

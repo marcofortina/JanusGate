@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dns_response.h"
 #include "fragment.h"
 #include "janusgate/packet.h"
 #include "nfqueue.h"
@@ -30,6 +31,20 @@
  * @return A negative errno-style error otherwise.
  */
 typedef int (*jg_dataplane_reset_sender)(const struct jg_tcp_reset_pair *resets,
+                                         void *context);
+
+/**
+ * @brief Synchronous output function for one client-facing Ethernet frame.
+ *
+ * @param[in] frame Complete Ethernet frame.
+ * @param[in] frame_size Number of frame bytes.
+ * @param[in,out] context Sender-specific context.
+ *
+ * @return 0 on success.
+ * @return A negative errno-style error otherwise.
+ */
+typedef int (*jg_dataplane_frame_sender)(const uint8_t *frame,
+                                         size_t frame_size,
                                          void *context);
 
 /**
@@ -101,6 +116,28 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
 int jg_dataplane_worker_set_reset_sender(struct jg_dataplane_worker *worker,
                                          jg_dataplane_reset_sender sender,
                                          void *context);
+
+/**
+ * @brief Configure blocked UDP DNS responses and client-facing output.
+ *
+ * A sender is optional only for DROP. Configuration is copied into the
+ * worker.
+ *
+ * @param[in,out] worker Data-plane worker to configure.
+ * @param[in] config Validated blocked-query response configuration.
+ * @param[in] sender Client-facing output function, or null for DROP.
+ * @param[in,out] context Context passed unchanged to @p sender.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or configuration.
+ *
+ * @thread_safety Configure the worker before its queue thread starts.
+ */
+int jg_dataplane_worker_set_dns_response(
+    struct jg_dataplane_worker *worker,
+    const struct jg_dns_response_config *config,
+    jg_dataplane_frame_sender sender,
+    void *context);
 
 /**
  * @brief Process one NFQUEUE packet against the current policy snapshot.

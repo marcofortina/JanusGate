@@ -32,6 +32,8 @@ struct jg_daemon_runtime_config {
     uint32_t queue_receive_buffer_size;
     /** Requested raw packet send-buffer bytes for every worker. */
     uint32_t packet_send_buffer_size;
+    /** Blocked UDP DNS response behavior. */
+    struct jg_dns_response_config dns_response;
     /** First CPU used when worker pinning is enabled. */
     uint32_t first_cpu;
     /** Whether queue workers are pinned to consecutive CPUs. */

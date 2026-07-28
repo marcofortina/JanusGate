@@ -143,6 +143,11 @@ static int create_workers(struct jg_daemon_runtime *runtime,
                 runtime->workers[index], jg_packet_output_send_tcp_resets,
                 runtime->outputs[index]);
         }
+        if (result == 0) {
+            result = jg_dataplane_worker_set_dns_response(
+                runtime->workers[index], &config->dns_response,
+                jg_packet_output_send_client_frame, runtime->outputs[index]);
+        }
     }
     return result;
 }
@@ -190,6 +195,7 @@ void jg_daemon_runtime_config_default(struct jg_daemon_runtime_config *config)
         .queue_receive_buffer_size = JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT,
         .packet_send_buffer_size = JG_PACKET_OUTPUT_BUFFER_DEFAULT,
     };
+    jg_dns_response_config_default(&config->dns_response);
 }
 
 /** @brief Validate process-local database and socket bounds. */
@@ -200,7 +206,8 @@ int jg_daemon_runtime_config_validate(
         config->database_path[0] != '/' || config->database_path[1] == '\0' ||
         config->database_busy_timeout_ms == 0U ||
         config->queue_receive_buffer_size == 0U ||
-        config->packet_send_buffer_size == 0U) {
+        config->packet_send_buffer_size == 0U ||
+        jg_dns_response_config_validate(&config->dns_response) != 0) {
         return -EINVAL;
     }
     if (config->database_busy_timeout_ms > JG_DATABASE_BUSY_TIMEOUT_MAX ||

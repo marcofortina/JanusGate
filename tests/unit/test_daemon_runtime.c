@@ -30,6 +30,7 @@ static void test_configuration(void **state)
                      JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT);
     assert_int_equal(config.packet_send_buffer_size,
                      JG_PACKET_OUTPUT_BUFFER_DEFAULT);
+    assert_int_equal(config.dns_response.action, JG_DNS_BLOCK_REFUSED);
     assert_false(config.pin_workers);
     assert_int_equal(jg_daemon_runtime_config_validate(&config), 0);
 
