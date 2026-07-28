@@ -6,6 +6,7 @@ pkg_check_modules(CMOCKA REQUIRED IMPORTED_TARGET cmocka)
 add_executable(
   janusgate-unit-tests
   unit/test_blocklist.c
+  unit/test_blocklist_remote.c
   unit/test_main.c
   unit/test_checked.c
   unit/test_database.c
