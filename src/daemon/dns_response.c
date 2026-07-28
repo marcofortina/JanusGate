@@ -254,34 +254,6 @@ static bool packet_valid(const struct jg_packet_view *packet)
            jg_range_valid(0U, packet->network_offset, packet->frame_size);
 }
 
-/** @brief Initialize explicit-refusal response defaults. */
-void jg_dns_response_config_default(struct jg_dns_response_config *config)
-{
-    if (config == NULL) {
-        return;
-    }
-    (void)memset(config, 0, sizeof(*config));
-    config->action = JG_DNS_BLOCK_REFUSED;
-    config->checksum_ipv4_udp = true;
-    config->sinkhole_ttl = 60U;
-}
-
-/** @brief Validate action-specific response configuration. */
-int jg_dns_response_config_validate(const struct jg_dns_response_config *config)
-{
-    if (config == NULL ||
-        (config->action != JG_DNS_BLOCK_DROP &&
-         config->action != JG_DNS_BLOCK_REFUSED &&
-         config->action != JG_DNS_BLOCK_NXDOMAIN &&
-         config->action != JG_DNS_BLOCK_SINKHOLE) ||
-        (config->action == JG_DNS_BLOCK_SINKHOLE &&
-         ((!config->has_ipv4_sinkhole && !config->has_ipv6_sinkhole) ||
-          config->sinkhole_ttl == 0U))) {
-        return -EINVAL;
-    }
-    return 0;
-}
-
 /** @brief Build one bounded client-facing blocked-query response frame. */
 int jg_dns_response_build(const struct jg_packet_view *packet,
                           const uint8_t *query,

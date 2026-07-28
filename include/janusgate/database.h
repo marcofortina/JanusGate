@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/dns_policy.h"
 #include "janusgate/network.h"
 #include "janusgate/policy.h"
 #include "janusgate/version.h"
@@ -143,6 +144,40 @@ JG_PUBLIC int jg_database_store_network_config(
  */
 JG_PUBLIC int jg_database_load_network_config(struct jg_database *database,
                                               struct jg_network_config *config);
+
+/**
+ * @brief Atomically persist blocked UDP DNS response policy.
+ *
+ * @param[in] database Open database.
+ * @param[in] config Response policy to validate and persist.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or configuration.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_store_dns_response_config(
+    struct jg_database *database,
+    const struct jg_dns_response_config *config);
+
+/**
+ * @brief Load persistent blocked UDP DNS response policy.
+ *
+ * @param[in] database Open database.
+ * @param[out] config Receives the validated response policy.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -ENOENT when no response policy has been stored.
+ * @return -EILSEQ when persistent content is not canonical.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_load_dns_response_config(
+    struct jg_database *database,
+    struct jg_dns_response_config *config);
 
 /**
  * @brief Atomically replace every active persistent domain rule.

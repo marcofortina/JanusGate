@@ -118,6 +118,7 @@ static int resolve_interface(const char *name, uint32_t *index)
 static int create_workers(struct jg_daemon_runtime *runtime,
                           const struct jg_daemon_runtime_config *config,
                           const struct jg_network_config *network,
+                          const struct jg_dns_response_config *dns_response,
                           uint32_t ingress_index,
                           uint32_t egress_index)
 {
@@ -145,7 +146,7 @@ static int create_workers(struct jg_daemon_runtime *runtime,
         }
         if (result == 0) {
             result = jg_dataplane_worker_set_dns_response(
-                runtime->workers[index], &config->dns_response,
+                runtime->workers[index], dns_response,
                 jg_packet_output_send_client_frame, runtime->outputs[index]);
         }
     }
@@ -225,6 +226,7 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     struct jg_daemon_runtime *started = NULL;
     struct jg_policy_snapshot *snapshot = NULL;
     struct jg_network_config network;
+    struct jg_dns_response_config dns_response = {0};
     uint32_t ingress_index = 0U;
     uint32_t egress_index = 0U;
     int result = 0;
@@ -234,6 +236,9 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     }
     *runtime = NULL;
     result = jg_daemon_runtime_config_validate(config);
+    if (result == 0) {
+        dns_response = config->dns_response;
+    }
     if (result == 0) {
         started = calloc(1U, sizeof(*started));
         if (started == NULL) {
@@ -248,6 +253,13 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     }
     if (result == 0) {
         result = jg_database_load_network_config(started->database, &network);
+    }
+    if (result == 0) {
+        result = jg_database_load_dns_response_config(started->database,
+                                                      &dns_response);
+        if (result == -ENOENT) {
+            result = 0;
+        }
     }
     if (result == 0) {
         result = resolve_interface(network.ingress, &ingress_index);
@@ -267,8 +279,8 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
         }
     }
     if (result == 0) {
-        result = create_workers(started, config, &network, ingress_index,
-                                egress_index);
+        result = create_workers(started, config, &network, &dns_response,
+                                ingress_index, egress_index);
     }
     if (result == 0) {
         result = jg_netd_client_apply(&network);

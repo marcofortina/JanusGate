@@ -271,12 +271,24 @@ static void test_validation(void **state)
 {
     struct jg_packet_view packet = parse_ipv4_query();
     struct jg_dns_response_config config;
+    struct jg_dns_response_config decoded;
+    uint8_t wire[JG_DNS_RESPONSE_CONFIG_WIRE_SIZE];
     uint8_t response[512U];
+    size_t encoded_size = 0U;
     size_t response_size = 1U;
 
     (void)state;
     jg_dns_response_config_default(&config);
     assert_int_equal(jg_dns_response_config_validate(&config), 0);
+    assert_int_equal(jg_dns_response_config_encode(&config, wire, sizeof(wire),
+                                                   &encoded_size),
+                     0);
+    assert_int_equal(encoded_size, sizeof(wire));
+    assert_int_equal(
+        jg_dns_response_config_decode(wire, sizeof(wire), &decoded), 0);
+    assert_int_equal(decoded.action, JG_DNS_BLOCK_REFUSED);
+    assert_true(decoded.checksum_ipv4_udp);
+    assert_int_equal(decoded.sinkhole_ttl, 60U);
     config.action = JG_DNS_BLOCK_SINKHOLE;
     assert_int_equal(jg_dns_response_config_validate(&config), -EINVAL);
     config.action = (enum jg_dns_block_action)0;

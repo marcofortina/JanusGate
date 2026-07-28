@@ -983,16 +983,16 @@ static char hex_digit(uint8_t value)
     return digits[value & UINT8_C(0x0f)];
 }
 
-/** @brief Encode one fixed-size network body as canonical hexadecimal text. */
-static void encode_network_config(const uint8_t *wire, char *text)
+/** @brief Encode fixed-size bytes as canonical lowercase hexadecimal text. */
+static void encode_hex(const uint8_t *wire, size_t wire_size, char *text)
 {
     size_t index = 0U;
 
-    for (index = 0U; index < JG_NETWORK_CONFIG_WIRE_SIZE; ++index) {
+    for (index = 0U; index < wire_size; ++index) {
         text[index * 2U] = hex_digit((uint8_t)(wire[index] >> 4U));
         text[index * 2U + 1U] = hex_digit(wire[index]);
     }
-    text[JG_NETWORK_CONFIG_WIRE_SIZE * 2U] = '\0';
+    text[wire_size * 2U] = '\0';
 }
 
 /** @brief Decode one lowercase hexadecimal digit. */
@@ -1009,17 +1009,18 @@ static bool decode_hex_digit(char digit, uint8_t *value)
     return false;
 }
 
-/** @brief Decode canonical network configuration text into its wire body. */
-static int decode_network_config(const char *text,
-                                 size_t text_size,
-                                 uint8_t *wire)
+/** @brief Decode canonical lowercase hexadecimal text into fixed-size bytes. */
+static int decode_hex(const char *text,
+                      size_t text_size,
+                      uint8_t *wire,
+                      size_t wire_size)
 {
     size_t index = 0U;
 
-    if (text_size != JG_NETWORK_CONFIG_WIRE_SIZE * 2U) {
+    if (text_size != wire_size * 2U) {
         return -EILSEQ;
     }
-    for (index = 0U; index < JG_NETWORK_CONFIG_WIRE_SIZE; ++index) {
+    for (index = 0U; index < wire_size; ++index) {
         uint8_t high = 0U;
         uint8_t low = 0U;
 
@@ -1059,7 +1060,7 @@ int jg_database_store_network_config(struct jg_database *database,
     if (encoded_size != sizeof(wire)) {
         return -EIO;
     }
-    encode_network_config(wire, text);
+    encode_hex(wire, sizeof(wire), text);
     status = sqlite3_prepare_v3(database->handle, statement_text, -1,
                                 SQLITE_PREPARE_PERSISTENT, &statement, NULL);
     result = jg_database_sqlite_result(status);
@@ -1112,10 +1113,109 @@ int jg_database_load_network_config(struct jg_database *database,
         result = required_text(statement, 0, &text, &text_size);
     }
     if (result == 0) {
-        result = decode_network_config(text, text_size, wire);
+        result = decode_hex(text, text_size, wire, sizeof(wire));
     }
     if (result == 0 &&
         jg_network_config_decode(wire, sizeof(wire), &loaded) != 0) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *config = loaded;
+    }
+    return result;
+}
+
+/** @brief Atomically persist one validated DNS response configuration. */
+int jg_database_store_dns_response_config(
+    struct jg_database *database,
+    const struct jg_dns_response_config *config)
+{
+    static const char statement_text[] =
+        "INSERT INTO system_settings(key,value,updated_at)"
+        " VALUES('dns.response',?1,unixepoch())"
+        " ON CONFLICT(key) DO UPDATE SET"
+        " value=excluded.value,updated_at=excluded.updated_at;";
+    char text[JG_DNS_RESPONSE_CONFIG_WIRE_SIZE * 2U + 1U];
+    uint8_t wire[JG_DNS_RESPONSE_CONFIG_WIRE_SIZE];
+    sqlite3_stmt *statement = NULL;
+    size_t encoded_size = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    result = jg_dns_response_config_encode(config, wire, sizeof(wire),
+                                           &encoded_size);
+    if (result != 0) {
+        return result;
+    }
+    if (encoded_size != sizeof(wire)) {
+        return -EIO;
+    }
+    encode_hex(wire, sizeof(wire), text);
+    status = sqlite3_prepare_v3(database->handle, statement_text, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 1, text, -1, SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Load one validated persistent DNS response configuration. */
+int jg_database_load_dns_response_config(struct jg_database *database,
+                                         struct jg_dns_response_config *config)
+{
+    static const char query[] = "SELECT value FROM system_settings"
+                                " WHERE key='dns.response';";
+    uint8_t wire[JG_DNS_RESPONSE_CONFIG_WIRE_SIZE];
+    struct jg_dns_response_config loaded;
+    sqlite3_stmt *statement = NULL;
+    const char *text = NULL;
+    size_t text_size = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || config == NULL) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = required_text(statement, 0, &text, &text_size);
+    }
+    if (result == 0) {
+        result = decode_hex(text, text_size, wire, sizeof(wire));
+    }
+    if (result == 0 &&
+        jg_dns_response_config_decode(wire, sizeof(wire), &loaded) != 0) {
         result = -EILSEQ;
     }
     if (statement != NULL) {

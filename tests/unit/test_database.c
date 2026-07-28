@@ -641,6 +641,60 @@ static void test_network_configuration(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify persistent blocked-query response policy round trips. */
+static void test_dns_response_configuration(void **state)
+{
+    static const char corrupt[] = "UPDATE system_settings SET value='invalid'"
+                                  " WHERE key='dns.response';";
+    char directory[64U];
+    char path[512U];
+    struct jg_dns_response_config expected;
+    struct jg_dns_response_config loaded;
+    struct jg_database *database = NULL;
+    sqlite3 *handle = NULL;
+
+    (void)state;
+    jg_dns_response_config_default(&expected);
+    expected.action = JG_DNS_BLOCK_SINKHOLE;
+    expected.has_ipv4_sinkhole = true;
+    expected.ipv4_sinkhole[0U] = 192U;
+    expected.ipv4_sinkhole[2U] = 2U;
+    expected.ipv4_sinkhole[3U] = 80U;
+    expected.sinkhole_ttl = 300U;
+
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_dns_response_config(database, &loaded),
+                     -ENOENT);
+    assert_int_equal(jg_database_store_dns_response_config(database, &expected),
+                     0);
+    assert_int_equal(jg_database_load_dns_response_config(database, &loaded),
+                     0);
+    assert_int_equal(loaded.action, expected.action);
+    assert_true(loaded.has_ipv4_sinkhole);
+    assert_memory_equal(loaded.ipv4_sinkhole, expected.ipv4_sinkhole, 4U);
+    assert_int_equal(loaded.sinkhole_ttl, expected.sinkhole_ttl);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, corrupt, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+    database = NULL;
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_dns_response_config(database, &loaded),
+                     -EILSEQ);
+    assert_int_equal(jg_database_store_dns_response_config(database, NULL),
+                     -EINVAL);
+    assert_int_equal(jg_database_load_dns_response_config(NULL, &loaded),
+                     -EINVAL);
+    assert_int_equal(jg_database_load_dns_response_config(database, NULL),
+                     -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the SQLite lifecycle and migration test group. */
 int jg_test_database(void)
 {
@@ -652,6 +706,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_network_configuration),
+        cmocka_unit_test(test_dns_response_configuration),
     };
 
     return cmocka_run_group_tests_name("database", tests, NULL, NULL);
