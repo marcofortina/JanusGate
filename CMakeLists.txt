@@ -48,6 +48,7 @@ configure_file(
 
 add_library(
   janusgate-common STATIC
+  src/common/audit.c
   src/common/auth.c
   src/common/blocklist.c
   src/common/blocklist_remote.c
@@ -137,7 +138,8 @@ install(
   EXPORT JanusGateTargets
   ARCHIVE COMPONENT development)
 install(
-  FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/auth.h"
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/audit.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/auth.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist_remote.h"

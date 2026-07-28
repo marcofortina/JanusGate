@@ -9,6 +9,7 @@
 
 #include <cmocka.h>
 
+int jg_test_audit(void);
 int jg_test_auth(void);
 int jg_test_blocklist(void);
 int jg_test_blocklist_remote(void);
@@ -38,8 +39,9 @@ int jg_test_tcp_stream(void);
 /** @brief Run every unit-test group and combine their exit status. */
 int main(void)
 {
-    int result = jg_test_auth();
+    int result = jg_test_audit();
 
+    result |= jg_test_auth();
     result |= jg_test_blocklist();
     result |= jg_test_blocklist_remote();
     result |= jg_test_checked();

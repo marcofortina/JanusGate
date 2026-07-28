@@ -20,14 +20,9 @@
 
 #include <sqlite3.h>
 
+#include "database_internal.h"
 #include "janusgate/checked.h"
 #include "janusgate/domain.h"
-
-/** Private database connection and path ownership. */
-struct jg_database {
-    sqlite3 *handle;
-    char *path;
-};
 
 /** One ordered schema migration. */
 struct database_migration {
@@ -392,7 +387,7 @@ static const struct database_migration migrations[] = {
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
-static int sqlite_result(int status)
+int jg_database_sqlite_result(int status)
 {
     switch (status & 0xff) {
     case SQLITE_OK:
@@ -429,17 +424,17 @@ static int execute_sql(sqlite3 *handle, const char *sql)
         int status = sqlite3_prepare_v3(
             handle, cursor, -1, SQLITE_PREPARE_PERSISTENT, &statement, &tail);
 
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
         if (result == 0 && statement != NULL) {
             do {
                 status = sqlite3_step(statement);
             } while (status == SQLITE_ROW);
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
         if (statement != NULL) {
             status = sqlite3_finalize(statement);
             if (result == 0) {
-                result = sqlite_result(status);
+                result = jg_database_sqlite_result(status);
             }
         }
         cursor = tail;
@@ -523,12 +518,12 @@ static int read_version(sqlite3 *handle, uint32_t *version)
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(handle, "PRAGMA user_version;", -1, 0U,
                                     &statement, NULL);
-    int result = sqlite_result(status);
+    int result = jg_database_sqlite_result(status);
 
     if (result == 0) {
         status = sqlite3_step(statement);
         if (status != SQLITE_ROW) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         } else {
             const sqlite3_int64 value = sqlite3_column_int64(statement, 0);
 
@@ -542,7 +537,7 @@ static int read_version(sqlite3 *handle, uint32_t *version)
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
@@ -554,12 +549,12 @@ static int enable_wal(sqlite3 *handle)
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(handle, "PRAGMA journal_mode=WAL;", -1, 0U,
                                     &statement, NULL);
-    int result = sqlite_result(status);
+    int result = jg_database_sqlite_result(status);
 
     if (result == 0) {
         status = sqlite3_step(statement);
         if (status != SQLITE_ROW) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         } else {
             const char *mode = (const char *)sqlite3_column_text(statement, 0);
 
@@ -571,7 +566,7 @@ static int enable_wal(sqlite3 *handle)
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
@@ -584,12 +579,12 @@ static int database_is_empty(sqlite3 *handle, bool *empty)
         "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';";
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(handle, query, -1, 0U, &statement, NULL);
-    int result = sqlite_result(status);
+    int result = jg_database_sqlite_result(status);
 
     if (result == 0) {
         status = sqlite3_step(statement);
         if (status != SQLITE_ROW) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         } else {
             *empty = sqlite3_column_int64(statement, 0) == 0;
         }
@@ -597,7 +592,7 @@ static int database_is_empty(sqlite3 *handle, bool *empty)
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
@@ -656,30 +651,30 @@ static int backup_database(const struct jg_database *database)
                                  SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX |
                                      SQLITE_OPEN_NOFOLLOW,
                                  NULL);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
         backup = sqlite3_backup_init(target, "main", database->handle, "main");
         if (backup == NULL) {
-            result = sqlite_result(sqlite3_errcode(target));
+            result = jg_database_sqlite_result(sqlite3_errcode(target));
         }
     }
     if (result == 0) {
         status = sqlite3_backup_step(backup, -1);
         if (status != SQLITE_DONE) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     if (backup != NULL) {
         status = sqlite3_backup_finish(backup);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     if (target != NULL) {
         status = sqlite3_close(target);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     if (result == 0 && rename(temporary_path, backup_path) != 0) {
@@ -743,11 +738,11 @@ int jg_database_check_integrity(struct jg_database *database)
     }
     status = sqlite3_prepare_v3(database->handle, "PRAGMA integrity_check;", -1,
                                 0U, &statement, NULL);
-    result = sqlite_result(status);
+    result = jg_database_sqlite_result(status);
     if (result == 0) {
         status = sqlite3_step(statement);
         if (status != SQLITE_ROW) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         } else {
             const char *message =
                 (const char *)sqlite3_column_text(statement, 0);
@@ -763,7 +758,7 @@ int jg_database_check_integrity(struct jg_database *database)
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
@@ -811,18 +806,18 @@ int jg_database_open(const char *path,
                                 SQLITE_OPEN_NOFOLLOW,
                             NULL);
 
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        result =
-            sqlite_result(sqlite3_extended_result_codes(opened->handle, 1));
+        result = jg_database_sqlite_result(
+            sqlite3_extended_result_codes(opened->handle, 1));
     }
     if (result == 0) {
-        result = sqlite_result(
+        result = jg_database_sqlite_result(
             sqlite3_busy_timeout(opened->handle, (int)busy_timeout_ms));
     }
     if (result == 0) {
-        result = sqlite_result(sqlite3_db_config(
+        result = jg_database_sqlite_result(sqlite3_db_config(
             opened->handle, SQLITE_DBCONFIG_DEFENSIVE, 1, NULL));
     }
     if (result == 0) {
@@ -997,19 +992,19 @@ int jg_database_store_network_config(struct jg_database *database,
     encode_network_config(wire, text);
     status = sqlite3_prepare_v3(database->handle, statement_text, -1,
                                 SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = sqlite_result(status);
+    result = jg_database_sqlite_result(status);
     if (result == 0) {
         status = sqlite3_bind_text(statement, 1, text, -1, SQLITE_TRANSIENT);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
         status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : sqlite_result(status);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
@@ -1034,13 +1029,13 @@ int jg_database_load_network_config(struct jg_database *database,
     }
     status = sqlite3_prepare_v3(database->handle, query, -1,
                                 SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = sqlite_result(status);
+    result = jg_database_sqlite_result(status);
     if (result == 0) {
         status = sqlite3_step(statement);
         if (status == SQLITE_DONE) {
             result = -ENOENT;
         } else if (status != SQLITE_ROW) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     if (result == 0) {
@@ -1056,7 +1051,7 @@ int jg_database_load_network_config(struct jg_database *database,
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     if (result == 0) {
@@ -1166,7 +1161,7 @@ static int bind_scope(sqlite3_stmt *statement,
     }
     status = sqlite3_bind_text(statement, 6, type, -1, SQLITE_STATIC);
     if (status != SQLITE_OK) {
-        return sqlite_result(status);
+        return jg_database_sqlite_result(status);
     }
     switch (scope->type) {
     case JG_POLICY_SCOPE_GLOBAL:
@@ -1199,7 +1194,7 @@ static int bind_scope(sqlite3_stmt *statement,
     default:
         return -EINVAL;
     }
-    return sqlite_result(status);
+    return jg_database_sqlite_result(status);
 }
 
 /** @brief Bind and insert one validated domain rule. */
@@ -1209,10 +1204,10 @@ static int insert_domain_rule(sqlite3_stmt *statement,
     char normalized[JG_DOMAIN_NAME_MAX + 1U];
     const char *persistent_source = source_text(rule->source);
     int status = sqlite3_reset(statement);
-    int result = sqlite_result(status);
+    int result = jg_database_sqlite_result(status);
 
     if (result == 0) {
-        result = sqlite_result(sqlite3_clear_bindings(statement));
+        result = jg_database_sqlite_result(sqlite3_clear_bindings(statement));
     }
     if (result == 0) {
         result =
@@ -1220,28 +1215,28 @@ static int insert_domain_rule(sqlite3_stmt *statement,
     }
     if (result == 0) {
         status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)rule->id);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
         status =
             sqlite3_bind_text(statement, 2, normalized, -1, SQLITE_TRANSIENT);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
         status = sqlite3_bind_text(
             statement, 3, rule->include_subdomains ? "suffix" : "exact", -1,
             SQLITE_STATIC);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
         status = sqlite3_bind_text(statement, 4, effect_text(rule->effect), -1,
                                    SQLITE_STATIC);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0 && persistent_source != NULL) {
         status = sqlite3_bind_text(statement, 5, persistent_source, -1,
                                    SQLITE_STATIC);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     } else if (result == 0) {
         result = -EINVAL;
     }
@@ -1251,11 +1246,11 @@ static int insert_domain_rule(sqlite3_stmt *statement,
     if (result == 0) {
         status = sqlite3_bind_text(statement, 10, rule->attribution, -1,
                                    SQLITE_TRANSIENT);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
         status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : sqlite_result(status);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
     return result;
 }
@@ -1289,7 +1284,7 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         status =
             sqlite3_prepare_v3(database->handle, insert, -1,
                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     for (index = 0U; result == 0 && index < rule_count; ++index) {
         result = insert_domain_rule(statement, &rules[index]);
@@ -1297,7 +1292,7 @@ int jg_database_replace_domain_rules(struct jg_database *database,
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     if (result == 0) {
@@ -1489,12 +1484,12 @@ static int read_policy_size(sqlite3 *handle,
         " FROM domain_rules WHERE enabled=1;";
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(handle, query, -1, 0U, &statement, NULL);
-    int result = sqlite_result(status);
+    int result = jg_database_sqlite_result(status);
 
     if (result == 0) {
         status = sqlite3_step(statement);
         if (status != SQLITE_ROW) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         } else {
             const sqlite3_int64 count = sqlite3_column_int64(statement, 0);
             const sqlite3_int64 bytes = sqlite3_column_int64(statement, 1);
@@ -1512,7 +1507,7 @@ static int read_policy_size(sqlite3 *handle,
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
@@ -1534,7 +1529,7 @@ static int read_domain_rules(sqlite3 *handle,
     size_t cursor = 0U;
     int status = sqlite3_prepare_v3(
         handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = sqlite_result(status);
+    int result = jg_database_sqlite_result(status);
 
     while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
         if (index >= rule_count) {
@@ -1546,7 +1541,7 @@ static int read_domain_rules(sqlite3 *handle,
         }
     }
     if (result == 0 && status != SQLITE_DONE) {
-        result = sqlite_result(status);
+        result = jg_database_sqlite_result(status);
     }
     if (result == 0 && (index != rule_count || cursor != strings_size)) {
         result = -EILSEQ;
@@ -1554,7 +1549,7 @@ static int read_domain_rules(sqlite3 *handle,
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
         if (result == 0) {
-            result = sqlite_result(status);
+            result = jg_database_sqlite_result(status);
         }
     }
     return result;
