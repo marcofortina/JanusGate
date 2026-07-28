@@ -55,6 +55,7 @@ add_library(
   src/common/account.c
   src/common/audit.c
   src/common/auth.c
+  src/common/backup.c
   src/common/blocklist.c
   src/common/blocklist_remote.c
   src/common/certificate.c
@@ -189,6 +190,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/account.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/audit.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/auth.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/backup.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/blocklist_remote.h"

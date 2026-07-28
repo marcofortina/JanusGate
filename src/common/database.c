@@ -987,7 +987,13 @@ int jg_database_export(struct jg_database *database,
         result = copy_database(snapshot, database->handle);
     }
     if (result == 0 && !include_sensitive) {
+        result = execute_sql(snapshot, "PRAGMA secure_delete=ON;");
+    }
+    if (result == 0 && !include_sensitive) {
         result = execute_sql(snapshot, scrub_sensitive_data);
+    }
+    if (result == 0 && !include_sensitive) {
+        result = execute_sql(snapshot, "VACUUM;");
     }
     if (result == 0) {
         serialized = sqlite3_serialize(snapshot, "main", &serialized_size, 0U);

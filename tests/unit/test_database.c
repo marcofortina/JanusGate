@@ -137,6 +137,25 @@ static sqlite3_int64 row_count(sqlite3 *handle, const char *table)
     return count;
 }
 
+/** @brief Find whether one byte sequence occurs inside another. */
+static bool snapshot_contains(const uint8_t *data,
+                              size_t data_size,
+                              const uint8_t *needle,
+                              size_t needle_size)
+{
+    size_t offset = 0U;
+
+    if (needle_size == 0U || needle_size > data_size) {
+        return false;
+    }
+    for (offset = 0U; offset <= data_size - needle_size; ++offset) {
+        if (memcmp(data + offset, needle, needle_size) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /** @brief Set user_version through a prepared SQLite statement. */
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
@@ -498,6 +517,9 @@ static void test_database_export(void **state)
     }
     assert_int_equal(row_count(snapshot, "system_settings"), 1);
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
+    assert_false(snapshot_contains(data, data_size,
+                                   (const uint8_t *)"secret-hash",
+                                   sizeof("secret-hash") - 1U));
     jg_database_export_clear(data, data_size);
 
     assert_int_equal(jg_database_export(NULL, false, &data, &data_size),

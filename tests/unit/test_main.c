@@ -13,6 +13,7 @@ int jg_test_access(void);
 int jg_test_account(void);
 int jg_test_audit(void);
 int jg_test_auth(void);
+int jg_test_backup(void);
 int jg_test_blocklist(void);
 int jg_test_blocklist_remote(void);
 int jg_test_blocklist_update(void);
@@ -55,6 +56,7 @@ int main(void)
     result |= jg_test_account();
     result |= jg_test_audit();
     result |= jg_test_auth();
+    result |= jg_test_backup();
     result |= jg_test_blocklist();
     result |= jg_test_blocklist_remote();
     result |= jg_test_blocklist_update();

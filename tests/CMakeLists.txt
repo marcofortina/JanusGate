@@ -9,6 +9,7 @@ add_executable(
   unit/test_account.c
   unit/test_audit.c
   unit/test_auth.c
+  unit/test_backup.c
   unit/test_blocklist.c
   unit/test_blocklist_remote.c
   unit/test_blocklist_update.c
