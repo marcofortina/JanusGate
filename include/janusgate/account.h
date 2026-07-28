@@ -68,6 +68,9 @@
 /** Largest accepted API-token request limit per minute. */
 #define JG_ACCOUNT_TOKEN_RATE_MAX 60000U
 
+/** Number of one-time recovery codes issued when TOTP is enabled. */
+#define JG_ACCOUNT_RECOVERY_CODE_COUNT 10U
+
 /**
  * @brief Authenticated local identity returned to management services.
  */
@@ -86,6 +89,8 @@ struct jg_account_identity {
     bool force_password_change;
     /** Whether TOTP is required for this user. */
     bool totp_enabled;
+    /** Whether required multifactor authentication has been completed. */
+    bool mfa_complete;
 };
 
 /**
@@ -128,6 +133,22 @@ struct jg_account_api_token {
     uint64_t token_id;
     /** Opaque token displayed only by the creation operation. */
     char secret[JG_AUTH_SECRET_TEXT_SIZE];
+};
+
+/**
+ * @brief One-time TOTP enrollment material.
+ */
+struct jg_account_totp_provisioning {
+    /** Canonical Base32 secret suitable for an `otpauth` URI. */
+    char secret[JG_AUTH_TOTP_SECRET_TEXT_SIZE];
+};
+
+/**
+ * @brief One-time recovery codes returned when TOTP is confirmed.
+ */
+struct jg_account_recovery_codes {
+    /** Independent opaque recovery values shown exactly once. */
+    char codes[JG_ACCOUNT_RECOVERY_CODE_COUNT][JG_AUTH_SECRET_TEXT_SIZE];
 };
 
 /**
@@ -433,5 +454,146 @@ JG_PUBLIC int jg_account_token_validate(
 JG_PUBLIC int jg_account_token_revoke(struct jg_database *database,
                                       uint64_t token_id,
                                       uint64_t now);
+
+/**
+ * @brief Begin TOTP enrollment for one enabled user.
+ *
+ * The new secret is encrypted with the appliance-local key before storage and
+ * remains disabled until explicitly confirmed. Existing enabled enrollment
+ * cannot be overwritten.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Enabled nonzero user identifier.
+ * @param[in] key Appliance-local TOTP encryption key.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] provisioning Receives the one-time Base32 secret.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the user does not exist.
+ * @return -EACCES when the user is disabled.
+ * @return -EEXIST when TOTP is already enabled.
+ * @return A negative errno-style cryptographic or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Stores one disabled encrypted TOTP credential.
+ */
+JG_PUBLIC int jg_account_totp_provision(
+    struct jg_database *database,
+    uint64_t user_id,
+    const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+    uint64_t now,
+    struct jg_account_totp_provisioning *provisioning);
+
+/**
+ * @brief Confirm pending TOTP enrollment and issue recovery codes.
+ *
+ * The TOTP code must match the pending encrypted secret. Enabling MFA,
+ * storing hashed recovery codes, advancing the user epoch, and revoking
+ * existing sessions occur in one transaction.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Enrolling nonzero user identifier.
+ * @param[in] key Appliance-local TOTP encryption key.
+ * @param[in] code Six-digit TOTP value.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] recovery_codes Receives one-time recovery values.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or code range.
+ * @return -EACCES for an incorrect code or disabled user.
+ * @return -ENOENT when no pending enrollment exists.
+ * @return -EALREADY when TOTP is already enabled.
+ * @return A negative errno-style cryptographic or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Enables TOTP and revokes existing sessions transactionally.
+ */
+JG_PUBLIC int jg_account_totp_confirm(
+    struct jg_database *database,
+    uint64_t user_id,
+    const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+    uint32_t code,
+    uint64_t now,
+    struct jg_account_recovery_codes *recovery_codes);
+
+/**
+ * @brief Complete password authentication with a TOTP code.
+ *
+ * The supplied password identity must still match the user's current
+ * revision and session epoch.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] password_identity Identity returned by password authentication.
+ * @param[in] key Appliance-local TOTP encryption key.
+ * @param[in] code Six-digit TOTP value.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] identity Receives an MFA-complete current identity.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or code range.
+ * @return -EACCES for an incorrect code or stale identity.
+ * @return -ENOENT when no enabled TOTP credential exists.
+ * @return A negative errno-style cryptographic or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_totp_authenticate(
+    struct jg_database *database,
+    const struct jg_account_identity *password_identity,
+    const uint8_t key[JG_AUTH_TOTP_KEY_SIZE],
+    uint32_t code,
+    uint64_t now,
+    struct jg_account_identity *identity);
+
+/**
+ * @brief Complete password authentication with one recovery code.
+ *
+ * A matching recovery code is marked used in the same transaction that
+ * validates the current user identity and can never authenticate again.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] password_identity Identity returned by password authentication.
+ * @param[in] recovery_code Exact opaque recovery-code bytes.
+ * @param[in] recovery_code_size Number of bytes in @p recovery_code.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] identity Receives an MFA-complete current identity.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -EACCES for an unknown, used, or stale recovery credential.
+ * @return A negative errno-style digest or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Marks one matching recovery code used transactionally.
+ */
+JG_PUBLIC int jg_account_recovery_authenticate(
+    struct jg_database *database,
+    const struct jg_account_identity *password_identity,
+    const uint8_t *recovery_code,
+    size_t recovery_code_size,
+    uint64_t now,
+    struct jg_account_identity *identity);
+
+/**
+ * @brief Disable TOTP and invalidate existing sessions for one user.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Nonzero persistent user identifier.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the user or TOTP credential does not exist.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Deletes TOTP and recovery material and advances the user epoch.
+ */
+JG_PUBLIC int jg_account_totp_disable(struct jg_database *database,
+                                      uint64_t user_id);
 
 #endif
