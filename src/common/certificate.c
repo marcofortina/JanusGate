@@ -319,22 +319,21 @@ static int validate_destination(int directory, const char *leaf)
     return 0;
 }
 
-/** @brief Inspect one securely installed combined certificate PEM. */
-int jg_certificate_inspect_file(const char *path,
-                                struct jg_certificate_info *info)
+/** @brief Load one bounded secure regular file without following symlinks. */
+static int read_secure_file(const char *path, uint8_t **data, size_t *data_size)
 {
     char directory_path[PATH_MAX];
     char leaf[NAME_MAX + 1U];
     struct stat metadata;
-    uint8_t *data = NULL;
     int directory = -1;
     int descriptor = -1;
     int result = 0;
 
-    if (info == NULL) {
+    if (data == NULL || data_size == NULL) {
         return -EINVAL;
     }
-    (void)memset(info, 0, sizeof(*info));
+    *data = NULL;
+    *data_size = 0U;
     result = split_path(path, directory_path, leaf);
     if (result != 0) {
         return result;
@@ -364,24 +363,47 @@ int jg_certificate_inspect_file(const char *path,
         result = -EMSGSIZE;
     }
     if (result == 0) {
-        data = malloc((size_t)metadata.st_size);
-        if (data == NULL) {
+        *data = malloc((size_t)metadata.st_size + 1U);
+        if (*data == NULL) {
             result = -ENOMEM;
         }
     }
     if (result == 0) {
-        result = read_exact(descriptor, data, (size_t)metadata.st_size);
+        result = read_exact(descriptor, *data, (size_t)metadata.st_size);
     }
     if (close(descriptor) != 0 && result == 0) {
         result = -errno;
     }
     if (result == 0) {
-        result = jg_certificate_inspect(
-            (const char *)data, (size_t)metadata.st_size, (const char *)data,
-            (size_t)metadata.st_size, info);
+        (*data)[metadata.st_size] = '\0';
+        *data_size = (size_t)metadata.st_size;
+    } else if (*data != NULL) {
+        sodium_memzero(*data, (size_t)metadata.st_size);
+        free(*data);
+        *data = NULL;
+    }
+    return result;
+}
+
+/** @brief Inspect one securely installed combined certificate PEM. */
+int jg_certificate_inspect_file(const char *path,
+                                struct jg_certificate_info *info)
+{
+    uint8_t *data = NULL;
+    size_t data_size = 0U;
+    int result = 0;
+
+    if (info == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(info, 0, sizeof(*info));
+    result = read_secure_file(path, &data, &data_size);
+    if (result == 0) {
+        result = jg_certificate_inspect((const char *)data, data_size,
+                                        (const char *)data, data_size, info);
     }
     if (data != NULL) {
-        sodium_memzero(data, (size_t)metadata.st_size);
+        sodium_memzero(data, data_size);
         free(data);
     }
     return result;
@@ -421,13 +443,12 @@ static int create_temporary_file(int directory, char name[64U], int *descriptor)
     return result;
 }
 
-/** @brief Atomically install one matching certificate and private key. */
-int jg_certificate_install(const char *path,
-                           const char *certificate,
-                           size_t certificate_size,
-                           const char *private_key,
-                           size_t private_key_size,
-                           struct jg_certificate_info *info)
+/** @brief Atomically replace one secure file with up to two byte spans. */
+static int atomic_write(const char *path,
+                        const char *first,
+                        size_t first_size,
+                        const char *second,
+                        size_t second_size)
 {
     char directory_path[PATH_MAX];
     char leaf[NAME_MAX + 1U];
@@ -437,19 +458,13 @@ int jg_certificate_install(const char *path,
     bool temporary_exists = false;
     int result = 0;
 
-    if (info == NULL) {
+    if (first == NULL || first_size == 0U ||
+        ((second == NULL) != (second_size == 0U)) ||
+        second_size > JG_CERTIFICATE_PEM_MAX ||
+        first_size > JG_CERTIFICATE_PEM_MAX - second_size) {
         return -EINVAL;
     }
     result = split_path(path, directory_path, leaf);
-    if (result == 0 &&
-        (private_key_size > JG_CERTIFICATE_PEM_MAX ||
-         certificate_size > JG_CERTIFICATE_PEM_MAX - private_key_size)) {
-        result = -EMSGSIZE;
-    }
-    if (result == 0) {
-        result = jg_certificate_inspect(certificate, certificate_size,
-                                        private_key, private_key_size, info);
-    }
     if (result == 0) {
         directory = open(directory_path,
                          O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
@@ -465,10 +480,10 @@ int jg_certificate_install(const char *path,
         temporary_exists = result == 0;
     }
     if (result == 0) {
-        result = write_exact(descriptor, certificate, certificate_size);
+        result = write_exact(descriptor, first, first_size);
     }
     if (result == 0) {
-        result = write_exact(descriptor, private_key, private_key_size);
+        result = write_exact(descriptor, second, second_size);
     }
     if (result == 0 && fsync(descriptor) != 0) {
         result = -errno;
@@ -490,8 +505,111 @@ int jg_certificate_install(const char *path,
     if (directory >= 0) {
         (void)close(directory);
     }
+    return result;
+}
+
+/** @brief Atomically install one matching certificate and private key. */
+int jg_certificate_install(const char *path,
+                           const char *certificate,
+                           size_t certificate_size,
+                           const char *private_key,
+                           size_t private_key_size,
+                           struct jg_certificate_info *info)
+{
+    int result = 0;
+
+    if (info == NULL || private_key_size > JG_CERTIFICATE_PEM_MAX ||
+        certificate_size > JG_CERTIFICATE_PEM_MAX - private_key_size) {
+        return -EINVAL;
+    }
+    result = jg_certificate_inspect(certificate, certificate_size, private_key,
+                                    private_key_size, info);
+    if (result == 0) {
+        result = atomic_write(path, certificate, certificate_size, private_key,
+                              private_key_size);
+    }
     if (result != 0) {
         (void)memset(info, 0, sizeof(*info));
+    }
+    return result;
+}
+
+/** @brief Atomically store one validated pending private key. */
+int jg_certificate_private_key_store(const char *path,
+                                     const char *private_key,
+                                     size_t private_key_size)
+{
+    EVP_PKEY *parsed = read_private_key(private_key, private_key_size);
+    int result = 0;
+
+    if (parsed == NULL) {
+        return -EINVAL;
+    }
+    result = atomic_write(path, private_key, private_key_size, NULL, 0U);
+    EVP_PKEY_free(parsed);
+    return result;
+}
+
+/** @brief Load one securely stored pending private key. */
+int jg_certificate_private_key_load(const char *path,
+                                    char **private_key,
+                                    size_t *private_key_size)
+{
+    uint8_t *data = NULL;
+    EVP_PKEY *parsed = NULL;
+    int result = 0;
+
+    if (private_key == NULL || private_key_size == NULL) {
+        return -EINVAL;
+    }
+    *private_key = NULL;
+    *private_key_size = 0U;
+    result = read_secure_file(path, &data, private_key_size);
+    if (result == 0) {
+        parsed = read_private_key((const char *)data, *private_key_size);
+        if (parsed == NULL) {
+            result = -EINVAL;
+        }
+    }
+    if (result == 0) {
+        *private_key = (char *)data;
+        data = NULL;
+    }
+    EVP_PKEY_free(parsed);
+    if (data != NULL) {
+        sodium_memzero(data, *private_key_size);
+        free(data);
+        *private_key_size = 0U;
+    }
+    return result;
+}
+
+/** @brief Securely remove one pending private-key file. */
+int jg_certificate_private_key_remove(const char *path)
+{
+    char directory_path[PATH_MAX];
+    char leaf[NAME_MAX + 1U];
+    int directory = -1;
+    int result = split_path(path, directory_path, leaf);
+
+    if (result == 0) {
+        directory = open(directory_path,
+                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (directory < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        result = validate_destination(directory, leaf);
+    }
+    if (result == 0 && unlinkat(directory, leaf, 0) != 0) {
+        result = -errno;
+    }
+    if (result == 0 && fsync(directory) != 0) {
+        result = -errno;
+    }
+    if (directory >= 0) {
+        (void)close(directory);
     }
     return result;
 }

@@ -21,6 +21,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <sodium.h>
 
 #include "janusgate/certificate.h"
 
@@ -136,6 +137,9 @@ static void test_certificate_installation(void **state)
     char directory[sizeof(template)];
     char path[256U];
     char link[256U];
+    char pending[256U];
+    char *loaded_key = NULL;
+    size_t loaded_key_size = 0U;
     struct stat metadata;
     struct jg_certificate_material material;
     struct jg_certificate_info installed;
@@ -151,6 +155,10 @@ static void test_certificate_installation(void **state)
     written = snprintf(link, sizeof(link), "%s/server-link.pem", directory);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(link));
+    written =
+        snprintf(pending, sizeof(pending), "%s/server.pending", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(pending));
 
     assert_int_equal(jg_certificate_create_self_signed("janusgate.local", NULL,
                                                        0U, 30U, &material),
@@ -176,6 +184,22 @@ static void test_certificate_installation(void **state)
                                material.certificate_size, material.private_key,
                                material.private_key_size, &installed),
         -EACCES);
+
+    assert_int_equal(
+        jg_certificate_private_key_store(pending, material.private_key,
+                                         material.private_key_size),
+        0);
+    assert_int_equal(
+        jg_certificate_private_key_load(pending, &loaded_key, &loaded_key_size),
+        0);
+    assert_int_equal(loaded_key_size, material.private_key_size);
+    assert_memory_equal(loaded_key, material.private_key, loaded_key_size);
+    sodium_memzero(loaded_key, loaded_key_size);
+    free(loaded_key);
+    assert_int_equal(jg_certificate_private_key_remove(pending), 0);
+    assert_int_equal(
+        jg_certificate_private_key_load(pending, &loaded_key, &loaded_key_size),
+        -ENOENT);
 
     assert_int_equal(unlink(link), 0);
     assert_int_equal(unlink(path), 0);

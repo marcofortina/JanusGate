@@ -137,6 +137,56 @@ JG_PUBLIC int jg_certificate_install(const char *path,
                                      struct jg_certificate_info *info);
 
 /**
+ * @brief Atomically store one validated pending private key.
+ *
+ * @param[in] path Absolute private destination path.
+ * @param[in] private_key Unencrypted private-key PEM.
+ * @param[in] private_key_size Exact private-key bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EACCES for an insecure existing destination.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety Concurrent replacement of the same path is unsupported.
+ */
+JG_PUBLIC int jg_certificate_private_key_store(const char *path,
+                                               const char *private_key,
+                                               size_t private_key_size);
+
+/**
+ * @brief Load one securely stored pending private key.
+ *
+ * @param[in] path Absolute private source path.
+ * @param[out] private_key Receives an owned null-terminated PEM.
+ * @param[out] private_key_size Receives exact PEM bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EACCES for an insecure source.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_certificate_private_key_load(const char *path,
+                                              char **private_key,
+                                              size_t *private_key_size);
+
+/**
+ * @brief Securely remove one pending private-key file.
+ *
+ * @param[in] path Absolute private-key path.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a malformed path.
+ * @return -EACCES for an insecure source.
+ * @return A negative errno-style file error otherwise.
+ *
+ * @thread_safety Concurrent replacement of the same path is unsupported.
+ */
+JG_PUBLIC int jg_certificate_private_key_remove(const char *path);
+
+/**
  * @brief Generate a private key and PKCS#10 certificate-signing request.
  *
  * Subject alternative names accept normalized DNS names and IPv4 or IPv6
