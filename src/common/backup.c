@@ -2,14 +2,23 @@
  * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "janusgate/backup.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <sodium.h>
 
@@ -112,6 +121,119 @@ static uint64_t read_u64(const uint8_t *source)
 static int initialize_crypto(void)
 {
     return sodium_init() < 0 ? -EIO : 0;
+}
+
+/** @brief Validate one untrusted backup filename. */
+static bool filename_valid(const char *filename)
+{
+    const size_t length =
+        filename == NULL ? 0U : strnlen(filename, JG_BACKUP_FILENAME_MAX + 1U);
+    size_t index = 0U;
+
+    if (length == 0U || length > JG_BACKUP_FILENAME_MAX ||
+        filename[0U] == '.') {
+        return false;
+    }
+    for (index = 0U; index < length; ++index) {
+        const char character = filename[index];
+        const bool valid = (character >= 'a' && character <= 'z') ||
+                           (character >= 'A' && character <= 'Z') ||
+                           (character >= '0' && character <= '9') ||
+                           character == '-' || character == '_' ||
+                           character == '.';
+
+        if (!valid) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Open and validate one owner-private backup directory. */
+static int open_directory(const char *directory, int *descriptor)
+{
+    struct stat metadata;
+    int opened;
+
+    if (directory == NULL || descriptor == NULL || directory[0U] != '/' ||
+        directory[1U] == '\0' || strlen(directory) >= PATH_MAX) {
+        return -EINVAL;
+    }
+    *descriptor = -1;
+    opened = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (opened < 0) {
+        return -errno;
+    }
+    if (fstat(opened, &metadata) != 0) {
+        const int result = -errno;
+
+        (void)close(opened);
+        return result;
+    }
+    if (!S_ISDIR(metadata.st_mode) || metadata.st_uid != geteuid() ||
+        (metadata.st_mode & (S_IRWXG | S_IRWXO)) != 0U) {
+        (void)close(opened);
+        return -EACCES;
+    }
+    *descriptor = opened;
+    return 0;
+}
+
+/** @brief Validate one opened private regular archive file. */
+static int validate_archive_file(int descriptor,
+                                 struct stat *metadata,
+                                 bool require_nonempty)
+{
+    if (fstat(descriptor, metadata) != 0) {
+        return -errno;
+    }
+    if (!S_ISREG(metadata->st_mode) || metadata->st_uid != geteuid() ||
+        (metadata->st_mode & 0777U) != (S_IRUSR | S_IWUSR) ||
+        metadata->st_nlink != 1U ||
+        (require_nonempty && metadata->st_size <= 0)) {
+        return -EACCES;
+    }
+    return 0;
+}
+
+/** @brief Write every byte to one regular file descriptor. */
+static int write_all(int descriptor, const uint8_t *data, size_t data_size)
+{
+    size_t offset = 0U;
+
+    while (offset < data_size) {
+        const ssize_t written =
+            write(descriptor, data + offset, data_size - offset);
+
+        if (written > 0) {
+            offset += (size_t)written;
+        } else if (written == 0) {
+            return -EIO;
+        } else if (errno != EINTR) {
+            return -errno;
+        }
+    }
+    return 0;
+}
+
+/** @brief Read exactly one bounded regular file. */
+static int read_all(int descriptor, uint8_t *data, size_t data_size)
+{
+    size_t offset = 0U;
+
+    while (offset < data_size) {
+        const ssize_t received =
+            read(descriptor, data + offset, data_size - offset);
+
+        if (received > 0) {
+            offset += (size_t)received;
+        } else if (received == 0) {
+            return -EIO;
+        } else if (errno != EINTR) {
+            return -errno;
+        }
+    }
+    return 0;
 }
 
 /** @brief Validate a passphrase for the selected backup kind. */
@@ -478,6 +600,173 @@ int jg_backup_open(const uint8_t *archive,
         }
     } else {
         jg_backup_contents_clear(contents);
+    }
+    return result;
+}
+
+/** @brief Atomically store one new private backup archive. */
+int jg_backup_store(const char *directory,
+                    const char *filename,
+                    const uint8_t *archive,
+                    size_t archive_size)
+{
+    char temporary[64U] = {0};
+    uint64_t random = 0U;
+    int directory_descriptor = -1;
+    int descriptor = -1;
+    int result;
+
+    if (!filename_valid(filename) || archive == NULL ||
+        archive_size < BACKUP_HEADER_SIZE ||
+        archive_size > JG_BACKUP_PAYLOAD_MAX + BACKUP_HEADER_SIZE +
+                           crypto_aead_xchacha20poly1305_ietf_ABYTES) {
+        return -EINVAL;
+    }
+    result = initialize_crypto();
+    if (result == 0) {
+        result = open_directory(directory, &directory_descriptor);
+    }
+    if (result == 0) {
+        int written;
+
+        randombytes_buf(&random, sizeof(random));
+        written = snprintf(temporary, sizeof(temporary),
+                           ".janusgate-%016" PRIx64, random);
+        if (written <= 0 || (size_t)written >= sizeof(temporary)) {
+            result = -EOVERFLOW;
+        }
+    }
+    if (result == 0) {
+        descriptor =
+            openat(directory_descriptor, temporary,
+                   O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                   S_IRUSR | S_IWUSR);
+        if (descriptor < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        result = write_all(descriptor, archive, archive_size);
+    }
+    if (result == 0 && fsync(descriptor) != 0) {
+        result = -errno;
+    }
+    if (descriptor >= 0 && close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result == 0 && linkat(directory_descriptor, temporary,
+                              directory_descriptor, filename, 0) != 0) {
+        result = -errno;
+    }
+    if (directory_descriptor >= 0 && temporary[0U] != '\0') {
+        (void)unlinkat(directory_descriptor, temporary, 0);
+    }
+    if (result == 0 && fsync(directory_descriptor) != 0) {
+        result = -errno;
+    }
+    if (directory_descriptor >= 0 && close(directory_descriptor) != 0 &&
+        result == 0) {
+        result = -errno;
+    }
+    sodium_memzero(&random, sizeof(random));
+    return result;
+}
+
+/** @brief Load one secure private backup archive. */
+int jg_backup_load(const char *directory,
+                   const char *filename,
+                   uint8_t **archive,
+                   size_t *archive_size)
+{
+    struct stat metadata = {0};
+    int directory_descriptor = -1;
+    int descriptor = -1;
+    int result;
+
+    if (!filename_valid(filename) || archive == NULL || archive_size == NULL) {
+        return -EINVAL;
+    }
+    *archive = NULL;
+    *archive_size = 0U;
+    result = open_directory(directory, &directory_descriptor);
+    if (result == 0) {
+        descriptor = openat(directory_descriptor, filename,
+                            O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        result = validate_archive_file(descriptor, &metadata, true);
+    }
+    if (result == 0 &&
+        ((uint64_t)metadata.st_size < BACKUP_HEADER_SIZE ||
+         (uint64_t)metadata.st_size >
+             (uint64_t)JG_BACKUP_PAYLOAD_MAX + BACKUP_HEADER_SIZE +
+                 crypto_aead_xchacha20poly1305_ietf_ABYTES ||
+         (uint64_t)metadata.st_size > SIZE_MAX)) {
+        result = -EOVERFLOW;
+    }
+    if (result == 0) {
+        *archive = malloc((size_t)metadata.st_size);
+        if (*archive == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        result = read_all(descriptor, *archive, (size_t)metadata.st_size);
+    }
+    if (descriptor >= 0 && close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (directory_descriptor >= 0 && close(directory_descriptor) != 0 &&
+        result == 0) {
+        result = -errno;
+    }
+    if (result == 0) {
+        *archive_size = (size_t)metadata.st_size;
+    } else {
+        jg_backup_data_clear(
+            *archive, metadata.st_size > 0 ? (size_t)metadata.st_size : 0U);
+        *archive = NULL;
+    }
+    return result;
+}
+
+/** @brief Remove one secure private backup archive. */
+int jg_backup_remove(const char *directory, const char *filename)
+{
+    struct stat metadata;
+    int directory_descriptor = -1;
+    int descriptor = -1;
+    int result;
+
+    if (!filename_valid(filename)) {
+        return -EINVAL;
+    }
+    result = open_directory(directory, &directory_descriptor);
+    if (result == 0) {
+        descriptor = openat(directory_descriptor, filename,
+                            O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        result = validate_archive_file(descriptor, &metadata, false);
+    }
+    if (descriptor >= 0 && close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result == 0 && unlinkat(directory_descriptor, filename, 0) != 0) {
+        result = -errno;
+    }
+    if (result == 0 && fsync(directory_descriptor) != 0) {
+        result = -errno;
+    }
+    if (directory_descriptor >= 0 && close(directory_descriptor) != 0 &&
+        result == 0) {
+        result = -errno;
     }
     return result;
 }

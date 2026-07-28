@@ -2,6 +2,8 @@
  * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -9,8 +11,12 @@
 
 #include <errno.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <cmocka.h>
 
@@ -176,6 +182,65 @@ static void test_archive_rejection(void **state)
     jg_backup_data_clear(NULL, 0U);
 }
 
+/** @brief Verify private atomic archive storage and metadata checks. */
+static void test_archive_storage(void **state)
+{
+    static const uint8_t database[] = "stored database";
+    char directory[] = "/tmp/janusgate-backup-XXXXXX";
+    char path[256U];
+    char link_path[256U];
+    uint8_t *archive = NULL;
+    uint8_t *loaded = NULL;
+    size_t archive_size = 0U;
+    size_t loaded_size = 0U;
+    int written;
+
+    (void)state;
+    assert_non_null(mkdtemp(directory));
+    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, database,
+                                      sizeof(database) - 1U, NULL, 0U, NULL, 0U,
+                                      1U, 9U, &archive, &archive_size),
+                     0);
+    assert_int_equal(
+        jg_backup_store(directory, "backup-1.jgb", archive, archive_size), 0);
+    assert_int_equal(
+        jg_backup_store(directory, "backup-1.jgb", archive, archive_size),
+        -EEXIST);
+    assert_int_equal(
+        jg_backup_load(directory, "backup-1.jgb", &loaded, &loaded_size), 0);
+    assert_int_equal(loaded_size, archive_size);
+    assert_memory_equal(loaded, archive, archive_size);
+    jg_backup_data_clear(loaded, loaded_size);
+    loaded = NULL;
+    loaded_size = 0U;
+
+    written = snprintf(path, sizeof(path), "%s/backup-1.jgb", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(path));
+    assert_int_equal(chmod(path, 0644), 0);
+    assert_int_equal(
+        jg_backup_load(directory, "backup-1.jgb", &loaded, &loaded_size),
+        -EACCES);
+    assert_int_equal(chmod(path, 0600), 0);
+    written =
+        snprintf(link_path, sizeof(link_path), "%s/backup-link.jgb", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(link_path));
+    assert_int_equal(symlink("backup-1.jgb", link_path), 0);
+    assert_true(jg_backup_load(directory, "backup-link.jgb", &loaded,
+                               &loaded_size) < 0);
+    assert_int_equal(
+        jg_backup_store(directory, "../escape", archive, archive_size),
+        -EINVAL);
+    assert_int_equal(jg_backup_remove(directory, "backup-1.jgb"), 0);
+    assert_int_equal(
+        jg_backup_load(directory, "backup-1.jgb", &loaded, &loaded_size),
+        -ENOENT);
+    assert_int_equal(unlink(link_path), 0);
+    assert_int_equal(rmdir(directory), 0);
+    jg_backup_data_clear(archive, archive_size);
+}
+
 /** @brief Run the backup archive test group. */
 int jg_test_backup(void)
 {
@@ -183,6 +248,7 @@ int jg_test_backup(void)
         cmocka_unit_test(test_configuration_archive),
         cmocka_unit_test(test_encrypted_archive),
         cmocka_unit_test(test_archive_rejection),
+        cmocka_unit_test(test_archive_storage),
     };
 
     return cmocka_run_group_tests_name("backup", tests, NULL, NULL);

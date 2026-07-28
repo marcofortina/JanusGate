@@ -28,6 +28,12 @@
 /** Maximum full-backup passphrase bytes. */
 #define JG_BACKUP_PASSPHRASE_MAX 1024U
 
+/** Default private backup archive directory. */
+#define JG_BACKUP_DEFAULT_DIRECTORY "/var/lib/janusgate/backups"
+
+/** Maximum backup filename bytes excluding the terminator. */
+#define JG_BACKUP_FILENAME_MAX 128U
+
 /** Backup archive content class. */
 enum jg_backup_kind {
     /** Appliance configuration without authentication secrets. */
@@ -174,6 +180,72 @@ JG_PUBLIC int jg_backup_open(const uint8_t *archive,
                              const char *passphrase,
                              size_t passphrase_size,
                              struct jg_backup_contents *contents);
+
+/**
+ * @brief Atomically store one new archive in a private directory.
+ *
+ * The directory must be absolute, owned by the effective user, and accessible
+ * only by its owner. Existing destinations are never replaced.
+ *
+ * @param[in] directory Private backup directory.
+ * @param[in] filename Plain filename without path separators.
+ * @param[in] archive Complete archive.
+ * @param[in] archive_size Archive bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -EACCES for insecure directory or destination metadata.
+ * @return -EEXIST when the destination already exists.
+ * @return A negative errno-style file error otherwise.
+ *
+ * @thread_safety Concurrent storage is safe for distinct filenames.
+ *
+ * @side_effects Creates and synchronizes one mode-0600 regular file.
+ */
+JG_PUBLIC int jg_backup_store(const char *directory,
+                              const char *filename,
+                              const uint8_t *archive,
+                              size_t archive_size);
+
+/**
+ * @brief Load one securely stored archive into memory.
+ *
+ * @param[in] directory Private backup directory.
+ * @param[in] filename Plain filename without path separators.
+ * @param[out] archive Receives the owned archive.
+ * @param[out] archive_size Receives the archive size in bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -EACCES for insecure directory or archive metadata.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety Concurrent loads of immutable archives are safe.
+ *
+ * @side_effects Allocates @p archive, which must be released with
+ * jg_backup_data_clear().
+ */
+JG_PUBLIC int jg_backup_load(const char *directory,
+                             const char *filename,
+                             uint8_t **archive,
+                             size_t *archive_size);
+
+/**
+ * @brief Securely remove one stored backup archive.
+ *
+ * @param[in] directory Private backup directory.
+ * @param[in] filename Plain filename without path separators.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -EACCES for insecure directory or archive metadata.
+ * @return A negative errno-style file error otherwise.
+ *
+ * @thread_safety Concurrent access to the same filename is unsupported.
+ *
+ * @side_effects Unlinks and synchronizes one archive directory entry.
+ */
+JG_PUBLIC int jg_backup_remove(const char *directory, const char *filename);
 
 /**
  * @brief Securely erase and release an archive buffer.
