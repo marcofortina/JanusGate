@@ -33,7 +33,9 @@ enum jg_dataplane_reason {
     JG_DATAPLANE_FRAGMENT_PENDING = 5,
     /** TCP stream handling must complete before a domain verdict is possible.
      */
-    JG_DATAPLANE_STREAM_PENDING = 6
+    JG_DATAPLANE_STREAM_PENDING = 6,
+    /** ECH or a missing extension made the private SNI unavailable. */
+    JG_DATAPLANE_SNI_ENCRYPTED_OR_UNAVAILABLE = 7
 };
 
 /**

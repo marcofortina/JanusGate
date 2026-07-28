@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "dataplane.h"
+#include "janusgate/tls_client_hello.h"
 
 /** Independently updated counters for one data-plane worker. */
 struct atomic_dataplane_stats {
@@ -36,14 +37,19 @@ struct jg_dataplane_worker {
     struct jg_policy_store *store;
     struct jg_fragment_tracker *fragments;
     struct jg_tcp_stream_tracker *streams;
+    struct jg_tcp_stream_tracker *tls_streams;
     struct jg_packet_limits limits;
     struct atomic_dataplane_stats stats;
     uint8_t *fragment_payload;
     uint8_t *stream_output;
+    uint8_t *tls_output;
     struct jg_tcp_stream_message *stream_messages;
+    struct jg_tls_client_hello_parser *tls_parsers;
     size_t fragment_payload_size;
     size_t stream_output_size;
     size_t stream_message_capacity;
+    size_t tls_output_size;
+    size_t tls_parser_count;
     size_t reader_index;
     jg_dataplane_reset_sender reset_sender;
     void *reset_context;
@@ -151,6 +157,36 @@ static int process_fragment(struct jg_dataplane_worker *worker,
     return 0;
 }
 
+/** @brief Reject and reset one stream blocked by domain policy. */
+static int reset_blocked_stream(struct jg_dataplane_worker *worker,
+                                struct jg_tcp_stream_tracker *tracker,
+                                const struct jg_dataplane_result *result,
+                                uint64_t now_ms)
+{
+    struct jg_tcp_reset_pair resets;
+    int operation_result = 0;
+
+    if (result->reason != JG_DATAPLANE_POLICY_BLOCK) {
+        return -EINVAL;
+    }
+    operation_result =
+        jg_tcp_stream_tracker_reject_flow(tracker, &result->packet, now_ms);
+    if (operation_result != 0) {
+        return operation_result;
+    }
+    if (worker->reset_sender == NULL) {
+        return -ENOTCONN;
+    }
+    operation_result = jg_tcp_reset_build(&result->packet, &resets);
+    if (operation_result == 0) {
+        operation_result = worker->reset_sender(&resets, worker->reset_context);
+    }
+    if (operation_result == 0) {
+        increment(&worker->stats.tcp_resets);
+    }
+    return operation_result;
+}
+
 /** @brief Process one TCP packet through bounded DNS stream state. */
 static int process_stream(struct jg_dataplane_worker *worker,
                           const struct jg_policy_snapshot *snapshot,
@@ -180,26 +216,8 @@ static int process_stream(struct jg_dataplane_worker *worker,
                 return operation_result;
             }
             if (result->verdict == JG_NFQUEUE_DROP) {
-                struct jg_tcp_reset_pair resets;
-
-                operation_result = jg_tcp_stream_tracker_reject_flow(
-                    worker->streams, &result->packet, now_ms);
-                if (operation_result != 0 ||
-                    result->reason != JG_DATAPLANE_POLICY_BLOCK) {
-                    return operation_result;
-                }
-                if (worker->reset_sender == NULL) {
-                    return -ENOTCONN;
-                }
-                operation_result = jg_tcp_reset_build(&result->packet, &resets);
-                if (operation_result == 0) {
-                    operation_result =
-                        worker->reset_sender(&resets, worker->reset_context);
-                }
-                if (operation_result == 0) {
-                    increment(&worker->stats.tcp_resets);
-                }
-                return operation_result;
+                return reset_blocked_stream(worker, worker->streams, result,
+                                            now_ms);
             }
         }
     } else if (stream_result == JG_TCP_STREAM_BUFFERED ||
@@ -214,6 +232,108 @@ static int process_stream(struct jg_dataplane_worker *worker,
         result->reason = JG_DATAPLANE_MALFORMED;
     }
     return 0;
+}
+
+/** @brief Mark a TLS packet as accepted while its SNI remains unavailable. */
+static void accept_unavailable_sni(struct jg_dataplane_result *result)
+{
+    result->verdict = JG_NFQUEUE_ACCEPT;
+    result->reason = JG_DATAPLANE_SNI_ENCRYPTED_OR_UNAVAILABLE;
+}
+
+/** @brief Apply one terminal ClientHello result to a selected TLS stream. */
+static int apply_client_hello(struct jg_dataplane_worker *worker,
+                              const struct jg_policy_snapshot *snapshot,
+                              struct jg_dataplane_result *result,
+                              const struct jg_tls_client_hello *hello,
+                              enum jg_tls_client_hello_result hello_result,
+                              uint64_t now_ms)
+{
+    int operation_result = 0;
+
+    if (hello_result == JG_TLS_CLIENT_HELLO_COMPLETE &&
+        hello->has_server_name) {
+        operation_result = jg_dataplane_evaluate_visible_sni(
+            &result->packet, hello->server_name, snapshot, result);
+        if (operation_result != 0 || result->verdict == JG_NFQUEUE_DROP) {
+            return operation_result != 0
+                       ? operation_result
+                       : reset_blocked_stream(worker, worker->tls_streams,
+                                              result, now_ms);
+        }
+        if (hello->encrypted_client_hello) {
+            accept_unavailable_sni(result);
+        }
+    } else if (hello_result == JG_TLS_CLIENT_HELLO_COMPLETE ||
+               hello_result == JG_TLS_CLIENT_HELLO_NOT_CLIENT_HELLO) {
+        accept_unavailable_sni(result);
+    } else if (hello_result == JG_TLS_CLIENT_HELLO_MALFORMED ||
+               hello_result == JG_TLS_CLIENT_HELLO_TOO_LARGE) {
+        result->verdict = JG_NFQUEUE_DROP;
+        result->reason = JG_DATAPLANE_MALFORMED;
+        operation_result = jg_tcp_stream_tracker_reject_flow(
+            worker->tls_streams, &result->packet, now_ms);
+    } else {
+        result->verdict = JG_NFQUEUE_ACCEPT;
+        result->reason = JG_DATAPLANE_STREAM_PENDING;
+    }
+    return operation_result;
+}
+
+/** @brief Process one selected TCP packet through bounded TLS stream state. */
+static int process_tls_stream(struct jg_dataplane_worker *worker,
+                              const struct jg_policy_snapshot *snapshot,
+                              struct jg_dataplane_result *result)
+{
+    struct jg_tcp_raw_stream_chunk chunk;
+    enum jg_tcp_raw_stream_result stream_result = JG_TCP_RAW_STREAM_EXHAUSTED;
+    struct jg_tls_client_hello hello;
+    enum jg_tls_client_hello_result hello_result = JG_TLS_CLIENT_HELLO_MORE;
+    uint64_t now_ms = 0U;
+    int operation_result = monotonic_milliseconds(&now_ms);
+
+    if (operation_result == 0) {
+        operation_result = jg_tcp_stream_tracker_add_raw(
+            worker->tls_streams, &result->packet, now_ms, worker->tls_output,
+            worker->tls_output_size, &chunk, &stream_result);
+    }
+    if (operation_result != 0) {
+        return operation_result;
+    }
+    if (chunk.flow_index != SIZE_MAX &&
+        chunk.flow_index >= worker->tls_parser_count) {
+        return -ERANGE;
+    }
+    if (chunk.flow_index != SIZE_MAX && chunk.new_flow) {
+        jg_tls_client_hello_parser_init(&worker->tls_parsers[chunk.flow_index]);
+    }
+    if (stream_result == JG_TCP_RAW_STREAM_BYTES) {
+        if (worker->tls_parsers[chunk.flow_index].terminal ==
+            JG_TLS_CLIENT_HELLO_MORE) {
+            hello_result = jg_tls_client_hello_parser_feed(
+                &worker->tls_parsers[chunk.flow_index], worker->tls_output,
+                chunk.size, &hello);
+            operation_result = apply_client_hello(worker, snapshot, result,
+                                                  &hello, hello_result, now_ms);
+        } else {
+            result->verdict = JG_NFQUEUE_ACCEPT;
+            result->reason = JG_DATAPLANE_PASS;
+        }
+    } else if (stream_result == JG_TCP_RAW_STREAM_BUFFERED ||
+               stream_result == JG_TCP_RAW_STREAM_DUPLICATE) {
+        result->verdict = JG_NFQUEUE_ACCEPT;
+        result->reason = JG_DATAPLANE_STREAM_PENDING;
+    } else if (stream_result == JG_TCP_RAW_STREAM_CLOSED) {
+        result->verdict = JG_NFQUEUE_ACCEPT;
+        result->reason = JG_DATAPLANE_PASS;
+    } else {
+        result->verdict = JG_NFQUEUE_DROP;
+        result->reason = JG_DATAPLANE_MALFORMED;
+    }
+    if (chunk.closed && chunk.flow_index != SIZE_MAX) {
+        jg_tls_client_hello_parser_init(&worker->tls_parsers[chunk.flow_index]);
+    }
+    return operation_result;
 }
 
 /** @brief Create one exclusive policy-reading packet worker. */
@@ -294,6 +414,18 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
         jg_dataplane_worker_destroy(created);
         return result != 0 ? result : -ENOMEM;
     }
+    created->tls_parser_count = active_stream_limits->max_flows;
+    created->tls_output_size = active_stream_limits->max_buffered_bytes;
+    created->tls_output = malloc(created->tls_output_size);
+    created->tls_parsers =
+        calloc(created->tls_parser_count, sizeof(*created->tls_parsers));
+    result = jg_tcp_stream_tracker_create(active_stream_limits,
+                                          &created->tls_streams);
+    if (created->tls_output == NULL || created->tls_parsers == NULL ||
+        result != 0) {
+        jg_dataplane_worker_destroy(created);
+        return result != 0 ? result : -ENOMEM;
+    }
     initialize_stats(&created->stats);
 
     snapshot = jg_policy_store_acquire(store, reader_index);
@@ -349,6 +481,12 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
                result.packet.transport == JG_TRANSPORT_TCP &&
                result.packet.destination_port == 53U) {
         evaluation_result = process_stream(worker, snapshot, &result);
+    } else if (evaluation_result == 0 &&
+               result.reason == JG_DATAPLANE_STREAM_PENDING &&
+               result.packet.transport == JG_TRANSPORT_TCP &&
+               (result.packet.destination_port == 443U ||
+                result.packet.destination_port == 853U)) {
+        evaluation_result = process_tls_stream(worker, snapshot, &result);
     }
     jg_policy_store_release(worker->store, worker->reader_index);
     if (evaluation_result != 0) {
@@ -412,8 +550,11 @@ void jg_dataplane_worker_destroy(struct jg_dataplane_worker *worker)
     if (worker == NULL) {
         return;
     }
+    jg_tcp_stream_tracker_destroy(worker->tls_streams);
     jg_tcp_stream_tracker_destroy(worker->streams);
     jg_fragment_tracker_destroy(worker->fragments);
+    free(worker->tls_parsers);
+    free(worker->tls_output);
     free(worker->stream_messages);
     free(worker->stream_output);
     free(worker->fragment_payload);

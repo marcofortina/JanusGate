@@ -39,6 +39,18 @@ static const uint8_t tcp_query[] = {
     0x04U, 't',   'e',   's',   't',   0x00U, 0x00U, 0x01U, 0x00U, 0x01U,
 };
 
+/** TLS ClientHello with visible SNI `resolver.example`. */
+static const uint8_t tls_client_hello[] = {
+    0x16U, 0x03U, 0x03U, 0x00U, 0x4fU, 0x01U, 0x00U, 0x00U, 0x4bU, 0x03U, 0x03U,
+    0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+    0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+    0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+    0x00U, 0x02U, 0x13U, 0x01U, 0x01U, 0x00U, 0x00U, 0x20U, 0x00U, 0x00U, 0x00U,
+    0x15U, 0x00U, 0x13U, 0x00U, 0x00U, 0x10U, 'r',   'e',   's',   'o',   'l',
+    'v',   'e',   'r',   '.',   'e',   'x',   'a',   'm',   'p',   'l',   'e',
+    0x00U, 0x2bU, 0x00U, 0x03U, 0x02U, 0x03U, 0x04U,
+};
+
 /** Captured synchronous reset output from one worker. */
 struct reset_capture {
     struct jg_tcp_reset_pair resets;
@@ -76,6 +88,26 @@ static struct jg_policy_store *build_blocking_store(void)
         .domain = "blocked.test",
         .effect = JG_POLICY_BLOCK,
         .source = JG_POLICY_SOURCE_EXPLICIT,
+        .scope = {.type = JG_POLICY_SCOPE_GLOBAL},
+        .attribution = "unit test",
+    };
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_store *store = NULL;
+
+    assert_int_equal(jg_policy_snapshot_build(&rule, 1U, 1U, &snapshot), 0);
+    assert_int_equal(jg_policy_store_create(snapshot, 1U, &store), 0);
+    return store;
+}
+
+/** @brief Build one policy store blocking the visible test SNI. */
+static struct jg_policy_store *build_sni_blocking_store(void)
+{
+    const struct jg_policy_rule_input rule = {
+        .id = 29U,
+        .domain = "resolver.example",
+        .effect = JG_POLICY_BLOCK,
+        .source = JG_POLICY_SOURCE_EXPLICIT,
+        .target = JG_POLICY_DOMAIN_TLS_SNI,
         .scope = {.type = JG_POLICY_SCOPE_GLOBAL},
         .attribution = "unit test",
     };
@@ -128,15 +160,18 @@ static size_t build_fragment(uint8_t *frame,
 /** @brief Build one Ethernet, IPv4, and TCP segment of the test query. */
 static size_t build_tcp_segment(uint8_t *frame,
                                 size_t frame_size,
-                                size_t query_offset,
-                                size_t query_size,
-                                uint32_t sequence)
+                                const uint8_t *payload,
+                                size_t payload_size,
+                                size_t segment_offset,
+                                size_t segment_size,
+                                uint32_t sequence,
+                                uint16_t destination_port)
 {
-    const size_t complete_size = 54U + query_size;
-    const uint16_t ip_size = (uint16_t)(40U + query_size);
+    const size_t complete_size = 54U + segment_size;
+    const uint16_t ip_size = (uint16_t)(40U + segment_size);
 
     assert_true(complete_size <= frame_size);
-    assert_true(query_offset + query_size <= sizeof(tcp_query));
+    assert_true(segment_offset + segment_size <= payload_size);
     (void)memset(frame, 0, complete_size);
     (void)memcpy(frame, arp_frame, 12U);
     frame[12U] = 0x08U;
@@ -156,14 +191,15 @@ static size_t build_tcp_segment(uint8_t *frame,
     frame[33U] = 53U;
     frame[34U] = 0x30U;
     frame[35U] = 0x39U;
-    frame[37U] = 0x35U;
+    frame[36U] = (uint8_t)(destination_port >> 8U);
+    frame[37U] = (uint8_t)destination_port;
     frame[38U] = (uint8_t)(sequence >> 24U);
     frame[39U] = (uint8_t)(sequence >> 16U);
     frame[40U] = (uint8_t)(sequence >> 8U);
     frame[41U] = (uint8_t)sequence;
     frame[46U] = 0x50U;
     frame[47U] = 0x18U;
-    (void)memcpy(frame + 54U, tcp_query + query_offset, query_size);
+    (void)memcpy(frame + 54U, payload + segment_offset, segment_size);
     return complete_size;
 }
 
@@ -259,14 +295,14 @@ static void test_tcp_dns(void **state)
         jg_dataplane_worker_set_reset_sender(worker, capture_resets, &capture),
         0);
     packet.data = first_frame;
-    packet.size =
-        build_tcp_segment(first_frame, sizeof(first_frame), 0U, 16U, 1000U);
+    packet.size = build_tcp_segment(first_frame, sizeof(first_frame), tcp_query,
+                                    sizeof(tcp_query), 0U, 16U, 1000U, 53U);
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_ACCEPT);
 
     packet.data = last_frame;
-    packet.size =
-        build_tcp_segment(last_frame, sizeof(last_frame), 16U, 16U, 1016U);
+    packet.size = build_tcp_segment(last_frame, sizeof(last_frame), tcp_query,
+                                    sizeof(tcp_query), 16U, 16U, 1016U, 53U);
     assert_int_equal(jg_dataplane_worker_process(&packet, worker),
                      JG_NFQUEUE_DROP);
     assert_int_equal(capture.calls, 1U);
@@ -286,6 +322,55 @@ static void test_tcp_dns(void **state)
         jg_dataplane_worker_get_stream_stats(worker, &stream_stats), 0);
     assert_int_equal(stream_stats.messages, 1U);
     assert_int_equal(stream_stats.conflicts, 1U);
+    jg_dataplane_worker_destroy(worker);
+    jg_policy_store_destroy(store);
+}
+
+/** @brief Verify fragmented ClientHello SNI blocking and TCP reset output. */
+static void test_tls_sni(void **state)
+{
+    uint8_t first_frame[96U];
+    uint8_t last_frame[96U];
+    struct jg_nfqueue_packet packet = {
+        .queue_number = 100U,
+        .ingress_index = 2U,
+    };
+    struct jg_policy_store *store = build_sni_blocking_store();
+    struct jg_dataplane_worker *worker = NULL;
+    struct jg_dataplane_stats stats;
+    struct reset_capture capture = {0};
+
+    (void)state;
+    assert_int_equal(
+        jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    assert_int_equal(
+        jg_dataplane_worker_set_reset_sender(worker, capture_resets, &capture),
+        0);
+    packet.data = first_frame;
+    packet.size =
+        build_tcp_segment(first_frame, sizeof(first_frame), tls_client_hello,
+                          sizeof(tls_client_hello), 0U, 42U, 2000U, 443U);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_ACCEPT);
+
+    packet.data = last_frame;
+    packet.size =
+        build_tcp_segment(last_frame, sizeof(last_frame), tls_client_hello,
+                          sizeof(tls_client_hello), 42U,
+                          sizeof(tls_client_hello) - 42U, 2042U, 443U);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_DROP);
+    assert_int_equal(capture.calls, 1U);
+    assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
+    assert_int_equal(stats.packets, 3U);
+    assert_int_equal(stats.accepted, 1U);
+    assert_int_equal(stats.blocked, 2U);
+    assert_int_equal(stats.streams, 1U);
+    assert_int_equal(stats.tcp_resets, 1U);
+    assert_int_equal(stats.internal_errors, 0U);
     jg_dataplane_worker_destroy(worker);
     jg_policy_store_destroy(store);
 }
@@ -356,6 +441,7 @@ int jg_test_dataplane_worker(void)
         cmocka_unit_test(test_processing),
         cmocka_unit_test(test_fragmented_dns),
         cmocka_unit_test(test_tcp_dns),
+        cmocka_unit_test(test_tls_sni),
         cmocka_unit_test(test_arguments),
     };
 

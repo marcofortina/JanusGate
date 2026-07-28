@@ -83,7 +83,7 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
                                struct jg_dataplane_worker **worker);
 
 /**
- * @brief Configure synchronous TCP reset output for blocked DNS streams.
+ * @brief Configure synchronous TCP reset output for blocked TCP streams.
  *
  * @param[in,out] worker Data-plane worker to configure.
  * @param[in] sender Reset output function.
