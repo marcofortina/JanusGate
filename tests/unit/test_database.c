@@ -514,10 +514,13 @@ static void test_policy_round_trip(void **state)
     struct jg_policy_rule_input mutable_rule;
     struct jg_policy_destination_rule_input destination_rules[2U];
     struct jg_policy_destination_rule_input invalid_destination;
+    struct jg_policy_destination_rule_input mutable_destination;
     struct jg_database_domain_rule domain_page[2U];
     struct jg_database_domain_rule created_rule;
     struct jg_database_domain_rule updated_rule;
     struct jg_database_destination_rule destination_page[1U];
+    struct jg_database_destination_rule created_destination;
+    struct jg_database_destination_rule updated_destination;
     struct jg_policy_destination destination = {
         .transport = JG_POLICY_TRANSPORT_TCP,
         .address_family = JG_POLICY_ADDRESS_IPV4,
@@ -711,6 +714,58 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(jg_database_create_domain_rule(database, &mutable_rule,
                                                     true, &created_rule),
                      -EINVAL);
+    mutable_destination = make_destination_rule(0U, JG_POLICY_BLOCK);
+    mutable_destination.has_address = true;
+    mutable_destination.address_family = JG_POLICY_ADDRESS_IPV4;
+    mutable_destination.address[0U] = 203U;
+    mutable_destination.address[1U] = 0U;
+    mutable_destination.address[2U] = 113U;
+    mutable_destination.address[3U] = 99U;
+    mutable_destination.prefix_length = 24U;
+    assert_int_equal(
+        jg_database_create_destination_rule(database, &mutable_destination,
+                                            false, &created_destination),
+        0);
+    assert_true(created_destination.id > 21U);
+    assert_int_equal(created_destination.revision, 1U);
+    assert_false(created_destination.enabled);
+    assert_true(created_destination.has_address);
+    assert_int_equal(created_destination.address[3U], 0U);
+    mutable_destination.id = created_destination.id;
+    mutable_destination.has_port = true;
+    mutable_destination.port = 443U;
+    assert_int_equal(jg_database_update_destination_rule(
+                         database, &mutable_destination, true,
+                         created_destination.revision, &updated_destination),
+                     0);
+    assert_int_equal(updated_destination.revision, 2U);
+    assert_true(updated_destination.enabled);
+    assert_true(updated_destination.has_port);
+    assert_int_equal(updated_destination.port, 443U);
+    assert_int_equal(jg_database_update_destination_rule(
+                         database, &mutable_destination, true,
+                         created_destination.revision, &updated_destination),
+                     -EAGAIN);
+    mutable_destination.id = INT64_MAX;
+    assert_int_equal(
+        jg_database_update_destination_rule(database, &mutable_destination,
+                                            true, 1U, &updated_destination),
+        -ENOENT);
+    assert_int_equal(
+        jg_database_delete_destination_rule(database, created_destination.id,
+                                            created_destination.revision),
+        -EAGAIN);
+    assert_int_equal(jg_database_delete_destination_rule(
+                         database, created_destination.id, 2U),
+                     0);
+    assert_int_equal(jg_database_delete_destination_rule(
+                         database, created_destination.id, 2U),
+                     -ENOENT);
+    mutable_destination.id = 1U;
+    assert_int_equal(
+        jg_database_create_destination_rule(database, &mutable_destination,
+                                            true, &created_destination),
+        -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
 }
