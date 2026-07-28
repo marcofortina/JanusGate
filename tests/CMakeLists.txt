@@ -7,11 +7,14 @@ add_executable(
   janusgate-unit-tests
   unit/test_main.c
   unit/test_checked.c
+  unit/test_database.c
   unit/test_dns.c
   unit/test_domain.c
   unit/test_packet.c
   unit/test_policy.c)
-target_link_libraries(janusgate-unit-tests PRIVATE JanusGate::common PkgConfig::CMOCKA)
+target_link_libraries(
+  janusgate-unit-tests
+  PRIVATE JanusGate::common PkgConfig::CMOCKA PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)
