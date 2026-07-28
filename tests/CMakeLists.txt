@@ -23,6 +23,7 @@ add_executable(
   unit/test_dns.c
   unit/test_dns_response.c
   unit/test_domain.c
+  unit/test_event.c
   unit/test_fragment.c
   unit/test_ipc.c
   unit/test_ipc_client.c
