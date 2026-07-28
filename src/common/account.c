@@ -409,6 +409,705 @@ int jg_account_create_initial_administrator(
     return result;
 }
 
+/** @brief Convert one persistent role identifier to its public value. */
+static enum jg_access_role role_from_id(sqlite3_int64 role_id)
+{
+    switch (role_id) {
+    case JG_ACCESS_ROLE_ADMINISTRATOR:
+        return JG_ACCESS_ROLE_ADMINISTRATOR;
+    case JG_ACCESS_ROLE_OPERATOR:
+        return JG_ACCESS_ROLE_OPERATOR;
+    case JG_ACCESS_ROLE_AUDITOR:
+        return JG_ACCESS_ROLE_AUDITOR;
+    default:
+        return JG_ACCESS_ROLE_NONE;
+    }
+}
+
+/** @brief Validate one assignable fixed backend role. */
+static bool role_valid(enum jg_access_role role)
+{
+    return role != JG_ACCESS_ROLE_NONE &&
+           role_from_id((sqlite3_int64)role) == role;
+}
+
+/** @brief Decode one user row selected in the shared administrative order. */
+static int decode_user_row(sqlite3_stmt *statement,
+                           struct jg_account_user *user)
+{
+    const sqlite3_int64 user_id = sqlite3_column_int64(statement, 0);
+    const char *username = (const char *)sqlite3_column_text(statement, 1);
+    const int username_size = sqlite3_column_bytes(statement, 1);
+    const sqlite3_int64 enabled = sqlite3_column_int64(statement, 2);
+    const sqlite3_int64 failed_logins = sqlite3_column_int64(statement, 3);
+    const sqlite3_int64 locked_until = sqlite3_column_int64(statement, 4);
+    const sqlite3_int64 created_at = sqlite3_column_int64(statement, 5);
+    const sqlite3_int64 password_changed_at =
+        sqlite3_column_int64(statement, 6);
+    const sqlite3_int64 last_login_at = sqlite3_column_int64(statement, 7);
+    const sqlite3_int64 force_password_change =
+        sqlite3_column_int64(statement, 8);
+    const sqlite3_int64 revision = sqlite3_column_int64(statement, 9);
+    const sqlite3_int64 totp_enabled = sqlite3_column_int64(statement, 10);
+    const enum jg_access_role role =
+        role_from_id(sqlite3_column_int64(statement, 11));
+    const sqlite3_int64 role_count = sqlite3_column_int64(statement, 12);
+
+    if (user == NULL || user_id <= 0 || username == NULL ||
+        username_size <= 0 || (size_t)username_size > JG_ACCOUNT_USERNAME_MAX ||
+        failed_logins < 0 || failed_logins > (sqlite3_int64)UINT32_MAX ||
+        locked_until < 0 || created_at < 0 || password_changed_at < 0 ||
+        last_login_at < 0 || revision <= 0 || (enabled != 0 && enabled != 1) ||
+        (force_password_change != 0 && force_password_change != 1) ||
+        (totp_enabled != 0 && totp_enabled != 1) ||
+        role == JG_ACCESS_ROLE_NONE || role_count != 1) {
+        return -EILSEQ;
+    }
+    (void)memset(user, 0, sizeof(*user));
+    user->user_id = (uint64_t)user_id;
+    (void)memcpy(user->username, username, (size_t)username_size);
+    user->username[(size_t)username_size] = '\0';
+    if (!username_valid(user->username)) {
+        (void)memset(user, 0, sizeof(*user));
+        return -EILSEQ;
+    }
+    user->role = role;
+    user->revision = (uint64_t)revision;
+    user->created_at = (uint64_t)created_at;
+    user->password_changed_at = (uint64_t)password_changed_at;
+    user->last_login_at = (uint64_t)last_login_at;
+    user->locked_until = (uint64_t)locked_until;
+    user->failed_logins = (uint32_t)failed_logins;
+    user->enabled = enabled != 0;
+    user->force_password_change = force_password_change != 0;
+    user->totp_enabled = totp_enabled != 0;
+    return 0;
+}
+
+/** @brief Load one complete administrative user record by identifier. */
+static int load_user(sqlite3 *handle,
+                     uint64_t user_id,
+                     struct jg_account_user *user)
+{
+    static const char query[] =
+        "SELECT u.id,u.username,u.enabled,u.failed_logins,"
+        "coalesce(u.locked_until,0),u.created_at,u.password_changed_at,"
+        "coalesce(u.last_login_at,0),u.force_password_change,u.revision,"
+        "coalesce((SELECT enabled FROM totp_credentials"
+        " WHERE user_id=u.id),0),"
+        "(SELECT role_id FROM user_roles WHERE user_id=u.id LIMIT 1),"
+        "(SELECT count(*) FROM user_roles WHERE user_id=u.id)"
+        " FROM users u WHERE u.id=?1;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(
+        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_ROW) {
+            result = decode_user_row(statement, user);
+        } else if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Delete every web session owned by one local user. */
+static int delete_user_sessions(sqlite3 *handle, uint64_t user_id)
+{
+    static const char sql[] = "DELETE FROM web_sessions WHERE user_id=?1;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(handle, sql, -1, SQLITE_PREPARE_PERSISTENT,
+                                    &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Revoke every active API token owned by one local user. */
+static int revoke_user_tokens(sqlite3 *handle, uint64_t user_id, uint64_t now)
+{
+    static const char sql[] =
+        "UPDATE api_tokens SET revoked_at=?1,revision=revision+1"
+        " WHERE user_id=?2 AND revoked_at IS NULL;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(handle, sql, -1, SQLITE_PREPARE_PERSISTENT,
+                                    &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)now);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Count enabled users retaining the administrator role. */
+static int count_enabled_administrators(sqlite3 *handle, uint64_t *count)
+{
+    static const char query[] =
+        "SELECT count(*) FROM users u JOIN user_roles ur ON ur.user_id=u.id"
+        " WHERE u.enabled=1 AND ur.role_id=?1;";
+    sqlite3_stmt *statement = NULL;
+    int status = sqlite3_prepare_v3(
+        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 1, ADMINISTRATOR_ROLE_ID);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status != SQLITE_ROW || sqlite3_column_int64(statement, 0) < 0) {
+            result = status == SQLITE_ROW ? -EILSEQ
+                                          : jg_database_sqlite_result(status);
+        } else {
+            *count = (uint64_t)sqlite3_column_int64(statement, 0);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief List a bounded stable page of local users. */
+int jg_account_user_list(struct jg_database *database,
+                         uint64_t offset,
+                         struct jg_account_user *users,
+                         size_t capacity,
+                         size_t *count,
+                         uint64_t *total)
+{
+    static const char count_query[] = "SELECT count(*) FROM users;";
+    static const char list_query[] =
+        "SELECT u.id,u.username,u.enabled,u.failed_logins,"
+        "coalesce(u.locked_until,0),u.created_at,u.password_changed_at,"
+        "coalesce(u.last_login_at,0),u.force_password_change,u.revision,"
+        "coalesce((SELECT enabled FROM totp_credentials"
+        " WHERE user_id=u.id),0),"
+        "(SELECT role_id FROM user_roles WHERE user_id=u.id LIMIT 1),"
+        "(SELECT count(*) FROM user_roles WHERE user_id=u.id)"
+        " FROM users u ORDER BY u.username COLLATE BINARY,u.id"
+        " LIMIT ?1 OFFSET ?2;";
+    sqlite3_stmt *statement = NULL;
+    bool transaction_open = false;
+    size_t loaded = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (total != NULL) {
+        *total = 0U;
+    }
+    if (database == NULL || users == NULL || count == NULL || total == NULL ||
+        capacity == 0U || capacity > JG_ACCOUNT_USER_PAGE_MAX ||
+        capacity > (size_t)INT64_MAX || offset > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    (void)memset(users, 0, capacity * sizeof(*users));
+    result = execute_fixed(database->handle, "BEGIN;");
+    transaction_open = result == 0;
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, count_query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status != SQLITE_ROW || sqlite3_column_int64(statement, 0) < 0) {
+            result = status == SQLITE_ROW ? -EILSEQ
+                                          : jg_database_sqlite_result(status);
+        } else {
+            *total = (uint64_t)sqlite3_column_int64(statement, 0);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, list_query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)capacity);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)offset);
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && loaded < capacity) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            break;
+        }
+        if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        } else {
+            result = decode_user_row(statement, &users[loaded]);
+            if (result == 0) {
+                ++loaded;
+            }
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = execute_fixed(database->handle, "COMMIT;");
+        if (result == 0) {
+            transaction_open = false;
+            *count = loaded;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)memset(users, 0, capacity * sizeof(*users));
+        *count = 0U;
+        *total = 0U;
+    }
+    return result;
+}
+
+/** @brief Insert one local user and its single role transactionally. */
+int jg_account_user_create(
+    struct jg_database *database,
+    const char *username,
+    const uint8_t *password,
+    size_t password_size,
+    const struct jg_auth_password_policy *password_policy,
+    enum jg_access_role role,
+    bool force_password_change,
+    uint64_t now,
+    struct jg_account_user *user)
+{
+    static const char insert_user[] =
+        "INSERT INTO users("
+        "username,password_hash,enabled,failed_logins,locked_until,created_at,"
+        "password_changed_at,force_password_change,last_login_at,revision,"
+        "session_epoch"
+        ") VALUES(?1,?2,1,0,NULL,?3,?3,?4,NULL,1,1);";
+    static const char insert_role[] =
+        "INSERT INTO user_roles(user_id,role_id) VALUES(?1,?2);";
+    char password_hash[JG_AUTH_PASSWORD_HASH_SIZE];
+    sqlite3_stmt *statement = NULL;
+    bool transaction_open = false;
+    uint64_t user_id = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (user != NULL) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    if (database == NULL || !username_valid(username) || password == NULL ||
+        password_policy == NULL || !role_valid(role) || now == 0U ||
+        now > (uint64_t)INT64_MAX || user == NULL) {
+        return -EINVAL;
+    }
+    result = jg_auth_password_hash(password_policy, password, password_size,
+                                   password_hash);
+    if (result == 0) {
+        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        transaction_open = result == 0;
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, insert_user, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_text(statement, 1, username, -1, SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 2, password_hash, -1,
+                                   SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 3, (sqlite3_int64)now);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 4, force_password_change ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if ((status & 0xff) == SQLITE_CONSTRAINT) {
+            result = -EEXIST;
+        } else {
+            result =
+                status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        const sqlite3_int64 identifier =
+            sqlite3_last_insert_rowid(database->handle);
+
+        if (identifier <= 0) {
+            result = -EOVERFLOW;
+        } else {
+            user_id = (uint64_t)identifier;
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, insert_role, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 2, (int)role);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = load_user(database->handle, user_id, user);
+    }
+    if (result == 0) {
+        result = execute_fixed(database->handle, "COMMIT;");
+        if (result == 0) {
+            transaction_open = false;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)execute_fixed(database->handle, "ROLLBACK;");
+    }
+    if (result != 0) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    sodium_memzero(password_hash, sizeof(password_hash));
+    return result;
+}
+
+/** @brief Replace one user's mutable role and authentication state. */
+int jg_account_user_update(struct jg_database *database,
+                           uint64_t user_id,
+                           uint64_t expected_revision,
+                           const struct jg_account_user_update *update,
+                           uint64_t now,
+                           struct jg_account_user *user)
+{
+    static const char update_user[] =
+        "UPDATE users SET enabled=?1,force_password_change=?2,"
+        "revision=revision+1,session_epoch=session_epoch+1"
+        " WHERE id=?3 AND revision=?4;";
+    static const char update_role[] =
+        "UPDATE user_roles SET role_id=?1 WHERE user_id=?2;";
+    struct jg_account_user current;
+    sqlite3_stmt *statement = NULL;
+    bool transaction_open = false;
+    uint64_t administrator_count = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (user != NULL) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    if (database == NULL || user_id == 0U || user_id > (uint64_t)INT64_MAX ||
+        expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX ||
+        update == NULL || !role_valid(update->role) || now == 0U ||
+        now > (uint64_t)INT64_MAX || user == NULL) {
+        return -EINVAL;
+    }
+    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+    transaction_open = result == 0;
+    if (result == 0) {
+        result = load_user(database->handle, user_id, &current);
+    }
+    if (result == 0 && current.revision != expected_revision) {
+        result = -ESTALE;
+    }
+    if (result == 0 && current.enabled &&
+        current.role == JG_ACCESS_ROLE_ADMINISTRATOR &&
+        (!update->enabled || update->role != JG_ACCESS_ROLE_ADMINISTRATOR)) {
+        result = count_enabled_administrators(database->handle,
+                                              &administrator_count);
+        if (result == 0 && administrator_count <= 1U) {
+            result = -EPERM;
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, update_user, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 1, update->enabled ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 2,
+                                  update->force_password_change ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 3, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_int64(statement, 4, (sqlite3_int64)expected_revision);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -ESTALE;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, update_role, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 1, (int)update->role);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = delete_user_sessions(database->handle, user_id);
+    }
+    if (result == 0 && !update->enabled) {
+        result = revoke_user_tokens(database->handle, user_id, now);
+    }
+    if (result == 0) {
+        result = load_user(database->handle, user_id, user);
+    }
+    if (result == 0) {
+        result = execute_fixed(database->handle, "COMMIT;");
+        if (result == 0) {
+            transaction_open = false;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)execute_fixed(database->handle, "ROLLBACK;");
+    }
+    if (result != 0) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    return result;
+}
+
+/** @brief Replace one user's password and revoke issued credentials. */
+int jg_account_user_reset_password(
+    struct jg_database *database,
+    uint64_t user_id,
+    uint64_t expected_revision,
+    const uint8_t *password,
+    size_t password_size,
+    const struct jg_auth_password_policy *password_policy,
+    bool force_password_change,
+    uint64_t now,
+    struct jg_account_user *user)
+{
+    static const char update_password[] =
+        "UPDATE users SET password_hash=?1,password_changed_at=?2,"
+        "force_password_change=?3,failed_logins=0,locked_until=NULL,"
+        "revision=revision+1,session_epoch=session_epoch+1"
+        " WHERE id=?4 AND revision=?5;";
+    char password_hash[JG_AUTH_PASSWORD_HASH_SIZE];
+    sqlite3_stmt *statement = NULL;
+    bool transaction_open = false;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (user != NULL) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    if (database == NULL || user_id == 0U || user_id > (uint64_t)INT64_MAX ||
+        expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX ||
+        password == NULL || password_policy == NULL || now == 0U ||
+        now > (uint64_t)INT64_MAX || user == NULL) {
+        return -EINVAL;
+    }
+    result = jg_auth_password_hash(password_policy, password, password_size,
+                                   password_hash);
+    if (result == 0) {
+        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        transaction_open = result == 0;
+    }
+    if (result == 0) {
+        result = load_user(database->handle, user_id, user);
+    }
+    if (result == 0 && user->revision != expected_revision) {
+        result = -ESTALE;
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, update_password, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 1, password_hash, -1,
+                                   SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)now);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int(statement, 3, force_password_change ? 1 : 0);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 4, (sqlite3_int64)user_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_int64(statement, 5, (sqlite3_int64)expected_revision);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -ESTALE;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = delete_user_sessions(database->handle, user_id);
+    }
+    if (result == 0) {
+        result = revoke_user_tokens(database->handle, user_id, now);
+    }
+    if (result == 0) {
+        result = load_user(database->handle, user_id, user);
+    }
+    if (result == 0) {
+        result = execute_fixed(database->handle, "COMMIT;");
+        if (result == 0) {
+            transaction_open = false;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)execute_fixed(database->handle, "ROLLBACK;");
+    }
+    if (result != 0) {
+        (void)memset(user, 0, sizeof(*user));
+    }
+    sodium_memzero(password_hash, sizeof(password_hash));
+    return result;
+}
+
 /** @brief Read one bounded authentication record by exact username. */
 static int load_authentication_record(sqlite3 *handle,
                                       const char *username,

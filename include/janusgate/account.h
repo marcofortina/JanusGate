@@ -32,6 +32,9 @@
 /** Maximum local username bytes excluding the null terminator. */
 #define JG_ACCOUNT_USERNAME_MAX 128U
 
+/** Largest local-user page returned by one management query. */
+#define JG_ACCOUNT_USER_PAGE_MAX 100U
+
 /** Smallest accepted bootstrap-token lifetime in seconds. */
 #define JG_ACCOUNT_BOOTSTRAP_LIFETIME_MIN 60U
 
@@ -91,6 +94,48 @@ struct jg_account_identity {
     bool totp_enabled;
     /** Whether required multifactor authentication has been completed. */
     bool mfa_complete;
+};
+
+/**
+ * @brief Persistent local-user state returned to administration surfaces.
+ */
+struct jg_account_user {
+    /** Persistent nonzero user identifier. */
+    uint64_t user_id;
+    /** Canonical local username. */
+    char username[JG_ACCOUNT_USERNAME_MAX + 1U];
+    /** Exactly one fixed backend role. */
+    enum jg_access_role role;
+    /** Current optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Creation Unix timestamp. */
+    uint64_t created_at;
+    /** Last password-change Unix timestamp. */
+    uint64_t password_changed_at;
+    /** Last successful login timestamp, or zero when absent. */
+    uint64_t last_login_at;
+    /** Current lock expiry timestamp, or zero when unlocked. */
+    uint64_t locked_until;
+    /** Persistent consecutive login failures. */
+    uint32_t failed_logins;
+    /** Whether authentication is permitted. */
+    bool enabled;
+    /** Whether a password change is required after login. */
+    bool force_password_change;
+    /** Whether TOTP is enabled. */
+    bool totp_enabled;
+};
+
+/**
+ * @brief Mutable state accepted by a local-user administration update.
+ */
+struct jg_account_user_update {
+    /** Exactly one fixed backend role. */
+    enum jg_access_role role;
+    /** Whether authentication remains permitted. */
+    bool enabled;
+    /** Whether the next login must change its password. */
+    bool force_password_change;
 };
 
 /**
@@ -215,6 +260,138 @@ JG_PUBLIC int jg_account_create_initial_administrator(
     const struct jg_auth_password_policy *password_policy,
     uint64_t now,
     uint64_t *user_id);
+
+/**
+ * @brief List local users in stable username order.
+ *
+ * @param[in] database Open database.
+ * @param[in] offset Zero-based page offset.
+ * @param[out] users Receives up to @p capacity user records.
+ * @param[in] capacity Requested page size from one through
+ * JG_ACCOUNT_USER_PAGE_MAX.
+ * @param[out] count Receives the number of returned records.
+ * @param[out] total Receives the total number of local users.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument or invalid capacity.
+ * @return -EOVERFLOW when pagination or persistent values cannot be
+ * represented.
+ * @return -EILSEQ when a user has invalid persistent role state.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_user_list(struct jg_database *database,
+                                   uint64_t offset,
+                                   struct jg_account_user *users,
+                                   size_t capacity,
+                                   size_t *count,
+                                   uint64_t *total);
+
+/**
+ * @brief Create one enabled local user with exactly one role.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] username New unique local username.
+ * @param[in] password Initial password bytes.
+ * @param[in] password_size Number of bytes in @p password.
+ * @param[in] password_policy Valid Argon2id password policy.
+ * @param[in] role Initial fixed backend role.
+ * @param[in] force_password_change Whether the first login must change its
+ * password.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] user Receives the created persistent state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null or malformed input.
+ * @return -EEXIST when the username is already present.
+ * @return A negative errno-style hashing or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Creates the user and its role assignment transactionally.
+ */
+JG_PUBLIC int jg_account_user_create(
+    struct jg_database *database,
+    const char *username,
+    const uint8_t *password,
+    size_t password_size,
+    const struct jg_auth_password_policy *password_policy,
+    enum jg_access_role role,
+    bool force_password_change,
+    uint64_t now,
+    struct jg_account_user *user);
+
+/**
+ * @brief Update one local user's role and authentication state.
+ *
+ * Role and enablement changes invalidate every current web session. Disabling
+ * a user also revokes every current API token. The final enabled
+ * administrator cannot be disabled or assigned another role.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Existing nonzero user identifier.
+ * @param[in] expected_revision Current revision supplied by the caller.
+ * @param[in] update Complete replacement state.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] user Receives the updated persistent state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null or malformed input.
+ * @return -ENOENT when the user does not exist.
+ * @return -ESTALE when @p expected_revision is no longer current.
+ * @return -EPERM when the update would remove the final enabled
+ * administrator.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Updates role and state and revokes affected credentials
+ * transactionally.
+ */
+JG_PUBLIC int jg_account_user_update(
+    struct jg_database *database,
+    uint64_t user_id,
+    uint64_t expected_revision,
+    const struct jg_account_user_update *update,
+    uint64_t now,
+    struct jg_account_user *user);
+
+/**
+ * @brief Replace one local user's password and revoke current credentials.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] user_id Existing nonzero user identifier.
+ * @param[in] expected_revision Current revision supplied by the caller.
+ * @param[in] password Replacement password bytes.
+ * @param[in] password_size Number of bytes in @p password.
+ * @param[in] password_policy Valid Argon2id password policy.
+ * @param[in] force_password_change Whether the user must replace this password
+ * after login.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] user Receives the updated persistent state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null or malformed input.
+ * @return -ENOENT when the user does not exist.
+ * @return -ESTALE when @p expected_revision is no longer current.
+ * @return A negative errno-style hashing or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Replaces the password, clears login failures, and revokes all
+ * web sessions and API tokens transactionally.
+ */
+JG_PUBLIC int jg_account_user_reset_password(
+    struct jg_database *database,
+    uint64_t user_id,
+    uint64_t expected_revision,
+    const uint8_t *password,
+    size_t password_size,
+    const struct jg_auth_password_policy *password_policy,
+    bool force_password_change,
+    uint64_t now,
+    struct jg_account_user *user);
 
 /**
  * @brief Authenticate one enabled local user with persistent rate limiting.

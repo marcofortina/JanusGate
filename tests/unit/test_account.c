@@ -387,6 +387,156 @@ static void test_api_tokens(void **state)
     remove_account_database(directory, path);
 }
 
+/** @brief Verify transactional local-user administration and revocation. */
+static void test_user_administration(void **state)
+{
+    static const uint8_t administrator_password[] =
+        "correct horse battery staple";
+    static const uint8_t operator_password[] =
+        "operator password is suitably long";
+    static const uint8_t replacement_password[] =
+        "replacement password is suitably long";
+    static const uint8_t remote[4U] = {192U, 0U, 2U, 10U};
+    char directory[64U];
+    char path[512U];
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_account_user users[4U];
+    struct jg_account_user administrator;
+    struct jg_account_user operator_user;
+    struct jg_account_user updated;
+    struct jg_account_user_update update = {
+        .role = JG_ACCESS_ROLE_AUDITOR,
+        .enabled = true,
+        .force_password_change = true,
+    };
+    struct jg_account_session_tokens session;
+    struct jg_account_token_config token_config = {
+        .name = "auditor integration",
+        .permissions = JG_ACCESS_STATUS_READ,
+        .requests_per_minute = 60U,
+    };
+    struct jg_account_api_token api_token;
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_identity identity;
+    struct jg_database *database = NULL;
+    size_t count = 0U;
+    uint64_t total = 0U;
+    uint64_t administrator_id = 0U;
+    uint64_t token_id = 0U;
+    uint32_t token_rate = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_account_bootstrap_issue(database, 100U, 300U, bootstrap), 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         administrator_password,
+                         sizeof(administrator_password) - 1U, &password_policy,
+                         101U, &administrator_id),
+                     0);
+    assert_int_equal(
+        jg_account_user_list(database, 0U, users, 4U, &count, &total), 0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(total, 1U);
+    administrator = users[0U];
+
+    assert_int_equal(jg_account_user_create(
+                         database, "operator", operator_password,
+                         sizeof(operator_password) - 1U, &password_policy,
+                         JG_ACCESS_ROLE_OPERATOR, false, 102U, &operator_user),
+                     0);
+    assert_int_equal(operator_user.role, JG_ACCESS_ROLE_OPERATOR);
+    assert_true(operator_user.enabled);
+    assert_false(operator_user.force_password_change);
+    assert_int_equal(
+        jg_account_user_create(database, "operator", operator_password,
+                               sizeof(operator_password) - 1U, &password_policy,
+                               JG_ACCESS_ROLE_AUDITOR, false, 103U, &updated),
+        -EEXIST);
+    assert_int_equal(
+        jg_account_user_list(database, 0U, users, 4U, &count, &total), 0);
+    assert_int_equal(count, 2U);
+    assert_int_equal(total, 2U);
+    assert_string_equal(users[0U].username, "administrator");
+    assert_string_equal(users[1U].username, "operator");
+
+    assert_int_equal(jg_account_authenticate(database, "operator",
+                                             operator_password,
+                                             sizeof(operator_password) - 1U,
+                                             &password_policy, 110U, &identity),
+                     0);
+    assert_int_equal(jg_account_session_issue(database, &identity, 110U,
+                                              JG_ACCOUNT_SESSION_LIFETIME_MIN,
+                                              JG_POLICY_ADDRESS_NONE, NULL,
+                                              &session),
+                     0);
+    update.enabled = false;
+    update.role = JG_ACCESS_ROLE_OPERATOR;
+    update.force_password_change = false;
+    assert_int_equal(jg_account_user_update(database, administrator.user_id,
+                                            administrator.revision, &update,
+                                            111U, &updated),
+                     -EPERM);
+
+    update.enabled = true;
+    update.role = JG_ACCESS_ROLE_AUDITOR;
+    update.force_password_change = true;
+    assert_int_equal(jg_account_user_update(database, operator_user.user_id,
+                                            operator_user.revision, &update,
+                                            112U, &updated),
+                     0);
+    assert_int_equal(updated.role, JG_ACCESS_ROLE_AUDITOR);
+    assert_true(updated.force_password_change);
+    assert_int_equal(updated.revision, operator_user.revision + 1U);
+    assert_int_equal(
+        jg_account_session_validate(database, (const uint8_t *)session.session,
+                                    strlen(session.session), NULL, 0U, false,
+                                    113U, JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                                    JG_POLICY_ADDRESS_NONE, NULL, &identity),
+        -EACCES);
+    assert_int_equal(jg_account_user_update(database, operator_user.user_id,
+                                            operator_user.revision, &update,
+                                            113U, &operator_user),
+                     -ESTALE);
+
+    assert_int_equal(jg_account_token_issue(database, updated.user_id,
+                                            &token_config, 114U, &api_token),
+                     0);
+    assert_int_equal(jg_account_user_reset_password(
+                         database, updated.user_id, updated.revision,
+                         replacement_password,
+                         sizeof(replacement_password) - 1U, &password_policy,
+                         false, 115U, &operator_user),
+                     0);
+    assert_false(operator_user.force_password_change);
+    assert_int_equal(operator_user.revision, updated.revision + 1U);
+    assert_int_equal(jg_account_token_validate(
+                         database, (const uint8_t *)api_token.secret,
+                         strlen(api_token.secret), 116U, JG_POLICY_ADDRESS_IPV4,
+                         remote, &identity, &token_id, &token_rate),
+                     -EACCES);
+    assert_int_equal(jg_account_authenticate(database, "operator",
+                                             operator_password,
+                                             sizeof(operator_password) - 1U,
+                                             &password_policy, 116U, &identity),
+                     -EACCES);
+    assert_int_equal(jg_account_authenticate(database, "operator",
+                                             replacement_password,
+                                             sizeof(replacement_password) - 1U,
+                                             &password_policy, 117U, &identity),
+                     0);
+    assert_int_equal(identity.permissions,
+                     jg_access_role_permissions(JG_ACCESS_ROLE_AUDITOR));
+
+    jg_database_close(database);
+    remove_account_database(directory, path);
+}
+
 /** @brief Verify encrypted TOTP enrollment and one-time recovery login. */
 static void test_multifactor_authentication(void **state)
 {
@@ -491,6 +641,7 @@ int jg_test_account(void)
         cmocka_unit_test(test_password_authentication),
         cmocka_unit_test(test_web_sessions),
         cmocka_unit_test(test_api_tokens),
+        cmocka_unit_test(test_user_administration),
         cmocka_unit_test(test_multifactor_authentication),
     };
 
