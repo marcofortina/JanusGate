@@ -18,6 +18,7 @@ include(CompilerOptions)
 include(ProjectMetadata)
 
 find_package(PkgConfig REQUIRED)
+pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -40,6 +41,8 @@ configure_file(
 add_library(
   janusgate-common STATIC
   src/common/checked.c
+  src/common/dns.c
+  src/common/domain.c
   src/common/packet.c
   src/common/version.c)
 add_library(JanusGate::common ALIAS janusgate-common)
@@ -48,6 +51,7 @@ target_include_directories(
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
          "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+target_link_libraries(janusgate-common PUBLIC PkgConfig::IDN2)
 janusgate_apply_compiler_options(janusgate-common)
 
 install(
@@ -56,6 +60,8 @@ install(
   ARCHIVE COMPONENT development)
 install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/checked.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/dns.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/domain.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
