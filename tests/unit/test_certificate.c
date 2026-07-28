@@ -2,13 +2,19 @@
  * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
  */
 
+#define _GNU_SOURCE
+
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <cmocka.h>
 #include <openssl/bio.h>
@@ -123,6 +129,60 @@ static void test_certificate_validation(void **state)
         -EINVAL);
 }
 
+/** @brief Verify atomic private installation and secure file inspection. */
+static void test_certificate_installation(void **state)
+{
+    static const char template[] = "/tmp/janusgate-certificate-XXXXXX";
+    char directory[sizeof(template)];
+    char path[256U];
+    char link[256U];
+    struct stat metadata;
+    struct jg_certificate_material material;
+    struct jg_certificate_info installed;
+    struct jg_certificate_info inspected;
+    int written = 0;
+
+    (void)state;
+    (void)memcpy(directory, template, sizeof(template));
+    assert_non_null(mkdtemp(directory));
+    written = snprintf(path, sizeof(path), "%s/server.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(path));
+    written = snprintf(link, sizeof(link), "%s/server-link.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(link));
+
+    assert_int_equal(jg_certificate_create_self_signed("janusgate.local", NULL,
+                                                       0U, 30U, &material),
+                     0);
+    assert_int_equal(
+        jg_certificate_install(path, material.certificate,
+                               material.certificate_size, material.private_key,
+                               material.private_key_size, &installed),
+        0);
+    assert_int_equal(stat(path, &metadata), 0);
+    assert_int_equal(metadata.st_mode & 0777U, S_IRUSR | S_IWUSR);
+    assert_int_equal(jg_certificate_inspect_file(path, &inspected), 0);
+    assert_memory_equal(inspected.fingerprint_sha256,
+                        installed.fingerprint_sha256,
+                        sizeof(installed.fingerprint_sha256));
+
+    assert_int_equal(chmod(path, 0644), 0);
+    assert_int_equal(jg_certificate_inspect_file(path, &inspected), -EACCES);
+    assert_int_equal(chmod(path, 0600), 0);
+    assert_int_equal(symlink(path, link), 0);
+    assert_int_equal(
+        jg_certificate_install(link, material.certificate,
+                               material.certificate_size, material.private_key,
+                               material.private_key_size, &installed),
+        -EACCES);
+
+    assert_int_equal(unlink(link), 0);
+    assert_int_equal(unlink(path), 0);
+    assert_int_equal(rmdir(directory), 0);
+    jg_certificate_material_clear(&material);
+}
+
 /** @brief Run the certificate-management unit-test group. */
 int jg_test_certificate(void)
 {
@@ -130,6 +190,7 @@ int jg_test_certificate(void)
         cmocka_unit_test(test_self_signed_certificate),
         cmocka_unit_test(test_certificate_request),
         cmocka_unit_test(test_certificate_validation),
+        cmocka_unit_test(test_certificate_installation),
     };
 
     return cmocka_run_group_tests_name("certificate", tests, NULL, NULL);

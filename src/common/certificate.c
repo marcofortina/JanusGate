@@ -10,12 +10,16 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
@@ -216,6 +220,276 @@ int jg_certificate_inspect(const char *certificate,
     }
     EVP_PKEY_free(parsed_key);
     X509_free(parsed_certificate);
+    if (result != 0) {
+        (void)memset(info, 0, sizeof(*info));
+    }
+    return result;
+}
+
+/** @brief Split one safe absolute path into directory and leaf components. */
+static int split_path(const char *path,
+                      char directory[PATH_MAX],
+                      char leaf[NAME_MAX + 1U])
+{
+    const size_t path_size = bounded_length(path, PATH_MAX - 1U);
+    const char *separator = NULL;
+    size_t directory_size = 0U;
+    size_t leaf_size = 0U;
+
+    if (path_size < 2U || path_size >= PATH_MAX || path[0U] != '/') {
+        return -EINVAL;
+    }
+    for (size_t index = 0U; index < path_size; ++index) {
+        const uint8_t character = (uint8_t)path[index];
+
+        if (character < UINT8_C(0x20) || character == UINT8_C(0x7f)) {
+            return -EINVAL;
+        }
+    }
+    separator = strrchr(path, '/');
+    leaf_size = strlen(separator + 1);
+    if (leaf_size == 0U || leaf_size > NAME_MAX ||
+        (leaf_size == 1U && separator[1U] == '.') ||
+        (leaf_size == 2U && separator[1U] == '.' && separator[2U] == '.')) {
+        return -EINVAL;
+    }
+    directory_size = separator == path ? 1U : (size_t)(separator - path);
+    (void)memcpy(directory, path, directory_size);
+    directory[directory_size] = '\0';
+    (void)memcpy(leaf, separator + 1, leaf_size + 1U);
+    return 0;
+}
+
+/** @brief Read an exact byte count while retrying interrupted operations. */
+static int read_exact(int descriptor, uint8_t *data, size_t data_size)
+{
+    size_t offset = 0U;
+
+    while (offset < data_size) {
+        const ssize_t count =
+            read(descriptor, data + offset, data_size - offset);
+
+        if (count < 0 && errno != EINTR) {
+            return -errno;
+        }
+        if (count == 0) {
+            return -EMSGSIZE;
+        }
+        if (count > 0) {
+            offset += (size_t)count;
+        }
+    }
+    return 0;
+}
+
+/** @brief Write an exact byte count while retrying interrupted operations. */
+static int write_exact(int descriptor, const char *data, size_t data_size)
+{
+    size_t offset = 0U;
+
+    while (offset < data_size) {
+        const ssize_t count =
+            write(descriptor, data + offset, data_size - offset);
+
+        if (count < 0 && errno != EINTR) {
+            return -errno;
+        }
+        if (count == 0) {
+            return -EIO;
+        }
+        if (count > 0) {
+            offset += (size_t)count;
+        }
+    }
+    return 0;
+}
+
+/** @brief Check one existing destination without following its final link. */
+static int validate_destination(int directory, const char *leaf)
+{
+    struct stat metadata;
+
+    if (fstatat(directory, leaf, &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+        return errno == ENOENT ? 0 : -errno;
+    }
+    if (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
+        (metadata.st_mode & (S_IXUSR | S_IRWXG | S_IRWXO)) != 0U) {
+        return -EACCES;
+    }
+    return 0;
+}
+
+/** @brief Inspect one securely installed combined certificate PEM. */
+int jg_certificate_inspect_file(const char *path,
+                                struct jg_certificate_info *info)
+{
+    char directory_path[PATH_MAX];
+    char leaf[NAME_MAX + 1U];
+    struct stat metadata;
+    uint8_t *data = NULL;
+    int directory = -1;
+    int descriptor = -1;
+    int result = 0;
+
+    if (info == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(info, 0, sizeof(*info));
+    result = split_path(path, directory_path, leaf);
+    if (result != 0) {
+        return result;
+    }
+    directory =
+        open(directory_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (directory < 0) {
+        return -errno;
+    }
+    descriptor = openat(directory, leaf, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        result = -errno;
+    }
+    if (close(directory) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result != 0) {
+        return result;
+    }
+    if (fstat(descriptor, &metadata) != 0) {
+        result = -errno;
+    } else if (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
+               (metadata.st_mode & (S_IXUSR | S_IRWXG | S_IRWXO)) != 0U) {
+        result = -EACCES;
+    } else if (metadata.st_size <= 0 ||
+               metadata.st_size > (off_t)JG_CERTIFICATE_PEM_MAX) {
+        result = -EMSGSIZE;
+    }
+    if (result == 0) {
+        data = malloc((size_t)metadata.st_size);
+        if (data == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        result = read_exact(descriptor, data, (size_t)metadata.st_size);
+    }
+    if (close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result == 0) {
+        result = jg_certificate_inspect(
+            (const char *)data, (size_t)metadata.st_size, (const char *)data,
+            (size_t)metadata.st_size, info);
+    }
+    if (data != NULL) {
+        sodium_memzero(data, (size_t)metadata.st_size);
+        free(data);
+    }
+    return result;
+}
+
+/** @brief Create one exclusive random temporary name in an open directory. */
+static int create_temporary_file(int directory, char name[64U], int *descriptor)
+{
+    uint8_t random[12U];
+    int result = -EEXIST;
+
+    *descriptor = -1;
+    for (size_t attempt = 0U; attempt < 8U && result == -EEXIST; ++attempt) {
+        if (RAND_bytes(random, sizeof(random)) != 1) {
+            result = -EIO;
+        } else {
+            int written = snprintf(
+                name, 64U,
+                ".janusgate-certificate-%02x%02x%02x%02x%02x%02x%02x%02x"
+                "%02x%02x%02x%02x",
+                random[0U], random[1U], random[2U], random[3U], random[4U],
+                random[5U], random[6U], random[7U], random[8U], random[9U],
+                random[10U], random[11U]);
+
+            if (written <= 0 || written >= 64) {
+                result = -EOVERFLOW;
+            } else {
+                *descriptor =
+                    openat(directory, name,
+                           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                           S_IRUSR | S_IWUSR);
+                result = *descriptor < 0 ? -errno : 0;
+            }
+        }
+    }
+    sodium_memzero(random, sizeof(random));
+    return result;
+}
+
+/** @brief Atomically install one matching certificate and private key. */
+int jg_certificate_install(const char *path,
+                           const char *certificate,
+                           size_t certificate_size,
+                           const char *private_key,
+                           size_t private_key_size,
+                           struct jg_certificate_info *info)
+{
+    char directory_path[PATH_MAX];
+    char leaf[NAME_MAX + 1U];
+    char temporary[64U] = {0};
+    int directory = -1;
+    int descriptor = -1;
+    bool temporary_exists = false;
+    int result = 0;
+
+    if (info == NULL) {
+        return -EINVAL;
+    }
+    result = split_path(path, directory_path, leaf);
+    if (result == 0 &&
+        (private_key_size > JG_CERTIFICATE_PEM_MAX ||
+         certificate_size > JG_CERTIFICATE_PEM_MAX - private_key_size)) {
+        result = -EMSGSIZE;
+    }
+    if (result == 0) {
+        result = jg_certificate_inspect(certificate, certificate_size,
+                                        private_key, private_key_size, info);
+    }
+    if (result == 0) {
+        directory = open(directory_path,
+                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (directory < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        result = validate_destination(directory, leaf);
+    }
+    if (result == 0) {
+        result = create_temporary_file(directory, temporary, &descriptor);
+        temporary_exists = result == 0;
+    }
+    if (result == 0) {
+        result = write_exact(descriptor, certificate, certificate_size);
+    }
+    if (result == 0) {
+        result = write_exact(descriptor, private_key, private_key_size);
+    }
+    if (result == 0 && fsync(descriptor) != 0) {
+        result = -errno;
+    }
+    if (descriptor >= 0 && close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result == 0 && renameat(directory, temporary, directory, leaf) != 0) {
+        result = -errno;
+    } else if (result == 0) {
+        temporary_exists = false;
+    }
+    if (result == 0 && fsync(directory) != 0) {
+        result = -errno;
+    }
+    if (temporary_exists) {
+        (void)unlinkat(directory, temporary, 0);
+    }
+    if (directory >= 0) {
+        (void)close(directory);
+    }
     if (result != 0) {
         (void)memset(info, 0, sizeof(*info));
     }

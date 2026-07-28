@@ -28,6 +28,9 @@
 /** Maximum certificate validity accepted for local generation. */
 #define JG_CERTIFICATE_VALIDITY_DAYS_MAX 3650U
 
+/** Default combined server certificate and private-key PEM path. */
+#define JG_CERTIFICATE_DEFAULT_PATH "/etc/janusgate/certs/server.pem"
+
 /** Public metadata extracted from one leaf certificate. */
 struct jg_certificate_info {
     /** RFC 2253 subject distinguished name. */
@@ -79,6 +82,55 @@ struct jg_certificate_material {
  * @thread_safety OpenSSL initialization must be process-wide and complete.
  */
 JG_PUBLIC int jg_certificate_inspect(const char *certificate,
+                                     size_t certificate_size,
+                                     const char *private_key,
+                                     size_t private_key_size,
+                                     struct jg_certificate_info *info);
+
+/**
+ * @brief Inspect one securely installed combined certificate PEM.
+ *
+ * @param[in] path Absolute regular-file path.
+ * @param[out] info Receives validated public metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EACCES for insecure ownership, permissions, or file type.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety This function is reentrant.
+ *
+ * @side_effects Opens and reads one bounded file without following a symlink.
+ */
+JG_PUBLIC int jg_certificate_inspect_file(const char *path,
+                                          struct jg_certificate_info *info);
+
+/**
+ * @brief Atomically install one matching certificate and private key.
+ *
+ * The destination directory must already exist. An existing destination must
+ * be a secure regular file owned by the effective user.
+ *
+ * @param[in] path Absolute destination path.
+ * @param[in] certificate Certificate or chain PEM beginning with the leaf.
+ * @param[in] certificate_size Exact certificate bytes.
+ * @param[in] private_key Matching unencrypted private-key PEM.
+ * @param[in] private_key_size Exact private-key bytes.
+ * @param[out] info Receives installed public metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EKEYREJECTED when the private key does not match.
+ * @return -EACCES for an insecure existing destination.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety Concurrent installation to the same path is unsupported.
+ *
+ * @side_effects Creates a private temporary file, synchronizes it, and
+ * atomically replaces the destination.
+ */
+JG_PUBLIC int jg_certificate_install(const char *path,
+                                     const char *certificate,
                                      size_t certificate_size,
                                      const char *private_key,
                                      size_t private_key_size,
