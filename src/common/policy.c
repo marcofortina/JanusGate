@@ -1363,3 +1363,116 @@ int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
     }
     return 0;
 }
+
+/** @brief Copy one optional immutable rule string into a simulation result. */
+static void copy_simulation_text(char *output,
+                                 size_t output_size,
+                                 const char *text)
+{
+    if (text != NULL) {
+        const size_t text_size = strlen(text);
+
+        if (text_size < output_size) {
+            (void)memcpy(output, text, text_size + 1U);
+        }
+    }
+}
+
+/** @brief Copy one borrowed domain match into self-contained storage. */
+static void copy_domain_simulation(
+    const struct jg_policy_match *match,
+    struct jg_policy_simulation_match *simulation)
+{
+    simulation->effect = match->effect;
+    simulation->matched = match->matched;
+    simulation->rule_id = match->rule_id;
+    simulation->source = match->source;
+    copy_simulation_text(simulation->domain, sizeof(simulation->domain),
+                         match->domain);
+    copy_simulation_text(simulation->attribution,
+                         sizeof(simulation->attribution), match->attribution);
+}
+
+/** @brief Copy one borrowed destination match into self-contained storage. */
+static void copy_destination_simulation(
+    const struct jg_policy_destination_match *match,
+    struct jg_policy_simulation_match *simulation)
+{
+    simulation->effect = match->effect;
+    simulation->matched = match->matched;
+    simulation->rule_id = match->rule_id;
+    simulation->source = match->source;
+    copy_simulation_text(simulation->attribution,
+                         sizeof(simulation->attribution), match->attribution);
+}
+
+/** @brief Simulate destination and domain policy through production matchers.
+ */
+int jg_policy_simulate(const struct jg_policy_snapshot *snapshot,
+                       enum jg_policy_domain_target target,
+                       const char *domain,
+                       const struct jg_policy_client *client,
+                       const struct jg_policy_destination *destination,
+                       struct jg_policy_simulation *simulation)
+{
+    struct jg_policy_snapshot_info info;
+    struct jg_policy_destination_match destination_match;
+    struct jg_policy_match domain_match;
+    int result = 0;
+
+    if (simulation == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(simulation, 0, sizeof(*simulation));
+    if (snapshot == NULL || domain == NULL ||
+        (target != JG_POLICY_DOMAIN_DNS &&
+         target != JG_POLICY_DOMAIN_TLS_SNI)) {
+        return -EINVAL;
+    }
+    simulation->target = target;
+    simulation->effect = JG_POLICY_ALLOW;
+    simulation->domain.effect = JG_POLICY_ALLOW;
+    simulation->destination.effect = JG_POLICY_ALLOW;
+    result = jg_domain_normalize(domain, simulation->normalized_domain,
+                                 sizeof(simulation->normalized_domain));
+    if (result == 0) {
+        result = jg_policy_snapshot_get_info(snapshot, &info);
+    }
+    if (result == 0) {
+        simulation->generation = info.generation;
+    }
+    if (result == 0 && destination != NULL) {
+        simulation->destination_evaluated = true;
+        result = jg_policy_match_destination(snapshot, destination, client,
+                                             &destination_match);
+        if (result == 0) {
+            copy_destination_simulation(&destination_match,
+                                        &simulation->destination);
+        }
+        if (result == 0 && destination_match.effect == JG_POLICY_BLOCK) {
+            simulation->effect = JG_POLICY_BLOCK;
+            simulation->selected = JG_POLICY_MATCH_DESTINATION;
+            return 0;
+        }
+    }
+    if (result == 0 && target == JG_POLICY_DOMAIN_DNS) {
+        result = jg_policy_match_domain(snapshot, simulation->normalized_domain,
+                                        client, &domain_match);
+    } else if (result == 0) {
+        result = jg_policy_match_visible_sni(
+            snapshot, simulation->normalized_domain, client, &domain_match);
+    }
+    if (result == 0) {
+        copy_domain_simulation(&domain_match, &simulation->domain);
+        simulation->effect = domain_match.effect;
+        if (domain_match.matched) {
+            simulation->selected = JG_POLICY_MATCH_DOMAIN;
+        } else if (simulation->destination.matched) {
+            simulation->selected = JG_POLICY_MATCH_DESTINATION;
+        }
+    }
+    if (result != 0) {
+        (void)memset(simulation, 0, sizeof(*simulation));
+    }
+    return result;
+}

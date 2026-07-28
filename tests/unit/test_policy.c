@@ -360,6 +360,113 @@ static void test_destination_policy(void **state)
     assert_null(snapshot);
 }
 
+/** @brief Verify simulation mirrors destination-first production matching. */
+static void test_policy_simulation(void **state)
+{
+    struct jg_policy_rule_input domain_rules[2U];
+    struct jg_policy_destination_rule_input destination_rules[2U];
+    struct jg_policy_destination destination = {
+        .transport = JG_POLICY_TRANSPORT_UDP,
+        .address_family = JG_POLICY_ADDRESS_IPV4,
+        .address = {203U, 0U, 113U, 53U},
+        .port = 53U,
+    };
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_simulation simulation;
+
+    (void)state;
+    domain_rules[0] = make_rule(1U, "example.org", true, JG_POLICY_BLOCK,
+                                JG_POLICY_SOURCE_EXPLICIT);
+    domain_rules[1] = make_rule(2U, "secure.example", false, JG_POLICY_BLOCK,
+                                JG_POLICY_SOURCE_EXPLICIT);
+    domain_rules[1].target = JG_POLICY_DOMAIN_TLS_SNI;
+
+    destination_rules[0] =
+        make_destination_rule(10U, JG_POLICY_ALLOW, JG_POLICY_SOURCE_EXPLICIT);
+    destination_rules[0].transport = JG_POLICY_TRANSPORT_UDP;
+    destination_rules[0].has_address = true;
+    destination_rules[0].address_family = JG_POLICY_ADDRESS_IPV4;
+    (void)memcpy(destination_rules[0].address, destination.address, 4U);
+    destination_rules[0].prefix_length = 32U;
+    destination_rules[0].has_port = true;
+    destination_rules[0].port = 53U;
+
+    destination_rules[1] =
+        make_destination_rule(11U, JG_POLICY_BLOCK, JG_POLICY_SOURCE_EXPLICIT);
+    destination_rules[1].has_address = true;
+    destination_rules[1].address_family = JG_POLICY_ADDRESS_IPV4;
+    destination_rules[1].address[0U] = 198U;
+    destination_rules[1].address[1U] = 51U;
+    destination_rules[1].address[2U] = 100U;
+    destination_rules[1].prefix_length = 24U;
+
+    assert_int_equal(jg_policy_snapshot_build_complete(domain_rules, 2U,
+                                                       destination_rules, 2U,
+                                                       17U, &snapshot),
+                     0);
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_DNS,
+                                        "WWW.Example.ORG.", NULL, &destination,
+                                        &simulation),
+                     0);
+    assert_int_equal(simulation.generation, 17U);
+    assert_string_equal(simulation.normalized_domain, "www.example.org");
+    assert_int_equal(simulation.effect, JG_POLICY_BLOCK);
+    assert_int_equal(simulation.selected, JG_POLICY_MATCH_DOMAIN);
+    assert_true(simulation.destination_evaluated);
+    assert_true(simulation.destination.matched);
+    assert_int_equal(simulation.destination.rule_id, 10U);
+    assert_true(simulation.domain.matched);
+    assert_int_equal(simulation.domain.rule_id, 1U);
+    assert_string_equal(simulation.domain.domain, "example.org");
+    assert_string_equal(simulation.domain.attribution, "unit test");
+
+    destination.address[0U] = 198U;
+    destination.address[1U] = 51U;
+    destination.address[2U] = 100U;
+    destination.address[3U] = 7U;
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_DNS,
+                                        "www.example.org", NULL, &destination,
+                                        &simulation),
+                     0);
+    assert_int_equal(simulation.effect, JG_POLICY_BLOCK);
+    assert_int_equal(simulation.selected, JG_POLICY_MATCH_DESTINATION);
+    assert_int_equal(simulation.destination.rule_id, 11U);
+    assert_false(simulation.domain.matched);
+
+    destination.address[0U] = 203U;
+    destination.address[1U] = 0U;
+    destination.address[2U] = 113U;
+    destination.address[3U] = 53U;
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_DNS,
+                                        "unlisted.test", NULL, &destination,
+                                        &simulation),
+                     0);
+    assert_int_equal(simulation.effect, JG_POLICY_ALLOW);
+    assert_int_equal(simulation.selected, JG_POLICY_MATCH_DESTINATION);
+    assert_false(simulation.domain.matched);
+
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_TLS_SNI,
+                                        "Secure.Example", NULL, NULL,
+                                        &simulation),
+                     0);
+    assert_int_equal(simulation.effect, JG_POLICY_BLOCK);
+    assert_int_equal(simulation.selected, JG_POLICY_MATCH_DOMAIN);
+    assert_int_equal(simulation.domain.rule_id, 2U);
+    assert_false(simulation.destination_evaluated);
+
+    assert_int_equal(jg_policy_simulate(snapshot,
+                                        (enum jg_policy_domain_target)99,
+                                        "example.org", NULL, NULL, &simulation),
+                     -EINVAL);
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_DNS,
+                                        "bad domain", NULL, NULL, &simulation),
+                     -EINVAL);
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_DNS,
+                                        "example.org", NULL, NULL, NULL),
+                     -EINVAL);
+    jg_policy_snapshot_destroy(snapshot);
+}
+
 /** @brief Run the immutable policy snapshot and matcher test group. */
 int jg_test_policy(void)
 {
@@ -369,6 +476,7 @@ int jg_test_policy(void)
         cmocka_unit_test(test_empty_snapshot_and_invalid_rules),
         cmocka_unit_test(test_domain_target_isolation),
         cmocka_unit_test(test_destination_policy),
+        cmocka_unit_test(test_policy_simulation),
     };
 
     return cmocka_run_group_tests_name("policy", tests, NULL, NULL);

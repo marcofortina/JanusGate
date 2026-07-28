@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/domain.h"
 #include "janusgate/version.h"
 
 /** Number of bytes in a policy snapshot SHA-256 checksum. */
@@ -267,6 +268,58 @@ struct jg_policy_destination_match {
     const char *attribution;
 };
 
+/**
+ * @brief Policy dimension selecting a simulated final verdict.
+ */
+enum jg_policy_match_dimension {
+    /** No configured rule matched. */
+    JG_POLICY_MATCH_DEFAULT = 0,
+    /** A domain or visible-SNI rule selected the verdict. */
+    JG_POLICY_MATCH_DOMAIN = 1,
+    /** A destination address or port rule selected the verdict. */
+    JG_POLICY_MATCH_DESTINATION = 2
+};
+
+/**
+ * @brief Self-contained rule explanation returned by policy simulation.
+ */
+struct jg_policy_simulation_match {
+    /** Allow or block action selected by this policy dimension. */
+    enum jg_policy_effect effect;
+    /** Whether a configured rule matched. */
+    bool matched;
+    /** Matching stable rule identifier, or zero for the default. */
+    uint64_t rule_id;
+    /** Matching rule origin, or JG_POLICY_SOURCE_DEFAULT. */
+    enum jg_policy_source source;
+    /** Matched normalized domain, empty for destination or default results. */
+    char domain[JG_DOMAIN_NAME_MAX + 1U];
+    /** Matching rule attribution, empty for the default result. */
+    char attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
+};
+
+/**
+ * @brief Complete production-matcher policy simulation result.
+ */
+struct jg_policy_simulation {
+    /** Immutable snapshot generation used for every match. */
+    uint64_t generation;
+    /** DNS or visible-SNI domain context. */
+    enum jg_policy_domain_target target;
+    /** Final simulated action after destination and domain evaluation. */
+    enum jg_policy_effect effect;
+    /** Policy dimension explaining @ref effect. */
+    enum jg_policy_match_dimension selected;
+    /** Canonical IDNA2008 A-label input domain. */
+    char normalized_domain[JG_DOMAIN_NAME_MAX + 1U];
+    /** Domain or visible-SNI rule evaluation. */
+    struct jg_policy_simulation_match domain;
+    /** Optional destination rule evaluation. */
+    struct jg_policy_simulation_match destination;
+    /** Whether a destination was supplied and evaluated. */
+    bool destination_evaluated;
+};
+
 /** Opaque immutable policy snapshot. */
 struct jg_policy_snapshot;
 
@@ -412,5 +465,34 @@ JG_PUBLIC int jg_policy_match_destination(
     const struct jg_policy_destination *destination,
     const struct jg_policy_client *client,
     struct jg_policy_destination_match *match);
+
+/**
+ * @brief Simulate a complete domain decision with the production matchers.
+ *
+ * The input domain is normalized exactly as imported policy names are.
+ * Destination policy is evaluated first and a blocking destination terminates
+ * evaluation, matching the packet path. Otherwise DNS or visible-SNI policy
+ * selects the final action.
+ *
+ * @param[in] snapshot Immutable policy snapshot.
+ * @param[in] target DNS or visible-SNI domain context.
+ * @param[in] domain UTF-8 domain to normalize and evaluate.
+ * @param[in] client Optional client attributes used by scoped rules.
+ * @param[in] destination Optional destination address, port, and transport.
+ * @param[out] simulation Receives a self-contained explanation.
+ *
+ * @return 0 on success, including a default-allow result.
+ * @return -EINVAL for a null argument, invalid target, client, or destination.
+ * @return A negative errno-style domain-normalization error otherwise.
+ *
+ * @thread_safety Safe for concurrent calls on the same immutable snapshot.
+ */
+JG_PUBLIC int jg_policy_simulate(
+    const struct jg_policy_snapshot *snapshot,
+    enum jg_policy_domain_target target,
+    const char *domain,
+    const struct jg_policy_client *client,
+    const struct jg_policy_destination *destination,
+    struct jg_policy_simulation *simulation);
 
 #endif
