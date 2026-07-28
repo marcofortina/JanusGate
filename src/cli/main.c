@@ -121,6 +121,9 @@ static void print_usage(FILE *output)
                 "       janusgatectl [OPTIONS] user disable ID\n"
                 "       janusgatectl [OPTIONS] user password ID FILE\n"
                 "       janusgatectl [OPTIONS] user totp ID\n"
+                "       janusgatectl [OPTIONS] token list\n"
+                "       janusgatectl [OPTIONS] token create FILE\n"
+                "       janusgatectl [OPTIONS] token revoke ID\n"
                 "       janusgatectl [--socket PATH] [--json] ping\n"
                 "       janusgatectl [--socket PATH] [--json] policy reload\n"
                 "       janusgatectl --version\n"
@@ -1832,6 +1835,94 @@ static int run_user_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief List the first stable page of API-token metadata. */
+static int run_token_list(const struct cli_options *options, const char *token)
+{
+    json_t *body = NULL;
+    int result =
+        fetch_api_object(options, token, "/api/v1/tokens", "limit=100", &body);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Issue one scoped API token from an exact JSON document. */
+static int run_token_create(const struct cli_options *options,
+                            const char *token,
+                            const char *file)
+{
+    json_t *body = NULL;
+    int read_result = 0;
+    int result = CLI_EXIT_SUCCESS;
+
+    body = read_json_object(file, &read_result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: token document: %s\n",
+                      strerror(-read_result));
+        return read_result == -EINVAL || read_result == -EMSGSIZE
+                   ? CLI_EXIT_USAGE
+                   : CLI_EXIT_FAILURE;
+    }
+    result = send_api_request(options, token, "token create", "POST",
+                              "/api/v1/tokens", body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Revoke one API token after an explicit destructive confirmation. */
+static int run_token_revoke(const struct cli_options *options,
+                            const char *token,
+                            const char *identifier_text)
+{
+    char path[sizeof("/api/v1/tokens/18446744073709551615")];
+    json_t *body = NULL;
+    uint64_t identifier = 0U;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    if (!destructive_operation_confirmed(options, "Revoke the API token")) {
+        return CLI_EXIT_FAILURE;
+    }
+    body = json_object();
+    if (body == NULL) {
+        return CLI_EXIT_FAILURE;
+    }
+    (void)snprintf(path, sizeof(path), "/api/v1/tokens/%llu",
+                   (unsigned long long)identifier);
+    result =
+        send_api_request(options, token, "token revoke", "DELETE", path, body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Run one recognized API-token administration command. */
+static int run_token_command(const struct cli_options *options,
+                             int argc,
+                             char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "list") == 0) {
+        result = run_token_list(options, token);
+    } else if (strcmp(argv[1], "create") == 0) {
+        result = run_token_create(options, token, argv[2]);
+    } else {
+        result = run_token_revoke(options, token, argv[2]);
+    }
+    (void)argc;
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Query operational events or immutable audit records. */
 static int run_record_command(const struct cli_options *options,
                               int argc,
@@ -1921,6 +2012,12 @@ static int run_command(const struct cli_options *options,
          (argc == 4 && (strcmp(argv[1], "update") == 0 ||
                         strcmp(argv[1], "password") == 0)))) {
         return run_user_command(options, argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "token") == 0 &&
+        ((argc == 2 && strcmp(argv[1], "list") == 0) ||
+         (argc == 3 && (strcmp(argv[1], "create") == 0 ||
+                        strcmp(argv[1], "revoke") == 0)))) {
+        return run_token_command(options, argc, argv);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
