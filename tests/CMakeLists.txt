@@ -16,6 +16,7 @@ add_executable(
   unit/test_domain.c
   unit/test_fragment.c
   unit/test_ipc.c
+  unit/test_netd_client.c
   unit/test_network.c
   unit/test_netd.c
   unit/test_nfqueue.c

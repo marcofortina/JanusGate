@@ -38,6 +38,9 @@
 /** Maximum complete encoded message bytes. */
 #define JG_IPC_MAX_MESSAGE_SIZE (JG_IPC_HEADER_SIZE + JG_IPC_MAX_BODY_SIZE)
 
+/** Fixed local socket exposed by the privileged network helper. */
+#define JG_NETD_SOCKET_PATH "/run/janusgate/netd.sock"
+
 /**
  * @brief Direction and semantics of one protocol message.
  */

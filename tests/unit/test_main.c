@@ -19,6 +19,7 @@ int jg_test_dns(void);
 int jg_test_domain(void);
 int jg_test_fragment(void);
 int jg_test_ipc(void);
+int jg_test_netd_client(void);
 int jg_test_network(void);
 int jg_test_netd(void);
 int jg_test_nfqueue(void);
@@ -43,6 +44,7 @@ int main(void)
     result |= jg_test_domain();
     result |= jg_test_fragment();
     result |= jg_test_ipc();
+    result |= jg_test_netd_client();
     result |= jg_test_network();
     result |= jg_test_netd();
     result |= jg_test_nfqueue();

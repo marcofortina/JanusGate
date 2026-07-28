@@ -15,9 +15,6 @@
 #include "janusgate/ipc.h"
 #include "janusgate/network.h"
 
-/** Fixed local socket exposed by the privileged network helper. */
-#define JG_NETD_SOCKET_PATH "/run/janusgate/netd.sock"
-
 /**
  * @brief Validate and dispatch one decoded network-helper request.
  *

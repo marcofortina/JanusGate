@@ -76,6 +76,7 @@ add_library(
   src/daemon/dataplane.c
   src/daemon/dataplane_worker.c
   src/daemon/fragment.c
+  src/daemon/netd_client.c
   src/daemon/nfqueue.c
   src/daemon/nfqueue_group.c
   src/daemon/packet_output.c
