@@ -32,6 +32,7 @@
 #include "janusgate/access.h"
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
+#include "janusgate/certificate.h"
 #include "janusgate/event.h"
 #include "janusgate/ipc.h"
 #include "metrics.h"
@@ -213,7 +214,8 @@ int jg_management_create(struct jg_database *database,
     }
     *management = NULL;
     if (database == NULL || totp_key_path == NULL ||
-        !key_path_valid(certificate_path)) {
+        !key_path_valid(certificate_path) ||
+        strlen(certificate_path) > PATH_MAX - sizeof(".pending-key")) {
         return -EINVAL;
     }
     created = calloc(1U, sizeof(*created));
@@ -821,6 +823,39 @@ static json_t *user_json(const struct jg_account_user *user)
         set_optional_timestamp(body, "last_login_at", user->last_login_at) !=
             0 ||
         set_optional_timestamp(body, "locked_until", user->locked_until) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Convert validated server-certificate metadata to public JSON. */
+static json_t *certificate_json(const struct jg_certificate_info *certificate)
+{
+    char fingerprint[sizeof(certificate->fingerprint_sha256) * 2U + 1U];
+    json_t *body = json_object();
+
+    if (sodium_bin2hex(fingerprint, sizeof(fingerprint),
+                       certificate->fingerprint_sha256,
+                       sizeof(certificate->fingerprint_sha256)) == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "subject",
+                            json_string(certificate->subject)) != 0 ||
+        json_object_set_new(body, "issuer", json_string(certificate->issuer)) !=
+            0 ||
+        json_object_set_new(body, "fingerprint_sha256",
+                            json_string(fingerprint)) != 0 ||
+        json_object_set_new(
+            body, "not_before",
+            json_integer((json_int_t)certificate->not_before)) != 0 ||
+        json_object_set_new(body, "not_after",
+                            json_integer((json_int_t)certificate->not_after)) !=
+            0 ||
+        json_object_set_new(body, "self_signed",
+                            json_boolean(certificate->self_signed)) != 0 ||
+        json_object_set_new(body, "private_key_available",
+                            json_boolean(certificate->private_key_matches)) !=
+            0) {
         json_decref(body);
         return NULL;
     }
@@ -3017,6 +3052,76 @@ static int append_token_audit(struct jg_management *management,
             .previous_revision = previous_revision,
             .has_new_revision = true,
             .new_revision = token->revision,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Append one successful server-certificate lifecycle event. */
+static int append_certificate_audit(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    const char *common_name,
+    const struct jg_certificate_info *certificate,
+    uint64_t now)
+{
+    char source[INET6_ADDRSTRLEN];
+    char fingerprint[65U] = {0};
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int result = 0;
+
+    if (inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL ||
+        details == NULL) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && common_name != NULL &&
+        json_object_set_new(details, "common_name", json_string(common_name)) !=
+            0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && certificate != NULL) {
+        if (sodium_bin2hex(fingerprint, sizeof(fingerprint),
+                           certificate->fingerprint_sha256,
+                           sizeof(certificate->fingerprint_sha256)) == NULL ||
+            json_object_set_new(details, "subject",
+                                json_string(certificate->subject)) != 0 ||
+            json_object_set_new(details, "fingerprint_sha256",
+                                json_string(fingerprint)) != 0 ||
+            json_object_set_new(
+                details, "not_after",
+                json_integer((json_int_t)certificate->not_after)) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = action,
+            .object_type = "certificate",
+            .object_id = "server",
+            .details = encoded,
             .success = true,
             .request_id = request->request_id,
         };
@@ -6577,6 +6682,312 @@ static int handle_token_revoke(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Build the private pending-key path next to the server identity. */
+static int certificate_pending_path(const struct jg_management *management,
+                                    char path[PATH_MAX])
+{
+    const int written = snprintf(path, PATH_MAX, "%s.pending-key",
+                                 management->certificate_path);
+
+    return written > 0 && written < PATH_MAX ? 0 : -ENOSPC;
+}
+
+/** @brief Decode one bounded array of certificate subject alternative names. */
+static int certificate_alternative_names(
+    const json_t *body,
+    const char *names[JG_CERTIFICATE_SAN_MAX],
+    size_t *name_count)
+{
+    json_t *values = json_object_get(body, "alternative_names");
+    const size_t count = json_array_size(values);
+
+    *name_count = 0U;
+    if (!json_is_array(values) || count > JG_CERTIFICATE_SAN_MAX) {
+        return -EINVAL;
+    }
+    for (size_t index = 0U; index < count; ++index) {
+        json_t *value = json_array_get(values, index);
+        const char *text = json_string_value(value);
+        const size_t text_size = bounded_length(text, 253U);
+
+        if (!json_is_string(value) || text_size == 0U || text_size > 253U ||
+            json_string_length(value) != text_size) {
+            return -EINVAL;
+        }
+        names[index] = text;
+    }
+    *name_count = count;
+    return 0;
+}
+
+/** @brief Return current public server-certificate metadata. */
+static int handle_certificate_show(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_certificate_info certificate;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The certificate request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        jg_certificate_inspect_file(management->certificate_path, &certificate);
+    if (result == -ENOENT) {
+        return respond_error(404, "certificate_not_found",
+                             "The server certificate is not installed.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "certificate_unavailable",
+                             "The server certificate could not be inspected.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    value = certificate_json(&certificate);
+    if (body == NULL || value == NULL ||
+        json_object_set(body, "certificate", value) != 0) {
+        json_decref(value);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(value);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Create one CSR while retaining its private key on the appliance. */
+static int handle_certificate_csr(struct jg_management *management,
+                                  const struct management_request *request,
+                                  const struct remote_address *remote,
+                                  uint64_t now,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  size_t *written)
+{
+    static const char *const fields[] = {
+        "common_name",
+        "alternative_names",
+    };
+    struct authenticated_actor actor;
+    struct jg_certificate_material material;
+    const char *names[JG_CERTIFICATE_SAN_MAX];
+    const char *common_name = NULL;
+    char pending_path[PATH_MAX];
+    size_t name_count = 0U;
+    json_t *body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    (void)memset(&material, 0, sizeof(material));
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    common_name = required_string(request->body, "common_name", 1U, 253U);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        common_name == NULL ||
+        certificate_alternative_names(request->body, names, &name_count) != 0) {
+        return respond_error(400, "invalid_body",
+                             "The certificate request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = certificate_pending_path(management, pending_path);
+    if (result == 0) {
+        result = jg_certificate_create_csr(common_name, names, name_count,
+                                           &material);
+    }
+    if (result == 0) {
+        result = jg_certificate_private_key_store(
+            pending_path, material.private_key, material.private_key_size);
+    }
+    if (result == -EINVAL) {
+        jg_certificate_material_clear(&material);
+        return respond_error(400, "invalid_certificate_name",
+                             "The certificate names are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        jg_certificate_material_clear(&material);
+        return respond_error(500, "csr_create_failed",
+                             "The certificate request could not be created.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        append_certificate_audit(management, request, remote, &actor,
+                                 "certificate.csr", common_name, NULL, now);
+    if (result != 0) {
+        jg_certificate_material_clear(&material);
+        return respond_error(
+            500, "audit_failure",
+            "The certificate request was created, but its audit record could "
+            "not be stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(
+            body, "request",
+            json_stringn(material.request, material.request_size)) != 0 ||
+        json_object_set_new(body, "private_key_stored", json_true()) != 0) {
+        json_decref(body);
+        jg_certificate_material_clear(&material);
+        return -ENOMEM;
+    }
+    jg_certificate_material_clear(&material);
+    return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Install one validated server certificate with concurrency control. */
+static int handle_certificate_install(struct jg_management *management,
+                                      const struct management_request *request,
+                                      const struct remote_address *remote,
+                                      uint64_t now,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written)
+{
+    static const char *const fields[] = {
+        "expected_fingerprint",
+        "certificate",
+        "private_key",
+    };
+    struct authenticated_actor actor;
+    struct jg_certificate_info current;
+    struct jg_certificate_info installed;
+    uint8_t expected[32U];
+    const char *certificate = NULL;
+    const char *private_key = NULL;
+    char pending_path[PATH_MAX];
+    char *loaded_key = NULL;
+    size_t certificate_size = 0U;
+    size_t private_key_size = 0U;
+    bool expected_present = false;
+    bool current_present = false;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    certificate = required_string(request->body, "certificate", 1U,
+                                  JG_CERTIFICATE_PEM_MAX);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        certificate == NULL ||
+        !required_nullable_string(request->body, "private_key",
+                                  JG_CERTIFICATE_PEM_MAX, &private_key) ||
+        !required_optional_digest(request->body, "expected_fingerprint",
+                                  expected, &expected_present)) {
+        return respond_error(400, "invalid_body",
+                             "The certificate installation is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    certificate_size =
+        json_string_length(json_object_get(request->body, "certificate"));
+    if (private_key != NULL) {
+        private_key_size =
+            json_string_length(json_object_get(request->body, "private_key"));
+    }
+    result =
+        jg_certificate_inspect_file(management->certificate_path, &current);
+    current_present = result == 0;
+    if (result != 0 && result != -ENOENT) {
+        return respond_error(500, "certificate_unavailable",
+                             "The current certificate could not be inspected.",
+                             request->request_id, output, output_size, written);
+    }
+    if (current_present != expected_present ||
+        (current_present && sodium_memcmp(current.fingerprint_sha256, expected,
+                                          sizeof(expected)) != 0)) {
+        return respond_error(
+            409, "certificate_conflict",
+            "The current certificate has changed; reload and retry.",
+            request->request_id, output, output_size, written);
+    }
+    result = certificate_pending_path(management, pending_path);
+    if (result == 0 && private_key == NULL) {
+        result = jg_certificate_private_key_load(pending_path, &loaded_key,
+                                                 &private_key_size);
+        private_key = loaded_key;
+    }
+    if (result == 0) {
+        result = jg_certificate_install(
+            management->certificate_path, certificate, certificate_size,
+            private_key, private_key_size, &installed);
+    }
+    if (loaded_key != NULL) {
+        sodium_memzero(loaded_key, private_key_size);
+        free(loaded_key);
+    }
+    if (result == -ENOENT) {
+        return respond_error(
+            409, "pending_key_not_found",
+            "No pending private key is available for this certificate.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -EKEYREJECTED) {
+        return respond_error(400, "invalid_certificate",
+                             "The certificate or its private key is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "certificate_install_failed",
+                             "The server certificate could not be installed.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_certificate_private_key_remove(pending_path);
+    if (result == -ENOENT) {
+        result = 0;
+    }
+    if (result != 0) {
+        return respond_error(
+            500, "pending_key_cleanup_failed",
+            "The certificate was installed, but pending key cleanup failed.",
+            request->request_id, output, output_size, written);
+    }
+    result =
+        append_certificate_audit(management, request, remote, &actor,
+                                 "certificate.install", NULL, &installed, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The certificate was installed, but its audit record could not be "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    value = certificate_json(&installed);
+    if (body == NULL || value == NULL ||
+        json_object_set(body, "certificate", value) != 0 ||
+        json_object_set_new(body, "reload_required", json_true()) != 0) {
+        json_decref(value);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(value);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated filtered page of operational events. */
 static int handle_events_list(struct jg_management *management,
                               const struct management_request *request,
@@ -7251,6 +7662,19 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/tokens") == 0 && post) {
         return handle_token_issue(management, request, remote, now, output,
                                   output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/certificates") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_certificate_show(management, request, remote, now, output,
+                                       output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/certificates/install") == 0 && post) {
+        return handle_certificate_install(management, request, remote, now,
+                                          output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/certificates/csr") == 0 && post) {
+        return handle_certificate_csr(management, request, remote, now, output,
+                                      output_size, written);
     }
     if (strcmp(request->method, "DELETE") == 0 &&
         collection_path_identifier(request->path, "/api/v1/tokens/", "",

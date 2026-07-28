@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,9 +19,11 @@
 
 #include <cmocka.h>
 #include <jansson.h>
+#include <sodium.h>
 
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
+#include "janusgate/certificate.h"
 #include "janusgate/event.h"
 #include "janusgate/ipc.h"
 #include "management.h"
@@ -92,6 +95,28 @@ static int setup_management(void **state)
                                           &fixture->management),
                      0);
     *state = fixture;
+    return 0;
+}
+
+/** @brief Add one initial server identity to a fresh management fixture. */
+static int setup_certificate_management(void **state)
+{
+    struct management_fixture *fixture = NULL;
+    struct jg_certificate_material material;
+    struct jg_certificate_info info;
+    int result = setup_management(state);
+
+    assert_int_equal(result, 0);
+    fixture = *state;
+    assert_int_equal(jg_certificate_create_self_signed("janusgate.local", NULL,
+                                                       0U, 365U, &material),
+                     0);
+    assert_int_equal(
+        jg_certificate_install(fixture->certificate_path, material.certificate,
+                               material.certificate_size, material.private_key,
+                               material.private_key_size, &info),
+        0);
+    jg_certificate_material_clear(&material);
     return 0;
 }
 
@@ -1195,6 +1220,146 @@ static void test_token_api(void **state)
     assert_int_equal(verification.records_inspected, 2U);
 }
 
+/** @brief Verify certificate inspection, CSR retention, and installation. */
+static void test_certificate_api(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_token_config token_config = {
+        .name = "certificate administrator",
+        .permissions = JG_ACCESS_SECURITY_WRITE,
+        .requests_per_minute = 60U,
+    };
+    struct jg_account_api_token token;
+    struct jg_certificate_material material;
+    struct jg_certificate_info installed;
+    struct jg_audit_verification verification;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[16384U];
+    char pending_path[256U];
+    char fingerprint[65U];
+    char *encoded_certificate = NULL;
+    char *encoded_key = NULL;
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *value = NULL;
+    json_t *text = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, (uint64_t)now,
+                         &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"certificate-show\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/certificates\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    value = json_object_get(json_object_get(body, "certificate"),
+                            "fingerprint_sha256");
+    assert_true(json_is_string(value));
+    assert_int_equal(json_string_length(value), 64U);
+    (void)snprintf(fingerprint, sizeof(fingerprint), "%s",
+                   json_string_value(value));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"certificate-csr\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/certificates/csr\","
+        "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+        "\"bearer\":\"%s\",\"body\":{\"common_name\":\"gateway.example\","
+        "\"alternative_names\":[\"gateway.example\",\"192.168.77.1\"]}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    body = json_object_get(response, "body");
+    value = json_object_get(body, "request");
+    assert_true(json_is_string(value));
+    assert_non_null(
+        strstr(json_string_value(value), "BEGIN CERTIFICATE REQUEST"));
+    assert_null(strstr(json_string_value(value), "PRIVATE KEY"));
+    assert_true(json_is_true(json_object_get(body, "private_key_stored")));
+    json_decref(response);
+    written = snprintf(pending_path, sizeof(pending_path), "%s.pending-key",
+                       fixture->certificate_path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(pending_path));
+    assert_int_equal(access(pending_path, F_OK), 0);
+
+    assert_int_equal(jg_certificate_create_self_signed(
+                         "replacement.example", NULL, 0U, 365U, &material),
+                     0);
+    text = json_stringn(material.certificate, material.certificate_size);
+    assert_non_null(text);
+    encoded_certificate = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
+    json_decref(text);
+    text = json_stringn(material.private_key, material.private_key_size);
+    assert_non_null(text);
+    encoded_key = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
+    json_decref(text);
+    assert_non_null(encoded_certificate);
+    assert_non_null(encoded_key);
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"certificate-install\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/certificates/install\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"bearer\":\"%s\",\"body\":{\"expected_fingerprint\":\"%s\","
+                 "\"certificate\":%s,\"private_key\":%s}}",
+                 token.secret, fingerprint, encoded_certificate, encoded_key);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    sodium_memzero(request, sizeof(request));
+    sodium_memzero(encoded_key, strlen(encoded_key));
+    free(encoded_key);
+    free(encoded_certificate);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "reload_required")));
+    assert_true(json_is_true(
+        json_object_get(json_object_get(body, "certificate"), "self_signed")));
+    json_decref(response);
+    assert_int_equal(access(pending_path, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    assert_int_equal(
+        jg_certificate_inspect_file(fixture->certificate_path, &installed), 0);
+    assert_string_equal(installed.subject, "CN=replacement.example");
+    assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
+                     0);
+    assert_true(verification.valid);
+    assert_int_equal(verification.records_inspected, 2U);
+    jg_certificate_material_clear(&material);
+    sodium_memzero(&token, sizeof(token));
+}
+
 /** @brief Verify authenticated network inspection and proposal validation. */
 static void test_network_api(void **state)
 {
@@ -1882,6 +2047,9 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_user_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_token_api, setup_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_certificate_api,
+                                        setup_certificate_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_network_api, setup_management,
                                         teardown_management),
