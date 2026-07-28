@@ -67,6 +67,17 @@ target_link_libraries(
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
 
+add_library(janusgate-netd-core STATIC src/netd/server.c)
+target_include_directories(
+  janusgate-netd-core
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/netd>")
+target_link_libraries(janusgate-netd-core PUBLIC JanusGate::common)
+janusgate_apply_compiler_options(janusgate-netd-core)
+
+add_executable(janusgate-netd src/netd/main.c)
+target_link_libraries(janusgate-netd PRIVATE janusgate-netd-core)
+janusgate_apply_compiler_options(janusgate-netd)
+
 install(
   TARGETS janusgate-common
   EXPORT JanusGateTargets
@@ -86,6 +97,10 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)
 install(
+  TARGETS janusgate-netd
+  RUNTIME DESTINATION "${CMAKE_INSTALL_SBINDIR}"
+  COMPONENT runtime)
+install(
   EXPORT JanusGateTargets
   NAMESPACE JanusGate::
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/JanusGate"
@@ -100,7 +115,7 @@ add_custom_target(
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-common janusgate-unit-tests
+  DEPENDS janusgate-netd janusgate-unit-tests
   USES_TERMINAL)
 
 if(BUILD_TESTING)
