@@ -68,7 +68,11 @@ enum jg_ipc_operation {
     /** Return the effective JanusGate-owned network state. */
     JG_IPC_NETWORK_STATE = 6,
     /** Remove only JanusGate-owned runtime network objects. */
-    JG_IPC_NETWORK_REMOVE = 7
+    JG_IPC_NETWORK_REMOVE = 7,
+    /** Reload persistent policy into a new immutable daemon snapshot. */
+    JG_IPC_POLICY_RELOAD = 8,
+    /** Return one aggregate daemon status and counter snapshot. */
+    JG_IPC_DAEMON_STATUS = 9
 };
 
 /**

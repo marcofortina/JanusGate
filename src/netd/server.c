@@ -59,7 +59,7 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
 
     if (request == NULL || response == NULL || request->request_id == 0U ||
         request->operation < JG_IPC_PING ||
-        request->operation > JG_IPC_NETWORK_REMOVE ||
+        request->operation > JG_IPC_DAEMON_STATUS ||
         request->body_size > JG_IPC_MAX_BODY_SIZE ||
         (request->body_size != 0U && request->body == NULL)) {
         return -EINVAL;

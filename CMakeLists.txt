@@ -75,6 +75,7 @@ add_library(
   janusgate-daemon-core STATIC
   src/daemon/dataplane.c
   src/daemon/dataplane_worker.c
+  src/daemon/control_protocol.c
   src/daemon/daemon_runtime.c
   src/daemon/fragment.c
   src/daemon/netd_client.c

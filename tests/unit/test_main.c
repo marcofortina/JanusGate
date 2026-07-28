@@ -12,6 +12,7 @@
 int jg_test_blocklist(void);
 int jg_test_blocklist_remote(void);
 int jg_test_checked(void);
+int jg_test_control_protocol(void);
 int jg_test_database(void);
 int jg_test_dataplane(void);
 int jg_test_dataplane_worker(void);
@@ -38,6 +39,7 @@ int main(void)
 
     result |= jg_test_blocklist_remote();
     result |= jg_test_checked();
+    result |= jg_test_control_protocol();
     result |= jg_test_database();
     result |= jg_test_dataplane();
     result |= jg_test_dataplane_worker();
