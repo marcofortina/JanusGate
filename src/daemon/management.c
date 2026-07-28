@@ -321,7 +321,10 @@ static const char *required_string(const json_t *object,
     const char *text = json_is_string(value) ? json_string_value(value) : NULL;
     const size_t length = bounded_length(text, maximum);
 
-    return length >= minimum && length <= maximum ? text : NULL;
+    return length >= minimum && length <= maximum &&
+                   json_string_length(value) == length
+               ? text
+               : NULL;
 }
 
 /** @brief Read an optional bounded JSON string field. */
@@ -339,7 +342,10 @@ static const char *optional_string(const json_t *object,
         return NULL;
     }
     text = json_string_value(value);
-    return bounded_length(text, maximum) <= maximum ? text : NULL;
+    return bounded_length(text, maximum) <= maximum &&
+                   json_string_length(value) == strlen(text)
+               ? text
+               : NULL;
 }
 
 /** @brief Parse and validate one internal management request envelope. */
@@ -732,7 +738,8 @@ static bool required_nullable_string(const json_t *object,
     }
     text = json_string_value(field);
     length = bounded_length(text, maximum);
-    if (length == 0U || length > maximum) {
+    if (length == 0U || length > maximum ||
+        json_string_length(field) != length) {
         return false;
     }
     *value = text;

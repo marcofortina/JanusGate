@@ -1588,6 +1588,10 @@ static void test_request_rejection(void **state)
         "\"host\":\"192.168.77.1\",\"origin\":\"https://192.0.2.1\","
         "\"remote_address\":\"192.0.2.10\","
         "\"body\":{\"username\":\"nobody\",\"password\":\"invalid\"}}";
+    const char embedded_null[] =
+        "{\"request_id\":\"nul-1\",\"method\":\"GET\\u0000POST\","
+        "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"body\":{}}";
 
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      400);
@@ -1595,6 +1599,10 @@ static void test_request_rejection(void **state)
     response = process_request(fixture, invalid_origin);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      403);
+    json_decref(response);
+    response = process_request(fixture, embedded_null);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
     json_decref(response);
 }
 
