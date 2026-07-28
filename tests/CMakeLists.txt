@@ -11,6 +11,7 @@ add_executable(
   unit/test_auth.c
   unit/test_blocklist.c
   unit/test_blocklist_remote.c
+  unit/test_blocklist_update.c
   unit/test_main.c
   unit/test_checked.c
   unit/test_control_protocol.c
