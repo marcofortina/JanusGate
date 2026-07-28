@@ -51,6 +51,11 @@ static const uint8_t tls_client_hello[] = {
     0x00U, 0x2bU, 0x00U, 0x03U, 0x02U, 0x03U, 0x04U,
 };
 
+/** TLS handshake whose first message is not a ClientHello. */
+static const uint8_t tls_non_client_hello[] = {
+    0x16U, 0x03U, 0x03U, 0x00U, 0x04U, 0x02U, 0x00U, 0x00U, 0x00U,
+};
+
 /** Captured synchronous reset output from one worker. */
 struct reset_capture {
     struct jg_tcp_reset_pair resets;
@@ -371,6 +376,37 @@ static void test_tls_sni(void **state)
     assert_int_equal(stats.streams, 1U);
     assert_int_equal(stats.tcp_resets, 1U);
     assert_int_equal(stats.internal_errors, 0U);
+    assert_int_equal(stats.sni_inspected, 1U);
+    assert_int_equal(stats.sni_encrypted_or_unavailable, 0U);
+    jg_dataplane_worker_destroy(worker);
+    jg_policy_store_destroy(store);
+}
+
+/** @brief Verify unavailable SNI is recorded without blocking the flow. */
+static void test_unavailable_sni(void **state)
+{
+    uint8_t frame[sizeof(tls_non_client_hello) + 54U];
+    struct jg_nfqueue_packet packet = {
+        .queue_number = 100U,
+        .ingress_index = 2U,
+        .data = frame,
+    };
+    struct jg_policy_store *store = build_store();
+    struct jg_dataplane_worker *worker = NULL;
+    struct jg_dataplane_stats stats;
+
+    (void)state;
+    assert_int_equal(
+        jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    packet.size = build_tcp_segment(frame, sizeof(frame), tls_non_client_hello,
+                                    sizeof(tls_non_client_hello), 0U,
+                                    sizeof(tls_non_client_hello), 3000U, 443U);
+    assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                     JG_NFQUEUE_ACCEPT);
+    assert_int_equal(jg_dataplane_worker_get_stats(worker, &stats), 0);
+    assert_int_equal(stats.sni_inspected, 0U);
+    assert_int_equal(stats.sni_encrypted_or_unavailable, 1U);
+    assert_int_equal(stats.malformed, 0U);
     jg_dataplane_worker_destroy(worker);
     jg_policy_store_destroy(store);
 }
@@ -442,6 +478,7 @@ int jg_test_dataplane_worker(void)
         cmocka_unit_test(test_fragmented_dns),
         cmocka_unit_test(test_tcp_dns),
         cmocka_unit_test(test_tls_sni),
+        cmocka_unit_test(test_unavailable_sni),
         cmocka_unit_test(test_arguments),
     };
 

@@ -52,6 +52,10 @@ struct jg_dataplane_stats {
     uint64_t tcp_resets;
     /** Internal classification failures closed with a drop. */
     uint64_t internal_errors;
+    /** Complete visible SNI values evaluated against policy. */
+    uint64_t sni_inspected;
+    /** TLS flows whose private SNI was encrypted or unavailable. */
+    uint64_t sni_encrypted_or_unavailable;
 };
 
 /** Opaque per-queue data-plane context. */

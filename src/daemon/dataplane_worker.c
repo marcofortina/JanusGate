@@ -30,6 +30,8 @@ struct atomic_dataplane_stats {
     atomic_uint_fast64_t streams;
     atomic_uint_fast64_t tcp_resets;
     atomic_uint_fast64_t internal_errors;
+    atomic_uint_fast64_t sni_inspected;
+    atomic_uint_fast64_t sni_encrypted_or_unavailable;
 };
 
 /** Complete per-queue data-plane context. */
@@ -74,6 +76,8 @@ static void initialize_stats(struct atomic_dataplane_stats *stats)
     atomic_init(&stats->streams, 0U);
     atomic_init(&stats->tcp_resets, 0U);
     atomic_init(&stats->internal_errors, 0U);
+    atomic_init(&stats->sni_inspected, 0U);
+    atomic_init(&stats->sni_encrypted_or_unavailable, 0U);
 }
 
 /** @brief Increment one relaxed data-plane counter. */
@@ -253,6 +257,10 @@ static int apply_client_hello(struct jg_dataplane_worker *worker,
 
     if (hello_result == JG_TLS_CLIENT_HELLO_COMPLETE &&
         hello->has_server_name) {
+        increment(&worker->stats.sni_inspected);
+        if (hello->encrypted_client_hello) {
+            increment(&worker->stats.sni_encrypted_or_unavailable);
+        }
         operation_result = jg_dataplane_evaluate_visible_sni(
             &result->packet, hello->server_name, snapshot, result);
         if (operation_result != 0 || result->verdict == JG_NFQUEUE_DROP) {
@@ -266,6 +274,7 @@ static int apply_client_hello(struct jg_dataplane_worker *worker,
         }
     } else if (hello_result == JG_TLS_CLIENT_HELLO_COMPLETE ||
                hello_result == JG_TLS_CLIENT_HELLO_NOT_CLIENT_HELLO) {
+        increment(&worker->stats.sni_encrypted_or_unavailable);
         accept_unavailable_sni(result);
     } else if (hello_result == JG_TLS_CLIENT_HELLO_MALFORMED ||
                hello_result == JG_TLS_CLIENT_HELLO_TOO_LARGE) {
@@ -521,6 +530,10 @@ int jg_dataplane_worker_get_stats(const struct jg_dataplane_worker *worker,
         atomic_load_explicit(&worker->stats.tcp_resets, memory_order_relaxed);
     stats->internal_errors = atomic_load_explicit(
         &worker->stats.internal_errors, memory_order_relaxed);
+    stats->sni_inspected = atomic_load_explicit(&worker->stats.sni_inspected,
+                                                memory_order_relaxed);
+    stats->sni_encrypted_or_unavailable = atomic_load_explicit(
+        &worker->stats.sni_encrypted_or_unavailable, memory_order_relaxed);
     return 0;
 }
 

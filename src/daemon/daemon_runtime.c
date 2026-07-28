@@ -74,6 +74,9 @@ static int aggregate_worker(const struct jg_daemon_runtime *runtime,
     saturating_add(dataplane.tcp_resets, &stats->dataplane.tcp_resets);
     saturating_add(dataplane.internal_errors,
                    &stats->dataplane.internal_errors);
+    saturating_add(dataplane.sni_inspected, &stats->dataplane.sni_inspected);
+    saturating_add(dataplane.sni_encrypted_or_unavailable,
+                   &stats->dataplane.sni_encrypted_or_unavailable);
 
     saturating_add(fragments.stored, &stats->fragments.stored);
     saturating_add(fragments.duplicates, &stats->fragments.duplicates);
