@@ -106,7 +106,7 @@ static bool column_exists(sqlite3 *handle,
 static void set_schema_version(sqlite3 *handle, uint32_t version)
 {
     sqlite3_stmt *statement = NULL;
-    const char *sql = version == 5U ? "PRAGMA user_version=5;" : NULL;
+    const char *sql = version == 6U ? "PRAGMA user_version=6;" : NULL;
 
     assert_non_null(sql);
     assert_int_equal(sqlite3_prepare_v2(handle, sql, -1, &statement, NULL),
@@ -198,6 +198,17 @@ static void create_version_two_fixture(const char *path)
     static const char schema[] =
         "CREATE TABLE schema_migrations ("
         "version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT;"
+        "CREATE TABLE users(id INTEGER PRIMARY KEY) STRICT;"
+        "CREATE TABLE web_sessions ("
+        "id INTEGER PRIMARY KEY,"
+        "user_id INTEGER NOT NULL REFERENCES users(id),"
+        "session_hash BLOB NOT NULL UNIQUE,"
+        "csrf_hash BLOB NOT NULL,"
+        "created_at INTEGER NOT NULL,"
+        "expires_at INTEGER NOT NULL,"
+        "last_seen_at INTEGER NOT NULL,"
+        "remote_address BLOB"
+        ") STRICT;"
         "INSERT INTO schema_migrations(version,applied_at) VALUES(1,10),(2,20);"
         "PRAGMA user_version=2;";
     sqlite3 *handle = NULL;
@@ -317,6 +328,7 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "users"));
     assert_true(table_exists(inspection, "audit_events"));
     assert_true(table_exists(inspection, "certificate_metadata"));
+    assert_true(table_exists(inspection, "bootstrap_credentials"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -382,6 +394,7 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "users", "force_password_change"));
     assert_true(column_exists(inspection, "users", "session_epoch"));
     assert_true(column_exists(inspection, "api_tokens", "source_address"));
+    assert_true(column_exists(inspection, "web_sessions", "session_epoch"));
     assert_true(column_exists(inspection, "audit_events", "request_id"));
     assert_true(column_exists(inspection, "domain_rules", "target"));
     assert_true(column_exists(inspection, "destination_rules", "source"));

@@ -448,12 +448,35 @@ static const char *const migration_4[] = {
     migration_4_policy,
 };
 
+/** Session revocation and first-boot credentials for schema version five. */
+static const char migration_5_identity[] =
+    "ALTER TABLE web_sessions ADD COLUMN session_epoch INTEGER NOT NULL "
+    "DEFAULT 1 CHECK(session_epoch > 0);"
+    "CREATE TABLE bootstrap_credentials ("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "token_hash BLOB NOT NULL CHECK(length(token_hash)=32),"
+    "created_at INTEGER NOT NULL CHECK(created_at >= 0),"
+    "expires_at INTEGER NOT NULL CHECK(expires_at > created_at),"
+    "consumed_at INTEGER CHECK(consumed_at IS NULL OR "
+    "consumed_at BETWEEN created_at AND expires_at)"
+    ") STRICT;"
+    "CREATE INDEX web_sessions_expiry_idx ON web_sessions(expires_at);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(5,unixepoch());"
+    "PRAGMA user_version=5;";
+
+/** Ordered statement groups composing schema version five. */
+static const char *const migration_5[] = {
+    migration_5_identity,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
     {2U, migration_2, sizeof(migration_2) / sizeof(migration_2[0])},
     {3U, migration_3, sizeof(migration_3) / sizeof(migration_3[0])},
     {4U, migration_4, sizeof(migration_4) / sizeof(migration_4[0])},
+    {5U, migration_5, sizeof(migration_5) / sizeof(migration_5[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
