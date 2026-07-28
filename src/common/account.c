@@ -2323,6 +2323,197 @@ int jg_account_token_issue(struct jg_database *database,
     return result;
 }
 
+/** @brief Decode one safe administrative API-token metadata row. */
+static int decode_token_row(sqlite3_stmt *statement,
+                            struct jg_account_token_record *token)
+{
+    const sqlite3_int64 token_id = sqlite3_column_int64(statement, 0);
+    const sqlite3_int64 user_id = sqlite3_column_int64(statement, 1);
+    const char *username = (const char *)sqlite3_column_text(statement, 2);
+    const char *name = (const char *)sqlite3_column_text(statement, 3);
+    const char *scopes = (const char *)sqlite3_column_text(statement, 4);
+    const int username_size = sqlite3_column_bytes(statement, 2);
+    const int name_size = sqlite3_column_bytes(statement, 3);
+    const sqlite3_int64 created_at = sqlite3_column_int64(statement, 5);
+    const sqlite3_int64 requests_per_minute =
+        sqlite3_column_int64(statement, 12);
+    const sqlite3_int64 revision = sqlite3_column_int64(statement, 13);
+    const int family_type = sqlite3_column_type(statement, 9);
+    const int address_type = sqlite3_column_type(statement, 10);
+    const int prefix_type = sqlite3_column_type(statement, 11);
+    const void *source_address = sqlite3_column_blob(statement, 10);
+    const int source_size = sqlite3_column_bytes(statement, 10);
+    uint32_t permissions = 0U;
+
+    if (token == NULL || token_id <= 0 || user_id <= 0 || username == NULL ||
+        username_size <= 0 || (size_t)username_size > JG_ACCOUNT_USERNAME_MAX ||
+        name == NULL || name_size <= 0 ||
+        (size_t)name_size > JG_ACCOUNT_TOKEN_NAME_MAX || scopes == NULL ||
+        created_at < 0 || requests_per_minute < JG_ACCOUNT_TOKEN_RATE_MIN ||
+        requests_per_minute > JG_ACCOUNT_TOKEN_RATE_MAX || revision <= 0 ||
+        (sqlite3_column_type(statement, 6) != SQLITE_NULL &&
+         (sqlite3_column_type(statement, 6) != SQLITE_INTEGER ||
+          sqlite3_column_int64(statement, 6) < 0)) ||
+        (sqlite3_column_type(statement, 7) != SQLITE_NULL &&
+         (sqlite3_column_type(statement, 7) != SQLITE_INTEGER ||
+          sqlite3_column_int64(statement, 7) < 0)) ||
+        (sqlite3_column_type(statement, 8) != SQLITE_NULL &&
+         (sqlite3_column_type(statement, 8) != SQLITE_INTEGER ||
+          sqlite3_column_int64(statement, 8) < 0)) ||
+        !((family_type == SQLITE_NULL && address_type == SQLITE_NULL &&
+           prefix_type == SQLITE_NULL) ||
+          (family_type == SQLITE_INTEGER && address_type == SQLITE_BLOB &&
+           prefix_type == SQLITE_INTEGER && source_address != NULL &&
+           ((sqlite3_column_int(statement, 9) == JG_POLICY_ADDRESS_IPV4 &&
+             source_size == 4 && sqlite3_column_int(statement, 11) >= 0 &&
+             sqlite3_column_int(statement, 11) <= 32) ||
+            (sqlite3_column_int(statement, 9) == JG_POLICY_ADDRESS_IPV6 &&
+             source_size == 16 && sqlite3_column_int(statement, 11) >= 0 &&
+             sqlite3_column_int(statement, 11) <= 128)))) ||
+        jg_access_scope_parse(scopes, &permissions) != 0) {
+        return -EILSEQ;
+    }
+    (void)memset(token, 0, sizeof(*token));
+    token->token_id = (uint64_t)token_id;
+    token->user_id = (uint64_t)user_id;
+    token->revision = (uint64_t)revision;
+    token->created_at = (uint64_t)created_at;
+    if (sqlite3_column_type(statement, 6) == SQLITE_INTEGER) {
+        token->expires_at = (uint64_t)sqlite3_column_int64(statement, 6);
+    }
+    if (sqlite3_column_type(statement, 7) == SQLITE_INTEGER) {
+        token->last_used_at = (uint64_t)sqlite3_column_int64(statement, 7);
+    }
+    if (sqlite3_column_type(statement, 8) == SQLITE_INTEGER) {
+        token->revoked_at = (uint64_t)sqlite3_column_int64(statement, 8);
+    }
+    token->permissions = permissions;
+    token->requests_per_minute = (uint32_t)requests_per_minute;
+    if (family_type == SQLITE_INTEGER) {
+        token->source_family =
+            (enum jg_policy_address_family)sqlite3_column_int(statement, 9);
+        (void)memcpy(token->source_address, source_address,
+                     (size_t)source_size);
+        token->source_prefix = (uint8_t)sqlite3_column_int(statement, 11);
+    }
+    (void)memcpy(token->name, name, (size_t)name_size);
+    token->name[(size_t)name_size] = '\0';
+    (void)memcpy(token->username, username, (size_t)username_size);
+    token->username[(size_t)username_size] = '\0';
+    if (!token_name_valid(token->name) || !username_valid(token->username)) {
+        (void)memset(token, 0, sizeof(*token));
+        return -EILSEQ;
+    }
+    return 0;
+}
+
+/** @brief List one stable bounded page of safe API-token metadata. */
+int jg_account_token_list(struct jg_database *database,
+                          uint64_t offset,
+                          struct jg_account_token_record *tokens,
+                          size_t capacity,
+                          size_t *count,
+                          uint64_t *total)
+{
+    static const char count_query[] = "SELECT count(*) FROM api_tokens;";
+    static const char list_query[] =
+        "SELECT t.id,t.user_id,u.username,t.name,t.scopes,t.created_at,"
+        "t.expires_at,t.last_used_at,t.revoked_at,t.source_family,"
+        "t.source_address,t.source_prefix,t.requests_per_minute,t.revision"
+        " FROM api_tokens t JOIN users u ON u.id=t.user_id"
+        " ORDER BY t.id LIMIT ?1 OFFSET ?2;";
+    sqlite3_stmt *statement = NULL;
+    bool transaction_open = false;
+    size_t loaded = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (total != NULL) {
+        *total = 0U;
+    }
+    if (database == NULL || tokens == NULL || count == NULL || total == NULL ||
+        capacity == 0U || capacity > JG_ACCOUNT_TOKEN_PAGE_MAX ||
+        capacity > (size_t)INT64_MAX || offset > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    (void)memset(tokens, 0, capacity * sizeof(*tokens));
+    result = execute_fixed(database->handle, "BEGIN;");
+    transaction_open = result == 0;
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, count_query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status != SQLITE_ROW || sqlite3_column_int64(statement, 0) < 0) {
+            result = status == SQLITE_ROW ? -EILSEQ
+                                          : jg_database_sqlite_result(status);
+        } else {
+            *total = (uint64_t)sqlite3_column_int64(statement, 0);
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, list_query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)capacity);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)offset);
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && loaded < capacity) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            break;
+        }
+        if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        } else {
+            result = decode_token_row(statement, &tokens[loaded]);
+            if (result == 0) {
+                ++loaded;
+            }
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = execute_fixed(database->handle, "COMMIT;");
+        if (result == 0) {
+            transaction_open = false;
+            *count = loaded;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)memset(tokens, 0, capacity * sizeof(*tokens));
+        *count = 0U;
+        *total = 0U;
+    }
+    return result;
+}
+
 /** Fields copied from one persistent API token and its owner. */
 struct api_token_record {
     uint64_t token_id;

@@ -322,6 +322,7 @@ static void test_api_tokens(void **state)
     static const uint8_t password[] = "correct horse battery staple";
     static const uint8_t remote[4U] = {192U, 0U, 2U, 10U};
     static const uint8_t other_remote[4U] = {198U, 51U, 100U, 10U};
+    static const uint8_t expected_network[4U] = {192U, 0U, 2U, 0U};
     char directory[64U];
     char path[512U];
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
@@ -334,12 +335,15 @@ static void test_api_tokens(void **state)
         .requests_per_minute = 120U,
     };
     struct jg_account_api_token token;
+    struct jg_account_token_record records[2U];
     struct jg_auth_password_policy password_policy;
     struct jg_account_identity identity;
     struct jg_database *database = NULL;
     uint32_t requests_per_minute = 0U;
     uint64_t authenticated_token_id = 0U;
     uint64_t user_id = 0U;
+    uint64_t total = 0U;
+    size_t count = 0U;
 
     (void)state;
     make_account_database_path(directory, sizeof(directory), path,
@@ -367,6 +371,22 @@ static void test_api_tokens(void **state)
     assert_int_equal(authenticated_token_id, token.token_id);
     assert_int_equal(requests_per_minute, 120U);
     assert_int_equal(identity.permissions, config.permissions);
+    assert_int_equal(
+        jg_account_token_list(database, 0U, records, 2U, &count, &total), 0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(total, 1U);
+    assert_int_equal(records[0U].token_id, token.token_id);
+    assert_int_equal(records[0U].user_id, user_id);
+    assert_string_equal(records[0U].username, "administrator");
+    assert_string_equal(records[0U].name, "automation");
+    assert_int_equal(records[0U].permissions, config.permissions);
+    assert_int_equal(records[0U].source_family, JG_POLICY_ADDRESS_IPV4);
+    assert_memory_equal(records[0U].source_address, expected_network,
+                        sizeof(expected_network));
+    assert_int_equal(records[0U].source_prefix, 24U);
+    assert_int_equal(records[0U].last_used_at, 111U);
+    assert_int_equal(records[0U].revoked_at, 0U);
+    assert_int_equal(records[0U].revision, 1U);
     assert_int_equal(jg_account_token_validate(
                          database, (const uint8_t *)token.secret,
                          strlen(token.secret), 112U, JG_POLICY_ADDRESS_IPV4,
@@ -377,6 +397,10 @@ static void test_api_tokens(void **state)
                      0);
     assert_int_equal(jg_account_token_revoke(database, token.token_id, 114U),
                      0);
+    assert_int_equal(
+        jg_account_token_list(database, 0U, records, 2U, &count, &total), 0);
+    assert_int_equal(records[0U].revoked_at, 113U);
+    assert_int_equal(records[0U].revision, 2U);
     assert_int_equal(jg_account_token_validate(
                          database, (const uint8_t *)token.secret,
                          strlen(token.secret), 115U, JG_POLICY_ADDRESS_IPV4,

@@ -65,6 +65,9 @@
 /** Maximum API-token display-name bytes excluding the null terminator. */
 #define JG_ACCOUNT_TOKEN_NAME_MAX 128U
 
+/** Largest API-token page returned by one management query. */
+#define JG_ACCOUNT_TOKEN_PAGE_MAX 100U
+
 /** Smallest accepted API-token request limit per minute. */
 #define JG_ACCOUNT_TOKEN_RATE_MIN 1U
 
@@ -178,6 +181,40 @@ struct jg_account_api_token {
     uint64_t token_id;
     /** Opaque token displayed only by the creation operation. */
     char secret[JG_AUTH_SECRET_TEXT_SIZE];
+};
+
+/**
+ * @brief Persistent API-token metadata safe for administration surfaces.
+ */
+struct jg_account_token_record {
+    /** Persistent nonzero token identifier. */
+    uint64_t token_id;
+    /** Owning nonzero local-user identifier. */
+    uint64_t user_id;
+    /** Current optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Creation Unix timestamp. */
+    uint64_t created_at;
+    /** Absolute expiry timestamp, or zero when absent. */
+    uint64_t expires_at;
+    /** Last successful use timestamp, or zero when unused. */
+    uint64_t last_used_at;
+    /** Revocation timestamp, or zero while active. */
+    uint64_t revoked_at;
+    /** Granted backend permissions. */
+    uint32_t permissions;
+    /** Per-token requests accepted in one minute. */
+    uint32_t requests_per_minute;
+    /** Optional source-network family. */
+    enum jg_policy_address_family source_family;
+    /** Canonical network-order source prefix address. */
+    uint8_t source_address[16U];
+    /** Significant source prefix bits. */
+    uint8_t source_prefix;
+    /** Administrative display name. */
+    char name[JG_ACCOUNT_TOKEN_NAME_MAX + 1U];
+    /** Current owning username. */
+    char username[JG_ACCOUNT_USERNAME_MAX + 1U];
 };
 
 /**
@@ -573,6 +610,33 @@ JG_PUBLIC int jg_account_token_issue(
     const struct jg_account_token_config *config,
     uint64_t now,
     struct jg_account_api_token *token);
+
+/**
+ * @brief List API-token metadata in stable identifier order.
+ *
+ * Secret hashes and plaintext token material are never included.
+ *
+ * @param[in] database Open database.
+ * @param[in] offset Zero-based page offset.
+ * @param[out] tokens Receives up to @p capacity records.
+ * @param[in] capacity Requested page size from one through
+ * JG_ACCOUNT_TOKEN_PAGE_MAX.
+ * @param[out] count Receives the number of returned records.
+ * @param[out] total Receives the total number of persistent tokens.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument or invalid pagination.
+ * @return -EILSEQ for invalid persistent token metadata.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_token_list(struct jg_database *database,
+                                    uint64_t offset,
+                                    struct jg_account_token_record *tokens,
+                                    size_t capacity,
+                                    size_t *count,
+                                    uint64_t *total);
 
 /**
  * @brief Authenticate one API token and return its current identity.
