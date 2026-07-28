@@ -23,9 +23,9 @@
 enum jg_dataplane_reason {
     /** Packet is valid but does not require stateless domain policy. */
     JG_DATAPLANE_PASS = 1,
-    /** Every DNS question is permitted by current policy. */
+    /** Every selected domain is permitted by current policy. */
     JG_DATAPLANE_POLICY_ALLOW = 2,
-    /** At least one DNS question is blocked by current policy. */
+    /** At least one selected domain is blocked by current policy. */
     JG_DATAPLANE_POLICY_BLOCK = 3,
     /** Packet or selected DNS message is malformed or exceeds limits. */
     JG_DATAPLANE_MALFORMED = 4,
@@ -121,5 +121,23 @@ int jg_dataplane_evaluate_tcp_dns(const struct jg_packet_view *packet,
                                   size_t message_size,
                                   const struct jg_policy_snapshot *snapshot,
                                   struct jg_dataplane_result *result);
+
+/**
+ * @brief Evaluate one visible TLS server name reconstructed from TCP.
+ *
+ * @param[in] packet Parsed TCP packet supplying client and flow metadata.
+ * @param[in] server_name Lowercase normalized visible SNI.
+ * @param[in] snapshot Immutable policy snapshot.
+ * @param[out] result Receives the packet verdict and explanation.
+ *
+ * @return 0 when an explicit verdict was produced.
+ * @return -EINVAL for invalid arguments or unsupported TCP metadata.
+ *
+ * @thread_safety Safe for concurrent calls using the same immutable snapshot.
+ */
+int jg_dataplane_evaluate_visible_sni(const struct jg_packet_view *packet,
+                                      const char *server_name,
+                                      const struct jg_policy_snapshot *snapshot,
+                                      struct jg_dataplane_result *result);
 
 #endif

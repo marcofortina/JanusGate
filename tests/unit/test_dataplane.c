@@ -44,6 +44,23 @@ static int build_policy(struct jg_policy_snapshot **snapshot)
     return jg_policy_snapshot_build(&rule, 1U, 1U, snapshot);
 }
 
+/** @brief Build one immutable snapshot blocking visible TLS SNI only. */
+static int build_sni_policy(struct jg_policy_snapshot **snapshot)
+{
+    const struct jg_policy_rule_input rule = {
+        .id = 23U,
+        .domain = "resolver.example",
+        .include_subdomains = true,
+        .effect = JG_POLICY_BLOCK,
+        .source = JG_POLICY_SOURCE_EXPLICIT,
+        .target = JG_POLICY_DOMAIN_TLS_SNI,
+        .scope = {.type = JG_POLICY_SCOPE_GLOBAL},
+        .attribution = "unit test",
+    };
+
+    return jg_policy_snapshot_build(&rule, 1U, 1U, snapshot);
+}
+
 /** @brief Verify block, default allow, and malformed DNS decisions. */
 static void test_udp_dns_policy(void **state)
 {
@@ -133,6 +150,44 @@ static void test_deferred_and_pass(void **state)
     jg_policy_snapshot_destroy(snapshot);
 }
 
+/** @brief Verify visible SNI policy decisions and selected port validation. */
+static void test_visible_sni_policy(void **state)
+{
+    struct jg_packet_view packet = {
+        .frame = blocked_query,
+        .frame_size = sizeof(blocked_query),
+        .ip_version = JG_IP_V4,
+        .transport = JG_TRANSPORT_TCP,
+        .ip_protocol = (uint8_t)JG_TRANSPORT_TCP,
+        .destination_port = 443U,
+        .address_size = 4U,
+        .source_address = {192U, 0U, 2U, 10U},
+    };
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_dataplane_result result;
+
+    (void)state;
+    assert_int_equal(build_sni_policy(&snapshot), 0);
+    assert_int_equal(jg_dataplane_evaluate_visible_sni(
+                         &packet, "api.resolver.example", snapshot, &result),
+                     0);
+    assert_int_equal(result.verdict, JG_NFQUEUE_DROP);
+    assert_int_equal(result.reason, JG_DATAPLANE_POLICY_BLOCK);
+    assert_int_equal(result.policy.rule_id, 23U);
+
+    assert_int_equal(jg_dataplane_evaluate_visible_sni(
+                         &packet, "allowed.example", snapshot, &result),
+                     0);
+    assert_int_equal(result.verdict, JG_NFQUEUE_ACCEPT);
+    assert_int_equal(result.reason, JG_DATAPLANE_POLICY_ALLOW);
+
+    packet.destination_port = 53U;
+    assert_int_equal(jg_dataplane_evaluate_visible_sni(
+                         &packet, "resolver.example", snapshot, &result),
+                     -EINVAL);
+    jg_policy_snapshot_destroy(snapshot);
+}
+
 /** @brief Verify argument rejection leaves a conservative result. */
 static void test_arguments(void **state)
 {
@@ -156,6 +211,10 @@ static void test_arguments(void **state)
     assert_int_equal(result.verdict, JG_NFQUEUE_DROP);
     assert_int_equal(jg_dataplane_evaluate_tcp_dns(NULL, NULL, 0U, NULL, NULL),
                      -EINVAL);
+    assert_int_equal(
+        jg_dataplane_evaluate_visible_sni(NULL, NULL, NULL, &result), -EINVAL);
+    assert_int_equal(jg_dataplane_evaluate_visible_sni(NULL, NULL, NULL, NULL),
+                     -EINVAL);
 }
 
 /** @brief Run the stateless data-plane test group. */
@@ -165,6 +224,7 @@ int jg_test_dataplane(void)
         cmocka_unit_test(test_udp_dns_policy),
         cmocka_unit_test(test_multiple_questions),
         cmocka_unit_test(test_deferred_and_pass),
+        cmocka_unit_test(test_visible_sni_policy),
         cmocka_unit_test(test_arguments),
     };
 

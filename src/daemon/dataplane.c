@@ -257,3 +257,44 @@ int jg_dataplane_evaluate_tcp_dns(const struct jg_packet_view *packet,
     return evaluate_dns_message(&packet_copy, message, message_size, snapshot,
                                 result);
 }
+
+/** @brief Evaluate one visible SNI reconstructed from a selected TCP flow. */
+int jg_dataplane_evaluate_visible_sni(const struct jg_packet_view *packet,
+                                      const char *server_name,
+                                      const struct jg_policy_snapshot *snapshot,
+                                      struct jg_dataplane_result *result)
+{
+    struct jg_packet_view packet_copy = {0};
+    struct jg_policy_client client;
+    int match_result = 0;
+
+    if (result == NULL) {
+        return -EINVAL;
+    }
+    if (packet != NULL) {
+        packet_copy = *packet;
+    }
+    initialize_result(result);
+    if (packet == NULL || server_name == NULL || snapshot == NULL ||
+        packet_copy.fragmented || packet_copy.transport != JG_TRANSPORT_TCP ||
+        packet_copy.ip_protocol != (uint8_t)JG_TRANSPORT_TCP ||
+        (packet_copy.destination_port != 443U &&
+         packet_copy.destination_port != 853U) ||
+        build_client(&packet_copy, &client) != 0) {
+        return -EINVAL;
+    }
+    result->packet = packet_copy;
+    result->packet_result = JG_PACKET_OK;
+    match_result = jg_policy_match_visible_sni(snapshot, server_name, &client,
+                                               &result->policy);
+    if (match_result != 0) {
+        return -EINVAL;
+    }
+    result->verdict = result->policy.effect == JG_POLICY_BLOCK
+                          ? JG_NFQUEUE_DROP
+                          : JG_NFQUEUE_ACCEPT;
+    result->reason = result->policy.effect == JG_POLICY_BLOCK
+                         ? JG_DATAPLANE_POLICY_BLOCK
+                         : JG_DATAPLANE_POLICY_ALLOW;
+    return 0;
+}
