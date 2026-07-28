@@ -151,6 +151,11 @@ static void test_arguments(void **state)
     assert_int_equal(
         jg_dataplane_evaluate_reassembled_udp(NULL, NULL, 0U, NULL, NULL),
         -EINVAL);
+    assert_int_equal(
+        jg_dataplane_evaluate_tcp_dns(NULL, NULL, 0U, NULL, &result), -EINVAL);
+    assert_int_equal(result.verdict, JG_NFQUEUE_DROP);
+    assert_int_equal(jg_dataplane_evaluate_tcp_dns(NULL, NULL, 0U, NULL, NULL),
+                     -EINVAL);
 }
 
 /** @brief Run the stateless data-plane test group. */

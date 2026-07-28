@@ -125,6 +125,8 @@ static void test_nft_rules(void **state)
     assert_non_null(strstr(
         rules,
         "queue flags bypass to 100 comment \"JanusGate IPv4 fragments\""));
+    assert_non_null(strstr(
+        rules, "queue flags bypass to 100 comment \"JanusGate DNS TCP\""));
     assert_non_null(strstr(rules, "elements = { \"jg-test-in\" }"));
     assert_non_null(strstr(rules, "ip frag-off & 0x3fff != 0"));
     assert_non_null(strstr(rules, "exthdr frag exists"));

@@ -34,10 +34,15 @@ struct atomic_dataplane_stats {
 struct jg_dataplane_worker {
     struct jg_policy_store *store;
     struct jg_fragment_tracker *fragments;
+    struct jg_tcp_stream_tracker *streams;
     struct jg_packet_limits limits;
     struct atomic_dataplane_stats stats;
     uint8_t *fragment_payload;
+    uint8_t *stream_output;
+    struct jg_tcp_stream_message *stream_messages;
     size_t fragment_payload_size;
+    size_t stream_output_size;
+    size_t stream_message_capacity;
     size_t reader_index;
 };
 
@@ -142,15 +147,65 @@ static int process_fragment(struct jg_dataplane_worker *worker,
     return 0;
 }
 
+/** @brief Process one TCP packet through bounded DNS stream state. */
+static int process_stream(struct jg_dataplane_worker *worker,
+                          const struct jg_policy_snapshot *snapshot,
+                          struct jg_dataplane_result *result)
+{
+    enum jg_tcp_stream_result stream_result = JG_TCP_STREAM_MALFORMED;
+    size_t message_count = 0U;
+    uint64_t now_ms = 0U;
+    int operation_result = monotonic_milliseconds(&now_ms);
+
+    if (operation_result == 0) {
+        operation_result = jg_tcp_stream_tracker_add(
+            worker->streams, &result->packet, now_ms, worker->stream_output,
+            worker->stream_output_size, worker->stream_messages,
+            worker->stream_message_capacity, &message_count, &stream_result);
+    }
+    if (operation_result != 0) {
+        return operation_result;
+    }
+    if (stream_result == JG_TCP_STREAM_MESSAGES) {
+        for (size_t index = 0U; index < message_count; ++index) {
+            operation_result = jg_dataplane_evaluate_tcp_dns(
+                &result->packet,
+                worker->stream_output + worker->stream_messages[index].offset,
+                worker->stream_messages[index].size, snapshot, result);
+            if (operation_result != 0) {
+                return operation_result;
+            }
+            if (result->verdict == JG_NFQUEUE_DROP) {
+                return jg_tcp_stream_tracker_reject_flow(
+                    worker->streams, &result->packet, now_ms);
+            }
+        }
+    } else if (stream_result == JG_TCP_STREAM_BUFFERED ||
+               stream_result == JG_TCP_STREAM_DUPLICATE) {
+        result->verdict = JG_NFQUEUE_ACCEPT;
+        result->reason = JG_DATAPLANE_STREAM_PENDING;
+    } else if (stream_result == JG_TCP_STREAM_CLOSED) {
+        result->verdict = JG_NFQUEUE_ACCEPT;
+        result->reason = JG_DATAPLANE_PASS;
+    } else {
+        result->verdict = JG_NFQUEUE_DROP;
+        result->reason = JG_DATAPLANE_MALFORMED;
+    }
+    return 0;
+}
+
 /** @brief Create one exclusive policy-reading packet worker. */
 int jg_dataplane_worker_create(struct jg_policy_store *store,
                                size_t reader_index,
                                const struct jg_packet_limits *limits,
                                const struct jg_fragment_limits *fragment_limits,
+                               const struct jg_tcp_stream_limits *stream_limits,
                                struct jg_dataplane_worker **worker)
 {
     struct jg_fragment_limits default_fragment_limits;
+    struct jg_tcp_stream_limits default_stream_limits;
     const struct jg_fragment_limits *active_fragment_limits = fragment_limits;
+    const struct jg_tcp_stream_limits *active_stream_limits = stream_limits;
     struct jg_dataplane_worker *created = NULL;
     const struct jg_policy_snapshot *snapshot = NULL;
     int result = 0;
@@ -195,6 +250,28 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
         jg_dataplane_worker_destroy(created);
         return result != 0 ? result : -ENOMEM;
     }
+    if (active_stream_limits == NULL) {
+        jg_tcp_stream_limits_default(&default_stream_limits);
+        active_stream_limits = &default_stream_limits;
+    }
+    result = jg_tcp_stream_limits_validate(active_stream_limits);
+    if (result != 0) {
+        jg_dataplane_worker_destroy(created);
+        return result;
+    }
+    created->stream_output_size = active_stream_limits->max_buffered_bytes;
+    created->stream_message_capacity =
+        active_stream_limits->max_messages_per_packet;
+    created->stream_output = malloc(created->stream_output_size);
+    created->stream_messages = calloc(created->stream_message_capacity,
+                                      sizeof(*created->stream_messages));
+    result =
+        jg_tcp_stream_tracker_create(active_stream_limits, &created->streams);
+    if (created->stream_output == NULL || created->stream_messages == NULL ||
+        result != 0) {
+        jg_dataplane_worker_destroy(created);
+        return result != 0 ? result : -ENOMEM;
+    }
     initialize_stats(&created->stats);
 
     snapshot = jg_policy_store_acquire(store, reader_index);
@@ -232,6 +309,11 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
     if (evaluation_result == 0 &&
         result.reason == JG_DATAPLANE_FRAGMENT_PENDING) {
         evaluation_result = process_fragment(worker, snapshot, &result);
+    } else if (evaluation_result == 0 &&
+               result.reason == JG_DATAPLANE_STREAM_PENDING &&
+               result.packet.transport == JG_TRANSPORT_TCP &&
+               result.packet.destination_port == 53U) {
+        evaluation_result = process_stream(worker, snapshot, &result);
     }
     jg_policy_store_release(worker->store, worker->reader_index);
     if (evaluation_result != 0) {
@@ -277,13 +359,26 @@ int jg_dataplane_worker_get_fragment_stats(
                : jg_fragment_tracker_get_stats(worker->fragments, stats);
 }
 
+/** @brief Copy the worker's detailed TCP stream-tracker counters. */
+int jg_dataplane_worker_get_stream_stats(
+    const struct jg_dataplane_worker *worker,
+    struct jg_tcp_stream_stats *stats)
+{
+    return worker == NULL
+               ? -EINVAL
+               : jg_tcp_stream_tracker_get_stats(worker->streams, stats);
+}
+
 /** @brief Release one stopped per-queue packet worker. */
 void jg_dataplane_worker_destroy(struct jg_dataplane_worker *worker)
 {
     if (worker == NULL) {
         return;
     }
+    jg_tcp_stream_tracker_destroy(worker->streams);
     jg_fragment_tracker_destroy(worker->fragments);
+    free(worker->stream_messages);
+    free(worker->stream_output);
     free(worker->fragment_payload);
     free(worker);
 }

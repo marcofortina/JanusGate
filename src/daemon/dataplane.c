@@ -36,6 +36,13 @@ static void initialize_result(struct jg_dataplane_result *result)
 static int build_client(const struct jg_packet_view *packet,
                         struct jg_policy_client *client)
 {
+    if (packet == NULL || client == NULL || packet->frame == NULL ||
+        packet->frame_size < ETHERNET_SOURCE_OFFSET + ETHERNET_ADDRESS_SIZE ||
+        packet->address_size == 0U ||
+        packet->address_size > JG_PACKET_ADDRESS_SIZE ||
+        packet->vlan_count > JG_PACKET_VLAN_LIMIT) {
+        return -EINVAL;
+    }
     (void)memset(client, 0, sizeof(*client));
     client->has_mac = true;
     (void)memcpy(client->mac, packet->frame + ETHERNET_SOURCE_OFFSET,
@@ -93,6 +100,29 @@ static int evaluate_dns(const struct jg_dns_message *dns,
     result->verdict = JG_NFQUEUE_ACCEPT;
     result->reason = JG_DATAPLANE_POLICY_ALLOW;
     return 0;
+}
+
+/** @brief Parse and evaluate one complete DNS message for a packet client. */
+static int evaluate_dns_message(const struct jg_packet_view *packet,
+                                const uint8_t *message,
+                                size_t message_size,
+                                const struct jg_policy_snapshot *snapshot,
+                                struct jg_dataplane_result *result)
+{
+    struct jg_policy_client client;
+    struct jg_dns_message dns;
+    int evaluation_result = 0;
+
+    if (message == NULL || snapshot == NULL ||
+        build_client(packet, &client) != 0) {
+        return -EINVAL;
+    }
+    result->dns_result = jg_dns_parse_query(message, message_size, &dns);
+    if (result->dns_result != JG_DNS_OK) {
+        return 0;
+    }
+    evaluation_result = evaluate_dns(&dns, &client, snapshot, result);
+    return evaluation_result == 0 ? 0 : -EINVAL;
 }
 
 /** @brief Evaluate one complete Ethernet frame without mutable shared state. */
@@ -166,12 +196,9 @@ int jg_dataplane_evaluate_reassembled_udp(
     const struct jg_policy_snapshot *snapshot,
     struct jg_dataplane_result *result)
 {
-    struct jg_packet_view packet_copy;
-    struct jg_policy_client client;
-    struct jg_dns_message dns;
+    struct jg_packet_view packet_copy = {0};
     uint16_t destination_port = 0U;
     uint16_t udp_size = 0U;
-    int evaluation_result = 0;
 
     if (result == NULL) {
         return -EINVAL;
@@ -190,8 +217,7 @@ int jg_dataplane_evaluate_reassembled_udp(
     if (payload_size < UDP_HEADER_SIZE ||
         !jg_read_u16_be(payload, payload_size, 2U, &destination_port) ||
         !jg_read_u16_be(payload, payload_size, 4U, &udp_size) ||
-        (size_t)udp_size != payload_size ||
-        build_client(&packet_copy, &client) != 0) {
+        (size_t)udp_size != payload_size) {
         return 0;
     }
     if (destination_port != 53U) {
@@ -199,11 +225,35 @@ int jg_dataplane_evaluate_reassembled_udp(
         result->reason = JG_DATAPLANE_PASS;
         return 0;
     }
-    result->dns_result = jg_dns_parse_query(
-        payload + UDP_HEADER_SIZE, payload_size - UDP_HEADER_SIZE, &dns);
-    if (result->dns_result != JG_DNS_OK) {
-        return 0;
+    return evaluate_dns_message(&packet_copy, payload + UDP_HEADER_SIZE,
+                                payload_size - UDP_HEADER_SIZE, snapshot,
+                                result);
+}
+
+/** @brief Evaluate one complete DNS message reconstructed from TCP. */
+int jg_dataplane_evaluate_tcp_dns(const struct jg_packet_view *packet,
+                                  const uint8_t *message,
+                                  size_t message_size,
+                                  const struct jg_policy_snapshot *snapshot,
+                                  struct jg_dataplane_result *result)
+{
+    struct jg_packet_view packet_copy = {0};
+
+    if (result == NULL) {
+        return -EINVAL;
     }
-    evaluation_result = evaluate_dns(&dns, &client, snapshot, result);
-    return evaluation_result == 0 ? 0 : -EINVAL;
+    if (packet != NULL) {
+        packet_copy = *packet;
+    }
+    initialize_result(result);
+    if (packet == NULL || message == NULL || snapshot == NULL ||
+        packet_copy.fragmented || packet_copy.transport != JG_TRANSPORT_TCP ||
+        packet_copy.ip_protocol != (uint8_t)JG_TRANSPORT_TCP ||
+        packet_copy.destination_port != 53U) {
+        return -EINVAL;
+    }
+    result->packet = packet_copy;
+    result->packet_result = JG_PACKET_OK;
+    return evaluate_dns_message(&packet_copy, message, message_size, snapshot,
+                                result);
 }

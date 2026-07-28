@@ -102,4 +102,24 @@ int jg_dataplane_evaluate_reassembled_udp(
     const struct jg_policy_snapshot *snapshot,
     struct jg_dataplane_result *result);
 
+/**
+ * @brief Evaluate one complete DNS message reconstructed from TCP.
+ *
+ * @param[in] packet Parsed TCP packet supplying client and flow metadata.
+ * @param[in] message Complete DNS message without its TCP length prefix.
+ * @param[in] message_size Number of DNS message bytes.
+ * @param[in] snapshot Immutable policy snapshot.
+ * @param[out] result Receives the packet verdict and explanation.
+ *
+ * @return 0 when an explicit verdict was produced.
+ * @return -EINVAL for invalid arguments or non-DNS TCP metadata.
+ *
+ * @thread_safety Safe for concurrent calls using the same immutable snapshot.
+ */
+int jg_dataplane_evaluate_tcp_dns(const struct jg_packet_view *packet,
+                                  const uint8_t *message,
+                                  size_t message_size,
+                                  const struct jg_policy_snapshot *snapshot,
+                                  struct jg_dataplane_result *result);
+
 #endif

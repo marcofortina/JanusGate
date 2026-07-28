@@ -162,7 +162,7 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
                             char *output,
                             size_t output_size)
 {
-    char fragment_queue[64U];
+    char stateful_queue[64U];
     char queue[128U];
     char queue_range[32U];
     const char *queue_flags = "";
@@ -199,12 +199,12 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
     if (written < 0 || (size_t)written >= sizeof(queue)) {
         return -ENOSPC;
     }
-    written = snprintf(fragment_queue, sizeof(fragment_queue),
+    written = snprintf(stateful_queue, sizeof(stateful_queue),
                        config->failure_mode == JG_NETWORK_FAIL_OPEN
                            ? "queue flags bypass to %u"
                            : "queue to %u",
                        (unsigned int)config->queue_first);
-    if (written < 0 || (size_t)written >= sizeof(fragment_queue)) {
+    if (written < 0 || (size_t)written >= sizeof(stateful_queue)) {
         return -ENOSPC;
     }
 
@@ -249,8 +249,8 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
         "  }\n"
         "}\n",
         replace_owned ? "flush table bridge " JG_NETD_NFT_TABLE "\n" : "",
-        config->ingress, fragment_queue, fragment_queue, queue, queue, queue,
-        queue, queue, queue, queue, queue, queue, queue);
+        config->ingress, stateful_queue, stateful_queue, queue, queue, queue,
+        queue, queue, stateful_queue, queue, queue, queue, queue);
     return written < 0 || (size_t)written >= output_size ? -ENOSPC : 0;
 }
 

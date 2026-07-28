@@ -17,6 +17,7 @@
 #include "janusgate/packet.h"
 #include "nfqueue.h"
 #include "policy_store.h"
+#include "tcp_stream.h"
 
 /**
  * @brief Lock-free counters maintained by one data-plane worker.
@@ -48,12 +49,13 @@ struct jg_dataplane_worker;
  * @param[in] reader_index Exclusive policy reader index.
  * @param[in] limits Packet parser limits, or null for conservative defaults.
  * @param[in] fragment_limits Fragment bounds, or null for defaults.
+ * @param[in] stream_limits TCP stream bounds, or null for defaults.
  * @param[out] worker Receives the owned worker.
  *
  * @return 0 on success.
  * @return -EINVAL for invalid arguments, limits, or reader index.
- * @return -ERANGE when a supported fragment limit is exceeded.
- * @return -EOVERFLOW when a fragment arena size cannot be represented.
+ * @return -ERANGE when a supported state limit is exceeded.
+ * @return -EOVERFLOW when a state arena size cannot be represented.
  * @return -ENOMEM when allocation fails.
  *
  * @thread_safety Each reader index may belong to only one worker.
@@ -62,6 +64,7 @@ int jg_dataplane_worker_create(struct jg_policy_store *store,
                                size_t reader_index,
                                const struct jg_packet_limits *limits,
                                const struct jg_fragment_limits *fragment_limits,
+                               const struct jg_tcp_stream_limits *stream_limits,
                                struct jg_dataplane_worker **worker);
 
 /**
@@ -109,6 +112,21 @@ int jg_dataplane_worker_get_stats(const struct jg_dataplane_worker *worker,
 int jg_dataplane_worker_get_fragment_stats(
     const struct jg_dataplane_worker *worker,
     struct jg_fragment_stats *stats);
+
+/**
+ * @brief Read the worker's detailed TCP stream-tracker counters.
+ *
+ * @param[in] worker Data-plane worker.
+ * @param[out] stats Receives current stream counters.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ *
+ * @thread_safety Safe while the worker processes packets.
+ */
+int jg_dataplane_worker_get_stream_stats(
+    const struct jg_dataplane_worker *worker,
+    struct jg_tcp_stream_stats *stats);
 
 /**
  * @brief Release one stopped data-plane worker.
