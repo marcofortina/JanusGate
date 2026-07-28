@@ -33,6 +33,9 @@
 /** Exact version-one network-configuration body size. */
 #define JG_NETWORK_CONFIG_WIRE_SIZE 84U
 
+/** Exact version-one network-state body size. */
+#define JG_NETWORK_STATE_WIRE_SIZE 176U
+
 /** Largest accepted userspace queue length. */
 #define JG_NETWORK_QUEUE_LENGTH_MAX 1048576U
 
@@ -77,6 +80,22 @@ struct jg_network_config {
     bool multicast_snooping;
     /** Whether nftables distributes flows according to the current CPU. */
     bool queue_cpu_fanout;
+};
+
+/**
+ * @brief Confirmed and optional pending helper network state.
+ */
+struct jg_network_state {
+    /** Last configuration explicitly confirmed by the daemon. */
+    struct jg_network_config confirmed;
+    /** Configuration waiting for connectivity confirmation. */
+    struct jg_network_config pending_config;
+    /** Whole seconds remaining before automatic rollback. */
+    uint32_t confirmation_seconds_remaining;
+    /** Whether @ref confirmed contains a known configuration. */
+    bool has_confirmed;
+    /** Whether @ref pending_config contains an unconfirmed transaction. */
+    bool pending;
 };
 
 /**
@@ -137,5 +156,47 @@ JG_PUBLIC int jg_network_config_encode(const struct jg_network_config *config,
 JG_PUBLIC int jg_network_config_decode(const uint8_t *data,
                                        size_t data_size,
                                        struct jg_network_config *config);
+
+/**
+ * @brief Encode canonical confirmed and pending helper state.
+ *
+ * Absent configuration slots are encoded as zero bytes. A non-pending state
+ * must report zero confirmation seconds.
+ *
+ * @param[in] state Complete helper state.
+ * @param[out] output Destination buffer.
+ * @param[in] output_size Available destination bytes.
+ * @param[out] encoded_size Receives @ref JG_NETWORK_STATE_WIRE_SIZE.
+ *
+ * @return 0 on success.
+ * @return -EINVAL or -ERANGE for invalid state.
+ * @return -ENOSPC when @p output is too small.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_network_state_encode(const struct jg_network_state *state,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *encoded_size);
+
+/**
+ * @brief Decode one exact canonical helper network state.
+ *
+ * @param[in] data Exact version-one state body.
+ * @param[in] data_size Number of bytes in @p data.
+ * @param[out] state Receives validated helper state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for null arguments or invalid state relationships.
+ * @return -EMSGSIZE unless @p data_size is exact.
+ * @return -EPROTONOSUPPORT for an unsupported body version.
+ * @return -EPROTO for noncanonical flags, reserved data, or absent slots.
+ * @return -ERANGE for an unsafe embedded configuration.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_network_state_decode(const uint8_t *data,
+                                      size_t data_size,
+                                      struct jg_network_state *state);
 
 #endif

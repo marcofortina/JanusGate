@@ -14,6 +14,9 @@
 /** Version of the fixed network-configuration body. */
 #define NETWORK_CONFIG_VERSION 1U
 
+/** Version of the fixed helper-state body. */
+#define NETWORK_STATE_VERSION 1U
+
 /** Boolean configuration flags in the fixed body. */
 enum network_flag {
     NETWORK_FLAG_STP = 1U << 0U,
@@ -37,6 +40,23 @@ enum network_offset {
     INGRESS_NAME_OFFSET = 36,
     EGRESS_NAME_OFFSET = 52,
     MANAGEMENT_NAME_OFFSET = 68
+};
+
+/** Presence flags in the fixed helper-state body. */
+enum network_state_flag {
+    NETWORK_STATE_HAS_CONFIRMED = 1U << 0U,
+    NETWORK_STATE_HAS_PENDING = 1U << 1U,
+    NETWORK_STATE_FLAG_ALL =
+        NETWORK_STATE_HAS_CONFIRMED | NETWORK_STATE_HAS_PENDING
+};
+
+/** Field offsets in the version-one helper-state body. */
+enum network_state_offset {
+    STATE_VERSION_OFFSET = 0,
+    STATE_FLAGS_OFFSET = 2,
+    STATE_REMAINING_OFFSET = 4,
+    STATE_CONFIRMED_OFFSET = 8,
+    STATE_PENDING_OFFSET = STATE_CONFIRMED_OFFSET + JG_NETWORK_CONFIG_WIRE_SIZE
 };
 
 /** @brief Determine whether one byte is allowed in an interface name. */
@@ -236,4 +256,124 @@ int jg_network_config_decode(const uint8_t *data,
     }
     *config = decoded;
     return 0;
+}
+
+/** @brief Determine whether one exact byte range is canonically zero. */
+static bool bytes_are_zero(const uint8_t *data, size_t size)
+{
+    for (size_t index = 0U; index < size; ++index) {
+        if (data[index] != 0U) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Encode one canonical confirmed and pending helper state. */
+int jg_network_state_encode(const struct jg_network_state *state,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *encoded_size)
+{
+    size_t config_size = 0U;
+    uint16_t flags = 0U;
+    int result = 0;
+
+    if (state == NULL || output == NULL || encoded_size == NULL ||
+        (!state->pending && state->confirmation_seconds_remaining != 0U)) {
+        return -EINVAL;
+    }
+    if (output_size < JG_NETWORK_STATE_WIRE_SIZE) {
+        return -ENOSPC;
+    }
+    if (state->has_confirmed) {
+        result = jg_network_config_validate(&state->confirmed);
+        flags |= NETWORK_STATE_HAS_CONFIRMED;
+    }
+    if (result == 0 && state->pending) {
+        result = jg_network_config_validate(&state->pending_config);
+        flags |= NETWORK_STATE_HAS_PENDING;
+    }
+    if (result != 0) {
+        return result;
+    }
+    (void)memset(output, 0, JG_NETWORK_STATE_WIRE_SIZE);
+    (void)jg_write_u16_be(output, output_size, STATE_VERSION_OFFSET,
+                          NETWORK_STATE_VERSION);
+    (void)jg_write_u16_be(output, output_size, STATE_FLAGS_OFFSET, flags);
+    (void)jg_write_u32_be(output, output_size, STATE_REMAINING_OFFSET,
+                          state->confirmation_seconds_remaining);
+    if (state->has_confirmed) {
+        result = jg_network_config_encode(
+            &state->confirmed, output + STATE_CONFIRMED_OFFSET,
+            JG_NETWORK_CONFIG_WIRE_SIZE, &config_size);
+    }
+    if (result == 0 && state->pending) {
+        result = jg_network_config_encode(
+            &state->pending_config, output + STATE_PENDING_OFFSET,
+            JG_NETWORK_CONFIG_WIRE_SIZE, &config_size);
+    }
+    if (result == 0 && config_size != JG_NETWORK_CONFIG_WIRE_SIZE &&
+        (state->has_confirmed || state->pending)) {
+        result = -EIO;
+    }
+    if (result == 0) {
+        *encoded_size = JG_NETWORK_STATE_WIRE_SIZE;
+    }
+    return result;
+}
+
+/** @brief Decode one canonical confirmed and pending helper state. */
+int jg_network_state_decode(const uint8_t *data,
+                            size_t data_size,
+                            struct jg_network_state *state)
+{
+    struct jg_network_state decoded;
+    uint32_t remaining = 0U;
+    uint16_t version = 0U;
+    uint16_t flags = 0U;
+    int result = 0;
+
+    if (data == NULL || state == NULL) {
+        return -EINVAL;
+    }
+    if (data_size != JG_NETWORK_STATE_WIRE_SIZE) {
+        return -EMSGSIZE;
+    }
+    if (!jg_read_u16_be(data, data_size, STATE_VERSION_OFFSET, &version) ||
+        !jg_read_u16_be(data, data_size, STATE_FLAGS_OFFSET, &flags) ||
+        !jg_read_u32_be(data, data_size, STATE_REMAINING_OFFSET, &remaining)) {
+        return -EPROTO;
+    }
+    if (version != NETWORK_STATE_VERSION) {
+        return -EPROTONOSUPPORT;
+    }
+    if ((flags & (uint16_t)~NETWORK_STATE_FLAG_ALL) != 0U ||
+        ((flags & NETWORK_STATE_HAS_PENDING) == 0U && remaining != 0U)) {
+        return -EPROTO;
+    }
+    (void)memset(&decoded, 0, sizeof(decoded));
+    decoded.has_confirmed = (flags & NETWORK_STATE_HAS_CONFIRMED) != 0U;
+    decoded.pending = (flags & NETWORK_STATE_HAS_PENDING) != 0U;
+    decoded.confirmation_seconds_remaining = remaining;
+    if (decoded.has_confirmed) {
+        result = jg_network_config_decode(data + STATE_CONFIRMED_OFFSET,
+                                          JG_NETWORK_CONFIG_WIRE_SIZE,
+                                          &decoded.confirmed);
+    } else if (!bytes_are_zero(data + STATE_CONFIRMED_OFFSET,
+                               JG_NETWORK_CONFIG_WIRE_SIZE)) {
+        result = -EPROTO;
+    }
+    if (result == 0 && decoded.pending) {
+        result = jg_network_config_decode(data + STATE_PENDING_OFFSET,
+                                          JG_NETWORK_CONFIG_WIRE_SIZE,
+                                          &decoded.pending_config);
+    } else if (result == 0 && !bytes_are_zero(data + STATE_PENDING_OFFSET,
+                                              JG_NETWORK_CONFIG_WIRE_SIZE)) {
+        result = -EPROTO;
+    }
+    if (result == 0) {
+        *state = decoded;
+    }
+    return result;
 }

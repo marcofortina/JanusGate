@@ -159,6 +159,74 @@ static void test_encode_errors(void **state)
         -EINVAL);
 }
 
+/** @brief Verify canonical helper-state encoding and absent slots. */
+static void test_state_round_trip(void **state)
+{
+    const struct jg_network_config config = test_config();
+    struct jg_network_state expected = {
+        .confirmed = config,
+        .pending_config = config,
+        .confirmation_seconds_remaining = 73U,
+        .has_confirmed = true,
+        .pending = true,
+    };
+    struct jg_network_state decoded;
+    uint8_t encoded[JG_NETWORK_STATE_WIRE_SIZE];
+    uint8_t zero_slots[JG_NETWORK_STATE_WIRE_SIZE - 8U] = {0U};
+    size_t encoded_size = 0U;
+
+    (void)state;
+    expected.pending_config.queue_length = 8192U;
+    assert_int_equal(jg_network_state_encode(&expected, encoded,
+                                             sizeof(encoded), &encoded_size),
+                     0);
+    assert_int_equal(encoded_size, sizeof(encoded));
+    assert_int_equal(jg_network_state_decode(encoded, encoded_size, &decoded),
+                     0);
+    assert_true(decoded.has_confirmed);
+    assert_true(decoded.pending);
+    assert_int_equal(decoded.confirmation_seconds_remaining, 73U);
+    assert_string_equal(decoded.confirmed.bridge, config.bridge);
+    assert_int_equal(decoded.pending_config.queue_length, 8192U);
+
+    (void)memset(&expected, 0, sizeof(expected));
+    assert_int_equal(jg_network_state_encode(&expected, encoded,
+                                             sizeof(encoded), &encoded_size),
+                     0);
+    assert_memory_equal(encoded + 8U, zero_slots, sizeof(zero_slots));
+    assert_int_equal(jg_network_state_decode(encoded, encoded_size, &decoded),
+                     0);
+    assert_false(decoded.has_confirmed);
+    assert_false(decoded.pending);
+}
+
+/** @brief Verify malformed or noncanonical helper-state rejection. */
+static void test_state_errors(void **state)
+{
+    const struct jg_network_state empty = {0};
+    struct jg_network_state decoded;
+    uint8_t encoded[JG_NETWORK_STATE_WIRE_SIZE];
+    size_t encoded_size = 0U;
+
+    (void)state;
+    assert_int_equal(jg_network_state_encode(&empty, encoded, sizeof(encoded),
+                                             &encoded_size),
+                     0);
+    encoded[3U] = 0x80U;
+    assert_int_equal(jg_network_state_decode(encoded, encoded_size, &decoded),
+                     -EPROTO);
+    encoded[3U] = 0U;
+    encoded[8U] = 1U;
+    assert_int_equal(jg_network_state_decode(encoded, encoded_size, &decoded),
+                     -EPROTO);
+    assert_int_equal(
+        jg_network_state_decode(encoded, encoded_size - 1U, &decoded),
+        -EMSGSIZE);
+    assert_int_equal(jg_network_state_encode(
+                         &empty, encoded, sizeof(encoded) - 1U, &encoded_size),
+                     -ENOSPC);
+}
+
 /** @brief Run the inline-network configuration test group. */
 int jg_test_network(void)
 {
@@ -167,6 +235,8 @@ int jg_test_network(void)
         cmocka_unit_test(test_round_trip),
         cmocka_unit_test(test_decode_errors),
         cmocka_unit_test(test_encode_errors),
+        cmocka_unit_test(test_state_round_trip),
+        cmocka_unit_test(test_state_errors),
     };
 
     return cmocka_run_group_tests_name("network", tests, NULL, NULL);
