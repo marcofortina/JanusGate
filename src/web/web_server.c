@@ -495,7 +495,7 @@ static int handle_request(struct mg_connection *connection, void *context)
                         server->config.hsts);
         return 400;
     }
-    if (strcmp(request->local_uri, "/api/v1/health") == 0) {
+    if (strcmp(request->local_uri, "/healthz") == 0) {
         if (strcmp(request->request_method, "GET") != 0) {
             (void)send_json(connection, 405, "Method Not Allowed",
                             "{\"error\":{\"code\":\"method_not_allowed\","

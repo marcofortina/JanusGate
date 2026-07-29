@@ -353,7 +353,7 @@ async function submitPasswordChange(event) {
  */
 async function initialize() {
   try {
-    const response = await fetch("/api/v1/health", {
+    const response = await fetch("/healthz", {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
       cache: "no-store",
