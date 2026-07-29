@@ -6,6 +6,7 @@ set -eu
 
 jobs=${JANUSGATE_BUILD_JOBS:-4}
 output_directory=${JANUSGATE_RELEASE_OUTPUT:-out/release}
+signing_key=${JANUSGATE_SIGNING_KEY:-}
 temporary_directory=
 release_complete=false
 output_created=false
@@ -38,13 +39,22 @@ case $jobs in
 esac
 [ "$jobs" -gt 0 ] || fail "job count must be positive"
 
-for program in clang cmake cppcheck doxygen git ninja python3 \
-    run-clang-tidy sha256sum sha512sum shellcheck shfmt xargs; do
+for program in clang cmake cppcheck doxygen git gpg ninja python3 \
+    run-clang-tidy sha256sum sha512sum shellcheck shfmt tar xargs; do
     command -v "$program" >/dev/null 2>&1 ||
         fail "required program is unavailable: $program"
 done
 
 project_directory=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+[ -z "$(git -C "$project_directory" status --porcelain)" ] ||
+    fail "working tree is not clean"
+if [ -z "$signing_key" ]; then
+    signing_key=$(git -C "$project_directory" config --get user.signingkey || true)
+fi
+[ -n "$signing_key" ] ||
+    fail "JANUSGATE_SIGNING_KEY or git user.signingkey is required"
+source_date_epoch=$(git -C "$project_directory" log -1 --format=%ct)
+export SOURCE_DATE_EPOCH="$source_date_epoch"
 case $output_directory in
     /*) ;;
     *)
@@ -103,9 +113,67 @@ if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
 fi
 archive=$1
 cp "$archive" "$output_directory/"
+archive=$(basename -- "$archive")
+gpg --batch --armor --local-user "$signing_key" --detach-sign \
+    "$output_directory/$archive"
+
+cp "$project_directory/api/openapi.yaml" \
+    "$output_directory/janusgate-openapi-0.1.0.yaml"
+cp "$project_directory/CHANGELOG.md" \
+    "$output_directory/janusgate-0.1.0-release-notes.md"
+tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 \
+    --numeric-owner --create --gzip \
+    --file="$output_directory/janusgate-0.1.0-doxygen.tar.gz" \
+    --directory="$release_build/docs/html" .
+
+python3 - "$release_build/include/janusgate/version.h" \
+    "$project_directory/include/janusgate/database.h" \
+    "$output_directory/janusgate-0.1.0-build-manifest.json" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+version_header = Path(sys.argv[1]).read_text(encoding="utf-8")
+database_header = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+
+def string_macro(name: str) -> str:
+    """Return one quoted build-identity macro."""
+    match = re.search(rf'^#define {name} "([^"]*)"$', version_header, re.MULTILINE)
+    if match is None:
+        raise SystemExit(f"missing build identity: {name}")
+    return match.group(1)
+
+
+schema = re.search(
+    r"^#define JG_DATABASE_SCHEMA_VERSION ([0-9]+)U$",
+    database_header,
+    re.MULTILINE,
+)
+if schema is None:
+    raise SystemExit("missing database schema version")
+
+manifest = {
+    "_license": "AGPL-3.0-or-later",
+    "_copyright": "Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>",
+    "version": string_macro("JANUSGATE_VERSION"),
+    "source_commit": string_macro("JANUSGATE_BUILD_COMMIT"),
+    "build_timestamp": string_macro("JANUSGATE_BUILD_TIMESTAMP"),
+    "compiler": string_macro("JANUSGATE_BUILD_COMPILER"),
+    "target": string_macro("JANUSGATE_BUILD_TARGET"),
+    "database_schema_version": int(schema.group(1)),
+    "sbom": "janusgate.spdx.json",
+}
+Path(sys.argv[3]).write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+
 (
     cd "$output_directory"
-    set -- janusgate-*.tar.gz janusgate.spdx.json
+    set -- janusgate-* janusgate.spdx.json
     sha256sum "$@" >SHA256SUMS
     sha512sum "$@" >SHA512SUMS
 )

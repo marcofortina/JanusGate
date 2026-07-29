@@ -96,4 +96,8 @@ artifacts.
 
 `scripts/release-check.sh` runs the complete local source, build, test,
 sanitizer, fuzz-smoke, analysis, documentation, benchmark, SBOM, archive, and
-checksum gates in temporary directories.
+checksum gates in temporary directories. It signs the source archive with
+`JANUSGATE_SIGNING_KEY`, or the configured Git signing key when the variable is
+unset, and publishes versioned OpenAPI, Doxygen, release-note, and build
+manifest artifacts beside the checksums. The separate appliance-image workflow
+builds and boots the Alpine, x86_64, and AArch64 deliverables.
