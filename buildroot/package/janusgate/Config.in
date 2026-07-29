@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+config BR2_PACKAGE_JANUSGATE
+	bool "janusgate"
+	depends on BR2_USE_MMU
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_CA_CERTIFICATES
+	select BR2_PACKAGE_CIVETWEB
+	select BR2_PACKAGE_CIVETWEB_LIB
+	select BR2_PACKAGE_JANSSON
+	select BR2_PACKAGE_LIBCAP
+	select BR2_PACKAGE_LIBCURL
+	select BR2_PACKAGE_LIBIDN2
+	select BR2_PACKAGE_LIBMNL
+	select BR2_PACKAGE_LIBNETFILTER_QUEUE
+	select BR2_PACKAGE_LIBSECCOMP
+	select BR2_PACKAGE_LIBSODIUM
+	select BR2_PACKAGE_NFTABLES
+	select BR2_PACKAGE_OPENSSL
+	select BR2_PACKAGE_SQLITE
+	select BR2_PACKAGE_ZLIB
+	help
+	  Transparent inline DNS and destination policy appliance.
+
+comment "janusgate requires an MMU and thread support"
+	depends on !BR2_USE_MMU || !BR2_TOOLCHAIN_HAS_THREADS

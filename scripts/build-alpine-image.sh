@@ -158,7 +158,7 @@ mount -t sysfs sys "$root_directory/sys"
 chroot_mounted=true
 
 chroot "$root_directory" /sbin/apk add --no-cache \
-    alpine-base ca-certificates chrony iproute2 linux-virt logrotate \
+    acpid alpine-base ca-certificates chrony iproute2 linux-virt logrotate \
     nftables openssl syslinux
 install -m 0644 "$package_file" "$root_directory/tmp/janusgate.apk"
 chroot "$root_directory" /sbin/apk add --allow-untrusted \
@@ -175,6 +175,7 @@ chroot "$root_directory" /sbin/rc-update add networking boot
 chroot "$root_directory" /sbin/rc-update add hostname boot
 chroot "$root_directory" /sbin/rc-update add syslog boot
 chroot "$root_directory" /sbin/rc-update add chronyd default
+chroot "$root_directory" /sbin/rc-update add acpid default
 chroot "$root_directory" /usr/sbin/janusgate-setup \
     --config /etc/janusgate/image-setup.json --image-build
 chroot "$root_directory" /usr/bin/passwd -l root

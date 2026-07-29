@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+devpts /dev/pts devpts defaults,gid=5,mode=620 0 0
+tmpfs /run tmpfs mode=0755,nosuid,nodev 0 0
+tmpfs /tmp tmpfs mode=1777,nosuid,nodev 0 0
+LABEL=JANUSGATE_DATA /data ext4 noatime,nosuid,nodev,noexec 0 2

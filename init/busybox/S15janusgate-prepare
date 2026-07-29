@@ -1,0 +1,53 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+set -eu
+
+case ${1-} in
+    start)
+        mountpoint -q /data || {
+            echo "JanusGate data partition is unavailable" >&2
+            exit 1
+        }
+        if [ ! -d /data/janusgate/etc ]; then
+            mkdir -p /data/janusgate/etc
+            cp -a /etc/janusgate/. /data/janusgate/etc/
+        fi
+        mkdir -p /data/janusgate/etc/certs /data/janusgate/lib \
+            /data/janusgate/log
+        chown janusgate:janusgate /data/janusgate/lib \
+            /data/janusgate/log
+        chmod 0750 /data/janusgate/etc /data/janusgate/etc/certs \
+            /data/janusgate/lib /data/janusgate/log
+        mkdir -p /var/lib/janusgate /var/log/janusgate
+        mountpoint -q /etc/janusgate ||
+            mount --bind /data/janusgate/etc /etc/janusgate
+        mountpoint -q /var/lib/janusgate ||
+            mount --bind /data/janusgate/lib /var/lib/janusgate
+        mountpoint -q /var/log/janusgate ||
+            mount --bind /data/janusgate/log /var/log/janusgate
+        if [ ! -e /data/janusgate/.initialized ]; then
+            janusgate-setup --config /etc/janusgate/image-setup.json \
+                --image-build --no-enable-services
+            touch /data/janusgate/.initialized
+            sync
+        fi
+        ;;
+    stop)
+        for path in /var/log/janusgate /var/lib/janusgate \
+            /etc/janusgate; do
+            if mountpoint -q "$path"; then
+                umount "$path"
+            fi
+        done
+        ;;
+    restart | reload)
+        "$0" stop
+        "$0" start
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart|reload}" >&2
+        exit 2
+        ;;
+esac

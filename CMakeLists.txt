@@ -18,7 +18,6 @@ include(CompilerOptions)
 include(ProjectMetadata)
 
 find_package(Threads REQUIRED)
-find_package(Doxygen 1.9 REQUIRED dot)
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 find_package(ZLIB REQUIRED)
@@ -47,9 +46,16 @@ option(JANUSGATE_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
 option(JANUSGATE_ENABLE_SANITIZERS "Enable address and undefined-behavior checks" OFF)
 option(JANUSGATE_ENABLE_COVERAGE "Enable source coverage instrumentation" OFF)
 option(JANUSGATE_ENABLE_FUZZING "Build libFuzzer parser targets" OFF)
+option(JANUSGATE_BUILD_DOCUMENTATION "Build the Doxygen reference" ON)
+set(JANUSGATE_SOURCE_COMMIT
+    ""
+    CACHE STRING "Source revision to embed when Git metadata is unavailable")
 
 if(JANUSGATE_ENABLE_FUZZING AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR "JANUSGATE_ENABLE_FUZZING requires Clang")
+endif()
+if(JANUSGATE_BUILD_DOCUMENTATION)
+  find_package(Doxygen 1.9 REQUIRED dot)
 endif()
 
 janusgate_collect_build_metadata()
@@ -58,10 +64,12 @@ configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/version.h.in"
   "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   @ONLY)
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/docs/Doxyfile.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
-  @ONLY)
+if(JANUSGATE_BUILD_DOCUMENTATION)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/Doxyfile.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+    @ONLY)
+endif()
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Uninstall.cmake.in"
   "${CMAKE_CURRENT_BINARY_DIR}/Uninstall.cmake"
@@ -289,6 +297,10 @@ install(
   DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
   COMPONENT runtime)
 install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/janusgate"
+  COMPONENT runtime)
+install(
   PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-netd"
            "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgated"
            "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-web"
@@ -344,12 +356,14 @@ add_custom_target(
           "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}"
   VERBATIM)
 
-add_custom_target(
-  doxygen
-  COMMAND "${DOXYGEN_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
-  BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/docs/html/index.html"
-  DEPENDS function-docs-check
-  VERBATIM)
+if(JANUSGATE_BUILD_DOCUMENTATION)
+  add_custom_target(
+    doxygen
+    COMMAND "${DOXYGEN_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/docs/html/index.html"
+    DEPENDS function-docs-check
+    VERBATIM)
+endif()
 
 add_custom_target(
   openapi-check
@@ -373,11 +387,25 @@ add_custom_target(
   USES_TERMINAL
   VERBATIM)
 
+set(janusgate_check_dependencies
+    janusgate-netd
+    janusgated
+    janusgate-web
+    janusgate-setup
+    janusgatectl
+    man-check
+    openapi-check)
+if(BUILD_TESTING)
+  list(APPEND janusgate_check_dependencies janusgate-integration-tests
+              janusgate-unit-tests)
+endif()
+if(JANUSGATE_BUILD_DOCUMENTATION)
+  list(APPEND janusgate_check_dependencies doxygen)
+endif()
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-netd janusgated janusgate-web janusgate-setup janusgatectl
-          doxygen janusgate-unit-tests man-check openapi-check
+  DEPENDS ${janusgate_check_dependencies}
   USES_TERMINAL)
 
 if(BUILD_TESTING)

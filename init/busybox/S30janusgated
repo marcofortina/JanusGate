@@ -1,0 +1,29 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+set -eu
+
+pid_file=/run/janusgated.pid
+
+case ${1-} in
+    start)
+        mkdir -p /run/janusgate/control
+        chown janusgate:janusgate-control /run/janusgate/control
+        chmod 0750 /run/janusgate/control
+        start-stop-daemon -S -q -b -m -p "$pid_file" \
+            -x /usr/sbin/janusgated
+        ;;
+    stop)
+        start-stop-daemon -K -q -p "$pid_file" -R TERM/10/KILL/5 || true
+        rm -f "$pid_file"
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart}" >&2
+        exit 2
+        ;;
+esac
