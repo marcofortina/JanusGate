@@ -1,0 +1,48 @@
+.\" SPDX-License-Identifier: AGPL-3.0-or-later
+.\" Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+.TH JANUSGATE-NETD 8 "July 2026" "JanusGate 0.1.0" "System Administration"
+.SH NAME
+janusgate-netd \- run the privileged JanusGate network helper
+.SH SYNOPSIS
+.B janusgate-netd
+.br
+.B janusgate-netd --version
+.SH DESCRIPTION
+.B janusgate-netd
+owns the narrow privileged boundary used to validate and apply JanusGate
+bridge, nftables, NFQUEUE, reboot, and power-off operations.
+It accepts only bounded versioned requests from the configured
+.B janusgate
+service identity over a Unix
+.B SOCK_SEQPACKET
+socket.
+.PP
+Network changes are transactional.
+An applied change must be confirmed within 120 seconds or the captured bridge
+and nftables state is restored.
+.SH OPTIONS
+.TP
+.B --version
+Display build version information and exit.
+.SH FILES
+.TP
+.I /run/janusgate/netd.sock
+Authenticated network-helper socket.
+.SH EXIT STATUS
+.TP
+.B 0
+The helper stopped cleanly or version information was displayed.
+.TP
+.B 1
+Required privilege, identity resolution, or runtime processing failed.
+.TP
+.B 2
+The command line was invalid.
+.SH SECURITY
+This helper must run as root under the supplied init definition.
+Do not expose its socket outside the local machine or grant access to
+identities other than the dedicated policy service.
+.SH SEE ALSO
+.BR janusgatectl (1),
+.BR janusgated (8),
+.BR janusgate-web (8)

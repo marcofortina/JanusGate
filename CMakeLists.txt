@@ -238,6 +238,29 @@ install(
   DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/api"
   COMPONENT development)
 install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/janusgatectl.1"
+  DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/janusgated.8"
+        "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/janusgate-netd.8"
+        "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/janusgate-web.8"
+        "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/janusgate-setup.8"
+  DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/completions/bash/janusgatectl"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/bash-completion/completions"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/completions/zsh/_janusgatectl"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/zsh/site-functions"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/completions/fish/janusgatectl.fish"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d"
+  COMPONENT runtime)
+install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/janusgate.conf.example"
   DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
   COMPONENT runtime)
@@ -285,10 +308,16 @@ add_custom_target(
   VERBATIM)
 
 add_custom_target(
+  man-check
+  COMMAND "${CMAKE_COMMAND}" "-DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ManpageCheck.cmake"
+  VERBATIM)
+
+add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
   DEPENDS janusgate-netd janusgated janusgate-web janusgate-setup janusgatectl
-          janusgate-unit-tests openapi-check
+          janusgate-unit-tests man-check openapi-check
   USES_TERMINAL)
 
 if(BUILD_TESTING)
@@ -298,6 +327,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-openapi.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.yaml")
+  add_test(
+    NAME man-pages
+    COMMAND "${CMAKE_COMMAND}" "-DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ManpageCheck.cmake")
 endif()
 
 set(CPACK_PACKAGE_NAME "janusgate")

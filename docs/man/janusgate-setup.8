@@ -1,0 +1,107 @@
+.\" SPDX-License-Identifier: AGPL-3.0-or-later
+.\" Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+.TH JANUSGATE-SETUP 8 "July 2026" "JanusGate 0.1.0" "System Administration"
+.SH NAME
+janusgate-setup \- initialize a JanusGate appliance safely
+.SH SYNOPSIS
+.B janusgate-setup --config
+.I file
+.RB ( --confirm-network | --image-build )
+.RI [ --dry-run ]
+.RI [ --no-enable-services ]
+.br
+.B janusgate-setup --config
+.I file
+.B --validate-only
+.RI [ --image-build ]
+.br
+.B janusgate-setup --version
+.SH DESCRIPTION
+.B janusgate-setup
+validates a bounded first-boot JSON document and initializes service
+identities, private state directories, the database, the TOTP key, the server
+identity, and service enablement.
+Operations are ordered so an invalid document cannot partially configure the
+appliance.
+.PP
+The configuration file must be a regular file owned by the invoking user and
+must not be writable by group or other users.
+Unknown JSON members and embedded null bytes are rejected.
+.SH OPTIONS
+.TP
+.BI --config " file"
+Read the complete first-boot JSON document from
+.IR file .
+.TP
+.B --confirm-network
+Confirm that the named ingress, egress, and management interfaces have been
+physically verified on this host.
+.TP
+.B --image-build
+Permit configured interface names that are absent while constructing an
+offline image.
+.TP
+.B --validate-only
+Validate the document and host assumptions without changing state.
+.TP
+.B --dry-run
+Print the ordered setup actions without changing state.
+.TP
+.B --no-enable-services
+Complete initialization but leave installed services disabled.
+.TP
+.B --help
+Display the complete command synopsis and exit.
+.TP
+.B --version
+Display build version information and exit.
+.SH CONFIGURATION
+The top-level object contains
+.BR network ,
+.BR certificate ,
+and
+.B enable_services
+members.
+The network object declares four distinct interface names, bridge MTU,
+NFQUEUE range and length, failure mode, STP, multicast snooping, and CPU
+fanout.
+The certificate object either identifies an existing PEM source or requests a
+new local identity with a common name, alternative names, and bounded validity.
+.PP
+See
+.I /etc/janusgate/janusgate.conf.example
+for the complete schema-shaped example.
+.SH FILES
+.TP
+.I /etc/janusgate/janusgate.conf.example
+Installed example setup document.
+.TP
+.I /etc/janusgate/certs/server.pem
+Installed or newly created server identity.
+.TP
+.I /var/lib/janusgate/janusgate.db
+Initialized persistent appliance state.
+.TP
+.I /var/lib/janusgate/totp.key
+New appliance-local TOTP protection key.
+.SH EXIT STATUS
+.TP
+.B 0
+Validation or initialization completed successfully.
+.TP
+.B 1
+Validation, privilege, filesystem, database, certificate, or service
+processing failed.
+.TP
+.B 2
+The command line was invalid.
+.SH SECURITY
+Run setup from a trusted local console.
+Review interface roles before using
+.BR --confirm-network .
+Protect the setup document if it refers to private certificate material.
+.SH SEE ALSO
+.BR janusgatectl (1),
+.BR janusgated (8),
+.BR janusgate-netd (8),
+.BR janusgate-web (8)

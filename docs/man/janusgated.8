@@ -1,0 +1,73 @@
+.\" SPDX-License-Identifier: AGPL-3.0-or-later
+.\" Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+.TH JANUSGATED 8 "July 2026" "JanusGate 0.1.0" "System Administration"
+.SH NAME
+janusgated \- run the JanusGate policy and packet-processing service
+.SH SYNOPSIS
+.B janusgated
+.br
+.B janusgated --version
+.SH DESCRIPTION
+.B janusgated
+loads persistent appliance state, publishes an immutable policy snapshot,
+starts the NFQUEUE workers, and serves the authenticated local management
+protocol.
+It cooperates with
+.BR janusgate-netd (8)
+for privileged network changes and never performs those changes directly.
+.PP
+The service is intended to run under the supplied init definition as the
+dedicated
+.B janusgate
+identity.
+Command-line runtime tuning is deliberately not supported; persistent state
+is validated before it is used.
+.SH OPTIONS
+.TP
+.B --version
+Display build version information and exit.
+.SH SIGNALS
+.TP
+.B SIGTERM
+Request an orderly stop.
+.TP
+.B SIGINT
+Request an orderly stop.
+.SH FILES
+.TP
+.I /var/lib/janusgate/janusgate.db
+Persistent SQLite appliance state.
+.TP
+.I /var/lib/janusgate/totp.key
+Private appliance-local TOTP protection key.
+.TP
+.I /var/lib/janusgate/backups/
+Private backup archives.
+.TP
+.I /etc/janusgate/certs/server.pem
+Combined server certificate and private key.
+.TP
+.I /run/janusgate/control.sock
+Authenticated local control and management socket.
+.TP
+.I /run/janusgate/netd.sock
+Privileged network-helper socket.
+.SH EXIT STATUS
+.TP
+.B 0
+The service stopped cleanly or version information was displayed.
+.TP
+.B 1
+Initialization, runtime, or shutdown failed.
+.TP
+.B 2
+The command line was invalid.
+.SH SECURITY
+Do not run the service as root.
+The supplied service definition restricts filesystem access, capabilities,
+system calls, address families, and writable paths.
+.SH SEE ALSO
+.BR janusgatectl (1),
+.BR janusgate-netd (8),
+.BR janusgate-web (8),
+.BR janusgate-setup (8)

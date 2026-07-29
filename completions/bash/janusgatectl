@@ -1,0 +1,194 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# shellcheck shell=bash
+
+# Complete one whitespace-separated candidate set.
+_janusgatectl_values()
+{
+    local candidates=$1
+    local current=$2
+
+    mapfile -t COMPREPLY < <(compgen -W "${candidates}" -- "${current}")
+}
+
+# Complete one local filesystem path.
+_janusgatectl_files()
+{
+    local current=$1
+
+    mapfile -t COMPREPLY < <(compgen -f -- "${current}")
+}
+
+# Complete JanusGate global options and its bounded command grammar.
+_janusgatectl()
+{
+    local current=${COMP_WORDS[COMP_CWORD]}
+    local previous=
+    local command=
+    local command_index=0
+    local index=1
+    local position=0
+    local subcommand=
+    local options="--socket --endpoint --token-file --passphrase-file
+        --client-cert --client-key --ca-file --timeout --json --quiet
+        --verbose --yes --include-private-key --help --version"
+    local commands="status health stats network policy domain blocklist source
+        events audit user token certificate backup diagnostics config service
+        system ping"
+
+    COMPREPLY=()
+    if ((COMP_CWORD > 0)); then
+        previous=${COMP_WORDS[COMP_CWORD - 1]}
+    fi
+    case "${previous}" in
+        --socket | --token-file | --passphrase-file | --client-cert | \
+            --client-key | --ca-file)
+            _janusgatectl_files "${current}"
+            return
+            ;;
+        --endpoint | --timeout)
+            return
+            ;;
+    esac
+
+    while ((index < COMP_CWORD)); do
+        case "${COMP_WORDS[index]}" in
+            --socket | --endpoint | --token-file | --passphrase-file | \
+                --client-cert | --client-key | --ca-file | --timeout)
+                ((index += 2))
+                ;;
+            --*)
+                ((index += 1))
+                ;;
+            *)
+                command=${COMP_WORDS[index]}
+                command_index=${index}
+                break
+                ;;
+        esac
+    done
+
+    if [[ -z ${command} ]]; then
+        if [[ ${current} == --* ]]; then
+            _janusgatectl_values "${options}" "${current}"
+        else
+            _janusgatectl_values "${commands} ${options}" "${current}"
+        fi
+        return
+    fi
+
+    position=$((COMP_CWORD - command_index))
+    if ((position > 1)); then
+        subcommand=${COMP_WORDS[command_index + 1]}
+    fi
+    case "${command}" in
+        network)
+            if ((position == 1)); then
+                _janusgatectl_values \
+                    "show validate apply set confirm rollback" "${current}"
+            elif ((position == 2)) &&
+                [[ ${subcommand} == validate || ${subcommand} == apply ||
+                    ${subcommand} == set ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        policy)
+            if ((position == 1)); then
+                _janusgatectl_values \
+                    "list show add update remove simulate reload" "${current}"
+            elif ((position == 2)) &&
+                [[ ${subcommand} == show || ${subcommand} == add ||
+                    ${subcommand} == update || ${subcommand} == remove ]]; then
+                _janusgatectl_values "domain destination" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == simulate ]]; then
+                _janusgatectl_files "${current}"
+            elif ((position == 3)) && [[ ${subcommand} == add ]]; then
+                _janusgatectl_files "${current}"
+            elif ((position == 4)) && [[ ${subcommand} == update ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        domain)
+            if ((position == 1)); then
+                _janusgatectl_values "block allow remove" "${current}"
+            fi
+            ;;
+        blocklist)
+            if ((position == 1)); then
+                _janusgatectl_values "list import export" "${current}"
+            elif ((position == 3)) && [[ ${subcommand} == import ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        source)
+            if ((position == 1)); then
+                _janusgatectl_values \
+                    "list add update refresh enable disable" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == add ]]; then
+                _janusgatectl_files "${current}"
+            elif ((position == 3)) && [[ ${subcommand} == update ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        audit)
+            if ((position == 1)); then
+                _janusgatectl_values "verify" "${current}"
+            fi
+            ;;
+        user)
+            if ((position == 1)); then
+                _janusgatectl_values \
+                    "list add update disable password totp" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == add ]]; then
+                _janusgatectl_files "${current}"
+            elif ((position == 3)) &&
+                [[ ${subcommand} == update || ${subcommand} == password ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        token)
+            if ((position == 1)); then
+                _janusgatectl_values "list create revoke" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == create ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        certificate)
+            if ((position == 1)); then
+                _janusgatectl_values "show install csr" "${current}"
+            elif ((position == 2)) &&
+                [[ ${subcommand} == install || ${subcommand} == csr ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
+        backup)
+            if ((position == 1)); then
+                _janusgatectl_values "create inspect restore" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == create ]]; then
+                _janusgatectl_values "configuration full" "${current}"
+            fi
+            ;;
+        diagnostics)
+            if ((position == 1)); then
+                _janusgatectl_values "create" "${current}"
+            fi
+            ;;
+        config)
+            if ((position == 1)); then
+                _janusgatectl_values "validate reload" "${current}"
+            fi
+            ;;
+        service)
+            if ((position == 1)); then
+                _janusgatectl_values "restart" "${current}"
+            fi
+            ;;
+        system)
+            if ((position == 1)); then
+                _janusgatectl_values "reboot shutdown" "${current}"
+            fi
+            ;;
+    esac
+}
+
+complete -F _janusgatectl janusgatectl

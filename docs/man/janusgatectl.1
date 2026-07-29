@@ -1,0 +1,350 @@
+.\" SPDX-License-Identifier: AGPL-3.0-or-later
+.\" Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+.TH JANUSGATECTL 1 "July 2026" "JanusGate 0.1.0" "User Commands"
+.SH NAME
+janusgatectl \- administer a JanusGate appliance
+.SH SYNOPSIS
+.B janusgatectl
+.RI [ options ]
+.I command
+.RI [ arguments ]
+.br
+.B janusgatectl
+.B --version
+.br
+.B janusgatectl
+.B --help
+.SH DESCRIPTION
+.B janusgatectl
+is the non-interactive administration client for JanusGate.
+It uses the local control socket for
+.B ping
+and
+.BR "policy reload" .
+All other commands use the versioned HTTPS management API and therefore
+require
+.B --endpoint
+and
+.BR --token-file .
+.PP
+Inputs are bounded and validated before transmission.
+JSON output is stable and suitable for automation.
+Secret values are displayed only when an operation explicitly creates a
+one-time secret.
+.SH OPTIONS
+.TP
+.BI --socket " path"
+Use
+.I path
+as the local daemon control socket.
+The default is
+.IR /run/janusgate/control.sock .
+.TP
+.BI --endpoint " URL"
+Use the HTTPS management origin at
+.IR URL .
+The value must identify an HTTPS origin without a path, query, or fragment.
+.TP
+.BI --token-file " path"
+Read one API bearer token from a private regular file.
+The file must be owned by the current user and must not be writable by group
+or other users.
+.TP
+.BI --passphrase-file " path"
+Read a full-backup passphrase from a private regular file.
+This avoids exposing the passphrase in process arguments.
+.TP
+.BI --client-cert " path"
+Use the PEM client certificate at
+.I path
+for optional mutual TLS.
+.TP
+.BI --client-key " path"
+Use the PEM private key at
+.IR path .
+This option must be used with
+.BR --client-cert .
+.TP
+.BI --ca-file " path"
+Trust the PEM certification authorities in
+.I path
+instead of the system trust store.
+.TP
+.BI --timeout " seconds"
+Set the remote request timeout.
+The accepted range is 1 through 300 seconds.
+.TP
+.B --json
+Write one compact JSON value with stable field names.
+.TP
+.B --quiet
+Suppress successful human-readable output.
+Errors remain visible.
+.TP
+.B --verbose
+Report transport and request details without printing secrets.
+.TP
+.B --yes
+Confirm a destructive operation without interactive terminal input.
+.TP
+.B --include-private-key
+Include the active server private key in a newly created encrypted full
+backup.
+.TP
+.B --help
+Display the complete command synopsis and exit.
+.TP
+.B --version
+Display build version information and exit.
+.SH STATUS COMMANDS
+.TP
+.B status
+Return readiness, active policy generation, and bounded packet counters.
+.TP
+.B health
+Return daemon and privileged network-helper health.
+.TP
+.B stats
+Return authenticated Prometheus metrics.
+.SH NETWORK COMMANDS
+.TP
+.B network show
+Display persistent and effective network state.
+.TP
+.BI "network validate " file
+Validate the complete JSON network configuration in
+.I file
+without applying it.
+.TP
+.BI "network apply " file
+Stage a revision-bound JSON network configuration.
+The change rolls back automatically unless it is confirmed before the
+reported deadline.
+.TP
+.BI "network set " file
+Validate, stage, and confirm the JSON network configuration in one guarded
+workflow.
+.TP
+.B network confirm
+Confirm the pending network transaction after reading its current revision.
+.TP
+.B network rollback
+Restore the pending network checkpoint after reading its current revision.
+.SH POLICY COMMANDS
+.TP
+.B policy list
+List domain and destination policy records.
+.TP
+.BI "policy show " "kind id"
+Display one
+.B domain
+or
+.B destination
+record.
+.TP
+.BI "policy add " "kind file"
+Create a
+.B domain
+or
+.B destination
+record from a strict JSON object.
+.TP
+.BI "policy update " "kind id file"
+Replace one revision-bound policy record.
+.TP
+.BI "policy remove " "kind id"
+Remove one policy record after retrieving its current revision.
+.TP
+.BI "policy simulate " file
+Explain a policy decision without changing state.
+.TP
+.BI "domain block " domain
+Create a global DNS block rule for
+.IR domain .
+.TP
+.BI "domain allow " domain
+Create a global DNS allow rule for
+.IR domain .
+.TP
+.BI "domain remove " id
+Remove an explicit domain rule after retrieving its current revision.
+.SH SOURCE COMMANDS
+.TP
+.B blocklist list
+List configured blocklist sources.
+.TP
+.BI "blocklist import " "source file"
+Import bounded content from
+.I file
+into the named local source.
+.TP
+.B blocklist export
+Export the normalized active blocklist as JSON or one domain per line.
+.TP
+.B source list
+List local and remote source configuration and update state.
+.TP
+.BI "source add " file
+Create a source from a strict JSON object.
+.TP
+.BI "source update " "id file"
+Replace one source at its current revision.
+.TP
+.BI "source refresh " id
+Refresh one remote source at its current revision.
+.TP
+.BI "source enable " id
+Enable one source at its current revision.
+.TP
+.BI "source disable " id
+Disable one source at its current revision.
+.SH EVENT AND AUDIT COMMANDS
+.TP
+.RI "events [" query ]
+List stable operational events.
+The optional query uses API query syntax such as
+.BR "severity=error&limit=20" .
+.TP
+.RI "audit [" query ]
+List immutable audit records.
+.TP
+.B audit verify
+Verify every link in the persistent audit hash chain.
+.SH ACCESS COMMANDS
+.TP
+.B user list
+List local user accounts.
+.TP
+.BI "user add " file
+Create a local user from a strict JSON object.
+If standard input is a terminal, the password is read without echo and
+replaces the object's password member.
+.TP
+.BI "user update " "id file"
+Replace the role and mutable state of one local user.
+.TP
+.BI "user disable " id
+Disable one user after retrieving its current revision.
+.TP
+.BI "user password " "id file"
+Reset a user's password at its current revision.
+.TP
+.BI "user totp " id
+Disable a user's TOTP enrollment at its current revision.
+.TP
+.B token list
+List API-token metadata without token secrets.
+.TP
+.BI "token create " file
+Create a scoped API token and display its secret once.
+.TP
+.BI "token revoke " id
+Revoke an API token.
+.SH CERTIFICATE COMMANDS
+.TP
+.B certificate show
+Inspect the active server certificate.
+.TP
+.BI "certificate install " file
+Validate and atomically install certificate material from a strict JSON
+object.
+.TP
+.BI "certificate csr " file
+Create a private key on the appliance and return its certificate signing
+request.
+.SH BACKUP COMMANDS
+.TP
+.B backup create configuration
+Create a configuration backup without authentication secrets.
+.TP
+.B backup create full
+Create an authenticated encrypted full backup.
+A passphrase is read from
+.B --passphrase-file
+or securely from the terminal.
+.TP
+.BI "backup inspect " id
+Verify and display stored backup metadata.
+.TP
+.BI "backup restore " id
+Validate a backup, show the dry-run comparison, and apply it only after
+confirmation.
+.SH SYSTEM COMMANDS
+.TP
+.B diagnostics create
+Create and save a bounded sanitized diagnostic archive.
+.TP
+.B config validate
+Validate all persistent runtime configuration.
+.TP
+.B config reload
+Validate and atomically publish persistent runtime configuration.
+.TP
+.B service restart
+Restart the policy service after explicit confirmation.
+.TP
+.B system reboot
+Reboot the appliance after explicit confirmation.
+.TP
+.B system shutdown
+Power off the appliance after explicit confirmation.
+.TP
+.B ping
+Check the local versioned control socket.
+.TP
+.B policy reload
+Request a local policy reload through the control socket.
+.SH EXIT STATUS
+.TP
+.B 0
+The operation completed successfully.
+.TP
+.B 1
+A local validation, input/output, or non-specific API failure occurred.
+.TP
+.B 2
+The command line or an input document was invalid.
+.TP
+.B 3
+Authentication or authorization failed.
+.TP
+.B 4
+The requested revision conflicted with current state.
+.TP
+.B 5
+The remote service or a required appliance component was unavailable.
+.SH FILES
+.TP
+.I /run/janusgate/control.sock
+Default local control socket.
+.TP
+.I /etc/janusgate/
+Persistent appliance configuration and certificate directory.
+.TP
+.I /var/lib/janusgate/backups/
+Private backup archive directory.
+.SH EXAMPLES
+.nf
+janusgatectl --endpoint https://192.168.77.1 \\
+  --token-file /root/.config/janusgate/token status
+
+janusgatectl --endpoint https://192.168.77.1 \\
+  --token-file /root/.config/janusgate/token \\
+  network apply network.json
+
+janusgatectl --endpoint https://192.168.77.1 \\
+  --token-file /root/.config/janusgate/token \\
+  --yes system reboot
+.fi
+.SH SECURITY
+Keep token, private-key, passphrase, and input files private.
+Prefer
+.B --ca-file
+or the system trust store over disabling certificate verification; the client
+does not provide an insecure mode.
+Use the narrowest API-token scopes required by automation.
+.SH SEE ALSO
+.BR janusgate-setup (8),
+.BR janusgated (8),
+.BR janusgate-web (8),
+.BR janusgate-netd (8)

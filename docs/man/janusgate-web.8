@@ -1,0 +1,91 @@
+.\" SPDX-License-Identifier: AGPL-3.0-or-later
+.\" Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+.TH JANUSGATE-WEB 8 "July 2026" "JanusGate 0.1.0" "System Administration"
+.SH NAME
+janusgate-web \- serve the JanusGate HTTPS management interface
+.SH SYNOPSIS
+.B janusgate-web
+.RI [ options ]
+.br
+.B janusgate-web --version
+.SH DESCRIPTION
+.B janusgate-web
+serves static management assets and proxies versioned API requests to
+.BR janusgated (8)
+over the authenticated local control socket.
+It listens only on a configured numeric management address and provides no
+plaintext HTTP listener.
+.PP
+The service refuses to run as root.
+.SH OPTIONS
+.TP
+.BI --listen-address " address"
+Bind the numeric IPv4 or IPv6 management address.
+The default is
+.BR 192.168.77.1 .
+Wildcard and multicast addresses are rejected.
+.TP
+.BI --port " port"
+Listen on the nonzero TCP
+.IR port .
+The default is 443.
+.TP
+.BI --certificate " path"
+Load the combined PEM certificate and private key at
+.IR path .
+The default is
+.IR /etc/janusgate/certs/server.pem .
+.TP
+.BI --web-root " path"
+Serve static files from the absolute
+.IR path .
+The default is
+.IR /usr/share/janusgate/web .
+.TP
+.BI --socket " path"
+Proxy API requests through the daemon control socket at
+.IR path .
+The default is
+.IR /run/janusgate/control.sock .
+.TP
+.B --hsts
+Emit HTTP Strict Transport Security after the administrator has established
+the intended certificate identity.
+.TP
+.B --version
+Display build version information and exit.
+.SH SIGNALS
+.TP
+.B SIGTERM
+Stop accepting requests and shut down cleanly.
+.TP
+.B SIGINT
+Stop accepting requests and shut down cleanly.
+.SH FILES
+.TP
+.I /etc/janusgate/certs/server.pem
+Default server certificate and private key.
+.TP
+.I /usr/share/janusgate/web/
+Default immutable web assets.
+.TP
+.I /run/janusgate/control.sock
+Default backend control socket.
+.SH EXIT STATUS
+.TP
+.B 0
+The service stopped cleanly or version information was displayed.
+.TP
+.B 1
+Privilege, TLS, listener, backend, or shutdown processing failed.
+.TP
+.B 2
+The command line was invalid.
+.SH SECURITY
+Use a dedicated unprivileged identity and keep the server PEM private.
+Enable HSTS only after confirming that clients trust the permanent
+certificate.
+.SH SEE ALSO
+.BR janusgatectl (1),
+.BR janusgated (8),
+.BR janusgate-netd (8)

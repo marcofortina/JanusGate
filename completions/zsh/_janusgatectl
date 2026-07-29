@@ -1,0 +1,137 @@
+#compdef janusgatectl
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+local context state state_descr line
+typeset -A opt_args
+
+_arguments -C \
+  '--socket=[local control socket]:socket path:_files' \
+  '--endpoint=[HTTPS management origin]:URL' \
+  '--token-file=[private API token file]:token file:_files' \
+  '--passphrase-file=[private backup passphrase file]:passphrase file:_files' \
+  '--client-cert=[mTLS client certificate]:certificate file:_files' \
+  '--client-key=[mTLS client private key]:key file:_files' \
+  '--ca-file=[PEM trust anchors]:CA file:_files' \
+  '--timeout=[remote request timeout]:seconds' \
+  '--json[write compact JSON]' \
+  '--quiet[suppress successful output]' \
+  '--verbose[report request details]' \
+  '--yes[confirm destructive operations]' \
+  '--include-private-key[include the server key in a full backup]' \
+  '--help[display command help]' \
+  '--version[display version information]' \
+  '1:command:->command' \
+  '*::argument:->argument'
+
+case ${state} in
+  command)
+    local -a commands=(
+      'status:return appliance status'
+      'health:return service health'
+      'stats:return Prometheus metrics'
+      'network:manage inline networking'
+      'policy:manage policy records'
+      'domain:manage simple domain rules'
+      'blocklist:import or export blocklists'
+      'source:manage blocklist sources'
+      'events:list operational events'
+      'audit:list or verify audit records'
+      'user:manage local users'
+      'token:manage API tokens'
+      'certificate:manage the server identity'
+      'backup:create, inspect, or restore backups'
+      'diagnostics:create a diagnostic archive'
+      'config:validate or reload configuration'
+      'service:manage JanusGate services'
+      'system:manage appliance power'
+      'ping:check the local control socket'
+    )
+    _describe -t commands 'command' commands
+    ;;
+  argument)
+    case ${line[1]} in
+      network)
+        if (( ${#line} == 1 )); then
+          _values 'network command' show validate apply set confirm rollback
+        elif [[ ${line[2]} == (validate|apply|set) ]]; then
+          _files
+        fi
+        ;;
+      policy)
+        if (( ${#line} == 1 )); then
+          _values 'policy command' list show add update remove simulate reload
+        elif [[ ${line[2]} == (show|add|update|remove) ]] &&
+          (( ${#line} == 2 )); then
+          _values 'policy kind' domain destination
+        elif [[ ${line[2]} == simulate ]] ||
+          [[ ${line[2]} == add && ${#line} -ge 3 ]] ||
+          [[ ${line[2]} == update && ${#line} -ge 4 ]]; then
+          _files
+        fi
+        ;;
+      domain)
+        _values 'domain command' block allow remove
+        ;;
+      blocklist)
+        if (( ${#line} == 1 )); then
+          _values 'blocklist command' list import export
+        elif [[ ${line[2]} == import && ${#line} -ge 3 ]]; then
+          _files
+        fi
+        ;;
+      source)
+        if (( ${#line} == 1 )); then
+          _values 'source command' list add update refresh enable disable
+        elif [[ ${line[2]} == add ]] ||
+          [[ ${line[2]} == update && ${#line} -ge 3 ]]; then
+          _files
+        fi
+        ;;
+      audit)
+        _values 'audit command' verify
+        ;;
+      user)
+        if (( ${#line} == 1 )); then
+          _values 'user command' list add update disable password totp
+        elif [[ ${line[2]} == add ]] ||
+          [[ ${line[2]} == (update|password) && ${#line} -ge 3 ]]; then
+          _files
+        fi
+        ;;
+      token)
+        if (( ${#line} == 1 )); then
+          _values 'token command' list create revoke
+        elif [[ ${line[2]} == create ]]; then
+          _files
+        fi
+        ;;
+      certificate)
+        if (( ${#line} == 1 )); then
+          _values 'certificate command' show install csr
+        elif [[ ${line[2]} == (install|csr) ]]; then
+          _files
+        fi
+        ;;
+      backup)
+        if (( ${#line} == 1 )); then
+          _values 'backup command' create inspect restore
+        elif [[ ${line[2]} == create ]]; then
+          _values 'backup kind' configuration full
+        fi
+        ;;
+      diagnostics)
+        _values 'diagnostics command' create
+        ;;
+      config)
+        _values 'configuration command' validate reload
+        ;;
+      service)
+        _values 'service command' restart
+        ;;
+      system)
+        _values 'system command' reboot shutdown
+        ;;
+    esac
+    ;;
+esac
