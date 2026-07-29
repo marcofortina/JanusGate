@@ -156,7 +156,8 @@ set -- \
 if [ "$target" = buildroot-aarch64 ]; then
     kernel="$build_directory/images/Image"
     [ -f "$kernel" ] || fail "AArch64 kernel does not exist: $kernel"
-    "$qemu_binary" -M virt -cpu cortex-a57 -m 1024 -nographic \
+    "$qemu_binary" -M virt -cpu cortex-a57 -accel tcg,thread=multi \
+        -m 1024 -nographic \
         -kernel "$kernel" \
         -append "root=/dev/vda1 rootwait ro console=ttyAMA0" \
         -drive if=none,id=root,format=raw,file="$image" \
@@ -178,6 +179,9 @@ else
     if [ "$target" = buildroot-x86_64 ]; then
         for firmware in "$build_directory/images/OVMF.fd" \
             /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/ovmf/OVMF.fd \
+            /usr/share/qemu/OVMF.fd \
             /usr/share/edk2/x64/OVMF_CODE.fd; do
             if [ -f "$firmware" ]; then
                 firmware_arguments=$firmware
@@ -190,7 +194,8 @@ else
     if [ -n "$firmware_arguments" ]; then
         set -- -bios "$firmware_arguments" "$@"
     fi
-    "$qemu_binary" -machine q35 -m 1024 -nographic \
+    "$qemu_binary" -machine q35 -accel tcg,thread=single \
+        -icount shift=auto,align=off,sleep=on -m 1024 -nographic \
         -drive if=virtio,format="$disk_format",file="$image" \
         "$@" \
         -device virtio-net-pci,netdev=data_in,mac=52:54:00:10:00:01 \

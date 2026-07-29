@@ -12,6 +12,8 @@ source_date_epoch=${SOURCE_DATE_EPOCH:-0}
 output_directory=out/alpine
 cache_directory=out/downloads
 package_file=
+civetweb_package=
+openrc_package=
 temporary_directory=
 loop_device=
 root_partition=
@@ -26,7 +28,7 @@ usage()
 usage: scripts/build-alpine-image.sh --apk FILE [options]
 
 Options:
-  --apk FILE               JanusGate Alpine package
+  --apk FILE               JanusGate APK; dependency APKs must be siblings
   --output-directory DIR   artifact directory (default: out/alpine)
   --cache-directory DIR    download cache (default: out/downloads)
   --image-size-mib SIZE    raw disk size (default: 2048)
@@ -122,6 +124,17 @@ done
 
 project_directory=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 package_file=$(realpath "$package_file")
+package_directory=$(dirname -- "$package_file")
+set -- "$package_directory"/civetweb-[0-9]*.apk
+if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+    fail "exactly one sibling CivetWeb APK is required"
+fi
+civetweb_package=$(realpath "$1")
+set -- "$package_directory"/janusgate-openrc-[0-9]*.apk
+if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+    fail "exactly one sibling janusgate-openrc APK is required"
+fi
+openrc_package=$(realpath "$1")
 mkdir -p "$output_directory" "$cache_directory"
 output_directory=$(realpath "$output_directory")
 cache_directory=$(realpath "$cache_directory")
@@ -161,9 +174,13 @@ chroot "$root_directory" /sbin/apk add --no-cache \
     acpid alpine-base ca-certificates chrony iproute2 linux-virt logrotate \
     nftables openssl syslinux
 install -m 0644 "$package_file" "$root_directory/tmp/janusgate.apk"
+install -m 0644 "$civetweb_package" "$root_directory/tmp/civetweb.apk"
+install -m 0644 "$openrc_package" "$root_directory/tmp/janusgate-openrc.apk"
 chroot "$root_directory" /sbin/apk add --allow-untrusted \
-    /tmp/janusgate.apk
-rm -f "$root_directory/tmp/janusgate.apk"
+    /tmp/civetweb.apk /tmp/janusgate.apk /tmp/janusgate-openrc.apk
+rm -f "$root_directory/tmp/civetweb.apk" \
+    "$root_directory/tmp/janusgate.apk" \
+    "$root_directory/tmp/janusgate-openrc.apk"
 
 printf '%s\n' janusgate >"$root_directory/etc/hostname"
 install -m 0644 "$project_directory/packaging/alpine/interfaces" \
@@ -235,6 +252,8 @@ loop_device=
 
 image_sha256=$(sha256sum "$raw_image" | awk '{print $1}')
 package_sha256=$(sha256sum "$package_file" | awk '{print $1}')
+civetweb_package_sha256=$(sha256sum "$civetweb_package" | awk '{print $1}')
+openrc_package_sha256=$(sha256sum "$openrc_package" | awk '{print $1}')
 cat >"$manifest" <<EOF
 {
   "_license": "AGPL-3.0-or-later",
@@ -245,6 +264,8 @@ cat >"$manifest" <<EOF
   "source_date_epoch": $source_date_epoch,
   "image_sha256": "$image_sha256",
   "package_sha256": "$package_sha256",
+  "civetweb_package_sha256": "$civetweb_package_sha256",
+  "openrc_package_sha256": "$openrc_package_sha256",
   "nic_order": ["data-in", "data-out", "management"]
 }
 EOF
