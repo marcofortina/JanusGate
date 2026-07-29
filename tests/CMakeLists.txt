@@ -85,3 +85,7 @@ set_tests_properties(integration PROPERTIES LABELS "integration" TIMEOUT 30)
 if(JANUSGATE_ENABLE_FUZZING)
   add_subdirectory(fuzz)
 endif()
+
+if(JANUSGATE_BUILD_BENCHMARKS)
+  add_subdirectory(performance)
+endif()

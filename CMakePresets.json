@@ -60,6 +60,14 @@
       }
     },
     {
+      "name": "performance",
+      "inherits": "release",
+      "cacheVariables": {
+        "JANUSGATE_BUILD_BENCHMARKS": "ON",
+        "JANUSGATE_BUILD_DOCUMENTATION": "OFF"
+      }
+    },
+    {
       "name": "clang-ubsan",
       "inherits": "debug",
       "environment": {
@@ -98,6 +106,10 @@
     {
       "name": "fuzz",
       "configurePreset": "fuzz"
+    },
+    {
+      "name": "performance",
+      "configurePreset": "performance"
     },
     {
       "name": "clang-ubsan",

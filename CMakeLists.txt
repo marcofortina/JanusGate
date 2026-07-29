@@ -47,12 +47,16 @@ option(JANUSGATE_ENABLE_SANITIZERS "Enable address and undefined-behavior checks
 option(JANUSGATE_ENABLE_COVERAGE "Enable source coverage instrumentation" OFF)
 option(JANUSGATE_ENABLE_FUZZING "Build libFuzzer parser targets" OFF)
 option(JANUSGATE_BUILD_DOCUMENTATION "Build the Doxygen reference" ON)
+option(JANUSGATE_BUILD_BENCHMARKS "Build the performance benchmark suite" OFF)
 set(JANUSGATE_SOURCE_COMMIT
     ""
     CACHE STRING "Source revision to embed when Git metadata is unavailable")
 
 if(JANUSGATE_ENABLE_FUZZING AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR "JANUSGATE_ENABLE_FUZZING requires Clang")
+endif()
+if(JANUSGATE_BUILD_BENCHMARKS AND NOT BUILD_TESTING)
+  message(FATAL_ERROR "JANUSGATE_BUILD_BENCHMARKS requires BUILD_TESTING")
 endif()
 if(JANUSGATE_BUILD_DOCUMENTATION)
   find_package(Doxygen 1.9 REQUIRED dot)
