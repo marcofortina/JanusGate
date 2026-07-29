@@ -1,0 +1,298 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  source:
+    name: Source metadata and interfaces
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3-jsonschema python3-yaml shellcheck shfmt
+      - name: Validate source metadata
+        run: python3 scripts/check-source-metadata.py
+      - name: Validate shell
+        run: |
+          git ls-files -z '*.sh' | xargs -0 shellcheck -s sh
+          git ls-files -z '*.sh' | xargs -0 shfmt -d -i 4 -ci -fn
+      - name: Validate OpenAPI
+        run: python3 scripts/validate-openapi.py api/openapi.yaml
+      - name: Validate Markdown
+        run: >-
+          npx --yes markdownlint-cli2@0.17.2
+          README.md SECURITY.md CONTRIBUTING.md 'docs/*.md'
+
+  ubuntu-build:
+    name: Ubuntu ${{ matrix.name }} build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC
+            cc: gcc
+          - name: Clang
+            cc: clang
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential clang cmake ninja-build \
+            pkg-config python3-jsonschema python3-yaml libcivetweb-dev \
+            libssl-dev zlib1g-dev libidn2-dev libcurl4-openssl-dev \
+            libjansson-dev libcap-dev libseccomp-dev libmnl-dev \
+            libnetfilter-queue-dev libnftables-dev libsodium-dev \
+            libsqlite3-dev libcmocka-dev
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ubuntu-${{ matrix.cc }} -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DJANUSGATE_BUILD_DOCUMENTATION=OFF
+      - name: Build
+        run: cmake --build build/ubuntu-${{ matrix.cc }} --parallel 4
+      - name: Test
+        run: >-
+          ctest --test-dir build/ubuntu-${{ matrix.cc }}
+          --output-on-failure
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake ninja-build \
+            pkg-config python3-jsonschema python3-yaml libcivetweb-dev \
+            libssl-dev zlib1g-dev libidn2-dev libcurl4-openssl-dev \
+            libjansson-dev libcap-dev libseccomp-dev libmnl-dev \
+            libnetfilter-queue-dev libnftables-dev libsodium-dev \
+            libsqlite3-dev libcmocka-dev
+      - name: Build tests
+        run: |
+          cmake -S . -B build/unit -G Ninja \
+            -DJANUSGATE_BUILD_DOCUMENTATION=OFF
+          cmake --build build/unit --parallel 4
+      - name: Run unit suite
+        run: ctest --test-dir build/unit --output-on-failure -R '^unit$'
+
+  namespace-integration:
+    name: Namespace integration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake ninja-build \
+            iproute2 iputils-ping pkg-config python3-jsonschema python3-yaml \
+            libcivetweb-dev libssl-dev zlib1g-dev libidn2-dev \
+            libcurl4-openssl-dev libjansson-dev libcap-dev libseccomp-dev \
+            libmnl-dev libnetfilter-queue-dev libnftables-dev \
+            libsodium-dev libsqlite3-dev libcmocka-dev
+      - name: Build integration suite
+        run: |
+          cmake -S . -B build/integration -G Ninja \
+            -DJANUSGATE_BUILD_DOCUMENTATION=OFF
+          cmake --build build/integration --parallel 4
+      - name: Run namespace laboratory
+        run: >-
+          sudo tests/namespace-lab/run-all.sh
+          --build-directory build/integration
+
+  sanitizers:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC ASan and UBSan
+            cc: gcc
+          - name: Clang ASan and UBSan
+            cc: clang
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential clang cmake ninja-build \
+            pkg-config python3-jsonschema python3-yaml libcivetweb-dev \
+            libssl-dev zlib1g-dev libidn2-dev libcurl4-openssl-dev \
+            libjansson-dev libcap-dev libseccomp-dev libmnl-dev \
+            libnetfilter-queue-dev libnftables-dev libsodium-dev \
+            libsqlite3-dev libcmocka-dev
+      - name: Configure
+        run: >-
+          cmake -S . -B build/sanitizers-${{ matrix.cc }} -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DJANUSGATE_BUILD_DOCUMENTATION=OFF
+          -DJANUSGATE_ENABLE_SANITIZERS=ON
+      - name: Build
+        run: cmake --build build/sanitizers-${{ matrix.cc }} --parallel 4
+      - name: Test
+        run: >-
+          ctest --test-dir build/sanitizers-${{ matrix.cc }}
+          --output-on-failure
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake lcov ninja-build \
+            pkg-config python3-jsonschema python3-yaml libcivetweb-dev \
+            libssl-dev zlib1g-dev libidn2-dev libcurl4-openssl-dev \
+            libjansson-dev libcap-dev libseccomp-dev libmnl-dev \
+            libnetfilter-queue-dev libnftables-dev libsodium-dev \
+            libsqlite3-dev libcmocka-dev
+      - name: Build and test
+        run: |
+          cmake -S . -B build/coverage -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DJANUSGATE_BUILD_DOCUMENTATION=OFF \
+            -DJANUSGATE_ENABLE_COVERAGE=ON
+          cmake --build build/coverage --parallel 4
+          ctest --test-dir build/coverage --output-on-failure
+      - name: Capture report
+        run: >-
+          lcov --capture --directory build/coverage
+          --output-file build/coverage.info
+          --ignore-errors mismatch
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: build/coverage.info
+          retention-days: 7
+
+  static-analysis:
+    name: Clang-Tidy and Cppcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential clang clang-tidy \
+            cmake cppcheck ninja-build pkg-config python3-jsonschema \
+            python3-yaml libcivetweb-dev libssl-dev zlib1g-dev \
+            libidn2-dev libcurl4-openssl-dev libjansson-dev libcap-dev \
+            libseccomp-dev libmnl-dev libnetfilter-queue-dev \
+            libnftables-dev libsodium-dev libsqlite3-dev libcmocka-dev
+      - name: Configure and analyze
+        run: |
+          cmake -S . -B build/analysis -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DJANUSGATE_BUILD_DOCUMENTATION=OFF
+          cmake --build build/analysis --parallel 4
+          cmake --build build/analysis --target static-analysis
+
+  documentation:
+    name: Doxygen and manual pages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential clang-tools cmake doxygen graphviz \
+            groff ninja-build pkg-config python3-jsonschema python3-yaml \
+            libcivetweb-dev libssl-dev zlib1g-dev libidn2-dev \
+            libcurl4-openssl-dev libjansson-dev libcap-dev libseccomp-dev \
+            libmnl-dev libnetfilter-queue-dev libnftables-dev \
+            libsodium-dev libsqlite3-dev libcmocka-dev
+      - name: Validate documentation
+        run: |
+          cmake -S . -B build/docs -G Ninja
+          cmake --build build/docs \
+            --target doxygen man-check openapi-check format-check
+
+  web-quality:
+    name: JavaScript, CSS, and HTML
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate JavaScript
+        run: npx --yes eslint@9.39.2 web/js/app.js
+      - name: Validate CSS
+        run: npx --yes stylelint@16.25.0 web/css/app.css
+      - name: Validate HTML
+        run: npx --yes html-validate@9.7.1 web/index.html
+
+  sbom:
+    name: SPDX SBOM
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Create SPDX JSON
+        run: python3 scripts/generate-sbom.py janusgate.spdx.json
+      - name: Validate JSON
+        run: python3 -m json.tool janusgate.spdx.json >/dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: janusgate-sbom
+          path: janusgate.spdx.json
+          retention-days: 7
+
+  performance:
+    name: Policy performance
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake ninja-build \
+            pkg-config python3-jsonschema python3-yaml libcivetweb-dev \
+            libssl-dev zlib1g-dev libidn2-dev libcurl4-openssl-dev \
+            libjansson-dev libcap-dev libseccomp-dev libmnl-dev \
+            libnetfilter-queue-dev libnftables-dev libsodium-dev \
+            libsqlite3-dev libcmocka-dev
+      - name: Run benchmark
+        run: scripts/run-benchmarks.sh

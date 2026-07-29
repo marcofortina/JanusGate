@@ -1,0 +1,182 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+name: Appliance images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  alpine-gcc:
+    name: Alpine GCC and APK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Build Alpine packages
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace alpine:3.24 \
+            sh -exc '
+              apk add alpine-sdk cmake git gzip sudo
+              adduser -D -u "$(stat -c %u /workspace)" builder
+              addgroup builder abuild
+              install -d -m 0750 /etc/sudoers.d
+              printf "%s\n" "builder ALL=(ALL) NOPASSWD: ALL" \
+                >/etc/sudoers.d/abuild
+              chmod 0440 /etc/sudoers.d/abuild
+              su builder -c \
+                "scripts/build-alpine-packages.sh /workspace/out/apk"
+            '
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alpine-apks
+          path: out/apk/**/*.apk
+          retention-days: 7
+
+  alpine-clang:
+    name: Alpine Clang build
+    needs: alpine-gcc
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: alpine-apks
+          path: out/apk
+      - name: Build and test with Clang
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace alpine:3.24 \
+            sh -exc '
+              apk add --no-cache bash build-base clang cmake cmocka-dev \
+                curl-dev groff jansson-dev libcap-dev libidn2-dev libmnl-dev \
+                libnetfilter_queue-dev libseccomp-dev libsodium-dev \
+                nftables-dev ninja openssl-dev pkgconf py3-jsonschema \
+                py3-yaml python3 sqlite-dev zlib-dev
+              apk add --allow-untrusted \
+                $(find out/apk -type f -name "civetweb-[0-9]*.apk") \
+                $(find out/apk -type f -name "civetweb-dev-[0-9]*.apk")
+              CC=clang cmake -S . -B build/alpine-clang -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DJANUSGATE_BUILD_DOCUMENTATION=OFF
+              cmake --build build/alpine-clang --parallel 4
+              ctest --test-dir build/alpine-clang --output-on-failure
+            '
+
+  alpine-image:
+    name: Alpine QCOW2 smoke test
+    needs: alpine-gcc
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: alpine-apks
+          path: out/apk
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes curl e2fsprogs fdisk ovmf \
+            qemu-utils qemu-system-x86 syslinux-utils
+      - name: Build raw and QCOW2 images
+        run: |
+          package=$(find out/apk -type f -name 'janusgate-[0-9]*.apk')
+          sudo scripts/build-alpine-image.sh --apk "$package"
+          scripts/build-qcow2.sh \
+            --raw out/alpine/janusgate-alpine-3.24.1-x86_64.raw
+      - name: Boot appliance
+        run: |
+          scripts/run-qemu-smoke.sh alpine \
+            --image out/alpine/janusgate-alpine-3.24.1-x86_64.qcow2
+          (
+            cd out/alpine
+            sha256sum --check \
+              janusgate-alpine-3.24.1-x86_64.qcow2.sha256
+          )
+
+  buildroot-x86_64:
+    name: Buildroot x86_64 firmware
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Reclaim firmware build space
+        run: |
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android /usr/share/dotnet
+          df -h /
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bc bison build-essential cpio curl file \
+            flex git libelf-dev libssl-dev ovmf python3 qemu-system-x86 \
+            rsync unzip wget zstd
+      - name: Build firmware
+        run: >-
+          scripts/build-firmware.sh janusgate_x86_64_efi_defconfig
+          --jobs 4
+      - name: Boot firmware
+        run: |
+          scripts/run-qemu-smoke.sh buildroot-x86_64
+          (
+            cd out/buildroot/janusgate_x86_64_efi_defconfig/images
+            sha256sum --check SHA256SUMS
+            sha512sum --check SHA512SUMS
+          )
+      - uses: actions/upload-artifact@v7
+        with:
+          name: buildroot-x86_64
+          path: |
+            out/buildroot/janusgate_x86_64_efi_defconfig/images/*.zst
+            out/buildroot/janusgate_x86_64_efi_defconfig/images/*SUMS
+            out/buildroot/janusgate_x86_64_efi_defconfig/images/*.json
+          retention-days: 7
+
+  buildroot-aarch64:
+    name: Buildroot AArch64 firmware
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Reclaim firmware build space
+        run: |
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android /usr/share/dotnet
+          df -h /
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bc bison build-essential cpio curl file \
+            flex git libelf-dev libssl-dev python3 qemu-system-arm rsync \
+            unzip wget zstd
+      - name: Build firmware
+        run: >-
+          scripts/build-firmware.sh janusgate_aarch64_virt_defconfig
+          --jobs 4
+      - name: Boot firmware
+        run: |
+          scripts/run-qemu-smoke.sh buildroot-aarch64
+          (
+            cd out/buildroot/janusgate_aarch64_virt_defconfig/images
+            sha256sum --check SHA256SUMS
+            sha512sum --check SHA512SUMS
+          )
+      - uses: actions/upload-artifact@v7
+        with:
+          name: buildroot-aarch64
+          path: |
+            out/buildroot/janusgate_aarch64_virt_defconfig/images/*.zst
+            out/buildroot/janusgate_aarch64_virt_defconfig/images/*SUMS
+            out/buildroot/janusgate_aarch64_virt_defconfig/images/*.json
+          retention-days: 7
