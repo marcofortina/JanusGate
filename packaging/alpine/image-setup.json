@@ -3,9 +3,9 @@
   "_copyright": "Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>",
   "network": {
     "bridge": "br-data",
-    "ingress": "enp1s0",
-    "egress": "enp2s0",
-    "management": "enp3s0",
+    "ingress": "eth0",
+    "egress": "eth1",
+    "management": "eth2",
     "bridge_mtu": 0,
     "queue_first": 100,
     "queue_count": 4,

@@ -461,10 +461,7 @@ static int load_configuration(const char *path,
                               struct setup_configuration *configuration)
 {
     static const char *const fields[] = {
-        "_license",
-        "network",
-        "certificate",
-        "enable_services",
+        "_license", "_copyright", "network", "certificate", "enable_services",
     };
     char *document = NULL;
     size_t document_size = 0U;

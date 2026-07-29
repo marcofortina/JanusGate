@@ -62,6 +62,10 @@ configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/docs/Doxyfile.in"
   "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
   @ONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Uninstall.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/Uninstall.cmake"
+  @ONLY)
 
 add_library(
   janusgate-common STATIC
@@ -326,6 +330,11 @@ add_custom_target(
           "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-static-analysis.py"
           "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}"
   USES_TERMINAL
+  VERBATIM)
+
+add_custom_target(
+  uninstall
+  COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/Uninstall.cmake"
   VERBATIM)
 
 add_custom_target(

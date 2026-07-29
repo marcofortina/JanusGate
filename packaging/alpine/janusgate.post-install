@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+set -eu
+
+install -d -m 0750 -o janusgate -g janusgate /var/lib/janusgate
+install -d -m 0700 -o janusgate -g janusgate /var/lib/janusgate/backups
+install -d -m 0750 -o janusgate -g janusgate /var/log/janusgate
+install -d -m 0750 -o root -g janusgate-control /run/janusgate
+
+echo "Run janusgate-setup with a reviewed configuration to enable services."

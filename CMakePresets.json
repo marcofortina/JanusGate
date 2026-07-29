@@ -27,6 +27,10 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "CMAKE_INSTALL_SYSCONFDIR": "/etc",
+        "CMAKE_INSTALL_LOCALSTATEDIR": "/var",
+        "CMAKE_INSTALL_RUNSTATEDIR": "/run",
         "JANUSGATE_HARDENING": "ON"
       }
     },

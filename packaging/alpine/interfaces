@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet manual
+    pre-up sysctl -q -w net.ipv6.conf.default.disable_ipv6=1
+    pre-up sysctl -q -w net.ipv6.conf.eth0.disable_ipv6=1
+
+auto eth1
+iface eth1 inet manual
+    pre-up sysctl -q -w net.ipv6.conf.eth1.disable_ipv6=1
+
+auto eth2
+iface eth2 inet static
+    address 192.168.77.1
+    netmask 255.255.255.0

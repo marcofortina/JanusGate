@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+file(GLOB manifests "@CMAKE_CURRENT_BINARY_DIR@/install_manifest*.txt")
+if(NOT manifests)
+  message(FATAL_ERROR "No install manifest exists in @CMAKE_CURRENT_BINARY_DIR@")
+endif()
+
+set(installed_files)
+foreach(manifest IN LISTS manifests)
+  file(STRINGS "${manifest}" manifest_files)
+  list(APPEND installed_files ${manifest_files})
+endforeach()
+list(REMOVE_DUPLICATES installed_files)
+list(REVERSE installed_files)
+foreach(installed_file IN LISTS installed_files)
+  if(DEFINED ENV{DESTDIR})
+    set(installed_path "$ENV{DESTDIR}${installed_file}")
+  else()
+    set(installed_path "${installed_file}")
+  endif()
+  if(IS_SYMLINK "${installed_path}" OR EXISTS "${installed_path}")
+    file(REMOVE "${installed_path}")
+    message(STATUS "Removed ${installed_path}")
+  endif()
+endforeach()

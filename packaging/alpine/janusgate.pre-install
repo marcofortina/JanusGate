@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+set -eu
+
+addgroup -S janusgate-control 2>/dev/null || true
+addgroup -S janusgate 2>/dev/null || true
+addgroup -S janusgate-web 2>/dev/null || true
+adduser -S -D -H -h /var/lib/janusgate -s /sbin/nologin \
+    -G janusgate janusgate 2>/dev/null || true
+adduser -S -D -H -h /var/empty -s /sbin/nologin \
+    -G janusgate-web janusgate-web 2>/dev/null || true
+
+if ! id -nG janusgate | tr ' ' '\n' | grep -Fx janusgate-control \
+    >/dev/null 2>&1; then
+    addgroup janusgate janusgate-control
+fi
+if ! id -nG janusgate-web | tr ' ' '\n' | grep -Fx janusgate-control \
+    >/dev/null 2>&1; then
+    addgroup janusgate-web janusgate-control
+fi
