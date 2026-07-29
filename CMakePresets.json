@@ -1,5 +1,11 @@
 {
   "version": 6,
+  "vendor": {
+    "github.com/marcofortina/JanusGate/metadata/1": {
+      "license": "AGPL-3.0-or-later",
+      "copyright": "Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>"
+    }
+  },
   "cmakeMinimumRequired": {
     "major": 3,
     "minor": 25,

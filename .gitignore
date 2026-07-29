@@ -7,8 +7,10 @@
 /Testing/
 /compile_commands.json
 /.cache/
+__pycache__/
 /.idea/
 /.vscode/
+*.patch
 *.gcda
 *.gcno
 *.gcov
@@ -16,4 +18,3 @@
 *.profdata
 *.swp
 *~
-
