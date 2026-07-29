@@ -3800,7 +3800,7 @@ static int complete_multifactor(
             management->database, password_identity, (const uint8_t *)recovery,
             strlen(recovery), now, identity);
     }
-    return -ENOKEY;
+    return -ENOMSG;
 }
 
 /** @brief Authenticate a password and return one browser session. */
@@ -3833,7 +3833,7 @@ static int handle_login(struct jg_management *management,
         result = complete_multifactor(management, request, &password_identity,
                                       now, &identity);
     }
-    if (result == -ENOKEY) {
+    if (result == -ENOMSG) {
         return respond_error(401, "mfa_required",
                              "A second authentication factor is required.",
                              request->request_id, output, output_size, written);
@@ -4136,7 +4136,7 @@ static int authenticate_actor(struct jg_management *management,
         actor->actor_id = actor->identity.user_id;
     }
     if (result == 0 && actor->identity.force_password_change) {
-        result = -EKEYEXPIRED;
+        result = -EPERM;
     }
     if (result == 0 &&
         !jg_access_grants(actor->identity.permissions, required_permissions)) {
@@ -4160,7 +4160,7 @@ static int respond_actor_error(int result,
                              "The API token request limit was exceeded.",
                              request->request_id, output, output_size, written);
     }
-    if (result == -EPERM || result == -EKEYEXPIRED) {
+    if (result == -EPERM) {
         return respond_error(403, "forbidden",
                              "The authenticated identity is not authorized.",
                              request->request_id, output, output_size, written);
@@ -4556,7 +4556,7 @@ static int handle_network_confirm(struct jg_management *management,
         if (result != 0) {
             audit_result = append_network_audit(
                 management, request, remote, &actor, "network.confirm",
-                &state.pending_config, recovery_result == 0 ? result : -EUCLEAN,
+                &state.pending_config, recovery_result == 0 ? result : -EIO,
                 record.revision, true,
                 recovery_result == 0 ? recovered.revision : updated.revision,
                 now);
@@ -7822,7 +7822,7 @@ static int handle_certificate_install(struct jg_management *management,
             "No pending private key is available for this certificate.",
             request->request_id, output, output_size, written);
     }
-    if (result == -EINVAL || result == -EKEYREJECTED) {
+    if (result == -EINVAL || result == -EACCES) {
         return respond_error(400, "invalid_certificate",
                              "The certificate or its private key is not valid.",
                              request->request_id, output, output_size, written);
@@ -8178,13 +8178,12 @@ static int handle_backup_restore(struct jg_management *management,
                        passphrase == NULL ? 0U : strlen(passphrase), &contents);
     jg_backup_data_clear(archive, archive_size);
     if (result != 0) {
-        return respond_error(result == -EKEYREJECTED ? 400 : 409,
-                             result == -EKEYREJECTED ? "incorrect_passphrase"
-                                                     : "backup_invalid",
-                             result == -EKEYREJECTED
-                                 ? "The full-backup passphrase is not correct."
-                                 : "The backup payload could not be validated.",
-                             request->request_id, output, output_size, written);
+        return respond_error(
+            result == -EACCES ? 400 : 409,
+            result == -EACCES ? "incorrect_passphrase" : "backup_invalid",
+            result == -EACCES ? "The full-backup passphrase is not correct."
+                              : "The backup payload could not be validated.",
+            request->request_id, output, output_size, written);
     }
     result = jg_database_restore(
         management->database, contents.database, contents.database_size,

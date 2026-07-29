@@ -76,7 +76,7 @@ struct jg_certificate_material {
  *
  * @return 0 on success.
  * @return -EINVAL for malformed arguments or PEM.
- * @return -EKEYREJECTED when the supplied private key does not match.
+ * @return -EACCES when the supplied private key does not match.
  * @return A negative errno-style allocation or conversion error otherwise.
  *
  * @thread_safety OpenSSL initialization must be process-wide and complete.
@@ -153,7 +153,7 @@ JG_PUBLIC void jg_certificate_pem_clear(char *pem, size_t pem_size);
  *
  * @return 0 on success.
  * @return -EINVAL for malformed arguments or PEM.
- * @return -EKEYREJECTED when the private key does not match.
+ * @return -EACCES when the private key does not match.
  * @return -EACCES for an insecure existing destination. A secure 0640
  * destination owned by the effective user retains its service group.
  * @return A negative errno-style file or allocation error otherwise.

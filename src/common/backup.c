@@ -586,7 +586,7 @@ int jg_backup_open(const uint8_t *archive,
                 archive + BACKUP_HEADER_SIZE,
                 (unsigned long long)(archive_size - BACKUP_HEADER_SIZE),
                 archive, BACKUP_AUTHENTICATED_HEADER_SIZE, nonce, key) != 0) {
-            result = -EKEYREJECTED;
+            result = -EACCES;
         }
         if (result == 0 && decrypted_size != plaintext_size) {
             result = -EILSEQ;

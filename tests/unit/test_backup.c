@@ -113,7 +113,7 @@ static void test_encrypted_archive(void **state)
                                 sizeof(private_certificate) - 1U));
     assert_int_equal(jg_backup_open(archive, archive_size, "wrong passphrase",
                                     sizeof("wrong passphrase") - 1U, &contents),
-                     -EKEYREJECTED);
+                     -EACCES);
     assert_int_equal(jg_backup_open(archive, archive_size, passphrase,
                                     sizeof(passphrase) - 1U, &contents),
                      0);

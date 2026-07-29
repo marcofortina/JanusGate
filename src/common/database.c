@@ -3979,7 +3979,7 @@ int jg_database_record_blocklist_attempt(
         result = -EAGAIN;
     }
     if (result == 0 && successful && !source.has_active_checksum) {
-        result = -ENODATA;
+        result = -ENOENT;
     }
     if (result == 0) {
         result = store_blocklist_attempt(database->handle, source_id, state,

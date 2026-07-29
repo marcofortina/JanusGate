@@ -1723,7 +1723,7 @@ static void test_blocklist_activation(void **state)
     assert_int_equal(jg_database_record_blocklist_attempt(database, empty.id,
                                                           empty.revision,
                                                           &remote, true, NULL),
-                     -ENODATA);
+                     -ENOENT);
     jg_blocklist_destroy(blocklist);
     jg_database_close(database);
     remove_database(directory, path);

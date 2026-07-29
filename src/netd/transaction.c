@@ -75,7 +75,7 @@ int jg_netd_apply_network(const struct jg_network_config *config)
         rollback_result = jg_netd_restore_bridge(&checkpoint);
     }
     if (rollback_result != 0) {
-        return -EUCLEAN;
+        return -EIO;
     }
     if (result == 0) {
         transaction.checkpoint = checkpoint;
@@ -120,7 +120,7 @@ int jg_netd_rollback_network(void)
         transaction.current_valid = false;
         clear_pending_transaction();
     }
-    return -EUCLEAN;
+    return -EIO;
 }
 
 /** @brief Roll back one pending transaction whose deadline has elapsed. */

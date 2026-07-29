@@ -950,7 +950,7 @@ JG_PUBLIC int jg_database_activate_blocklist(
  *
  * @return 0 on success.
  * @return -EINVAL for invalid arguments or inconsistent attempt state.
- * @return -ENODATA when success is reported without an active list.
+ * @return -ENOENT when success is reported without an active list.
  * @return -ENOENT when the source does not exist.
  * @return -EAGAIN when the source configuration changed during the attempt.
  * @return -EOVERFLOW when timestamps cannot be represented persistently.

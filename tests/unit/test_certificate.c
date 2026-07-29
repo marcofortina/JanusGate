@@ -104,7 +104,7 @@ static void test_certificate_request(void **state)
     assert_int_equal(jg_certificate_inspect(
                          certificate.certificate, certificate.certificate_size,
                          request.private_key, request.private_key_size, &info),
-                     -EKEYREJECTED);
+                     -EACCES);
 
     EVP_PKEY_free(public_key);
     X509_REQ_free(parsed);

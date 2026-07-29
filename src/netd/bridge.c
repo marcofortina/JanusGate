@@ -360,7 +360,7 @@ int jg_netd_apply_bridge(const struct jg_network_config *config,
         snapshot.valid = true;
         *checkpoint = snapshot;
     }
-    return rollback_result == 0 ? result : -EUCLEAN;
+    return rollback_result == 0 ? result : -EIO;
 }
 
 /** @brief Restore and consume one prior bridge checkpoint. */

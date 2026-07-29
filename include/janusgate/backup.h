@@ -163,7 +163,7 @@ JG_PUBLIC int jg_backup_inspect(const uint8_t *archive,
  *
  * @return 0 on success.
  * @return -EINVAL for malformed arguments.
- * @return -EKEYREJECTED for an incorrect full-backup passphrase.
+ * @return -EACCES for an incorrect full-backup passphrase.
  * @return -EILSEQ for malformed structure.
  * @return -EBADMSG for a checksum mismatch.
  * @return -ENOTSUP for an incompatible format.

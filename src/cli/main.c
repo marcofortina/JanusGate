@@ -555,7 +555,7 @@ static int read_backup_passphrase(
         if (result == 0 &&
             (verification_size != *passphrase_size ||
              sodium_memcmp(verification, passphrase, *passphrase_size) != 0)) {
-            result = -EKEYREJECTED;
+            result = -EACCES;
         }
     }
     sodium_memzero(verification, sizeof(verification));
@@ -2300,9 +2300,8 @@ static int run_backup_create(const struct cli_options *options,
 
         if (read_result != 0) {
             (void)fprintf(stderr, "janusgatectl: backup passphrase: %s\n",
-                          read_result == -EKEYREJECTED
-                              ? "confirmation does not match"
-                              : strerror(-read_result));
+                          read_result == -EACCES ? "confirmation does not match"
+                                                 : strerror(-read_result));
             sodium_memzero(passphrase, sizeof(passphrase));
             return read_result == -EINVAL || read_result == -ENOTTY
                        ? CLI_EXIT_USAGE

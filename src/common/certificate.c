@@ -183,7 +183,7 @@ static int inspect_certificate(X509 *certificate,
             private_key != NULL &&
             X509_check_private_key(certificate, private_key) == 1;
         if (private_key != NULL && !info->private_key_matches) {
-            result = -EKEYREJECTED;
+            result = -EACCES;
         }
     }
     EVP_PKEY_free(public_key);

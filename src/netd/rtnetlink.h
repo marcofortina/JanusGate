@@ -119,7 +119,7 @@ int jg_netd_validate_live_config(const struct jg_network_config *config,
  * rollback. It contains no owned resources.
  *
  * @return 0 when the bridge transaction completed.
- * @return -EUCLEAN when an apply error was followed by failed rollback.
+ * @return -EIO when an apply error was followed by failed rollback.
  * @return A negative errno-style validation or rtnetlink error otherwise.
  *
  * @thread_safety Calls affecting the same links require external

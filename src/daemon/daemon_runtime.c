@@ -559,7 +559,7 @@ int jg_daemon_runtime_reload_configuration(
             runtime, &runtime->active_dns_response, runtime->worker_count);
     }
     if (rollback_result != 0) {
-        result = -EUCLEAN;
+        result = -EIO;
     }
     if (result == 0) {
         runtime->active_dns_response = candidate.dns_response;

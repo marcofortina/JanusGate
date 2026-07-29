@@ -71,7 +71,7 @@ int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid);
  * @param[in] config Validated complete inline-network configuration.
  *
  * @return 0 on success.
- * @return -EUCLEAN when bridge restoration fails.
+ * @return -EIO when bridge restoration fails.
  * @return A negative errno-style validation, rtnetlink, or nftables error
  * otherwise.
  *
@@ -99,7 +99,7 @@ int jg_netd_confirm_network(void);
  *
  * @return 0 on success.
  * @return -EBUSY when no transaction is pending.
- * @return -EUCLEAN when complete restoration cannot be guaranteed.
+ * @return -EIO when complete restoration cannot be guaranteed.
  *
  * @thread_safety State-changing calls require external serialization.
  *
@@ -111,7 +111,7 @@ int jg_netd_rollback_network(void);
  * @brief Roll back a pending network transaction after its deadline.
  *
  * @return 0 when no transaction is due or rollback succeeds.
- * @return -EUCLEAN when an expired transaction cannot be fully restored.
+ * @return -EIO when an expired transaction cannot be fully restored.
  * @return A negative errno-style monotonic-clock error otherwise.
  *
  * @thread_safety State-changing calls require external serialization.
