@@ -28,7 +28,6 @@ pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
 pkg_check_modules(MNL REQUIRED IMPORTED_TARGET libmnl)
-pkg_check_modules(NETFILTER_QUEUE REQUIRED IMPORTED_TARGET libnetfilter_queue)
 pkg_check_modules(NFTABLES REQUIRED IMPORTED_TARGET libnftables)
 pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
@@ -36,10 +35,16 @@ pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   pkg_check_modules(LIBCAP REQUIRED IMPORTED_TARGET libcap)
   pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp)
+  pkg_check_modules(NETFILTER_QUEUE REQUIRED IMPORTED_TARGET
+                    libnetfilter_queue)
   set(janusgate_process_security_source src/common/process_security.c)
+  set(janusgate_nfqueue_source src/daemon/nfqueue.c)
+  set(janusgate_packet_output_source src/daemon/packet_output.c)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
   set(janusgate_process_security_source
       src/common/process_security_openbsd.c)
+  set(janusgate_nfqueue_source src/daemon/nfqueue_openbsd.c)
+  set(janusgate_packet_output_source src/daemon/packet_output_openbsd.c)
 else()
   message(FATAL_ERROR "JanusGate supports Linux and OpenBSD")
 endif()
@@ -153,9 +158,9 @@ add_library(
   src/daemon/fragment.c
   src/daemon/management.c
   src/daemon/netd_client.c
-  src/daemon/nfqueue.c
+  ${janusgate_nfqueue_source}
   src/daemon/nfqueue_group.c
-  src/daemon/packet_output.c
+  ${janusgate_packet_output_source}
   src/daemon/policy_store.c
   src/daemon/tcp_reset.c
   src/daemon/tcp_stream.c)
@@ -165,7 +170,11 @@ target_include_directories(
 target_link_libraries(
   janusgate-daemon-core
   PUBLIC JanusGate::common janusgate-control-protocol Threads::Threads
-  PRIVATE PkgConfig::JANSSON PkgConfig::NETFILTER_QUEUE)
+  PRIVATE PkgConfig::JANSSON)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(janusgate-daemon-core
+                        PRIVATE PkgConfig::NETFILTER_QUEUE)
+endif()
 janusgate_apply_compiler_options(janusgate-daemon-core)
 
 add_library(

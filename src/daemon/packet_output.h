@@ -86,7 +86,7 @@ int jg_packet_output_config_validate(
  *
  * @thread_safety Concurrent opens are independent.
  *
- * @side_effects Opens an AF_PACKET socket requiring CAP_NET_RAW.
+ * @side_effects Opens the native raw link-layer output facility.
  */
 int jg_packet_output_open(const struct jg_packet_output_config *config,
                           struct jg_packet_output **output);

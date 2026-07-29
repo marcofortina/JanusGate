@@ -20,7 +20,7 @@ int jg_test_nfqueue(void);
 /** @brief Build one valid single-worker queue configuration. */
 static struct jg_nfqueue_worker_config test_config(void)
 {
-    const struct jg_nfqueue_worker_config config = {
+    struct jg_nfqueue_worker_config config = {
         .queue_number = 100U,
         .ingress_index = 2U,
         .queue_length = 4096U,
@@ -28,6 +28,9 @@ static struct jg_nfqueue_worker_config test_config(void)
         .fail_open = true,
     };
 
+#if defined(__OpenBSD__)
+    config.fail_open = false;
+#endif
     return config;
 }
 
@@ -50,6 +53,11 @@ static void test_configuration(void **state)
     config = test_config();
     config.receive_buffer_size = JG_NFQUEUE_RECEIVE_BUFFER_MAX + 1U;
     assert_int_equal(jg_nfqueue_worker_config_validate(&config), -ERANGE);
+#if defined(__OpenBSD__)
+    config = test_config();
+    config.fail_open = true;
+    assert_int_equal(jg_nfqueue_worker_config_validate(&config), -ENOTSUP);
+#endif
 }
 
 /** @brief Verify argument rejection without opening a privileged queue. */
@@ -89,9 +97,18 @@ static void test_group_configuration(void **state)
     };
 
     (void)state;
+#if defined(__OpenBSD__)
+    config.queue_count = 1U;
+    config.fail_open = false;
+#endif
     assert_int_equal(jg_nfqueue_group_config_validate(&config), 0);
     assert_int_equal(jg_nfqueue_group_config_validate(NULL), -EINVAL);
 
+#if defined(__OpenBSD__)
+    config.queue_count = 2U;
+    assert_int_equal(jg_nfqueue_group_config_validate(&config), -ENOTSUP);
+    config.queue_count = 1U;
+#endif
     config.queue_count = 0U;
     assert_int_equal(jg_nfqueue_group_config_validate(&config), -EINVAL);
     config.queue_count = JG_NETWORK_QUEUE_COUNT_MAX + 1U;

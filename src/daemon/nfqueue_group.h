@@ -4,7 +4,7 @@
 
 /**
  * @file nfqueue_group.h
- * @brief Independent worker group for a contiguous NFQUEUE range.
+ * @brief Independent worker group for native kernel packet queues.
  */
 
 #ifndef JANUSGATE_DAEMON_NFQUEUE_GROUP_H
@@ -17,7 +17,7 @@
 #include "nfqueue.h"
 
 /**
- * @brief Complete configuration shared by one NFQUEUE worker group.
+ * @brief Complete configuration shared by one packet-queue worker group.
  */
 struct jg_nfqueue_group_config {
     /** First queue number in the contiguous range. */
@@ -28,7 +28,7 @@ struct jg_nfqueue_group_config {
     uint32_t ingress_index;
     /** Maximum packets retained by every kernel queue. */
     uint32_t queue_length;
-    /** Requested netlink receive-buffer bytes for every worker. */
+    /** Requested kernel receive-buffer bytes for every worker. */
     uint32_t receive_buffer_size;
     /** First CPU used when worker pinning is enabled. */
     uint32_t first_cpu;
@@ -51,6 +51,7 @@ struct jg_nfqueue_group;
  * worker fields.
  * @return -ERANGE when the queue range, worker count, or requested CPU range
  * exceeds supported bounds.
+ * @return -ENOTSUP for a platform-specific unsupported option.
  *
  * @thread_safety This function is reentrant.
  */

@@ -49,7 +49,7 @@ struct jg_nfqueue_packet {
 };
 
 /**
- * @brief Configuration of one independent NFQUEUE worker.
+ * @brief Configuration of one independent kernel-queue worker.
  */
 struct jg_nfqueue_worker_config {
     /** Queue number owned exclusively by this worker. */
@@ -76,9 +76,9 @@ struct jg_nfqueue_stats {
     uint64_t dropped;
     /** Packets rejected for missing, truncated, or unexpected metadata. */
     uint64_t malformed;
-    /** Netlink receive overflows reported by the kernel. */
+    /** Packet transport or link-capture overflows reported by the kernel. */
     uint64_t overflows;
-    /** Netlink messages rejected by libnetfilter_queue. */
+    /** Kernel packet messages rejected by the native transport. */
     uint64_t message_errors;
     /** Verdicts which could not be delivered to the kernel. */
     uint64_t verdict_errors;
@@ -111,6 +111,7 @@ typedef enum jg_nfqueue_verdict (*jg_nfqueue_processor)(
  * @return -EINVAL for a null configuration, zero interface index, or zero
  * receive buffer.
  * @return -ERANGE for an unsafe queue length or receive-buffer size.
+ * @return -ENOTSUP for behavior unavailable on the current platform.
  *
  * @thread_safety This function is reentrant.
  */
@@ -131,7 +132,7 @@ int jg_nfqueue_worker_config_validate(
  *
  * @thread_safety Different queue numbers may be opened independently.
  *
- * @side_effects Binds the queue and tunes its netlink receive socket.
+ * @side_effects Binds and tunes the native packet-queue transport.
  */
 int jg_nfqueue_worker_open(const struct jg_nfqueue_worker_config *config,
                            jg_nfqueue_processor processor,
@@ -142,7 +143,7 @@ int jg_nfqueue_worker_open(const struct jg_nfqueue_worker_config *config,
  * @brief Service packets until the supplied descriptor becomes readable.
  *
  * Every valid packet callback attempts exactly one definitive verdict.
- * Shutdown drains already delivered netlink messages within the configured
+ * Shutdown drains already delivered packet messages within the configured
  * queue bound before returning.
  *
  * @param[in,out] worker Open queue worker.
@@ -178,7 +179,7 @@ int jg_nfqueue_worker_get_stats(const struct jg_nfqueue_worker *worker,
  *
  * @thread_safety The worker must not be running.
  *
- * @side_effects Unbinds the queue and closes its netlink socket.
+ * @side_effects Unbinds the queue and closes its native descriptors.
  */
 void jg_nfqueue_worker_close(struct jg_nfqueue_worker *worker);
 

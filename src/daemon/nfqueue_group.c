@@ -186,7 +186,7 @@ int jg_nfqueue_group_config_validate(
         return -ERANGE;
     }
 #else
-    if (config->pin_workers) {
+    if (config->queue_count != 1U || config->pin_workers) {
         return -ENOTSUP;
     }
 #endif

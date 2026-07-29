@@ -27,7 +27,7 @@ static const struct metric_descriptor metrics[METRIC_COUNT] = {
     {"janusgate_policy_generation", "gauge",
      "Current immutable policy generation."},
     {"janusgate_nfqueue_packets_total", "counter",
-     "Packets received from Linux NFQUEUE."},
+     "Packets received from the kernel policy queue."},
     {"janusgate_nfqueue_accepted_total", "counter",
      "Packets accepted through NFQUEUE."},
     {"janusgate_nfqueue_dropped_total", "counter",

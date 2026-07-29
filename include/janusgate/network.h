@@ -27,7 +27,7 @@
 
 #include "janusgate/version.h"
 
-/** Maximum Linux interface-name bytes excluding the null terminator. */
+/** Maximum supported interface-name bytes excluding the null terminator. */
 #define JG_INTERFACE_NAME_MAX 15U
 
 /** Exact version-one network-configuration body size. */
