@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+[Unit]
+Description=JanusGate inline policy daemon
+Documentation=man:janusgated(8)
+Requires=janusgate-netd.service
+After=janusgate-netd.service local-fs.target
+Before=janusgate-web.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/janusgated
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_NET_ADMIN CAP_NET_RAW CAP_SETGID CAP_SETUID
+AmbientCapabilities=
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/etc/janusgate/certs /run/janusgate /var/lib/janusgate /var/log/janusgate
+
+[Install]
+WantedBy=multi-user.target

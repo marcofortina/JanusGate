@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# shellcheck disable=SC2034
+
+name="JanusGate policy daemon"
+description="JanusGate inline packet inspection and policy service"
+command="/usr/sbin/janusgated"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=5
+respawn_period=30
+
+depend() {
+    need janusgate-netd
+    use logger
+    before janusgate-web
+}
+
+start_pre() {
+    checkpath --directory --owner janusgate:janusgate --mode 0750 \
+        /var/lib/janusgate
+    checkpath --directory --owner janusgate:janusgate --mode 0700 \
+        /var/lib/janusgate/backups
+    checkpath --directory --owner janusgate:janusgate --mode 0750 \
+        /var/log/janusgate
+}

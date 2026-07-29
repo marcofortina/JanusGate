@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+[Unit]
+Description=JanusGate HTTPS administration
+Documentation=man:janusgate-web(8)
+Requires=janusgated.service
+After=janusgated.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=janusgate-web
+Group=janusgate-web
+SupplementaryGroups=janusgate-control
+ExecStart=/usr/sbin/janusgate-web --hsts
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

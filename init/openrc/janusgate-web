@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# shellcheck disable=SC2034
+
+name="JanusGate web administration"
+description="Unprivileged JanusGate HTTPS administration service"
+command="/usr/sbin/janusgate-web"
+command_args="--hsts"
+command_user="janusgate-web:janusgate-web"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=5
+respawn_period=30
+
+depend() {
+    need janusgated
+    use logger
+}

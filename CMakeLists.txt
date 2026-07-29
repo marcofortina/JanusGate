@@ -228,6 +228,30 @@ install(
   DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/web"
   COMPONENT runtime)
 install(
+  PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-netd"
+           "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgated"
+           "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-web"
+  DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/init.d"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgate-netd.service"
+        "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgated.service"
+        "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgate-web.service"
+  DESTINATION "lib/systemd/system"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/tmpfiles/janusgate.conf"
+  DESTINATION "lib/tmpfiles.d"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/sysusers/janusgate.conf"
+  DESTINATION "lib/sysusers.d"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/logrotate/janusgate"
+  DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/logrotate.d"
+  COMPONENT runtime)
+install(
   EXPORT JanusGateTargets
   NAMESPACE JanusGate::
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/JanusGate"
