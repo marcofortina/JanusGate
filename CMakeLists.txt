@@ -426,5 +426,9 @@ set(CPACK_PACKAGE_VENDOR "Marco Fortina")
 set(CPACK_PACKAGE_CONTACT "marco_fortina@hotmail.it")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_SOURCE_GENERATOR "TGZ")
-set(CPACK_SOURCE_IGNORE_FILES "/build[^/]*/;/.git/;~$;${CPACK_SOURCE_IGNORE_FILES}")
+set(CPACK_SOURCE_PACKAGE_FILE_NAME "janusgate-${PROJECT_VERSION}")
+set(
+  CPACK_SOURCE_IGNORE_FILES
+  "/build[^/]*/;/.git/;/out/;/packaging/alpine/APKBUILD$;~$;${CPACK_SOURCE_IGNORE_FILES}"
+)
 include(CPack)

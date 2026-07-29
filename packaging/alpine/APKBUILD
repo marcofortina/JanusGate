@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# Maintainer: Marco Fortina <marco_fortina@hotmail.it>
+
+pkgname=janusgate
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Transparent inline DNS policy appliance"
+url="https://github.com/marcofortina/JanusGate"
+arch="all"
+license="AGPL-3.0-or-later"
+depends="
+	ca-certificates
+	iproute2
+	libcap-utils
+	logrotate
+	nftables
+	openrc
+	"
+makedepends="
+	bash
+	build-base
+	civetweb-dev
+	cmake
+	cmocka-dev
+	curl-dev
+	groff
+	jansson-dev
+	libcap-dev
+	libidn2-dev
+	libmnl-dev
+	libnetfilter_queue-dev
+	libseccomp-dev
+	libsodium-dev
+	nftables-dev
+	openssl-dev
+	pkgconf
+	py3-jsonschema
+	py3-yaml
+	python3
+	samurai
+	sqlite-dev
+	zlib-dev
+	"
+subpackages="
+	$pkgname-openrc
+	$pkgname-bash-completion:bashcomp:noarch
+	$pkgname-fish-completion:fishcomp:noarch
+	$pkgname-zsh-completion:zshcomp:noarch
+	$pkgname-dev
+	$pkgname-doc
+	"
+install="$pkgname.pre-install $pkgname.post-install"
+source="janusgate-$pkgver.tar.gz::https://github.com/marcofortina/JanusGate/releases/download/v$pkgver/janusgate-$pkgver.tar.gz"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_INSTALL_LOCALSTATEDIR=/var \
+		-DCMAKE_INSTALL_RUNSTATEDIR=/run \
+		-DCMAKE_INSTALL_SYSCONFDIR=/etc \
+		-DBUILD_TESTING=ON \
+		-DJANUSGATE_BUILD_DOCUMENTATION=OFF \
+		-DJANUSGATE_HARDENING=ON \
+		-DJANUSGATE_SOURCE_COMMIT="${JANUSGATE_SOURCE_COMMIT:-}" \
+		-DJANUSGATE_WARNINGS_AS_ERRORS=ON
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build --output-on-failure
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+	rm -r "$pkgdir"/usr/lib/systemd "$pkgdir"/usr/lib/sysusers.d \
+		"$pkgdir"/usr/lib/tmpfiles.d
+}
+
+sha512sums="
+b58cb70dc6c7d2ffb2c7fd91b4a8baf689d211ae55f7eb2612dd13b9991e7d0b2d59c3a86abd6a1d4cc2ad766c80baabc92b180cb450d02ca7e963ecb8aadb20  janusgate-0.1.0.tar.gz
+"
