@@ -876,7 +876,7 @@ int jg_account_user_update(struct jg_database *database,
         " WHERE id=?3 AND revision=?4;";
     static const char update_role[] =
         "UPDATE user_roles SET role_id=?1 WHERE user_id=?2;";
-    struct jg_account_user current;
+    struct jg_account_user current = {0};
     sqlite3_stmt *statement = NULL;
     bool transaction_open = false;
     uint64_t administrator_count = 0U;
@@ -3603,7 +3603,7 @@ static int disable_totp(struct jg_database *database,
 {
     static const char delete_totp[] =
         "DELETE FROM totp_credentials WHERE user_id=?1;";
-    struct jg_account_user current;
+    struct jg_account_user current = {0};
     sqlite3_stmt *statement = NULL;
     bool transaction_open = false;
     int status = SQLITE_OK;

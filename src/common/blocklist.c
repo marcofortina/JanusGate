@@ -71,6 +71,10 @@ static bool is_space(uint8_t value)
 /** @brief Remove leading and trailing ASCII whitespace from a span. */
 static struct byte_span trim_span(struct byte_span span)
 {
+    if (span.data == NULL) {
+        span.size = 0U;
+        return span;
+    }
     while (span.size > 0U && is_space(span.data[0])) {
         ++span.data;
         --span.size;
@@ -701,7 +705,7 @@ static int finalize_blocklist(const struct blocklist_stage *stage,
     if (result == 0) {
         blocklist->strings = malloc(strings_size);
         if (unique_count != 0U) {
-            blocklist->entries = malloc(entries_size);
+            blocklist->entries = calloc(1U, entries_size);
         }
         if (blocklist->strings == NULL ||
             (unique_count != 0U && blocklist->entries == NULL)) {

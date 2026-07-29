@@ -4732,10 +4732,16 @@ static int read_domain_rules(sqlite3 *handle,
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     size_t cursor = 0U;
-    int status = sqlite3_prepare_v3(
-        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
+    int status = SQLITE_OK;
+    int result = 0;
 
+    if (handle == NULL ||
+        (rule_count != 0U && (rules == NULL || strings == NULL))) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(handle, query, -1, SQLITE_PREPARE_PERSISTENT,
+                                &statement, NULL);
+    result = jg_database_sqlite_result(status);
     while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
         if (index >= rule_count) {
             result = -EILSEQ;
@@ -4775,10 +4781,16 @@ static int read_destination_rules(
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     size_t cursor = 0U;
-    int status = sqlite3_prepare_v3(
-        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
+    int status = SQLITE_OK;
+    int result = 0;
 
+    if (handle == NULL ||
+        (rule_count != 0U && (rules == NULL || strings == NULL))) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(handle, query, -1, SQLITE_PREPARE_PERSISTENT,
+                                &statement, NULL);
+    result = jg_database_sqlite_result(status);
     while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
         if (index >= rule_count) {
             result = -EILSEQ;
@@ -4820,10 +4832,16 @@ static int read_encrypted_endpoints(
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     size_t cursor = 0U;
-    int status = sqlite3_prepare_v3(
-        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
+    int status = SQLITE_OK;
+    int result = 0;
 
+    if (handle == NULL ||
+        (rule_count != 0U && (rules == NULL || strings == NULL))) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(handle, query, -1, SQLITE_PREPARE_PERSISTENT,
+                                &statement, NULL);
+    result = jg_database_sqlite_result(status);
     while (result == 0 && (status = sqlite3_step(statement)) == SQLITE_ROW) {
         const char *attribution = NULL;
         const char *transport = NULL;
@@ -4960,7 +4978,8 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
             result = -ENOMEM;
         }
     }
-    if (result == 0 && complete_destination_count != 0U) {
+    if (result == 0 &&
+        (destination_rule_count != 0U || encrypted_endpoint_count != 0U)) {
         destination_rules = calloc(1U, destination_rules_size);
         destination_strings = malloc(complete_destination_strings_size);
         if (destination_rules == NULL || destination_strings == NULL) {

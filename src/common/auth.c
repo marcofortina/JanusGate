@@ -381,7 +381,7 @@ int jg_auth_totp_verify(const uint8_t secret[JG_AUTH_TOTP_SECRET_SIZE],
     uint8_t expected[JG_AUTH_TOTP_DIGITS];
     const uint64_t counter = timestamp / JG_AUTH_TOTP_PERIOD;
     uint64_t first = counter > window ? counter - window : 0U;
-    uint64_t last = counter;
+    uint64_t last;
     uint32_t expected_code = 0U;
     int result = 0;
 

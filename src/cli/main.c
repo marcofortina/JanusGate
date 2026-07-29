@@ -1200,7 +1200,7 @@ static int fetch_policy_rule(const struct cli_options *options,
     return result;
 }
 
-/** @brief Prompt before a destructive operation unless already confirmed. */
+/** @brief Confirm a destructive operation unless approval was already given. */
 static bool destructive_operation_confirmed(const struct cli_options *options,
                                             const char *description)
 {

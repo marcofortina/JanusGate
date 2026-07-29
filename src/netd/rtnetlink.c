@@ -284,10 +284,14 @@ static int validate_bridge_members(const struct jg_netd_link *bridge,
                                    const struct jg_netd_link *egress)
 {
     struct if_nameindex *interfaces = if_nameindex();
-    const struct if_nameindex *interface = interfaces;
-    int result = interfaces == NULL ? -errno : 0;
+    const struct if_nameindex *interface = NULL;
+    int result = 0;
 
-    while (result == 0 && interface->if_index != 0U) {
+    if (interfaces == NULL) {
+        return errno == 0 ? -EIO : -errno;
+    }
+    interface = interfaces;
+    while (interface->if_index != 0U && result == 0) {
         if (interface->if_index != ingress->index &&
             interface->if_index != egress->index &&
             interface->if_index != bridge->index) {
@@ -300,9 +304,7 @@ static int validate_bridge_members(const struct jg_netd_link *bridge,
         }
         ++interface;
     }
-    if (interfaces != NULL) {
-        if_freenameindex(interfaces);
-    }
+    if_freenameindex(interfaces);
     return result;
 }
 

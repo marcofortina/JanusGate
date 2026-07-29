@@ -321,6 +321,14 @@ add_custom_target(
   VERBATIM)
 
 add_custom_target(
+  static-analysis
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-static-analysis.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}"
+  USES_TERMINAL
+  VERBATIM)
+
+add_custom_target(
   function-docs-check
   COMMAND "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-function-docs.py"

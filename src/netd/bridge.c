@@ -58,7 +58,7 @@ static int open_connection(struct rtnl_connection *connection)
     }
     connection->socket = mnl_socket_open(NETLINK_ROUTE);
     if (connection->socket == NULL) {
-        result = -errno;
+        result = errno == 0 ? -EIO : -errno;
     }
     if (result == 0 &&
         setsockopt(mnl_socket_get_fd(connection->socket), SOL_SOCKET,
