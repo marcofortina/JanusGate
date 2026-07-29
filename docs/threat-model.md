@@ -32,7 +32,11 @@ storage, and the software supply chain.
 - A compromised `janusgate-web` process is contained by an unprivileged
   account, restricted files, local protocol validation, and the absence of
   direct network-administration capability.
-- Queue and connection exhaustion are bounded by NFQUEUE length, packet-copy
+- On OpenBSD, `janusgated` and `janusgate-web` additionally use `pledge`.
+  The narrow root network helper validates authenticated local requests but
+  cannot use `pledge` because bridge and MTU ioctls are not exposed by a
+  promise.
+- Queue and connection exhaustion are bounded by queue length, packet-copy
   length, flow counts, reassembly bytes, fragment counts, and timeouts.
 - Local symlink and permission attacks are reduced through ownership checks,
   restrictive modes, no-follow creation where applicable, and atomic replace

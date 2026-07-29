@@ -420,7 +420,7 @@ int jg_netd_run(uid_t allowed_uid, gid_t socket_gid)
         }
     }
     if (result == 0) {
-        result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_NETD);
+        result = jg_process_apply_system_call_filter(JG_PROCESS_PROFILE_NETD);
     }
     while (result == 0 && stop_requested == 0) {
         struct pollfd descriptor = {

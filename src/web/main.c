@@ -141,7 +141,7 @@ int main(int argc, char **argv)
         result = jg_web_server_start(&config, &server);
     }
     if (result == 0) {
-        result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_WEB);
+        result = jg_process_apply_system_call_filter(JG_PROCESS_PROFILE_WEB);
     }
     if (result == 0) {
         wait_result = sigwait(&signals, &signal_number);

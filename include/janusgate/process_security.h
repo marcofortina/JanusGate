@@ -10,9 +10,9 @@
  * state. Callers retain ownership of all arguments. Successful restrictions
  * are irreversible for the lifetime of the process.
  *
- * Calls that change credentials must be externally serialized. Seccomp
- * profiles are applied to every thread atomically. Errors are returned as
- * negative errno-style values.
+ * Calls that change credentials must be externally serialized. System-call
+ * restrictions use the native operating-system facility. Errors are returned
+ * as negative errno-style values.
  */
 
 #ifndef JANUSGATE_PROCESS_SECURITY_H
@@ -22,7 +22,7 @@
 enum jg_process_profile {
     /** Policy daemon startup and packet-processing privileges. */
     JG_PROCESS_PROFILE_DAEMON = 0,
-    /** Privileged bridge, nftables, and appliance lifecycle helper. */
+    /** Privileged bridge, packet-filter, and appliance lifecycle helper. */
     JG_PROCESS_PROFILE_NETD,
     /** Unprivileged HTTPS management service. */
     JG_PROCESS_PROFILE_WEB
@@ -32,28 +32,28 @@ enum jg_process_profile {
  * @brief Disable privilege growth and secret-bearing core dumps.
  *
  * @return 0 on success.
- * @return A negative errno-style `prctl` or resource-limit error otherwise.
+ * @return A negative errno-style kernel or resource-limit error otherwise.
  *
  * @thread_safety Call before creating worker threads.
  *
- * @side_effects Sets `PR_SET_NO_NEW_PRIVS`, disables dumpability, and sets the
- * soft and hard core-size limits to zero.
+ * @side_effects Disables privilege growth and core dumps using the strongest
+ * native controls available.
  */
 int jg_process_harden(void);
 
 /**
- * @brief Replace the current capability sets with one service minimum.
+ * @brief Restrict process privileges to one service minimum.
  *
  * @param[in] profile Service profile selecting the required capability set.
  *
  * @return 0 on success.
  * @return -EINVAL for an unknown profile.
- * @return A negative errno-style libcap or `prctl` error otherwise.
+ * @return A negative errno-style platform-security error otherwise.
  *
  * @thread_safety Call before starting concurrent work.
  *
- * @side_effects Clears ambient capabilities and replaces effective,
- * permitted, and inheritable capability sets.
+ * @side_effects Restricts operating-system privileges where separate
+ * capability sets are available.
  */
 int jg_process_restrict_capabilities(enum jg_process_profile profile);
 
@@ -62,7 +62,7 @@ int jg_process_restrict_capabilities(enum jg_process_profile profile);
  *
  * Supplementary groups are initialized from the account database before the
  * real, effective, and saved group and user identifiers are replaced. All
- * capabilities are cleared after the transition.
+ * platform privileges are cleared after the transition.
  *
  * @param[in] user_name Existing non-root account name.
  *
@@ -73,25 +73,24 @@ int jg_process_restrict_capabilities(enum jg_process_profile profile);
  *
  * @thread_safety Calls must be externally serialized.
  *
- * @side_effects Irreversibly changes process credentials and capabilities.
+ * @side_effects Irreversibly changes process credentials and privileges.
  */
 int jg_process_drop_privileges(const char *user_name);
 
 /**
- * @brief Install one service-specific seccomp system-call allowlist.
+ * @brief Install one service-specific native system-call allowlist.
  *
  * @param[in] profile Service profile selecting additional allowed calls.
  *
  * @return 0 on success.
  * @return -EINVAL for an unknown profile.
- * @return A negative errno-style libseccomp error otherwise.
+ * @return A negative errno-style platform-security error otherwise.
  *
- * @thread_safety The filter is atomically synchronized to every process
- * thread.
+ * @thread_safety Apply after starting service threads; the native restriction
+ * covers the process.
  *
- * @side_effects Permanently rejects calls outside the selected allowlist with
- * `EPERM`.
+ * @side_effects Permanently rejects calls outside the selected allowlist.
  */
-int jg_process_apply_seccomp(enum jg_process_profile profile);
+int jg_process_apply_system_call_filter(enum jg_process_profile profile);
 
 #endif

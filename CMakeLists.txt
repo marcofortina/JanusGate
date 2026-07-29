@@ -27,13 +27,22 @@ find_library(CIVETWEB_LIBRARY NAMES civetweb REQUIRED)
 pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
-pkg_check_modules(LIBCAP REQUIRED IMPORTED_TARGET libcap)
-pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp)
 pkg_check_modules(MNL REQUIRED IMPORTED_TARGET libmnl)
 pkg_check_modules(NETFILTER_QUEUE REQUIRED IMPORTED_TARGET libnetfilter_queue)
 pkg_check_modules(NFTABLES REQUIRED IMPORTED_TARGET libnftables)
 pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  pkg_check_modules(LIBCAP REQUIRED IMPORTED_TARGET libcap)
+  pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp)
+  set(janusgate_process_security_source src/common/process_security.c)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+  set(janusgate_process_security_source
+      src/common/process_security_openbsd.c)
+else()
+  message(FATAL_ERROR "JanusGate supports Linux and OpenBSD")
+endif()
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -101,7 +110,7 @@ add_library(
   src/common/network.c
   src/common/packet.c
   src/common/policy.c
-  src/common/process_security.c
+  ${janusgate_process_security_source}
   src/common/tls_client_hello.c
   src/common/version.c)
 add_library(JanusGate::common ALIAS janusgate-common)
@@ -115,8 +124,11 @@ target_link_libraries(
   PUBLIC OpenSSL::Crypto PkgConfig::IDN2 PkgConfig::SODIUM ZLIB::ZLIB)
 target_link_libraries(
   janusgate-common
-  PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::LIBCAP
-          PkgConfig::LIBSECCOMP PkgConfig::SQLITE3)
+  PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(
+    janusgate-common PRIVATE PkgConfig::LIBCAP PkgConfig::LIBSECCOMP)
+endif()
 janusgate_apply_compiler_options(janusgate-common)
 
 add_library(

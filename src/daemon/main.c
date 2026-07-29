@@ -159,7 +159,7 @@ int main(int argc, char **argv)
     }
     if (result == 0) {
         operation = "install system-call filter";
-        result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_DAEMON);
+        result = jg_process_apply_system_call_filter(JG_PROCESS_PROFILE_DAEMON);
     }
     if (result == 0) {
         waiter.runtime = runtime;

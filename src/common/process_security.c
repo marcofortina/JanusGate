@@ -343,7 +343,7 @@ int jg_process_drop_privileges(const char *user_name)
 }
 
 /** @brief Install one synchronized service system-call allowlist. */
-int jg_process_apply_seccomp(enum jg_process_profile profile)
+int jg_process_apply_system_call_filter(enum jg_process_profile profile)
 {
     scmp_filter_ctx filter = NULL;
     int result = validate_profile(profile);

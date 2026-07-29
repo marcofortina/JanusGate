@@ -31,8 +31,11 @@ record their pinned Buildroot, kernel, and source revisions.
 
 POSIX threads and the standard C library come from the target operating system.
 Linux builds use the kernel bridge, netlink, nftables, and NFQUEUE ABIs.
-OpenBSD builds use the base-system bridge, PF, divert-socket, BPF, `pledge`,
-and `unveil` interfaces; those facilities are not copied into the repository.
+OpenBSD builds use the base-system bridge, PF, divert-socket, and BPF
+interfaces. The unprivileged daemon and Web service use `pledge`; the narrow
+network helper cannot because the required bridge and MTU ioctls have no
+corresponding promise. Those operating-system facilities are not copied into
+the repository.
 
 JanusGate does not link a separate libargon2. The required Argon2id
 implementation is the reviewed `crypto_pwhash` interface supplied by

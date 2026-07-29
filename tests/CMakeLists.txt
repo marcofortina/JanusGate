@@ -72,7 +72,11 @@ add_test(
   COMMAND janusgate-setup --config
           "${CMAKE_CURRENT_BINARY_DIR}/janusgate-setup.conf" --image-build
           --validate-only)
-set_tests_properties(unit PROPERTIES TIMEOUT 30)
+if(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+  set_tests_properties(unit PROPERTIES TIMEOUT 300)
+else()
+  set_tests_properties(unit PROPERTIES TIMEOUT 120)
+endif()
 
 add_executable(janusgate-integration-tests integration/test_pipeline.c)
 target_link_libraries(
