@@ -510,18 +510,18 @@ int jg_tcp_stream_tracker_add(struct jg_tcp_stream_tracker *tracker,
     size_t consumed = 0U;
     enum jg_tcp_stream_result operation = JG_TCP_STREAM_BUFFERED;
     bool changed = false;
-    const bool syn =
-        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_SYN) != 0U;
-    const bool fin =
-        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_FIN) != 0U;
-    const bool rst =
-        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_RST) != 0U;
+    bool syn = false;
+    bool fin = false;
+    bool rst = false;
 
     if (tracker == NULL || output == NULL || messages == NULL ||
         message_count == NULL || result == NULL ||
         !packet_valid_for_port(packet, 53U)) {
         return -EINVAL;
     }
+    syn = (packet->tcp_flags & JG_TCP_FLAG_SYN) != 0U;
+    fin = (packet->tcp_flags & JG_TCP_FLAG_FIN) != 0U;
+    rst = (packet->tcp_flags & JG_TCP_FLAG_RST) != 0U;
     *message_count = 0U;
     if (output_size < tracker->limits.max_buffered_bytes ||
         message_capacity < tracker->limits.max_messages_per_packet) {
@@ -697,18 +697,18 @@ int jg_tcp_stream_tracker_add_raw(struct jg_tcp_stream_tracker *tracker,
     size_t contiguous = 0U;
     enum jg_tcp_stream_result insertion = JG_TCP_STREAM_BUFFERED;
     bool changed = false;
-    const bool syn =
-        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_SYN) != 0U;
-    const bool fin =
-        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_FIN) != 0U;
-    const bool rst =
-        packet != NULL && (packet->tcp_flags & JG_TCP_FLAG_RST) != 0U;
+    bool syn = false;
+    bool fin = false;
+    bool rst = false;
 
     if (tracker == NULL || output == NULL || chunk == NULL || result == NULL ||
         !(packet_valid_for_port(packet, 443U) ||
           packet_valid_for_port(packet, 853U))) {
         return -EINVAL;
     }
+    syn = (packet->tcp_flags & JG_TCP_FLAG_SYN) != 0U;
+    fin = (packet->tcp_flags & JG_TCP_FLAG_FIN) != 0U;
+    rst = (packet->tcp_flags & JG_TCP_FLAG_RST) != 0U;
     *chunk = (struct jg_tcp_raw_stream_chunk){
         .flow_index = SIZE_MAX,
     };

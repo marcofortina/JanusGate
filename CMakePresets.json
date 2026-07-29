@@ -45,6 +45,17 @@
       }
     },
     {
+      "name": "fuzz",
+      "inherits": "debug",
+      "environment": {
+        "CC": "clang"
+      },
+      "cacheVariables": {
+        "JANUSGATE_ENABLE_FUZZING": "ON",
+        "JANUSGATE_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
       "name": "clang-ubsan",
       "inherits": "debug",
       "environment": {
@@ -81,6 +92,10 @@
       "configurePreset": "coverage"
     },
     {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
+    },
+    {
       "name": "clang-ubsan",
       "configurePreset": "clang-ubsan"
     },
@@ -111,6 +126,13 @@
     {
       "name": "clang-ubsan",
       "configurePreset": "clang-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
       "output": {
         "outputOnFailure": true
       }

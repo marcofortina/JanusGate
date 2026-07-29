@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# One blocked.test A query without a TCP length prefix.
+be ef 01 00 00 01 00 00 00 00 00 00
+07 62 6c 6f 63 6b 65 64 04 74 65 73 74 00 00 01 00 01

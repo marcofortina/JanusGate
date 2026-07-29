@@ -73,3 +73,15 @@ add_test(
           "${CMAKE_CURRENT_BINARY_DIR}/janusgate-setup.conf" --image-build
           --validate-only)
 set_tests_properties(unit PROPERTIES TIMEOUT 30)
+
+add_executable(janusgate-integration-tests integration/test_pipeline.c)
+target_link_libraries(
+  janusgate-integration-tests
+  PRIVATE JanusGate::common janusgate-daemon-core)
+janusgate_apply_compiler_options(janusgate-integration-tests)
+add_test(NAME integration COMMAND janusgate-integration-tests)
+set_tests_properties(integration PROPERTIES LABELS "integration" TIMEOUT 30)
+
+if(JANUSGATE_ENABLE_FUZZING)
+  add_subdirectory(fuzz)
+endif()

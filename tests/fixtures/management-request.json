@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+{
+  "request_id": "fixture-1",
+  "method": "GET",
+  "path": "/api/v1/status",
+  "query": "",
+  "host": "janusgate.local",
+  "origin": "",
+  "remote_address": "192.0.2.10",
+  "session": "",
+  "csrf": "",
+  "bearer": "",
+  "body": {}
+}

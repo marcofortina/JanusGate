@@ -46,6 +46,11 @@ option(JANUSGATE_HARDENING "Enable compiler and linker hardening" ON)
 option(JANUSGATE_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
 option(JANUSGATE_ENABLE_SANITIZERS "Enable address and undefined-behavior checks" OFF)
 option(JANUSGATE_ENABLE_COVERAGE "Enable source coverage instrumentation" OFF)
+option(JANUSGATE_ENABLE_FUZZING "Build libFuzzer parser targets" OFF)
+
+if(JANUSGATE_ENABLE_FUZZING AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "JANUSGATE_ENABLE_FUZZING requires Clang")
+endif()
 
 janusgate_collect_build_metadata()
 
@@ -340,6 +345,15 @@ add_custom_target(
   man-check
   COMMAND "${CMAKE_COMMAND}" "-DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ManpageCheck.cmake"
+  VERBATIM)
+
+add_custom_target(
+  namespace-lab
+  COMMAND
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/namespace-lab/run-all.sh"
+    --build-directory "${CMAKE_CURRENT_BINARY_DIR}"
+  DEPENDS janusgate-integration-tests
+  USES_TERMINAL
   VERBATIM)
 
 add_custom_target(

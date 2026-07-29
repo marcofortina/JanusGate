@@ -433,6 +433,21 @@ static int parse_request(const uint8_t *data,
     return result;
 }
 
+/** @brief Validate one management envelope without dispatching it. */
+int jg_management_request_validate(const uint8_t *request_data,
+                                   size_t request_size)
+{
+    struct management_request request;
+    json_t *root = NULL;
+    const int result =
+        parse_request(request_data, request_size, &root, &request);
+
+    if (root != NULL) {
+        json_decref(root);
+    }
+    return result;
+}
+
 /** @brief Parse an exact numeric IPv4 or IPv6 remote address. */
 static int parse_remote_address(const char *text, struct remote_address *remote)
 {

@@ -35,6 +35,23 @@ enum jg_system_action {
 };
 
 /**
+ * @brief Validate one complete internal management request envelope.
+ *
+ * This boundary check applies the same size, JSON, field, host, address, and
+ * identifier rules used before request authentication and dispatch.
+ *
+ * @param[in] request_data Exact request JSON bytes.
+ * @param[in] request_size Request byte count.
+ *
+ * @return 0 when the envelope is valid.
+ * @return -EINVAL when bytes, JSON structure, or fields are invalid.
+ *
+ * @thread_safety This function is reentrant.
+ */
+int jg_management_request_validate(const uint8_t *request_data,
+                                   size_t request_size);
+
+/**
  * @brief Create management state around a borrowed database.
  *
  * @param[in,out] database Open database borrowed for the complete lifetime.

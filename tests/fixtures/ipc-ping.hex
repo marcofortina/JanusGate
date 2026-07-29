@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# Version-one empty ping request with request identifier one.
+4a 47 49 50 00 01 00 01 00 01 00 00 00 00 00 00
+00 00 00 00 00 00 00 01 00 00 00 00

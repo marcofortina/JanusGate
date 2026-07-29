@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# Ethernet, IPv6, one hop-by-hop extension, and an empty UDP datagram.
+00 01 02 03 04 05 06 07 08 09 0a 0b 86 dd
+60 00 00 00 00 10 00 40
+20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01
+20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 02
+11 00 00 00 00 00 00 00
+14 e9 00 35 00 08 00 00

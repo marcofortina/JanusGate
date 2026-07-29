@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+# TLS ClientHello exposing resolver.example through SNI.
+16 03 03 00 4f 01 00 00 4b 03 03
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 02 13 01 01 00 00 20
+00 00 00 15 00 13 00 00 10
+72 65 73 6f 6c 76 65 72 2e 65 78 61 6d 70 6c 65
+00 2b 00 03 02 03 04
