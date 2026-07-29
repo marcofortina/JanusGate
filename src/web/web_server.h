@@ -21,13 +21,21 @@
 #define JG_WEB_DEFAULT_ADDRESS "192.168.77.1"
 
 /** Default HTTPS management port. */
+#if defined(__OpenBSD__)
+#define JG_WEB_DEFAULT_PORT 8443U
+#else
 #define JG_WEB_DEFAULT_PORT 443U
+#endif
 
 /** Default combined certificate and private-key PEM. */
 #define JG_WEB_DEFAULT_CERTIFICATE JG_CERTIFICATE_DEFAULT_PATH
 
 /** Default installed local web assets. */
+#if defined(__OpenBSD__)
+#define JG_WEB_DEFAULT_ROOT "/usr/local/share/janusgate/web"
+#else
 #define JG_WEB_DEFAULT_ROOT "/usr/share/janusgate/web"
+#endif
 
 /** Largest accepted request including headers and body. */
 #define JG_WEB_REQUEST_SIZE_MAX 1048576U

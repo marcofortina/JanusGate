@@ -78,6 +78,63 @@ jobs:
           ctest --test-dir build/ubuntu-${{ matrix.cc }}
           --output-on-failure
 
+  openbsd-build:
+    name: OpenBSD 7.9 build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Build and test in OpenBSD
+        uses: vmactions/openbsd-vm@c941015845c0f0c429676840963dc63b226d4f69 # v1.4.5
+        with:
+          release: "7.9"
+          copyback: false
+          usesh: true
+          mem: 4096
+          cpu: 2
+          prepare: >-
+            pkg_add bash cmake cmocka curl groff jansson libidn2
+            libsodium ninja openssl%3.5 py3-jsonschema py3-yaml sqlite3
+          run: |
+            set -eu
+            civetweb_prefix=/usr/local/libexec/janusgate/civetweb
+            scripts/build-civetweb.sh "$civetweb_prefix"
+            civetweb_library=$(find "$civetweb_prefix/lib" -type f \
+              -name 'libcivetweb.so*' -print | sort | tail -n 1)
+            openssl_crypto=$(pkg_info -L openssl |
+              awk '/\/libcrypto\.so\.[0-9]+\.[0-9]+$/ { print; exit }')
+            test -n "$openssl_crypto"
+            openssl_include="/usr/local/include/$(basename \
+              "$(dirname "$openssl_crypto")")"
+            cmake -S . -B build/openbsd -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=/usr/local \
+              -DCMAKE_INSTALL_SYSCONFDIR=/etc \
+              -DCMAKE_INSTALL_LOCALSTATEDIR=/var \
+              -DJANUSGATE_BUILD_DOCUMENTATION=OFF \
+              -DCIVETWEB_INCLUDE_DIR="$civetweb_prefix/include" \
+              -DCIVETWEB_LIBRARY="$civetweb_library" \
+              -DOPENSSL_INCLUDE_DIR="$openssl_include" \
+              -DOPENSSL_CRYPTO_LIBRARY="$openssl_crypto"
+            cmake --build build/openbsd --parallel 2
+            ctest --test-dir build/openbsd --output-on-failure
+            DESTDIR="$PWD/build/openbsd-stage" \
+              cmake --install build/openbsd
+            test -x build/openbsd-stage/etc/rc.d/janusgate_netd
+            test -x build/openbsd-stage/etc/rc.d/janusgated
+            test -x build/openbsd-stage/etc/rc.d/janusgate_web
+            install -m 0600 config/janusgate.openbsd.conf.example \
+              build/openbsd/ci-config.json
+            packaging/install/install.sh \
+              --build-directory build/openbsd \
+              --config build/openbsd/ci-config.json \
+              --dry-run --unattended --confirm-network-risk
+            ksh -n init/openbsd/janusgate_netd
+            ksh -n init/openbsd/janusgated
+            ksh -n init/openbsd/janusgate_web
+
   unit-tests:
     name: Unit tests
     runs-on: ubuntu-24.04

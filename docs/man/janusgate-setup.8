@@ -63,10 +63,13 @@ and
 .B enable_services
 members.
 The network object declares four distinct interface names, bridge MTU,
-NFQUEUE range and length, failure mode, STP, multicast snooping, and CPU
+packet-queue range and length, failure mode, STP, multicast snooping, and CPU
 fanout.
 The certificate object either identifies an existing PEM source or requests a
 new local identity with a common name, alternative names, and bounded validity.
+.PP
+The installed OpenBSD example selects one fail-closed queue and disables CPU
+fanout, multicast-snooping control, and explicit bridge MTU changes.
 .PP
 See
 .I /etc/janusgate/janusgate.conf.example

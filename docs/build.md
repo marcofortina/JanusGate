@@ -7,8 +7,8 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
 JanusGate requires CMake 3.25 or newer, Ninja, Python 3, a C17 compiler,
 Doxygen with Graphviz, and development packages for CivetWeb, OpenSSL, zlib,
-libidn2, libcurl, Jansson, libcap, libseccomp, libmnl,
-libnetfilter_queue, libnftables, libsodium, and SQLite.
+libidn2, libcurl, Jansson, libsodium, and SQLite. Linux additionally requires
+libcap, libseccomp, libmnl, libnetfilter_queue, and libnftables.
 
 ## Debian or Ubuntu
 
@@ -37,6 +37,57 @@ ctest --preset alpine-debug --output-on-failure
 `packaging/alpine/APKBUILD` builds the release package and runs its tests. The
 companion CivetWeb APKBUILD supplies the reviewed library package for the
 3.24 appliance branch.
+
+## OpenBSD
+
+OpenBSD 7.9 uses the native Clang compiler, bridge and BPF interfaces, PF
+divert sockets, `pledge`, and rc.d. Install the required packages with:
+
+```sh
+pkg_add bash cmake cmocka curl groff jansson libidn2 libsodium \
+  ninja openssl%3.5 py3-jsonschema py3-yaml sqlite3
+```
+
+The packaged CivetWeb library omits TLS. Build the pinned, patched TLS variant
+in its dedicated runtime directory before configuring JanusGate:
+
+```sh
+doas scripts/build-civetweb.sh /usr/local/libexec/janusgate/civetweb
+civetweb_prefix=/usr/local/libexec/janusgate/civetweb
+civetweb_library=$(find "$civetweb_prefix/lib" -type f \
+  -name 'libcivetweb.so*' -print | sort | tail -n 1)
+```
+
+The script verifies the same CivetWeb source and Alpine security patches used
+by the appliance package. The `pkg-config` implementation is part of the base
+system. Configure the ports OpenSSL and CivetWeb paths explicitly because the
+base system TLS library remains separately available:
+
+```sh
+openssl_crypto=$(pkg_info -L openssl |
+  awk '/\/libcrypto\.so\.[0-9]+\.[0-9]+$/ { print; exit }')
+openssl_include="/usr/local/include/$(basename \
+  "$(dirname "$openssl_crypto")")"
+cmake -S . -B build/openbsd -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/usr/local \
+  -DCMAKE_INSTALL_SYSCONFDIR=/etc \
+  -DCMAKE_INSTALL_LOCALSTATEDIR=/var \
+  -DJANUSGATE_BUILD_DOCUMENTATION=OFF \
+  -DCIVETWEB_INCLUDE_DIR="$civetweb_prefix/include" \
+  -DCIVETWEB_LIBRARY="$civetweb_library" \
+  -DOPENSSL_INCLUDE_DIR="$openssl_include" \
+  -DOPENSSL_CRYPTO_LIBRARY="$openssl_crypto"
+cmake --build build/openbsd --parallel 2
+ctest --test-dir build/openbsd --output-on-failure
+```
+
+The installer uses `config/janusgate.openbsd.conf.example`, installs binaries
+under `/usr/local`, and enables the supplied rc.d services without starting
+them.
+
+The purpose, runtime role, and license of each direct dependency are recorded
+in [Dependencies](dependencies.md).
 
 ## Sanitizers and fuzzing
 

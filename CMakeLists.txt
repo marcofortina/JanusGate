@@ -45,6 +45,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       src/netd/nftables.c
       src/netd/rtnetlink.c)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+  include(CheckCSourceRuns)
+  set(CMAKE_REQUIRED_INCLUDES "${CIVETWEB_INCLUDE_DIR}")
+  set(CMAKE_REQUIRED_LIBRARIES "${CIVETWEB_LIBRARY}")
+  check_c_source_runs(
+    "#include <civetweb.h>
+     /* Verify the runtime feature required by every Web listener. */
+     int main(void) {
+       unsigned features = mg_init_library(MG_FEATURES_TLS);
+       if (features != 0U) {
+         mg_exit_library();
+       }
+       return (features & MG_FEATURES_TLS) != 0U ? 0 : 1;
+     }"
+    JANUSGATE_CIVETWEB_HAS_TLS)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  if(NOT JANUSGATE_CIVETWEB_HAS_TLS)
+    message(FATAL_ERROR
+            "CivetWeb must provide TLS; see docs/build.md for OpenBSD")
+  endif()
   set(janusgate_process_security_source
       src/common/process_security_openbsd.c)
   set(janusgate_nfqueue_source src/daemon/nfqueue_openbsd.c)
@@ -324,37 +344,51 @@ install(
   DESTINATION "${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d"
   COMPONENT runtime)
 install(
-  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/janusgate.conf.example"
-  DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
-  COMPONENT runtime)
-install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/janusgate"
   COMPONENT runtime)
-install(
-  PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-netd"
-           "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgated"
-           "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-web"
-  DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/init.d"
-  COMPONENT runtime)
-install(
-  FILES "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgate-netd.service"
-        "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgated.service"
-        "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgate-web.service"
-  DESTINATION "lib/systemd/system"
-  COMPONENT runtime)
-install(
-  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/tmpfiles/janusgate.conf"
-  DESTINATION "lib/tmpfiles.d"
-  COMPONENT runtime)
-install(
-  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/sysusers/janusgate.conf"
-  DESTINATION "lib/sysusers.d"
-  COMPONENT runtime)
-install(
-  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/logrotate/janusgate"
-  DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/logrotate.d"
-  COMPONENT runtime)
+if(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/janusgate.openbsd.conf.example"
+    DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
+    RENAME janusgate.conf.example
+    COMPONENT runtime)
+  install(
+    PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/init/openbsd/janusgate_netd"
+             "${CMAKE_CURRENT_SOURCE_DIR}/init/openbsd/janusgated"
+             "${CMAKE_CURRENT_SOURCE_DIR}/init/openbsd/janusgate_web"
+    DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/rc.d"
+    COMPONENT runtime)
+else()
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/janusgate.conf.example"
+    DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
+    COMPONENT runtime)
+  install(
+    PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-netd"
+             "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgated"
+             "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-web"
+    DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/init.d"
+    COMPONENT runtime)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgate-netd.service"
+          "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgated.service"
+          "${CMAKE_CURRENT_SOURCE_DIR}/init/systemd/janusgate-web.service"
+    DESTINATION "lib/systemd/system"
+    COMPONENT runtime)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/tmpfiles/janusgate.conf"
+    DESTINATION "lib/tmpfiles.d"
+    COMPONENT runtime)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/sysusers/janusgate.conf"
+    DESTINATION "lib/sysusers.d"
+    COMPONENT runtime)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/logrotate/janusgate"
+    DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/logrotate.d"
+    COMPONENT runtime)
+endif()
 install(
   EXPORT JanusGateTargets
   NAMESPACE JanusGate::

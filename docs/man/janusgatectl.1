@@ -38,7 +38,10 @@ Use
 .I path
 as the local daemon control socket.
 The default is
-.IR /run/janusgate/control/control.sock .
+.I /run/janusgate/control/control.sock
+on Linux and
+.I /var/run/janusgate/control/control.sock
+on OpenBSD.
 .TP
 .BI --endpoint " URL"
 Use the HTTPS management origin at
@@ -316,7 +319,10 @@ The remote service or a required appliance component was unavailable.
 .SH FILES
 .TP
 .I /run/janusgate/control/control.sock
-Default local control socket.
+Default local control socket on Linux.
+.TP
+.I /var/run/janusgate/control/control.sock
+Default local control socket on OpenBSD.
 .TP
 .I /etc/janusgate/
 Persistent appliance configuration and certificate directory.

@@ -27,6 +27,9 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 - Fail-open preserves selected traffic when queues or the daemon fail but
   temporarily loses enforcement. Fail-closed preserves policy at the cost of
   availability.
+- OpenBSD currently supports one fail-closed divert queue, no CPU fanout, no
+  multicast-snooping control, and no explicit bridge MTU override. Its
+  unprivileged management service listens on port 8443 by default.
 - The management plane is not a replacement for host hardening, patch
   management, protected backups, access review, or physical security.
 - Policy lists can be incomplete, stale, overbroad, or legally unsuitable.

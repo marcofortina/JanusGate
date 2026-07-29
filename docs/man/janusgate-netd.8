@@ -10,7 +10,8 @@ janusgate-netd \- run the privileged JanusGate network helper
 .SH DESCRIPTION
 .B janusgate-netd
 owns the narrow privileged boundary used to validate and apply JanusGate
-bridge, nftables, NFQUEUE, reboot, and power-off operations.
+bridge, native packet-selection, packet-queue, reboot, and power-off
+operations.
 It accepts only bounded versioned requests from the configured
 .B janusgate
 service identity over a Unix
@@ -19,7 +20,7 @@ socket.
 .PP
 Network changes are transactional.
 An applied change must be confirmed within 120 seconds or the captured bridge
-and nftables state is restored.
+and packet-selection state is restored.
 .SH OPTIONS
 .TP
 .B --version
@@ -27,7 +28,10 @@ Display build version information and exit.
 .SH FILES
 .TP
 .I /run/janusgate/netd.sock
-Authenticated network-helper socket.
+Authenticated network-helper socket on Linux.
+.TP
+.I /var/run/janusgate/netd.sock
+Authenticated network-helper socket on OpenBSD.
 .SH EXIT STATUS
 .TP
 .B 0

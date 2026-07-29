@@ -1,0 +1,28 @@
+{
+  "_license": "AGPL-3.0-or-later",
+  "_copyright": "Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>",
+  "network": {
+    "bridge": "bridge0",
+    "ingress": "em0",
+    "egress": "em1",
+    "management": "em2",
+    "bridge_mtu": 0,
+    "queue_first": 100,
+    "queue_count": 1,
+    "queue_length": 4096,
+    "failure_mode": "fail_closed",
+    "stp": false,
+    "multicast_snooping": false,
+    "queue_cpu_fanout": false
+  },
+  "certificate": {
+    "source": null,
+    "common_name": "janusgate.local",
+    "alternative_names": [
+      "janusgate.local",
+      "192.168.77.1"
+    ],
+    "validity_days": 825
+  },
+  "enable_services": true
+}

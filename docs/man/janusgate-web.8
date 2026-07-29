@@ -28,7 +28,7 @@ Wildcard and multicast addresses are rejected.
 .BI --port " port"
 Listen on the nonzero TCP
 .IR port .
-The default is 443.
+The default is 443 on Linux and 8443 on OpenBSD.
 .TP
 .BI --certificate " path"
 Load the combined PEM certificate and private key at
@@ -40,13 +40,19 @@ The default is
 Serve static files from the absolute
 .IR path .
 The default is
-.IR /usr/share/janusgate/web .
+.I /usr/share/janusgate/web
+on Linux and
+.I /usr/local/share/janusgate/web
+on OpenBSD.
 .TP
 .BI --socket " path"
 Proxy API requests through the daemon control socket at
 .IR path .
 The default is
-.IR /run/janusgate/control/control.sock .
+.I /run/janusgate/control/control.sock
+on Linux and
+.I /var/run/janusgate/control/control.sock
+on OpenBSD.
 .TP
 .B --hsts
 Emit HTTP Strict Transport Security after the administrator has established
@@ -67,10 +73,16 @@ Stop accepting requests and shut down cleanly.
 Default server certificate and private key.
 .TP
 .I /usr/share/janusgate/web/
-Default immutable web assets.
+Default immutable web assets on Linux.
 .TP
 .I /run/janusgate/control/control.sock
-Default backend control socket.
+Default backend control socket on Linux.
+.TP
+.I /usr/local/share/janusgate/web/
+Default immutable web assets on OpenBSD.
+.TP
+.I /var/run/janusgate/control/control.sock
+Default backend control socket on OpenBSD.
 .SH EXIT STATUS
 .TP
 .B 0

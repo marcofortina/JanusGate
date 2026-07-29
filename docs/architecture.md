@@ -6,16 +6,17 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 # Architecture
 
 JanusGate is an inline Layer-2 appliance. The data interfaces belong to one
-Linux bridge; the management interface remains separate. Ordinary frames stay
-in the kernel forwarding path. nftables sends only selected DNS and
-encrypted-DNS traffic to NFQUEUE.
+bridge; the management interface remains separate. Ordinary frames stay in
+the kernel forwarding path. Linux uses nftables and NFQUEUE for selected DNS
+and encrypted-DNS traffic. OpenBSD uses a PF anchor and divert sockets for the
+same policy boundary.
 
 ```text
 LAN ── data-in ──┐                    ┌── data-out ── router
-                 ├── Linux bridge ────┤
+                 ├──── OS bridge ─────┤
                  │       │ selected packets
                  │       v
-                 │   NFQUEUE workers
+                 │   policy workers
                  │       │ verdict or response
                  └───────┘
 
@@ -25,11 +26,11 @@ management ── HTTPS ── janusgate-web ── local control socket ── 
 
 ## Processes and privilege
 
-- `janusgated` owns the policy database, immutable policy snapshots, NFQUEUE
+- `janusgated` owns the policy database, immutable policy snapshots, packet
   workers, reassembly state, audit records, metrics, backups, and the local
   control protocol. It runs as the unprivileged `janusgate` account.
 - `janusgate-netd` is the narrow privileged helper. It validates every request
-  before changing bridge, address, nftables, or appliance power state.
+  before changing bridge, address, packet selection, or appliance power state.
 - `janusgate-web` terminates management HTTPS as `janusgate-web`. It validates
   HTTP limits and forwards structured requests over the local control socket.
 - `janusgatectl` uses either that socket for the small local command set or the
@@ -68,6 +69,10 @@ The Alpine appliance uses OpenRC and a writable root filesystem. Buildroot
 uses a read-only SquashFS system partition plus an ext4 data partition mounted
 at `/data`; configuration, database, certificates, blocklists, audit records,
 and logs are bind-mounted from that persistent partition.
+
+OpenBSD installs under `/usr/local`, uses `/var/run/janusgate` for local
+sockets, and starts the three processes through native rc.d scripts. The PF
+anchor is owned and replaced independently of administrator rules.
 
 Both reference images use the same interface order:
 

@@ -50,7 +50,11 @@ static void test_web_listener(void **state)
     jg_web_config_default(&config);
     assert_int_equal(jg_web_build_listener(&config, listener, sizeof(listener)),
                      0);
+#if defined(__OpenBSD__)
+    assert_string_equal(listener, "192.168.77.1:8443s");
+#else
     assert_string_equal(listener, "192.168.77.1:443s");
+#endif
     config.listen_address = "2001:db8::1";
     config.port = 8443U;
     assert_int_equal(jg_web_build_listener(&config, listener, sizeof(listener)),

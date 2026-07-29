@@ -28,9 +28,6 @@
 #include "janusgate/process_security.h"
 #include "rtnetlink.h"
 
-/** Runtime directory containing privileged local-control sockets. */
-#define JG_RUNTIME_DIRECTORY "/run/janusgate"
-
 /** Maximum wait for one local request or response. */
 #define JG_NETD_IO_TIMEOUT_SECONDS 5
 

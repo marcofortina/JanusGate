@@ -23,7 +23,8 @@ as a workaround.
 
 ## Service and configuration recovery
 
-Use local `janusgatectl --socket /run/janusgate/control.sock ping` to separate
+Use local `janusgatectl --socket /run/janusgate/control/control.sock ping`
+(or the corresponding `/var/run` path on OpenBSD) to separate
 web or certificate failure from daemon failure. Validate configuration before
 reload. If a service will not start, inspect its log and permissions, retain a
 copy of the failing state, and restore the last reviewed configuration rather

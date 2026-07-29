@@ -5,10 +5,10 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
 # JanusGate
 
-JanusGate is a transparent, bidirectional Linux appliance that applies domain
-and destination policy to traffic crossing an inline Layer-2 bridge. Classic
-DNS sent to arbitrary resolvers remains subject to policy while ordinary
-traffic stays in the kernel forwarding path.
+JanusGate is a transparent, bidirectional Linux and OpenBSD appliance that
+applies domain and destination policy to traffic crossing an inline Layer-2
+bridge. Classic DNS sent to arbitrary resolvers remains subject to policy
+while ordinary traffic stays in the kernel forwarding path.
 
 ```text
 protected LAN ── data-in ── JanusGate bridge ── data-out ── router
@@ -36,6 +36,7 @@ management interface is never attached to the data bridge.
 - HTTPS administration, local and remote CLI, roles, TOTP, tokens, optional
   mTLS, CSRF protection, audit chain, metrics, backups, and diagnostics.
 - Alpine 3.24 packages and VM image plus x86_64 and AArch64 Buildroot firmware.
+- Native OpenBSD 7.9 build, PF/divert packet path, rc.d services, and installer.
 - GCC/Clang, glibc/musl, sanitizer, fuzz, static-analysis, image, and
   performance verification.
 

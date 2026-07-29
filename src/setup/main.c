@@ -51,6 +51,7 @@
 #include "janusgate/database.h"
 #include "janusgate/domain.h"
 #include "janusgate/identity.h"
+#include "janusgate/ipc.h"
 #include "janusgate/network.h"
 #include "janusgate/version.h"
 
@@ -93,7 +94,8 @@ struct setup_configuration {
 enum account_backend {
     ACCOUNT_BACKEND_NONE = 0,
     ACCOUNT_BACKEND_SHADOW,
-    ACCOUNT_BACKEND_BUSYBOX
+    ACCOUNT_BACKEND_BUSYBOX,
+    ACCOUNT_BACKEND_OPENBSD
 };
 
 /** Resolved service account and group identifiers. */
@@ -651,6 +653,8 @@ static int create_group(enum account_backend backend,
     if (process == 0) {
         if (backend == ACCOUNT_BACKEND_SHADOW) {
             (void)execl(tool, tool, "--system", name, (char *)NULL);
+        } else if (backend == ACCOUNT_BACKEND_OPENBSD) {
+            (void)execl(tool, tool, name, (char *)NULL);
         } else {
             (void)execl(tool, tool, "-S", name, (char *)NULL);
         }
@@ -677,6 +681,9 @@ static int create_user(enum account_backend backend,
             (void)execl(tool, tool, "--system", "--gid", group, "--home-dir",
                         home, "--no-create-home", "--shell", shell, name,
                         (char *)NULL);
+        } else if (backend == ACCOUNT_BACKEND_OPENBSD) {
+            (void)execl(tool, tool, "-g", group, "-d", home, "-s", shell, name,
+                        (char *)NULL);
         } else {
             (void)execl(tool, tool, "-S", "-D", "-H", "-h", home, "-s", shell,
                         "-G", group, name, (char *)NULL);
@@ -701,6 +708,8 @@ static int add_group_member(enum account_backend backend,
         if (backend == ACCOUNT_BACKEND_SHADOW) {
             (void)execl(tool, tool, "--append", "--groups", group, user,
                         (char *)NULL);
+        } else if (backend == ACCOUNT_BACKEND_OPENBSD) {
+            (void)execl(tool, tool, "-G", group, user, (char *)NULL);
         } else {
             (void)execl(tool, tool, user, group, (char *)NULL);
         }
@@ -718,13 +727,21 @@ static enum account_backend detect_account_backend(const char **group_tool,
     *user_tool = available_tool("/usr/sbin/useradd", "/sbin/useradd");
     *member_tool = available_tool("/usr/sbin/usermod", "/sbin/usermod");
     if (*group_tool != NULL && *user_tool != NULL && *member_tool != NULL) {
+#if defined(__OpenBSD__)
+        return ACCOUNT_BACKEND_OPENBSD;
+#else
         return ACCOUNT_BACKEND_SHADOW;
+#endif
     }
+#if defined(__OpenBSD__)
+    return ACCOUNT_BACKEND_NONE;
+#else
     *group_tool = available_tool("/usr/sbin/addgroup", "/sbin/addgroup");
     *user_tool = available_tool("/usr/sbin/adduser", "/sbin/adduser");
     *member_tool = *group_tool;
     return *group_tool != NULL && *user_tool != NULL ? ACCOUNT_BACKEND_BUSYBOX
                                                      : ACCOUNT_BACKEND_NONE;
+#endif
 }
 
 /** @brief Ensure one non-root system group exists. */
@@ -929,11 +946,11 @@ static int ensure_directories(const struct service_identities *identities)
                                   identities->service_group);
     }
     if (result == 0) {
-        result = ensure_directory("/run/janusgate", 0750, 0U,
+        result = ensure_directory(JG_RUNTIME_DIRECTORY, 0750, 0U,
                                   identities->control_group);
     }
     if (result == 0) {
-        result = ensure_directory("/run/janusgate/control", 0750,
+        result = ensure_directory(JG_CONTROL_RUNTIME_DIRECTORY, 0750,
                                   identities->service_user,
                                   identities->control_group);
     }
@@ -1204,6 +1221,7 @@ static int ensure_certificate(const struct setup_configuration *configuration,
     return result;
 }
 
+#if !defined(__OpenBSD__)
 /** @brief Enable all services through systemd without starting them. */
 static int enable_systemd_services(const char *tool)
 {
@@ -1236,9 +1254,46 @@ static int enable_openrc_service(const char *tool, const char *service)
     return wait_for_command(process);
 }
 
+#else
+/** @brief Enable OpenBSD services in their required startup order. */
+static int enable_openbsd_services(const char *tool)
+{
+    pid_t process = fork();
+    int result = 0;
+
+    if (process < 0) {
+        return -errno;
+    }
+    if (process == 0) {
+        (void)execl(tool, tool, "enable", "janusgate_netd", "janusgated",
+                    "janusgate_web", (char *)NULL);
+        _exit(127);
+    }
+    result = wait_for_command(process);
+    if (result != 0) {
+        return result;
+    }
+    process = fork();
+    if (process < 0) {
+        return -errno;
+    }
+    if (process == 0) {
+        (void)execl(tool, tool, "order", "janusgate_netd", "janusgated",
+                    "janusgate_web", (char *)NULL);
+        _exit(127);
+    }
+    return wait_for_command(process);
+}
+#endif
+
 /** @brief Enable installed services through the active init system. */
 static int enable_services(void)
 {
+#if defined(__OpenBSD__)
+    const char *rcctl = available_tool("/usr/sbin/rcctl", "/sbin/rcctl");
+
+    return rcctl == NULL ? -ENOTSUP : enable_openbsd_services(rcctl);
+#else
     const char *systemctl =
         available_tool("/usr/bin/systemctl", "/bin/systemctl");
     const char *rc_update =
@@ -1259,6 +1314,7 @@ static int enable_services(void)
         result = enable_openrc_service(rc_update, "janusgate-web");
     }
     return result;
+#endif
 }
 
 /** @brief Print the exact setup plan without changing system state. */

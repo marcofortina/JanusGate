@@ -10,6 +10,7 @@ dry_run=false
 unattended=false
 network_risk_confirmed=false
 system_id=
+install_prefix=/usr
 
 # Print command-line help.
 usage()
@@ -74,6 +75,11 @@ require_cache_value()
 # Accept only the distributions covered by project packaging.
 validate_distribution()
 {
+    if [ "$(uname -s)" = OpenBSD ]; then
+        system_id=openbsd
+        install_prefix=/usr/local
+        return
+    fi
     [ -r /etc/os-release ] || fail "cannot identify the operating system"
     # shellcheck disable=SC1091
     . /etc/os-release
@@ -82,7 +88,7 @@ validate_distribution()
             system_id=$ID
             ;;
         *)
-            fail "supported systems are Alpine, Debian, and Ubuntu"
+            fail "supported systems are Alpine, Debian, Ubuntu, and OpenBSD"
             ;;
     esac
 }
@@ -98,6 +104,8 @@ ensure_membership()
     fi
     if [ "$system_id" = alpine ]; then
         run addgroup "$user" "$group"
+    elif [ "$system_id" = openbsd ]; then
+        run usermod -G "$group" "$user"
     else
         run usermod --append --groups "$group" "$user"
     fi
@@ -119,6 +127,19 @@ create_identities()
         id janusgate-web >/dev/null 2>&1 ||
             run adduser -S -D -H -h /var/empty -s /sbin/nologin \
                 -G janusgate-web janusgate-web
+    elif [ "$system_id" = openbsd ]; then
+        getent group janusgate-control >/dev/null 2>&1 ||
+            run groupadd janusgate-control
+        getent group janusgate >/dev/null 2>&1 ||
+            run groupadd janusgate
+        getent group janusgate-web >/dev/null 2>&1 ||
+            run groupadd janusgate-web
+        id janusgate >/dev/null 2>&1 ||
+            run useradd -g janusgate -d /var/lib/janusgate \
+                -s /sbin/nologin janusgate
+        id janusgate-web >/dev/null 2>&1 ||
+            run useradd -g janusgate-web -d /var/empty \
+                -s /sbin/nologin janusgate-web
     else
         getent group janusgate-control >/dev/null 2>&1 ||
             run groupadd --system janusgate-control
@@ -197,8 +218,9 @@ done
 require_program cmake
 require_program grep
 require_program sed
+require_program uname
 validate_distribution
-require_cache_value CMAKE_INSTALL_PREFIX /usr
+require_cache_value CMAKE_INSTALL_PREFIX "$install_prefix"
 require_cache_value CMAKE_INSTALL_SYSCONFDIR /etc
 require_cache_value CMAKE_INSTALL_LOCALSTATEDIR /var
 
@@ -218,7 +240,7 @@ confirm_installation
 
 if "$dry_run"; then
     create_identities
-    print_command cmake --install "$build_directory" --prefix /usr
+    print_command cmake --install "$build_directory" --prefix "$install_prefix"
     "$build_directory/janusgate-setup" --config "$config_file" --image-build \
         --dry-run
     echo "Dry run complete; no files or network state were changed."
@@ -226,7 +248,7 @@ if "$dry_run"; then
 fi
 
 create_identities
-cmake --install "$build_directory" --prefix /usr
+cmake --install "$build_directory" --prefix "$install_prefix"
 install -d -m 0750 -o janusgate -g janusgate /var/lib/janusgate
 rollback_file="/var/lib/janusgate/install-rollback-$(date -u +%Y%m%dT%H%M%SZ).txt"
 {
@@ -238,7 +260,7 @@ rollback_file="/var/lib/janusgate/install-rollback-$(date -u +%Y%m%dT%H%M%SZ).tx
 } >"$rollback_file"
 chmod 0600 "$rollback_file"
 
-/usr/sbin/janusgate-setup --config "$config_file" --confirm-network
+"$install_prefix/sbin/janusgate-setup" --config "$config_file" --confirm-network
 
 echo "JanusGate installation complete."
 echo "Rollback record: $rollback_file"

@@ -32,12 +32,6 @@
 #include "control_protocol.h"
 #include "netd_client.h"
 
-/** Runtime directory containing local-control sockets. */
-#define JG_RUNTIME_DIRECTORY "/run/janusgate"
-
-/** Policy-daemon-owned directory containing its control socket. */
-#define JG_CONTROL_RUNTIME_DIRECTORY "/run/janusgate/control"
-
 /** Maximum wait for one local request or response. */
 #define JG_CONTROL_IO_TIMEOUT_SECONDS 5
 

@@ -38,11 +38,21 @@
 /** Maximum complete encoded message bytes. */
 #define JG_IPC_MAX_MESSAGE_SIZE (JG_IPC_HEADER_SIZE + JG_IPC_MAX_BODY_SIZE)
 
+/** Directory containing JanusGate local-control sockets. */
+#if defined(__OpenBSD__)
+#define JG_RUNTIME_DIRECTORY "/var/run/janusgate"
+#else
+#define JG_RUNTIME_DIRECTORY "/run/janusgate"
+#endif
+
+/** Policy-daemon-owned directory containing its control socket. */
+#define JG_CONTROL_RUNTIME_DIRECTORY JG_RUNTIME_DIRECTORY "/control"
+
 /** Fixed local socket exposed by the privileged network helper. */
-#define JG_NETD_SOCKET_PATH "/run/janusgate/netd.sock"
+#define JG_NETD_SOCKET_PATH JG_RUNTIME_DIRECTORY "/netd.sock"
 
 /** Fixed local socket exposed by the main policy daemon. */
-#define JG_CONTROL_SOCKET_PATH "/run/janusgate/control/control.sock"
+#define JG_CONTROL_SOCKET_PATH JG_CONTROL_RUNTIME_DIRECTORY "/control.sock"
 
 /**
  * @brief Direction and semantics of one protocol message.

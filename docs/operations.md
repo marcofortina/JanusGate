@@ -9,8 +9,10 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
 Services start in dependency order: `janusgate-netd`, `janusgated`, then
 `janusgate-web`. Confirm all three, run `janusgatectl --socket
-/run/janusgate/control.sock ping`, inspect `health`, and verify one allowed and
-one blocked test name before admitting production traffic.
+/run/janusgate/control/control.sock ping` on Linux or
+`janusgatectl --socket /var/run/janusgate/control/control.sock ping` on
+OpenBSD, inspect `health`, and verify one allowed and one blocked test name
+before admitting production traffic.
 
 Do not treat HTTPS readiness alone as proof of policy enforcement. Monitor the
 active policy generation, queue bindings, worker count, last source refresh,

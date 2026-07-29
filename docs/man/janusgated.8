@@ -10,8 +10,8 @@ janusgated \- run the JanusGate policy and packet-processing service
 .SH DESCRIPTION
 .B janusgated
 loads persistent appliance state, publishes an immutable policy snapshot,
-starts the NFQUEUE workers, and serves the authenticated local management
-protocol.
+starts the native packet workers, and serves the authenticated local
+management protocol.
 It cooperates with
 .BR janusgate-netd (8)
 for privileged network changes and never performs those changes directly.
@@ -48,10 +48,16 @@ Private backup archives.
 Combined server certificate and private key.
 .TP
 .I /run/janusgate/control/control.sock
-Authenticated local control and management socket.
+Authenticated local control and management socket on Linux.
 .TP
 .I /run/janusgate/netd.sock
-Privileged network-helper socket.
+Privileged network-helper socket on Linux.
+.TP
+.I /var/run/janusgate/control/control.sock
+Authenticated local control and management socket on OpenBSD.
+.TP
+.I /var/run/janusgate/netd.sock
+Privileged network-helper socket on OpenBSD.
 .SH EXIT STATUS
 .TP
 .B 0

@@ -1,0 +1,12 @@
+#!/bin/ksh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+daemon="/usr/local/sbin/janusgate-netd"
+daemon_logger="daemon.info"
+rc_bg=YES
+rc_reload=NO
+
+. /etc/rc.d/rc.subr
+
+rc_cmd $1
