@@ -6,6 +6,7 @@ set -eu
 
 output_directory=${1-}
 source_directory=${SRCDEST:-}
+temporary_directory=
 
 # Stop with one concise package-build error.
 fail()
@@ -13,6 +14,16 @@ fail()
     echo "Alpine package build: $*" >&2
     exit 1
 }
+
+# Remove only the temporary package directory created by this invocation.
+cleanup()
+{
+    if [ -n "$temporary_directory" ] &&
+        [ -d "$temporary_directory" ]; then
+        rm -rf -- "$temporary_directory"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
 
 [ "$(id -u)" -ne 0 ] ||
     fail "run as an Alpine abuild user, not root"
@@ -41,7 +52,7 @@ export REPODEST="$output_directory"
 export SRCDEST="$source_directory"
 
 if [ ! -f "$HOME/.abuild/abuild.conf" ]; then
-    abuild-keygen -a -n
+    abuild-keygen -a -i -n
 fi
 
 (
@@ -65,8 +76,16 @@ git -C "$project_directory" archive --format=tar \
     ':(exclude)packaging/alpine/APKBUILD' |
     gzip -n >"$source_archive"
 
+temporary_directory=$(mktemp -d)
+package_directory="$temporary_directory/alpine/janusgate"
+mkdir -p "$package_directory"
+cp "$project_directory/packaging/alpine/APKBUILD" \
+    "$project_directory/packaging/alpine/janusgate.pre-install" \
+    "$project_directory/packaging/alpine/janusgate.post-install" \
+    "$package_directory/"
 (
-    cd "$project_directory/packaging/alpine"
+    cd "$package_directory"
+    abuild checksum
     JANUSGATE_SOURCE_COMMIT=$(git -C "$project_directory" rev-parse HEAD)
     export JANUSGATE_SOURCE_COMMIT
     abuild -r

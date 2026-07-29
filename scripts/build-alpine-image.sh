@@ -8,7 +8,7 @@ alpine_version=3.24.1
 alpine_branch=v3.24
 minirootfs_sha256=41f73e3cf5fa919b8aa5ca6b30dc48f0da2720776d7423e2a7748211456fe081
 image_size_mib=2048
-source_date_epoch=${SOURCE_DATE_EPOCH:-0}
+source_date_epoch=${SOURCE_DATE_EPOCH:-}
 output_directory=out/alpine
 cache_directory=out/downloads
 package_file=
@@ -19,6 +19,7 @@ loop_device=
 root_partition=
 root_mount=
 chroot_mounted=false
+bootloader_mounted=false
 root_mounted=false
 
 # Print command-line help.
@@ -58,6 +59,11 @@ cleanup()
         umount "$temporary_directory/root/proc" >/dev/null 2>&1 || true
         umount "$temporary_directory/root/sys" >/dev/null 2>&1 || true
         chroot_mounted=false
+    fi
+    if "$bootloader_mounted" && [ -n "$root_mount" ]; then
+        umount "$root_mount/dev" >/dev/null 2>&1 || true
+        umount "$root_mount/proc" >/dev/null 2>&1 || true
+        bootloader_mounted=false
     fi
     if "$root_mounted" && [ -n "$root_mount" ]; then
         umount "$root_mount" >/dev/null 2>&1 || true
@@ -117,12 +123,20 @@ esac
 [ "$image_size_mib" -ge 512 ] || fail "image size must be at least 512 MiB"
 [ "$(id -u)" -eq 0 ] || fail "root is required for loop and mount operations"
 
-for program in awk blkid chroot curl dd find install losetup mkfs.ext4 mount \
-    realpath sha256sum sfdisk tar touch truncate umount; do
+for program in awk blkid chown chroot curl dd find git install losetup \
+    mkfs.ext4 mount realpath sha256sum sfdisk tar touch truncate umount; do
     require_program "$program"
 done
 
 project_directory=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -z "$source_date_epoch" ]; then
+    source_date_epoch=$(git -C "$project_directory" log -1 --format=%ct)
+fi
+case $source_date_epoch in
+    *[!0-9]* | "")
+        fail "SOURCE_DATE_EPOCH must be a non-negative integer"
+        ;;
+esac
 package_file=$(realpath "$package_file")
 package_directory=$(dirname -- "$package_file")
 set -- "$package_directory"/civetweb-[0-9]*.apk
@@ -171,8 +185,8 @@ mount -t sysfs sys "$root_directory/sys"
 chroot_mounted=true
 
 chroot "$root_directory" /sbin/apk add --no-cache \
-    acpid alpine-base ca-certificates chrony iproute2 linux-virt logrotate \
-    nftables openssl syslinux
+    acpid alpine-base ca-certificates chrony e2fsprogs iproute2 linux-virt \
+    logrotate nftables openssl syslinux
 install -m 0644 "$package_file" "$root_directory/tmp/janusgate.apk"
 install -m 0644 "$civetweb_package" "$root_directory/tmp/civetweb.apk"
 install -m 0644 "$openrc_package" "$root_directory/tmp/janusgate-openrc.apk"
@@ -185,6 +199,9 @@ rm -f "$root_directory/tmp/civetweb.apk" \
 printf '%s\n' janusgate >"$root_directory/etc/hostname"
 install -m 0644 "$project_directory/packaging/alpine/interfaces" \
     "$root_directory/etc/network/interfaces"
+install -m 0644 "$project_directory/packaging/alpine/power-button" \
+    "$root_directory/etc/acpi/events/janusgate-power-button"
+printf '%s\n' button >>"$root_directory/etc/modules"
 install -d -m 0750 "$root_directory/etc/janusgate"
 install -m 0600 "$project_directory/packaging/alpine/image-setup.json" \
     "$root_directory/etc/janusgate/image-setup.json"
@@ -211,9 +228,10 @@ root_partition="${loop_device}p1"
 [ -b "$root_partition" ] || root_partition="${loop_device}1"
 [ -b "$root_partition" ] || fail "partition device was not created"
 
+# Syslinux requires 32-bit block addressing on ext4.
 E2FSPROGS_FAKE_TIME=$source_date_epoch mkfs.ext4 -F -L JANUSGATE_ROOT \
     -U 6a616e75-7367-4174-8567-617465000001 \
-    -E lazy_itable_init=0,lazy_journal_init=0 "$root_partition"
+    -O ^64bit -E lazy_itable_init=0,lazy_journal_init=0 "$root_partition"
 mount "$root_partition" "$root_mount"
 root_mounted=true
 cp -a "$root_directory/." "$root_mount/"
@@ -238,8 +256,16 @@ LABEL janusgate
     APPEND root=UUID=$root_uuid modules=sd-mod,virtio_blk,ext4 console=tty0 console=ttyS0,115200
 EOF
 mount --bind /dev "$root_mount/dev"
+mount -t proc proc "$root_mount/proc"
+bootloader_mounted=true
 chroot "$root_mount" /sbin/extlinux --install /boot/extlinux
+[ -f "$root_mount/usr/share/syslinux/ldlinux.c32" ] ||
+    fail "Syslinux loader module is unavailable"
+cp -p "$root_mount/usr/share/syslinux/ldlinux.c32" \
+    "$root_mount/boot/extlinux/"
 umount "$root_mount/dev"
+umount "$root_mount/proc"
+bootloader_mounted=false
 [ -f "$root_mount/usr/share/syslinux/mbr.bin" ] ||
     fail "syslinux MBR is unavailable"
 dd if="$root_mount/usr/share/syslinux/mbr.bin" of="$raw_image" \
@@ -269,6 +295,11 @@ cat >"$manifest" <<EOF
   "nic_order": ["data-in", "data-out", "management"]
 }
 EOF
+
+# Keep artifacts removable by the user who invoked this root-only builder.
+if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+    chown "$SUDO_UID:$SUDO_GID" "$output_directory" "$raw_image" "$manifest"
+fi
 
 echo "Alpine raw image: $raw_image"
 echo "Build manifest: $manifest"

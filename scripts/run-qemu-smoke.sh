@@ -52,6 +52,66 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
+# Send one command to the private QEMU monitor.
+send_monitor_command()
+{
+    python3 - "$monitor_socket" "$1" <<'PY'
+import socket
+import sys
+import time
+
+path = sys.argv[1]
+command = sys.argv[2].encode("ascii") + b"\n"
+for _ in range(50):
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+            monitor.settimeout(5)
+            monitor.connect(path)
+            response = b""
+            while b"(qemu) " not in response:
+                chunk = monitor.recv(4096)
+                if not chunk:
+                    raise OSError("QEMU monitor closed the connection")
+                response += chunk
+            monitor.sendall(command)
+            response = b""
+            while b"(qemu) " not in response:
+                chunk = monitor.recv(4096)
+                if not chunk:
+                    raise OSError("QEMU monitor closed the connection")
+                response += chunk
+        break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("QEMU monitor is unavailable")
+PY
+}
+
+# Wait for the authenticated management route to reach a stable service.
+wait_for_management()
+{
+    elapsed=0
+    while [ "$elapsed" -lt "$timeout_seconds" ]; do
+        if ! kill -0 "$qemu_pid" 2>/dev/null; then
+            tail -n 240 "$serial_log" >&2
+            fail "virtual machine exited before readiness"
+        fi
+        status=$(curl --insecure --silent --output /dev/null \
+            --write-out '%{http_code}' --connect-timeout 2 \
+            --header 'Host: 192.168.77.1' \
+            "https://127.0.0.1:$https_port/api/v1/status" || true)
+        case $status in
+            200 | 401 | 403)
+                return 0
+                ;;
+        esac
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
 [ "$#" -gt 0 ] || {
     usage >&2
     exit 2
@@ -157,7 +217,7 @@ if [ "$target" = buildroot-aarch64 ]; then
     kernel="$build_directory/images/Image"
     [ -f "$kernel" ] || fail "AArch64 kernel does not exist: $kernel"
     "$qemu_binary" -M virt -cpu cortex-a57 -accel tcg,thread=multi \
-        -m 1024 -nographic \
+        -m 1024 -nographic -snapshot \
         -kernel "$kernel" \
         -append "root=/dev/vda1 rootwait ro console=ttyAMA0" \
         -drive if=none,id=root,format=raw,file="$image" \
@@ -196,6 +256,7 @@ else
     fi
     "$qemu_binary" -machine q35 -accel tcg,thread=single \
         -icount shift=auto,align=off,sleep=on -m 1024 -nographic \
+        -snapshot \
         -drive if=virtio,format="$disk_format",file="$image" \
         "$@" \
         -device virtio-net-pci,netdev=data_in,mac=52:54:00:10:00:01 \
@@ -206,27 +267,7 @@ else
 fi
 qemu_pid=$!
 
-elapsed=0
-ready=false
-while [ "$elapsed" -lt "$timeout_seconds" ]; do
-    if ! kill -0 "$qemu_pid" 2>/dev/null; then
-        tail -n 240 "$serial_log" >&2
-        fail "virtual machine exited before readiness"
-    fi
-    status=$(curl --insecure --silent --output /dev/null \
-        --write-out '%{http_code}' --connect-timeout 2 \
-        --header 'Host: 192.168.77.1' \
-        "https://127.0.0.1:$https_port/api/v1/status" || true)
-    case $status in
-        200 | 401 | 403)
-            ready=true
-            break
-            ;;
-    esac
-    sleep 1
-    elapsed=$((elapsed + 1))
-done
-"$ready" || {
+wait_for_management || {
     tail -n 240 "$serial_log" >&2
     fail "management HTTPS did not become ready"
 }
@@ -235,31 +276,42 @@ if grep -Eiq 'kernel panic|segmentation fault|failed to start' "$serial_log"; th
     fail "guest log contains a fatal startup error"
 fi
 
-# Ask the guest firmware for an orderly ACPI shutdown through QEMU monitor.
-python3 - "$monitor_socket" <<'PY'
-import socket
-import sys
-import time
-
-path = sys.argv[1]
-for _ in range(50):
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
-            monitor.connect(path)
-            monitor.sendall(b"system_powerdown\n")
-        break
-    except OSError:
-        time.sleep(0.1)
-else:
-    raise SystemExit("QEMU monitor is unavailable")
-PY
-
+# Reset once and require a complete second boot from persistent storage.
+boot_count=$(grep -c 'Linux version ' "$serial_log" || true)
+send_monitor_command system_reset
 elapsed=0
-while kill -0 "$qemu_pid" 2>/dev/null && [ "$elapsed" -lt 30 ]; do
+while [ "$(grep -c 'Linux version ' "$serial_log" || true)" -le "$boot_count" ] &&
+    [ "$elapsed" -lt "$timeout_seconds" ]; do
+    if ! kill -0 "$qemu_pid" 2>/dev/null; then
+        tail -n 240 "$serial_log" >&2
+        fail "virtual machine exited during reboot"
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+[ "$elapsed" -lt "$timeout_seconds" ] || {
+    tail -n 240 "$serial_log" >&2
+    fail "guest did not reboot"
+}
+wait_for_management || {
+    tail -n 240 "$serial_log" >&2
+    fail "management HTTPS did not recover after reboot"
+}
+if grep -Eiq 'kernel panic|segmentation fault|failed to start' "$serial_log"; then
+    tail -n 240 "$serial_log" >&2
+    fail "guest log contains a fatal error after reboot"
+fi
+
+# Request an orderly ACPI shutdown through the QEMU monitor.
+send_monitor_command system_powerdown
+elapsed=0
+while kill -0 "$qemu_pid" 2>/dev/null &&
+    [ "$elapsed" -lt "$timeout_seconds" ]; do
     sleep 1
     elapsed=$((elapsed + 1))
 done
 if kill -0 "$qemu_pid" 2>/dev/null; then
+    tail -n 240 "$serial_log" >&2
     fail "guest did not complete an orderly shutdown"
 fi
 wait "$qemu_pid"
