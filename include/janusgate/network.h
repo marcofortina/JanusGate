@@ -66,7 +66,7 @@ struct jg_network_config {
     char management[JG_INTERFACE_NAME_MAX + 1U];
     /** Bridge MTU in `[1280, 65535]`, or zero to use the port minimum. */
     uint32_t bridge_mtu;
-    /** First NFQUEUE number in a contiguous balanced range. */
+    /** First native packet-queue number in a contiguous balanced range. */
     uint16_t queue_first;
     /** Queue count in `[1, JG_NETWORK_QUEUE_COUNT_MAX]`. */
     uint16_t queue_count;
@@ -78,7 +78,7 @@ struct jg_network_config {
     bool stp;
     /** Whether multicast snooping is enabled on the data bridge. */
     bool multicast_snooping;
-    /** Whether nftables distributes flows according to the current CPU. */
+    /** Whether the native packet filter distributes flows by current CPU. */
     bool queue_cpu_fanout;
 };
 
@@ -103,7 +103,7 @@ struct jg_network_state {
  *
  * Interface names must be distinct, null-terminated, start with an
  * alphanumeric byte, and contain only ASCII alphanumeric bytes plus `_`, `-`,
- * and `.`. The queue range must fit within the 16-bit NFQUEUE namespace.
+ * and `.`. The queue range must fit within the native 16-bit namespace.
  *
  * @param[in] config Configuration to validate.
  *

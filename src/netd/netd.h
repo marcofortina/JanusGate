@@ -34,8 +34,7 @@
  * @thread_safety Requests that can change network state must be externally
  * serialized.
  *
- * @side_effects Network-validation requests inspect current links through a
- * short-lived rtnetlink socket.
+ * @side_effects Network-validation requests inspect current native links.
  */
 int jg_netd_process_request(const struct jg_ipc_message *request,
                             struct jg_ipc_message *response,
@@ -62,9 +61,9 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
 int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid);
 
 /**
- * @brief Apply bridge and nftables state as one pending network transaction.
+ * @brief Apply bridge and packet-filter state as one pending transaction.
  *
- * The nftables replacement is the final step. If it fails atomically, the
+ * The packet-filter replacement is the final step. If it fails, the
  * bridge checkpoint is restored before returning. A successful transaction
  * must subsequently be confirmed or rolled back.
  *
@@ -72,7 +71,7 @@ int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid);
  *
  * @return 0 on success.
  * @return -EIO when bridge restoration fails.
- * @return A negative errno-style validation, rtnetlink, or nftables error
+ * @return A negative errno-style validation or native networking error
  * otherwise.
  *
  * @thread_safety State-changing calls require external serialization.
@@ -94,8 +93,8 @@ int jg_netd_confirm_network(void);
 /**
  * @brief Restore and consume the pending network checkpoint.
  *
- * The last confirmed nftables configuration and the captured bridge state are
- * restored. Both restoration paths are attempted even when one fails.
+ * The last confirmed packet-filter configuration and captured bridge state
+ * are restored. Both restoration paths are attempted even when one fails.
  *
  * @return 0 on success.
  * @return -EBUSY when no transaction is pending.

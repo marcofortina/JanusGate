@@ -49,7 +49,7 @@ static void clear_pending_transaction(void)
     transaction.pending_valid = false;
 }
 
-/** @brief Apply bridge and nftables state as one pending transaction. */
+/** @brief Apply bridge and native packet-filter state as one transaction. */
 int jg_netd_apply_network(const struct jg_network_config *config)
 {
     struct jg_netd_bridge_checkpoint checkpoint = {0};

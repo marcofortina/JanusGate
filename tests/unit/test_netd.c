@@ -26,8 +26,12 @@ int jg_test_netd(void);
 /** @brief Build one valid network configuration for helper requests. */
 static struct jg_network_config test_config(void)
 {
-    const struct jg_network_config config = {
+    struct jg_network_config config = {
+#if defined(__OpenBSD__)
+        .bridge = "bridge0",
+#else
         .bridge = "jg-test-br",
+#endif
         .ingress = "jg-test-in",
         .egress = "jg-test-out",
         .management = "jg-test-mgmt",
@@ -40,6 +44,13 @@ static struct jg_network_config test_config(void)
         .queue_cpu_fanout = true,
     };
 
+#if defined(__OpenBSD__)
+    config.bridge_mtu = 0U;
+    config.queue_count = 1U;
+    config.failure_mode = JG_NETWORK_FAIL_CLOSED;
+    config.multicast_snooping = false;
+    config.queue_cpu_fanout = false;
+#endif
     return config;
 }
 
@@ -171,6 +182,19 @@ static void test_nft_rules(void **state)
     (void)state;
     assert_int_equal(
         jg_netd_build_nft_rules(&config, false, rules, sizeof(rules)), 0);
+#if defined(__OpenBSD__)
+    assert_non_null(
+        strstr(rules, "on jg-test-in inet proto { tcp udp } from any to any "
+                      "port { 53 443 853 } no state divert-packet port 100"));
+    assert_non_null(
+        strstr(rules, "on jg-test-in inet6 proto { tcp udp } from any to any "
+                      "port { 53 443 853 } no state divert-packet port 100"));
+    assert_null(strstr(rules, "jg-test-out"));
+
+    config.queue_count = 2U;
+    assert_int_equal(
+        jg_netd_build_nft_rules(&config, true, rules, sizeof(rules)), -ENOTSUP);
+#else
     assert_non_null(strstr(rules, "table bridge janusgate"));
     assert_non_null(strstr(rules, "queue flags bypass,fanout to 100-101"));
     assert_non_null(strstr(
@@ -191,6 +215,7 @@ static void test_nft_rules(void **state)
     assert_non_null(strstr(rules, "flush table bridge janusgate"));
     assert_non_null(strstr(rules, "queue to 100-101"));
     assert_null(strstr(rules, "flags bypass"));
+#endif
 }
 
 /** @brief Verify bounded rtnetlink lookup and missing-link reporting. */
@@ -201,7 +226,11 @@ static void test_link_query(void **state)
     struct jg_netd_link loopback;
 
     (void)state;
+#if defined(__OpenBSD__)
+    assert_int_equal(jg_netd_query_link("lo0", &loopback), 0);
+#else
     assert_int_equal(jg_netd_query_link("lo", &loopback), 0);
+#endif
     assert_true(loopback.index > 0U);
     assert_true(loopback.mtu > 0U);
     assert_int_equal(jg_netd_query_link("jg-missing-link", &loopback), -ENODEV);

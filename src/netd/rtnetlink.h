@@ -4,7 +4,7 @@
 
 /**
  * @file rtnetlink.h
- * @brief Internal rtnetlink inspection for validated network transactions.
+ * @brief Internal link inspection for validated network transactions.
  */
 
 #ifndef JANUSGATE_NETD_RTNETLINK_H
@@ -19,7 +19,7 @@
 #define JG_NETD_BRIDGE_ALIAS "JanusGate data bridge"
 
 /**
- * @brief Bounded effective state of one Linux network link.
+ * @brief Bounded effective state of one native network link.
  */
 struct jg_netd_link {
     /** Kernel interface index. */
@@ -63,19 +63,19 @@ struct jg_netd_bridge_checkpoint {
 };
 
 /**
- * @brief Query one allowlisted interface through rtnetlink.
+ * @brief Query one allowlisted native interface.
  *
  * @param[in] name Validated null-terminated interface name.
  * @param[out] link Receives current kernel link state.
  *
  * @return 0 on success.
  * @return -ENODEV when the interface does not exist.
- * @return -EPROTO for a malformed kernel response.
- * @return A negative errno-style netlink error otherwise.
+ * @return -EPROTO for a malformed kernel response where applicable.
+ * @return A negative errno-style operating-system error otherwise.
  *
  * @thread_safety This function is reentrant.
  *
- * @side_effects Opens a short-lived `NETLINK_ROUTE` socket.
+ * @side_effects Opens a short-lived operating-system control socket.
  */
 int jg_netd_query_link(const char *name, struct jg_netd_link *link);
 
@@ -101,7 +101,7 @@ int jg_netd_query_link(const char *name, struct jg_netd_link *link);
  *
  * @thread_safety This function is reentrant.
  *
- * @side_effects Reads effective link state through rtnetlink.
+ * @side_effects Reads effective native link state.
  */
 int jg_netd_validate_live_config(const struct jg_network_config *config,
                                  uint32_t *effective_mtu);
@@ -120,7 +120,7 @@ int jg_netd_validate_live_config(const struct jg_network_config *config,
  *
  * @return 0 when the bridge transaction completed.
  * @return -EIO when an apply error was followed by failed rollback.
- * @return A negative errno-style validation or rtnetlink error otherwise.
+ * @return A negative errno-style validation or link-control error otherwise.
  *
  * @thread_safety Calls affecting the same links require external
  * serialization.
@@ -138,7 +138,7 @@ int jg_netd_apply_bridge(const struct jg_network_config *config,
  *
  * @return 0 when prior state was restored.
  * @return -EINVAL for a null or already consumed checkpoint.
- * @return A negative errno-style rtnetlink error otherwise.
+ * @return A negative errno-style link-control error otherwise.
  *
  * @thread_safety Calls affecting the same links require external
  * serialization.

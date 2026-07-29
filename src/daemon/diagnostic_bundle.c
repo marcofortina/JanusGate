@@ -287,9 +287,21 @@ static int append_interfaces(json_t *array,
     return 0;
 }
 
-/** @brief Describe the fixed JanusGate-owned nftables policy semantics. */
-static json_t *nftables_json(const struct jg_network_config *config)
+/** @brief Describe the fixed JanusGate-owned packet-filter semantics. */
+static json_t *packet_filter_json(const struct jg_network_config *config)
 {
+#if defined(__OpenBSD__)
+    static const char *const rules[] = {
+        "UDP and TCP destination port 53 enter inspection",
+        "UDP and TCP destination port 853 enter inspection",
+        "UDP and TCP destination port 443 enter encrypted DNS inspection",
+        "all remaining ingress traffic remains in the kernel path",
+    };
+    const char *backend = "pf";
+    const char *scope = "anchor";
+    const char *ownership = "JanusGate owned anchor";
+    const char *hook = "ingress quick no state";
+#else
     static const char *const rules[] = {
         "IPv4 and IPv6 fragments enter the first stateful queue",
         "configured destination address sets enter the balanced queue range",
@@ -299,6 +311,11 @@ static json_t *nftables_json(const struct jg_network_config *config)
         "UDP and TCP destination port 443 enter encrypted DNS inspection",
         "all remaining ingress traffic is accepted",
     };
+    const char *backend = "nftables";
+    const char *scope = "table";
+    const char *ownership = "JanusGate owned table";
+    const char *hook = "prerouting priority -300 policy accept";
+#endif
     json_t *object = json_object();
     json_t *items = json_array();
     uint32_t queue_last =
@@ -312,14 +329,16 @@ static json_t *nftables_json(const struct jg_network_config *config)
             result = -ENOMEM;
         }
     }
-    if (object == NULL || items == NULL || result != 0 ||
-        json_object_set_new(object, "family", json_string("bridge")) != 0 ||
-        json_object_set_new(object, "table", json_string("janusgate")) != 0 ||
-        json_object_set_new(object, "ownership",
-                            json_string("JanusGate owned table")) != 0 ||
-        json_object_set_new(
-            object, "hook",
-            json_string("prerouting priority -300 policy accept")) != 0 ||
+    if (object == NULL || items == NULL || result != 0) {
+        json_decref(items);
+        json_decref(object);
+        return NULL;
+    }
+    if (json_object_set_new(object, "backend", json_string(backend)) != 0 ||
+        json_object_set_new(object, "scope", json_string(scope)) != 0 ||
+        json_object_set_new(object, "name", json_string("janusgate")) != 0 ||
+        json_object_set_new(object, "ownership", json_string(ownership)) != 0 ||
+        json_object_set_new(object, "hook", json_string(hook)) != 0 ||
         json_object_set_new(object, "queue_first",
                             json_integer((json_int_t)config->queue_first)) !=
             0 ||
@@ -345,7 +364,7 @@ static json_t *network_document(void)
     json_t *confirmed = NULL;
     json_t *pending = NULL;
     json_t *interfaces = json_array();
-    json_t *nftables = NULL;
+    json_t *packet_filter = NULL;
     int state_result = jg_netd_client_state(&state);
     int result = 0;
 
@@ -356,16 +375,16 @@ static json_t *network_document(void)
     }
     if (state_result == 0 && state.has_confirmed) {
         confirmed = network_configuration_json(&state.confirmed);
-        nftables = nftables_json(&state.confirmed);
+        packet_filter = packet_filter_json(&state.confirmed);
         result = append_interfaces(interfaces, &state.confirmed);
     } else {
         confirmed = json_null();
-        nftables = json_null();
+        packet_filter = json_null();
     }
     pending = state_result == 0 && state.pending
                   ? network_configuration_json(&state.pending_config)
                   : json_null();
-    if (confirmed == NULL || pending == NULL || nftables == NULL ||
+    if (confirmed == NULL || pending == NULL || packet_filter == NULL ||
         result != 0 ||
         json_object_set_new(object, "helper_available",
                             json_boolean(state_result == 0)) != 0 ||
@@ -377,15 +396,15 @@ static json_t *network_document(void)
                                           ? state.confirmation_seconds_remaining
                                           : 0U))) != 0 ||
         json_object_set(object, "interfaces", interfaces) != 0 ||
-        json_object_set(object, "nftables", nftables) != 0) {
-        json_decref(nftables);
+        json_object_set(object, "packet_filter", packet_filter) != 0) {
+        json_decref(packet_filter);
         json_decref(interfaces);
         json_decref(pending);
         json_decref(confirmed);
         json_decref(object);
         return NULL;
     }
-    json_decref(nftables);
+    json_decref(packet_filter);
     json_decref(interfaces);
     json_decref(pending);
     json_decref(confirmed);
