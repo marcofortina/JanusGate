@@ -27,6 +27,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "janusgate/checked.h"
+
 #include "control_protocol.h"
 #include "netd_client.h"
 
@@ -53,6 +55,13 @@ struct jg_control_server {
     bool thread_started;
     bool joined;
     bool owns_path;
+};
+
+/** Heap-backed storage for one maximum-sized control exchange. */
+struct control_connection_buffers {
+    uint8_t request[JG_IPC_MAX_MESSAGE_SIZE];
+    uint8_t response[JG_IPC_MAX_MESSAGE_SIZE];
+    uint8_t response_body[JG_IPC_MAX_BODY_SIZE];
 };
 
 /** @brief Convert one daemon operation failure to a stable protocol error. */
@@ -254,8 +263,7 @@ int jg_control_handle_connection(int socket_fd,
                                  uid_t allowed_uid,
                                  struct jg_daemon_runtime *runtime)
 {
-    uint8_t request_data[JG_IPC_MAX_MESSAGE_SIZE];
-    uint8_t response_data[JG_IPC_MAX_MESSAGE_SIZE];
+    struct control_connection_buffers *buffers = NULL;
     struct jg_ipc_message request;
     struct jg_ipc_message response;
     size_t request_size = 0U;
@@ -266,37 +274,43 @@ int jg_control_handle_connection(int socket_fd,
     if (socket_fd < 0) {
         return -EINVAL;
     }
+    buffers = malloc(sizeof(*buffers));
+    if (buffers == NULL) {
+        return -ENOMEM;
+    }
     result = authenticate_peer(socket_fd, allowed_uid);
     if (result == 0) {
-        result = receive_request(socket_fd, request_data, sizeof(request_data),
-                                 &request_size);
+        result = receive_request(socket_fd, buffers->request,
+                                 sizeof(buffers->request), &request_size);
     }
     if (result == 0) {
-        result = jg_ipc_decode(request_data, request_size, &request);
+        result = jg_ipc_decode(buffers->request, request_size, &request);
     }
     if (result == 0) {
-        uint8_t response_body[JG_IPC_MAX_BODY_SIZE];
         size_t response_body_size = 0U;
 
         result = jg_control_process_request(
-            runtime, &request, &response, response_body, sizeof(response_body),
-            &response_body_size);
+            runtime, &request, &response, buffers->response_body,
+            sizeof(buffers->response_body), &response_body_size);
         if (result == 0) {
-            result = jg_ipc_encode(&response, response_data,
-                                   sizeof(response_data), &response_size);
+            result = jg_ipc_encode(&response, buffers->response,
+                                   sizeof(buffers->response), &response_size);
         }
     }
-    if (result != 0) {
-        return result;
+    if (result == 0) {
+        sent = send(socket_fd, buffers->response, response_size, MSG_NOSIGNAL);
+        if (sent < 0) {
+            result = -errno;
+        } else if ((size_t)sent != response_size) {
+            result = -EIO;
+        }
     }
-    sent = send(socket_fd, response_data, response_size, MSG_NOSIGNAL);
-    if (sent < 0) {
-        return -errno;
+    if (result == 0) {
+        result = perform_system_action(runtime);
     }
-    if ((size_t)sent != response_size) {
-        return -EIO;
-    }
-    return perform_system_action(runtime);
+    jg_secure_clear(buffers, sizeof(*buffers));
+    free(buffers);
+    return result;
 }
 
 /** @brief Notify the server thread through its level-triggered event. */

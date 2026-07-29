@@ -113,14 +113,15 @@ static void test_opaque_secrets(void **state)
 /** @brief Verify canonical TOTP provisioning and RFC-compatible codes. */
 static void test_totp(void **state)
 {
-    static const uint8_t vector[JG_AUTH_TOTP_SECRET_SIZE] =
-        "12345678901234567890123456789012";
+    static const uint8_t vector[] = "12345678901234567890123456789012";
     uint8_t issued[JG_AUTH_TOTP_SECRET_SIZE];
     uint8_t decoded[JG_AUTH_TOTP_SECRET_SIZE];
     char encoded[JG_AUTH_TOTP_SECRET_TEXT_SIZE];
     uint32_t code = 0U;
     bool valid = false;
 
+    _Static_assert(sizeof(vector) == JG_AUTH_TOTP_SECRET_SIZE + 1U,
+                   "TOTP test vector must be 32 bytes");
     (void)state;
     assert_int_equal(jg_auth_totp_secret_issue(issued, encoded), 0);
     assert_int_equal(strlen(encoded), JG_AUTH_TOTP_SECRET_TEXT_SIZE - 1U);

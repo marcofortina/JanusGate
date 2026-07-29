@@ -57,7 +57,11 @@ function(janusgate_apply_compiler_options target)
 
   if(JANUSGATE_HARDENING)
     janusgate_add_supported_compile_options(
-      "${target}" -fstack-protector-strong -D_FORTIFY_SOURCE=3 -fPIE)
+      "${target}"
+      -fstack-protector-strong
+      -U_FORTIFY_SOURCE
+      -D_FORTIFY_SOURCE=3
+      -fPIE)
     janusgate_add_supported_link_options(
       "${target}" -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
   endif()

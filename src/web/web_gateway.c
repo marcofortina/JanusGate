@@ -505,7 +505,7 @@ int jg_web_gateway_process(struct mg_connection *connection,
                            struct jg_web_gateway_response *response)
 {
     const struct mg_request_info *request = NULL;
-    uint8_t daemon_response[JG_IPC_MAX_BODY_SIZE];
+    uint8_t *daemon_response = NULL;
     json_t *body = NULL;
     char *envelope = NULL;
     size_t envelope_size = 0U;
@@ -552,20 +552,30 @@ int jg_web_gateway_process(struct mg_connection *connection,
             result == -ENOMEM ? "The request could not be processed."
                               : "The API request is not valid.");
     }
+    daemon_response = malloc(JG_IPC_MAX_BODY_SIZE);
+    if (daemon_response == NULL) {
+        sodium_memzero(envelope, envelope_size);
+        free(envelope);
+        return set_error_response(response, 500, "internal_error",
+                                  "The request could not be processed.");
+    }
     result = jg_ipc_client_call(control_socket_path, JG_IPC_MANAGEMENT_REQUEST,
                                 (const uint8_t *)envelope, envelope_size,
-                                daemon_response, sizeof(daemon_response),
+                                daemon_response, JG_IPC_MAX_BODY_SIZE,
                                 &daemon_response_size);
     sodium_memzero(envelope, envelope_size);
     free(envelope);
     if (result != 0) {
+        sodium_memzero(daemon_response, JG_IPC_MAX_BODY_SIZE);
+        free(daemon_response);
         return set_error_response(
             response, 503, "management_unavailable",
             "The management service is temporarily unavailable.");
     }
     result = jg_web_gateway_decode_response(daemon_response,
                                             daemon_response_size, response);
-    sodium_memzero(daemon_response, daemon_response_size);
+    sodium_memzero(daemon_response, JG_IPC_MAX_BODY_SIZE);
+    free(daemon_response);
     if (result != 0) {
         jg_web_gateway_response_clear(response);
         if (assign_request_id(connection, response->request_id) != 0) {
