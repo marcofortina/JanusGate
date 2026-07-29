@@ -1,0 +1,43 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+ */
+
+/**
+ * @mainpage JanusGate Developer Reference
+ *
+ * JanusGate is a transparent inline DNS policy appliance for networks where
+ * changing endpoint resolver settings is not practical. The implementation
+ * separates unprivileged policy and management processing from the narrow
+ * privileged network helper.
+ *
+ * @section architecture Architecture
+ *
+ * The common library provides bounded parsers, persistent state, identity,
+ * authentication, policy, backup, certificate, event, and IPC primitives.
+ * `janusgated` owns immutable policy publication and packet processing.
+ * `janusgate-netd` owns bridge, nftables, NFQUEUE, and appliance power
+ * operations. `janusgate-web` terminates HTTPS and proxies authenticated API
+ * envelopes over the local control protocol. `janusgatectl` and
+ * `janusgate-setup` provide deterministic administration workflows.
+ *
+ * @section ownership Ownership and concurrency
+ *
+ * Public interfaces state whether storage is borrowed, transferred, or
+ * allocated for the caller. Immutable policy snapshots may be read
+ * concurrently after publication. Mutable database and runtime owners require
+ * the locking or serialization documented by their modules.
+ *
+ * @section failures Failure handling
+ *
+ * Fallible C interfaces return zero on success and negative errno-style
+ * values on failure unless their contract states otherwise. Parsers are
+ * bounded, reject trailing input, and leave outputs in a defined state.
+ * Security-sensitive buffers are cleared before release.
+ *
+ * @section interfaces Interfaces
+ *
+ * Start with the public headers under `include/janusgate`. The management
+ * protocol is documented by `api/openapi.yaml`; operator-facing commands are
+ * documented by the installed manual pages.
+ */

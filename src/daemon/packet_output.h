@@ -98,7 +98,7 @@ int jg_packet_output_open(const struct jg_packet_output_config *config,
  * Both sends are attempted even when the first one fails.
  *
  * @param[in] resets Complete reset frame pair.
- * @param[in,out] context Open @ref jg_packet_output.
+ * @param[in,out] context Open `jg_packet_output` instance.
  *
  * @return 0 when both frames were sent.
  * @return A negative errno-style validation or socket error otherwise.
@@ -117,7 +117,7 @@ int jg_packet_output_send_tcp_resets(const struct jg_tcp_reset_pair *resets,
  *
  * @param[in] frame Complete Ethernet frame.
  * @param[in] frame_size Number of frame bytes.
- * @param[in,out] context Open @ref jg_packet_output.
+ * @param[in,out] context Open `jg_packet_output` instance.
  *
  * @return 0 when the complete frame was sent.
  * @return A negative errno-style validation or socket error otherwise.

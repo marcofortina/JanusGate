@@ -18,6 +18,7 @@ include(CompilerOptions)
 include(ProjectMetadata)
 
 find_package(Threads REQUIRED)
+find_package(Doxygen 1.9 REQUIRED dot)
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 find_package(ZLIB REQUIRED)
@@ -49,6 +50,10 @@ janusgate_collect_build_metadata()
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/version.h.in"
   "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
+  @ONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/docs/Doxyfile.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
   @ONLY)
 
 add_library(
@@ -238,6 +243,11 @@ install(
   DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/api"
   COMPONENT development)
 install(
+  DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/docs/html"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/janusgate"
+  COMPONENT development
+  OPTIONAL)
+install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/janusgatectl.1"
   DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
   COMPONENT runtime)
@@ -301,6 +311,20 @@ add_custom_target(
   VERBATIM)
 
 add_custom_target(
+  function-docs-check
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-function-docs.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}"
+  VERBATIM)
+
+add_custom_target(
+  doxygen
+  COMMAND "${DOXYGEN_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+  BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/docs/html/index.html"
+  DEPENDS function-docs-check
+  VERBATIM)
+
+add_custom_target(
   openapi-check
   COMMAND "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-openapi.py"
@@ -317,7 +341,7 @@ add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
   DEPENDS janusgate-netd janusgated janusgate-web janusgate-setup janusgatectl
-          janusgate-unit-tests man-check openapi-check
+          doxygen janusgate-unit-tests man-check openapi-check
   USES_TERMINAL)
 
 if(BUILD_TESTING)

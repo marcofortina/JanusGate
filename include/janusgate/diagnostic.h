@@ -71,7 +71,7 @@ struct jg_diagnostic_entry {
  * @thread_safety This function is reentrant.
  *
  * @side_effects Allocates @p archive, which must be released with
- * @ref jg_diagnostic_archive_destroy.
+ * `jg_diagnostic_archive_destroy()`.
  */
 JG_PUBLIC int jg_diagnostic_archive_create(
     const struct jg_diagnostic_entry *entries,
@@ -84,7 +84,7 @@ JG_PUBLIC int jg_diagnostic_archive_create(
  * @brief Release one diagnostic archive allocation.
  *
  * @param[in,out] archive Archive returned by
- * @ref jg_diagnostic_archive_create, or null.
+ * `jg_diagnostic_archive_create()`, or null.
  *
  * @thread_safety The allocation must not be used concurrently.
  */

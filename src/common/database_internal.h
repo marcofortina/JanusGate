@@ -14,7 +14,9 @@
 
 /** Private database connection and path ownership. */
 struct jg_database {
+    /** Open SQLite connection owned by this object. */
     sqlite3 *handle;
+    /** Absolute database path owned by this object. */
     char *path;
 };
 

@@ -133,7 +133,7 @@ int jg_fragment_tracker_create(const struct jg_fragment_limits *limits,
  * @brief Retain one fragment and reconstruct a complete IP payload.
  *
  * Fragment offsets are interpreted relative to the IPv4 payload or IPv6
- * fragmentable part exactly as populated by @ref jg_packet_parse.
+ * fragmentable part exactly as populated by `jg_packet_parse()`.
  *
  * @param[in,out] tracker Per-worker tracker.
  * @param[in] packet Parsed fragmented packet view.

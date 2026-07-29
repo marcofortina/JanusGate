@@ -100,7 +100,7 @@ int jg_nfqueue_group_request_stop(struct jg_nfqueue_group *group);
 /**
  * @brief Wait for every worker after an external or internal stop request.
  *
- * Unlike @ref jg_nfqueue_group_join, this function does not initiate a stop.
+ * Unlike `jg_nfqueue_group_join()`, this function does not initiate a stop.
  * It returns when another control path requests shutdown or one worker fails
  * and stops the group.
  *

@@ -151,7 +151,7 @@ int jg_dataplane_worker_set_dns_response(
 /**
  * @brief Process one NFQUEUE packet against the current policy snapshot.
  *
- * This function matches @ref jg_nfqueue_processor and may be passed directly
+ * This function matches `jg_nfqueue_processor` and may be passed directly
  * to a queue worker or group.
  *
  * @param[in] packet Immutable packet and kernel metadata.

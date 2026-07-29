@@ -68,7 +68,7 @@ int jg_management_create(struct jg_database *database,
  * trusted boundary.
  *
  * @param[in,out] management Management state.
- * @param[in] request Exact request JSON bytes.
+ * @param[in] request_data Exact request JSON bytes.
  * @param[in] request_size Request byte count.
  * @param[out] response Destination for the response JSON.
  * @param[in] response_size Available response bytes.
@@ -82,7 +82,7 @@ int jg_management_create(struct jg_database *database,
  * @thread_safety Calls must be externally serialized.
  */
 int jg_management_process(struct jg_management *management,
-                          const uint8_t *request,
+                          const uint8_t *request_data,
                           size_t request_size,
                           uint8_t *response,
                           size_t response_size,
@@ -105,7 +105,7 @@ int jg_management_process(struct jg_management *management,
  * error otherwise.
  *
  * @thread_safety Calls must be serialized with
- * @ref jg_management_process.
+ * `jg_management_process()`.
  *
  * @side_effects Performs bounded HTTPS requests, updates persistent source
  * health, appends audit events, and may publish new policy generations.
@@ -122,7 +122,7 @@ int jg_management_update_due_blocklists(struct jg_management *management,
  * @return The pending action, or @ref JG_SYSTEM_ACTION_NONE.
  *
  * @thread_safety Calls must be serialized with
- * @ref jg_management_process.
+ * `jg_management_process()`.
  *
  * @side_effects Clears the pending action.
  */

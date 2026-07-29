@@ -134,7 +134,7 @@ int jg_netd_apply_bridge(const struct jg_network_config *config,
  * @brief Restore a successfully captured bridge checkpoint.
  *
  * @param[in,out] checkpoint Prior state returned by
- * @ref jg_netd_apply_bridge. It is invalidated after successful restoration.
+ * `jg_netd_apply_bridge()`. It is invalidated after successful restoration.
  *
  * @return 0 when prior state was restored.
  * @return -EINVAL for a null or already consumed checkpoint.
