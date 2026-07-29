@@ -49,10 +49,10 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
  * retains ownership of @p socket_fd and must close it.
  *
  * @param[in] socket_fd Connected Unix-domain `SOCK_SEQPACKET` socket.
- * @param[in] allowed_uid Sole peer user identifier accepted by the helper.
+ * @param[in] allowed_uid Non-root peer user identifier accepted by the helper.
  *
  * @return 0 on a completed exchange.
- * @return -EACCES when `SO_PEERCRED` does not match @p allowed_uid.
+ * @return -EACCES when `SO_PEERCRED` is neither root nor @p allowed_uid.
  * @return -EMSGSIZE for an oversized packet.
  * @return A negative errno-style socket or decoder error otherwise.
  *
@@ -136,9 +136,9 @@ int jg_netd_get_network_state(struct jg_network_state *state);
 /**
  * @brief Run the fixed-path privileged network-helper server.
  *
- * The server creates @ref JG_NETD_SOCKET_PATH, accepts only @p allowed_uid,
- * imposes send and receive timeouts, and removes its socket during an orderly
- * shutdown.
+ * The server creates @ref JG_NETD_SOCKET_PATH, accepts root and
+ * @p allowed_uid, imposes send and receive timeouts, and removes its socket
+ * during an orderly shutdown.
  *
  * @param[in] allowed_uid Dedicated JanusGate service user identifier.
  * @param[in] socket_gid Group receiving access to the socket.

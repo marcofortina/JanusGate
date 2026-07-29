@@ -86,7 +86,7 @@ static int decode_link_info(const struct nlattr *attribute, void *user_data)
             return MNL_CB_ERROR;
         }
         query->link.bridge = strcmp(mnl_attr_get_str(attribute), "bridge") == 0;
-    } else if (type == IFLA_INFO_DATA &&
+    } else if (type == IFLA_INFO_DATA && query->link.bridge &&
                mnl_attr_parse_nested(attribute, decode_bridge_data, query) <
                    0) {
         if (query->error == 0) {

@@ -198,16 +198,22 @@ static int duplicate_string(const char *input, char **output)
 static int validate_certificate(const char *path)
 {
     struct stat metadata;
+    int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    int result = 0;
 
-    if (lstat(path, &metadata) != 0) {
+    if (descriptor < 0) {
         return -errno;
     }
-    if (!S_ISREG(metadata.st_mode) ||
-        (metadata.st_mode & (S_IRWXG | S_IRWXO)) != 0U ||
-        (geteuid() != 0U && metadata.st_uid != geteuid())) {
-        return -EACCES;
+    if (fstat(descriptor, &metadata) != 0) {
+        result = -errno;
+    } else if (!S_ISREG(metadata.st_mode) ||
+               (metadata.st_mode & (S_IWGRP | S_IXGRP | S_IRWXO)) != 0U) {
+        result = -EACCES;
     }
-    return 0;
+    if (close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    return result;
 }
 
 /** @brief Validate the installed asset root against writable substitution. */

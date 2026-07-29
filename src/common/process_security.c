@@ -17,7 +17,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <linux/prctl.h>
 #include <seccomp.h>
 
 /** Number of elements in one fixed array. */
@@ -286,6 +285,9 @@ int jg_process_restrict_capabilities(enum jg_process_profile profile)
         CAP_NET_ADMIN,
         CAP_SYS_BOOT,
     };
+    static const cap_value_t web_capabilities[] = {
+        CAP_NET_BIND_SERVICE,
+    };
     int result = validate_profile(profile);
 
     if (result != 0) {
@@ -303,7 +305,7 @@ int jg_process_restrict_capabilities(enum jg_process_profile profile)
         return install_capabilities(netd_capabilities,
                                     ARRAY_SIZE(netd_capabilities));
     }
-    return clear_capabilities();
+    return install_capabilities(web_capabilities, ARRAY_SIZE(web_capabilities));
 }
 
 /** @brief Permanently assume one dedicated non-root service identity. */

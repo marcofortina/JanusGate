@@ -179,30 +179,20 @@ static int authenticate_peer(int socket_fd, uid_t allowed_uid)
                                                                    : -EACCES;
 }
 
-/** @brief Close every descriptor received in ancillary socket data. */
-static void close_received_descriptors(struct msghdr *message)
+/** @brief Close the descriptor accepted by the bounded control buffer. */
+static void close_received_descriptor(struct msghdr *message)
 {
     struct cmsghdr *header = CMSG_FIRSTHDR(message);
 
-    while (header != NULL) {
-        if (header->cmsg_level == SOL_SOCKET &&
-            header->cmsg_type == SCM_RIGHTS &&
-            header->cmsg_len >= CMSG_LEN(0U)) {
-            const size_t descriptor_bytes = header->cmsg_len - CMSG_LEN(0U);
+    if (header != NULL && header->cmsg_level == SOL_SOCKET &&
+        header->cmsg_type == SCM_RIGHTS &&
+        header->cmsg_len >= CMSG_LEN(sizeof(int))) {
+        int descriptor = -1;
 
-            for (size_t offset = 0U; offset + sizeof(int) <= descriptor_bytes;
-                 offset += sizeof(int)) {
-                int descriptor = -1;
-
-                (void)memcpy(&descriptor,
-                             (const uint8_t *)CMSG_DATA(header) + offset,
-                             sizeof(descriptor));
-                if (descriptor >= 0) {
-                    (void)close(descriptor);
-                }
-            }
+        (void)memcpy(&descriptor, CMSG_DATA(header), sizeof(descriptor));
+        if (descriptor >= 0) {
+            (void)close(descriptor);
         }
-        header = CMSG_NXTHDR(message, header);
     }
 }
 
@@ -233,7 +223,7 @@ static int receive_request(int socket_fd,
         return -ECONNRESET;
     }
     if ((message.msg_flags & MSG_CTRUNC) != 0 || message.msg_controllen != 0U) {
-        close_received_descriptors(&message);
+        close_received_descriptor(&message);
         return -EPROTO;
     }
     if ((size_t)received > data_size) {
@@ -327,6 +317,7 @@ static int notify_stop(struct jg_control_server *server)
 static int prepare_runtime_directory(uid_t owner_uid, gid_t socket_gid)
 {
     struct stat status;
+    bool control_directory_created = false;
 
     if (mkdir(JG_RUNTIME_DIRECTORY, 0750) != 0 && errno != EEXIST) {
         return -errno;
@@ -342,7 +333,9 @@ static int prepare_runtime_directory(uid_t owner_uid, gid_t socket_gid)
         chmod(JG_RUNTIME_DIRECTORY, 0750) != 0) {
         return -errno;
     }
-    if (mkdir(JG_CONTROL_RUNTIME_DIRECTORY, 0750) != 0 && errno != EEXIST) {
+    if (mkdir(JG_CONTROL_RUNTIME_DIRECTORY, 0750) == 0) {
+        control_directory_created = true;
+    } else if (errno != EEXIST) {
         return -errno;
     }
     if (lstat(JG_CONTROL_RUNTIME_DIRECTORY, &status) != 0) {
@@ -352,9 +345,18 @@ static int prepare_runtime_directory(uid_t owner_uid, gid_t socket_gid)
         (status.st_mode & (S_IWGRP | S_IWOTH)) != 0U) {
         return -EACCES;
     }
-    if (chown(JG_CONTROL_RUNTIME_DIRECTORY, owner_uid, socket_gid) != 0 ||
-        chmod(JG_CONTROL_RUNTIME_DIRECTORY, 0750) != 0) {
+    if (control_directory_created &&
+        (chmod(JG_CONTROL_RUNTIME_DIRECTORY, 0750) != 0 ||
+         chown(JG_CONTROL_RUNTIME_DIRECTORY, owner_uid, socket_gid) != 0)) {
         return -errno;
+    }
+    if (control_directory_created &&
+        lstat(JG_CONTROL_RUNTIME_DIRECTORY, &status) != 0) {
+        return -errno;
+    }
+    if (status.st_uid != owner_uid || status.st_gid != socket_gid ||
+        (status.st_mode & 0777U) != 0750U) {
+        return -EACCES;
     }
     return 0;
 }
@@ -409,8 +411,8 @@ static int open_server_socket(uid_t owner_uid,
         *owns_path = true;
     }
     if (result == 0 &&
-        (chown(JG_CONTROL_SOCKET_PATH, owner_uid, socket_gid) != 0 ||
-         chmod(JG_CONTROL_SOCKET_PATH, 0660) != 0 ||
+        (chmod(JG_CONTROL_SOCKET_PATH, 0660) != 0 ||
+         chown(JG_CONTROL_SOCKET_PATH, owner_uid, socket_gid) != 0 ||
          listen(socket_fd, 16) != 0)) {
         result = -errno;
     }

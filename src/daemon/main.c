@@ -113,6 +113,7 @@ int main(int argc, char **argv)
     uid_t web_uid = 0U;
     gid_t control_gid = 0U;
     bool signal_thread_started = false;
+    const char *operation = "harden process";
     int result = 0;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -132,29 +133,37 @@ int main(int argc, char **argv)
     };
     result = jg_process_harden();
     if (result == 0) {
+        operation = "restrict capabilities";
         result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_DAEMON);
     }
     if (result == 0) {
+        operation = "resolve service identities";
         result = resolve_control_identity(&service_uid, &web_uid, &control_gid);
     }
     if (result == 0) {
+        operation = "block shutdown signals";
         result = block_shutdown_signals(&waiter.signals);
     }
     if (result == 0) {
+        operation = "start packet runtime";
         result = jg_daemon_runtime_start(&config, &runtime);
     }
     if (result == 0) {
+        operation = "start control service";
         result = jg_control_server_start(runtime, service_uid, web_uid,
                                          control_gid, &control_server);
     }
     if (result == 0) {
+        operation = "drop privileges";
         result = jg_process_drop_privileges(JG_SERVICE_USER);
     }
     if (result == 0) {
+        operation = "install system-call filter";
         result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_DAEMON);
     }
     if (result == 0) {
         waiter.runtime = runtime;
+        operation = "start signal waiter";
         result =
             pthread_create(&signal_thread, NULL, wait_for_shutdown, &waiter);
         if (result == 0) {
@@ -164,6 +173,7 @@ int main(int argc, char **argv)
         }
     }
     if (result == 0) {
+        operation = "run packet workers";
         result = jg_daemon_runtime_wait(runtime);
     } else if (runtime != NULL) {
         (void)jg_daemon_runtime_request_stop(runtime);
@@ -172,6 +182,7 @@ int main(int argc, char **argv)
         const int control_result = jg_control_server_stop(control_server);
 
         if (result == 0 && control_result != 0) {
+            operation = "stop control service";
             result = control_result;
         }
     }
@@ -180,19 +191,23 @@ int main(int argc, char **argv)
         const int join_result = pthread_join(signal_thread, NULL);
 
         if (result == 0 && wake_result != 0) {
+            operation = "wake signal waiter";
             result = -wake_result;
         }
         if (result == 0 && join_result != 0) {
+            operation = "join signal waiter";
             result = -join_result;
         }
         if (result == 0 && waiter.result != 0) {
+            operation = "handle shutdown";
             result = waiter.result;
         }
     }
     jg_control_server_destroy(control_server);
     jg_daemon_runtime_destroy(runtime);
     if (result != 0) {
-        (void)fprintf(stderr, "janusgated: %s\n", strerror(-result));
+        (void)fprintf(stderr, "janusgated: %s: %s\n", operation,
+                      strerror(-result));
         return 1;
     }
     return 0;

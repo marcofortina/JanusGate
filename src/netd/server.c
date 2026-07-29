@@ -158,33 +158,24 @@ static int authenticate_peer(int socket_fd, uid_t allowed_uid)
     if (credentials_size != sizeof(credentials)) {
         return -EPROTO;
     }
-    return credentials.uid == allowed_uid ? 0 : -EACCES;
+    return credentials.uid == 0U || credentials.uid == allowed_uid ? 0
+                                                                   : -EACCES;
 }
 
-/** @brief Close every file descriptor received in ancillary socket data. */
-static void close_received_descriptors(struct msghdr *message)
+/** @brief Close the descriptor accepted by the bounded control buffer. */
+static void close_received_descriptor(struct msghdr *message)
 {
     struct cmsghdr *header = CMSG_FIRSTHDR(message);
 
-    while (header != NULL) {
-        if (header->cmsg_level == SOL_SOCKET &&
-            header->cmsg_type == SCM_RIGHTS &&
-            header->cmsg_len >= CMSG_LEN(0U)) {
-            const size_t descriptor_bytes = header->cmsg_len - CMSG_LEN(0U);
+    if (header != NULL && header->cmsg_level == SOL_SOCKET &&
+        header->cmsg_type == SCM_RIGHTS &&
+        header->cmsg_len >= CMSG_LEN(sizeof(int))) {
+        int descriptor = -1;
 
-            for (size_t offset = 0U; offset + sizeof(int) <= descriptor_bytes;
-                 offset += sizeof(int)) {
-                int descriptor = -1;
-
-                (void)memcpy(&descriptor,
-                             (const uint8_t *)CMSG_DATA(header) + offset,
-                             sizeof(descriptor));
-                if (descriptor >= 0) {
-                    (void)close(descriptor);
-                }
-            }
+        (void)memcpy(&descriptor, CMSG_DATA(header), sizeof(descriptor));
+        if (descriptor >= 0) {
+            (void)close(descriptor);
         }
-        header = CMSG_NXTHDR(message, header);
     }
 }
 
@@ -218,7 +209,7 @@ static int receive_request(int socket_fd,
         return -ECONNRESET;
     }
     if ((message.msg_flags & MSG_CTRUNC) != 0 || message.msg_controllen != 0U) {
-        close_received_descriptors(&message);
+        close_received_descriptor(&message);
         return -EPROTO;
     }
     if ((size_t)received > data_size) {

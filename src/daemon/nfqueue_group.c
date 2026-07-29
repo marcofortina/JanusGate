@@ -30,6 +30,8 @@ struct group_worker {
     pthread_t thread;
     atomic_int result;
     bool started;
+    bool pin_worker;
+    uint32_t cpu;
 };
 
 /** Complete owner of a fixed contiguous set of queue workers. */
@@ -64,8 +66,21 @@ static int notify_stop(struct jg_nfqueue_group *group)
 static void *run_worker(void *context)
 {
     struct group_worker *worker = context;
-    const int result =
-        jg_nfqueue_worker_run(worker->queue, worker->group->stop_fd);
+    int result = 0;
+
+    if (worker->pin_worker) {
+        cpu_set_t affinity;
+
+        CPU_ZERO_S(sizeof(affinity), &affinity);
+        CPU_SET_S((size_t)worker->cpu, sizeof(affinity), &affinity);
+        result =
+            pthread_setaffinity_np(pthread_self(), sizeof(affinity), &affinity);
+    }
+    if (result == 0) {
+        result = jg_nfqueue_worker_run(worker->queue, worker->group->stop_fd);
+    } else {
+        result = -result;
+    }
 
     atomic_store_explicit(&worker->result, result, memory_order_release);
     if (result != 0) {
@@ -122,28 +137,14 @@ static int start_worker(struct group_worker *worker,
                         bool pin_worker,
                         uint32_t cpu)
 {
-    pthread_attr_t attributes;
-    int result = pthread_attr_init(&attributes);
+    int result = 0;
 
-    if (result != 0) {
-        return -result;
-    }
-    if (pin_worker) {
-        cpu_set_t affinity;
-
-        CPU_ZERO_S(sizeof(affinity), &affinity);
-        CPU_SET_S((size_t)cpu, sizeof(affinity), &affinity);
-        result = pthread_attr_setaffinity_np(&attributes, sizeof(affinity),
-                                             &affinity);
-    }
+    worker->pin_worker = pin_worker;
+    worker->cpu = cpu;
+    result = pthread_create(&worker->thread, NULL, run_worker, worker);
     if (result == 0) {
-        result =
-            pthread_create(&worker->thread, &attributes, run_worker, worker);
-        if (result == 0) {
-            worker->started = true;
-        }
+        worker->started = true;
     }
-    (void)pthread_attr_destroy(&attributes);
     return result == 0 ? 0 : -result;
 }
 
