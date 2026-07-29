@@ -19,6 +19,7 @@ include(ProjectMetadata)
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_path(CIVETWEB_INCLUDE_DIR NAMES civetweb.h REQUIRED)
@@ -233,6 +234,10 @@ install(
   DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/web"
   COMPONENT runtime)
 install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.yaml"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/api"
+  COMPONENT development)
+install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/janusgate.conf.example"
   DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
   COMPONENT runtime)
@@ -273,14 +278,26 @@ add_custom_target(
   VERBATIM)
 
 add_custom_target(
+  openapi-check
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-openapi.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.yaml"
+  VERBATIM)
+
+add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
   DEPENDS janusgate-netd janusgated janusgate-web janusgate-setup janusgatectl
-          janusgate-unit-tests
+          janusgate-unit-tests openapi-check
   USES_TERMINAL)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
+  add_test(
+    NAME openapi
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-openapi.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.yaml")
 endif()
 
 set(CPACK_PACKAGE_NAME "janusgate")

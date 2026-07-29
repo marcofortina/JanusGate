@@ -1,0 +1,1679 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+openapi: 3.1.0
+info:
+  title: JanusGate Management API
+  version: 1.0.0
+  description: |
+    Version 1 of the authenticated JanusGate appliance-management API.
+    Requests and responses use JSON unless an operation explicitly documents
+    another media type. State-changing browser requests require the CSRF value
+    returned at login in the `X-CSRF-Token` header. Bearer-token requests do
+    not use CSRF protection and are restricted by token scopes.
+  license:
+    name: GNU Affero General Public License v3.0 or later
+    identifier: AGPL-3.0-or-later
+  contact:
+    name: Marco Fortina
+    email: marco_fortina@hotmail.it
+servers:
+  - url: https://janusgate.local/api/v1
+    description: Appliance management endpoint
+tags:
+  - name: Authentication
+  - name: Status
+  - name: Network
+  - name: Policy
+  - name: Sources
+  - name: Events
+  - name: Access
+  - name: Certificates
+  - name: Backups
+  - name: System
+security:
+  - bearerAuth: []
+  - sessionCookie: []
+paths:
+  /auth/bootstrap:
+    post:
+      tags: [Authentication]
+      operationId: createInitialAdministrator
+      summary: Consume the one-time bootstrap credential
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Create an authenticated browser session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/password:
+    post:
+      tags: [Authentication]
+      operationId: changePassword
+      summary: Change the current user's password
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChange'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/session:
+    get:
+      tags: [Authentication]
+      operationId: getSession
+      summary: Return the current browser identity
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Revoke the current browser session
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/totp/provision:
+    post:
+      tags: [Authentication]
+      operationId: provisionTotp
+      summary: Begin TOTP enrollment
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/totp/confirm:
+    post:
+      tags: [Authentication]
+      operationId: confirmTotp
+      summary: Confirm TOTP enrollment and return recovery codes once
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TotpCode'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /auth/totp/disable:
+    post:
+      tags: [Authentication]
+      operationId: disableOwnTotp
+      summary: Disable TOTP for the current user
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TotpCode'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /status:
+    get:
+      tags: [Status]
+      operationId: getStatus
+      summary: Return readiness and bounded packet counters
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /health:
+    get:
+      tags: [Status]
+      operationId: getHealth
+      summary: Return daemon and network-helper health
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /metrics:
+    get:
+      tags: [Status]
+      operationId: getMetrics
+      summary: Return authenticated Prometheus metrics
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          $ref: '#/components/responses/JsonError'
+  /config/validate:
+    post:
+      tags: [System]
+      operationId: validatePersistentConfiguration
+      summary: Validate all persistent runtime configuration
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /config/reload:
+    post:
+      tags: [System]
+      operationId: reloadPersistentConfiguration
+      summary: Validate and atomically publish persistent configuration
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /network:
+    get:
+      tags: [Network]
+      operationId: getNetworkConfiguration
+      summary: Return persistent and effective network state
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /network/validate:
+    post:
+      tags: [Network]
+      operationId: validateNetworkConfiguration
+      summary: Validate a candidate configuration without applying it
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NetworkConfiguration'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /network/apply:
+    post:
+      tags: [Network]
+      operationId: applyNetworkConfiguration
+      summary: Stage a revision-checked network transaction
+      description: |
+        Remote management changes are applied with a rollback checkpoint.
+        Call `/network/confirm` before the returned deadline.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NetworkMutation'
+      responses:
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /network/confirm:
+    post:
+      tags: [Network]
+      operationId: confirmNetworkConfiguration
+      summary: Confirm the pending network checkpoint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /network/rollback:
+    post:
+      tags: [Network]
+      operationId: rollbackNetworkConfiguration
+      summary: Restore the pending network checkpoint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/destinations:
+    get:
+      tags: [Policy]
+      operationId: listDestinationRules
+      summary: List stable destination-policy records
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Policy]
+      operationId: createDestinationRule
+      summary: Create and atomically publish a destination rule
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DestinationRule'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/destinations/{ruleId}:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    patch:
+      tags: [Policy]
+      operationId: updateDestinationRule
+      summary: Replace one destination rule at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DestinationRuleUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    delete:
+      tags: [Policy]
+      operationId: deleteDestinationRule
+      summary: Remove one destination rule at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/simulate:
+    post:
+      tags: [Policy]
+      operationId: simulatePolicy
+      summary: Explain the current policy decision without changing state
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicySimulation'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /domains:
+    get:
+      tags: [Policy]
+      operationId: listDomainRules
+      summary: List stable domain-policy records
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Policy]
+      operationId: createDomainRule
+      summary: Create and atomically publish a domain rule
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainRule'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /domains/{ruleId}:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    patch:
+      tags: [Policy]
+      operationId: updateDomainRule
+      summary: Replace one domain rule at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainRuleUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    delete:
+      tags: [Policy]
+      operationId: deleteDomainRule
+      summary: Remove one domain rule at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /blocklists:
+    post:
+      tags: [Sources]
+      operationId: importBlocklist
+      summary: Import bounded blocklist content into an existing source
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlocklistImport'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /sources:
+    get:
+      tags: [Sources]
+      operationId: listSources
+      summary: List stable blocklist-source records
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Sources]
+      operationId: createSource
+      summary: Create a blocklist source
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Source'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /sources/{sourceId}:
+    parameters:
+      - $ref: '#/components/parameters/SourceId'
+    patch:
+      tags: [Sources]
+      operationId: updateSource
+      summary: Replace a source at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    delete:
+      tags: [Sources]
+      operationId: deleteSource
+      summary: Remove a source at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /sources/{sourceId}/refresh:
+    post:
+      tags: [Sources]
+      operationId: refreshSource
+      summary: Refresh one remote source at its current revision
+      parameters:
+        - $ref: '#/components/parameters/SourceId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /events:
+    get:
+      tags: [Events]
+      operationId: listEvents
+      summary: List recent operational events with exact filters
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [debug, info, warning, error, critical]
+        - name: component
+          in: query
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /audit:
+    get:
+      tags: [Events]
+      operationId: listAuditRecords
+      summary: List immutable audit records newest first
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /audit/verify:
+    get:
+      tags: [Events]
+      operationId: verifyAuditChain
+      summary: Verify every audit hash-chain link
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /users:
+    get:
+      tags: [Access]
+      operationId: listUsers
+      summary: List local users
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Access]
+      operationId: createUser
+      summary: Create a local user
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      tags: [Access]
+      operationId: updateUser
+      summary: Replace user state at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /users/{userId}/password:
+    post:
+      tags: [Access]
+      operationId: resetUserPassword
+      summary: Reset a user's password at its current revision
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPasswordReset'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /users/{userId}/totp:
+    delete:
+      tags: [Access]
+      operationId: resetUserTotp
+      summary: Disable another user's TOTP at its current revision
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /tokens:
+    get:
+      tags: [Access]
+      operationId: listTokens
+      summary: List API-token metadata without token secrets
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Access]
+      operationId: createToken
+      summary: Create an API token and return its secret once
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /tokens/{tokenId}:
+    delete:
+      tags: [Access]
+      operationId: revokeToken
+      summary: Revoke an API token
+      parameters:
+        - $ref: '#/components/parameters/TokenId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /certificates:
+    get:
+      tags: [Certificates]
+      operationId: getCertificate
+      summary: Inspect the active server identity
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /certificates/install:
+    post:
+      tags: [Certificates]
+      operationId: installCertificate
+      summary: Validate and atomically install a server identity
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CertificateInstall'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /certificates/csr:
+    post:
+      tags: [Certificates]
+      operationId: createCertificateSigningRequest
+      summary: Create a private key and certificate signing request
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CertificateRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /backups:
+    get:
+      tags: [Backups]
+      operationId: listBackups
+      summary: List stored backup metadata
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Backups]
+      operationId: createBackup
+      summary: Create a configuration or encrypted full backup
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /backups/{backupId}:
+    get:
+      tags: [Backups]
+      operationId: inspectBackup
+      summary: Inspect and verify a stored backup
+      parameters:
+        - $ref: '#/components/parameters/BackupId'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /backups/{backupId}/restore:
+    post:
+      tags: [Backups]
+      operationId: restoreBackup
+      summary: Dry-run or explicitly apply a verified backup
+      parameters:
+        - $ref: '#/components/parameters/BackupId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupRestore'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /diagnostics:
+    post:
+      tags: [System]
+      operationId: createDiagnostics
+      summary: Create a bounded sanitized diagnostic archive
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /service/restart:
+    post:
+      tags: [System]
+      operationId: restartService
+      summary: Restart the JanusGate policy service
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/Confirmation'
+      responses:
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /system/reboot:
+    post:
+      tags: [System]
+      operationId: rebootAppliance
+      summary: Reboot the appliance
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/Confirmation'
+      responses:
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /system/shutdown:
+    post:
+      tags: [System]
+      operationId: shutdownAppliance
+      summary: Power off the appliance
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/Confirmation'
+      responses:
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JanusGate API token
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: janusgate_session
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required for state-changing session-cookie requests.
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 43
+    AfterId:
+      name: after_id
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    RuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    SourceId:
+      name: sourceId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    TokenId:
+      name: tokenId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    BackupId:
+      name: backupId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+  requestBodies:
+    EmptyObject:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyObject'
+    Confirmation:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Confirmation'
+  responses:
+    JsonSuccess:
+      description: Successful operation
+      headers:
+        X-Request-ID:
+          description: Stable request correlation identifier.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/JsonObject'
+    JsonError:
+      description: |
+        Error response. Depending on the operation, status is 400, 401, 403,
+        404, 409, 413, 415, 422, 429, 500, 502, or 503.
+      headers:
+        X-Request-ID:
+          description: Stable request correlation identifier.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Identifier:
+      type: integer
+      minimum: 1
+      maximum: 9223372036854775807
+    JsonObject:
+      type: object
+      additionalProperties: true
+    EmptyObject:
+      type: object
+      additionalProperties: false
+    Confirmation:
+      type: object
+      additionalProperties: false
+      required: [confirm]
+      properties:
+        confirm:
+          const: true
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+        message:
+          type: string
+          minLength: 1
+          maxLength: 512
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+    Revision:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+    BootstrapRequest:
+      type: object
+      additionalProperties: false
+      required: [token, username, password]
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 12
+          maxLength: 256
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+        totp:
+          type: integer
+          minimum: 0
+          maximum: 999999
+        recovery_code:
+          type: string
+          minLength: 43
+          maxLength: 43
+    PasswordChange:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+          minLength: 1
+          maxLength: 256
+        new_password:
+          type: string
+          minLength: 12
+          maxLength: 256
+    TotpCode:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: integer
+          minimum: 0
+          maximum: 999999
+    NetworkConfiguration:
+      type: object
+      additionalProperties: false
+      required:
+        - bridge
+        - ingress
+        - egress
+        - management
+        - bridge_mtu
+        - queue_first
+        - queue_count
+        - queue_length
+        - failure_mode
+        - stp
+        - multicast_snooping
+        - queue_cpu_fanout
+      properties:
+        bridge:
+          $ref: '#/components/schemas/InterfaceName'
+        ingress:
+          $ref: '#/components/schemas/InterfaceName'
+        egress:
+          $ref: '#/components/schemas/InterfaceName'
+        management:
+          $ref: '#/components/schemas/InterfaceName'
+        bridge_mtu:
+          oneOf:
+            - const: 0
+            - type: integer
+              minimum: 1280
+              maximum: 65535
+        queue_first:
+          type: integer
+          minimum: 0
+          maximum: 65535
+        queue_count:
+          type: integer
+          minimum: 1
+          maximum: 64
+        queue_length:
+          type: integer
+          minimum: 1
+          maximum: 1048576
+        failure_mode:
+          type: string
+          enum: [fail_open, fail_closed]
+        stp:
+          type: boolean
+        multicast_snooping:
+          type: boolean
+        queue_cpu_fanout:
+          type: boolean
+    NetworkMutation:
+      type: object
+      additionalProperties: false
+      required: [revision, configuration]
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        configuration:
+          $ref: '#/components/schemas/NetworkConfiguration'
+    InterfaceName:
+      type: string
+      minLength: 1
+      maxLength: 15
+      pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+    Scope:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              const: global
+        - type: object
+          additionalProperties: false
+          required: [type, vlan]
+          properties:
+            type:
+              const: vlan
+            vlan:
+              type: integer
+              minimum: 0
+              maximum: 4094
+        - type: object
+          additionalProperties: false
+          required: [type, address]
+          properties:
+            type:
+              const: mac
+            address:
+              type: string
+              pattern: '^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$'
+        - type: object
+          additionalProperties: false
+          required: [type, address, prefix_length]
+          properties:
+            type:
+              type: string
+              enum: [ipv4, ipv6]
+            address:
+              type: string
+              minLength: 2
+              maxLength: 45
+            prefix_length:
+              type: integer
+              minimum: 0
+              maximum: 128
+    DomainRuleFields:
+      type: object
+      required:
+        [domain, action, target, include_subdomains, scope, attribution, enabled]
+      properties:
+        domain:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        action:
+          type: string
+          enum: [allow, block]
+        target:
+          type: string
+          enum: [dns, tls_sni]
+        include_subdomains:
+          type: boolean
+        scope:
+          $ref: '#/components/schemas/Scope'
+        attribution:
+          type: string
+          minLength: 1
+          maxLength: 255
+        enabled:
+          type: boolean
+    DomainRule:
+      allOf:
+        - $ref: '#/components/schemas/DomainRuleFields'
+      unevaluatedProperties: false
+    DomainRuleUpdate:
+      allOf:
+        - $ref: '#/components/schemas/DomainRuleFields'
+        - type: object
+          required: [revision]
+          properties:
+            revision:
+              $ref: '#/components/schemas/Identifier'
+      unevaluatedProperties: false
+    DestinationRuleFields:
+      type: object
+      required:
+        [action, transport, address, prefix_length, port, scope, attribution,
+         enabled]
+      properties:
+        action:
+          type: string
+          enum: [allow, block]
+        transport:
+          type: string
+          enum: [any, tcp, udp]
+        address:
+          type: [string, 'null']
+          maxLength: 45
+        prefix_length:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 128
+        port:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 65535
+        scope:
+          $ref: '#/components/schemas/Scope'
+        attribution:
+          type: string
+          minLength: 1
+          maxLength: 255
+        enabled:
+          type: boolean
+      allOf:
+        - if:
+            properties:
+              address:
+                type: 'null'
+          then:
+            properties:
+              prefix_length:
+                type: 'null'
+          else:
+            properties:
+              prefix_length:
+                type: integer
+        - anyOf:
+            - properties:
+                address:
+                  type: string
+            - properties:
+                port:
+                  type: integer
+    DestinationRule:
+      allOf:
+        - $ref: '#/components/schemas/DestinationRuleFields'
+      unevaluatedProperties: false
+    DestinationRuleUpdate:
+      allOf:
+        - $ref: '#/components/schemas/DestinationRuleFields'
+        - type: object
+          required: [revision]
+          properties:
+            revision:
+              $ref: '#/components/schemas/Identifier'
+      unevaluatedProperties: false
+    PolicySimulation:
+      type: object
+      additionalProperties: false
+      required: [domain]
+      dependentRequired:
+        destination_ip: [destination_port, transport]
+        destination_port: [destination_ip, transport]
+        transport: [destination_ip, destination_port]
+      properties:
+        target:
+          type: string
+          enum: [dns, tls_sni]
+        domain:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        source_ip:
+          type: string
+          minLength: 2
+          maxLength: 45
+        source_mac:
+          type: string
+          pattern: '^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$'
+        vlan:
+          type: integer
+          minimum: 0
+          maximum: 4094
+        destination_ip:
+          type: string
+          minLength: 2
+          maxLength: 45
+        destination_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        transport:
+          type: string
+          enum: [tcp, udp]
+    SourceFields:
+      type: object
+      required:
+        - name
+        - format
+        - mode
+        - url
+        - signature_url
+        - enabled
+        - update_interval_seconds
+        - max_download_bytes
+        - max_decompressed_bytes
+        - connect_timeout_ms
+        - transfer_timeout_ms
+        - redirect_limit
+        - retry_base_seconds
+        - retry_max_seconds
+        - sha256_pin
+        - ed25519_public_key
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        format:
+          type: string
+          enum: [domain, hosts, category, rpz, json]
+        mode:
+          type: string
+          enum: [strict, tolerant]
+        url:
+          type: [string, 'null']
+          format: uri
+          maxLength: 2048
+          pattern: '^[Hh][Tt][Tt][Pp][Ss]://'
+        signature_url:
+          type: [string, 'null']
+          format: uri
+          maxLength: 2048
+          pattern: '^[Hh][Tt][Tt][Pp][Ss]://'
+        enabled:
+          type: boolean
+        update_interval_seconds:
+          type: integer
+          minimum: 300
+          maximum: 2592000
+        max_download_bytes:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775807
+        max_decompressed_bytes:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775807
+        connect_timeout_ms:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+        transfer_timeout_ms:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+        redirect_limit:
+          type: integer
+          minimum: 0
+          maximum: 20
+        retry_base_seconds:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775807
+        retry_max_seconds:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775807
+        sha256_pin:
+          type: [string, 'null']
+          pattern: '^[0-9A-Fa-f]{64}$'
+        ed25519_public_key:
+          type: [string, 'null']
+          pattern: '^[0-9A-Fa-f]{64}$'
+      allOf:
+        - if:
+            properties:
+              ed25519_public_key:
+                type: string
+          then:
+            properties:
+              url:
+                type: string
+              signature_url:
+                type: string
+          else:
+            properties:
+              signature_url:
+                type: 'null'
+    Source:
+      allOf:
+        - $ref: '#/components/schemas/SourceFields'
+      unevaluatedProperties: false
+    SourceUpdate:
+      allOf:
+        - $ref: '#/components/schemas/SourceFields'
+        - type: object
+          required: [revision]
+          properties:
+            revision:
+              $ref: '#/components/schemas/Identifier'
+      unevaluatedProperties: false
+    BlocklistImport:
+      type: object
+      additionalProperties: false
+      required: [source_id, revision, content]
+      properties:
+        source_id:
+          $ref: '#/components/schemas/Identifier'
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        content:
+          type: string
+          minLength: 1
+    UserCreate:
+      type: object
+      additionalProperties: false
+      required: [username, password, role, force_password_change]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 12
+          maxLength: 256
+        role:
+          type: string
+          enum: [administrator, operator, auditor]
+        force_password_change:
+          type: boolean
+    UserUpdate:
+      type: object
+      additionalProperties: false
+      required: [revision, role, enabled, force_password_change]
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        role:
+          type: string
+          enum: [administrator, operator, auditor]
+        enabled:
+          type: boolean
+        force_password_change:
+          type: boolean
+    UserPasswordReset:
+      type: object
+      additionalProperties: false
+      required: [revision, password, force_password_change]
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        password:
+          type: string
+          minLength: 12
+          maxLength: 256
+        force_password_change:
+          type: boolean
+    TokenCreate:
+      type: object
+      additionalProperties: false
+      required:
+        [user_id, name, scopes, expires_at, source_network,
+         requests_per_minute]
+      properties:
+        user_id:
+          $ref: '#/components/schemas/Identifier'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        scopes:
+          type: string
+          minLength: 1
+          maxLength: 192
+        expires_at:
+          type: [integer, 'null']
+          minimum: 1
+        source_network:
+          type: [string, 'null']
+          maxLength: 49
+        requests_per_minute:
+          type: integer
+          minimum: 1
+          maximum: 60000
+    CertificateInstall:
+      type: object
+      additionalProperties: false
+      required: [certificate, private_key, expected_fingerprint]
+      properties:
+        certificate:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        private_key:
+          type: [string, 'null']
+          maxLength: 65536
+        expected_fingerprint:
+          type: [string, 'null']
+          pattern: '^[0-9A-Fa-f]{64}$'
+    CertificateRequest:
+      type: object
+      additionalProperties: false
+      required: [common_name, alternative_names]
+      properties:
+        common_name:
+          type: string
+          minLength: 1
+          maxLength: 253
+        alternative_names:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 253
+    BackupCreate:
+      type: object
+      additionalProperties: false
+      required: [kind, include_private_key, passphrase]
+      properties:
+        kind:
+          type: string
+          enum: [configuration, full]
+        include_private_key:
+          type: boolean
+        passphrase:
+          type: [string, 'null']
+          maxLength: 1024
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: configuration
+          then:
+            properties:
+              include_private_key:
+                const: false
+              passphrase:
+                type: 'null'
+          else:
+            properties:
+              passphrase:
+                type: string
+                minLength: 8
+    BackupRestore:
+      type: object
+      additionalProperties: false
+      required: [passphrase, dry_run, confirm]
+      properties:
+        passphrase:
+          type: [string, 'null']
+          maxLength: 1024
+        dry_run:
+          type: boolean
+        confirm:
+          type: boolean
+      oneOf:
+        - properties:
+            dry_run:
+              const: true
+            confirm:
+              const: false
+        - properties:
+            dry_run:
+              const: false
+            confirm:
+              const: true
