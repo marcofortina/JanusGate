@@ -16,9 +16,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <fcntl.h>
 #include <pthread.h>
+#if defined(__linux__)
 #include <sched.h>
-#include <sys/eventfd.h>
+#endif
 #include <unistd.h>
 
 #include "janusgate/network.h"
@@ -39,7 +41,7 @@ struct jg_nfqueue_group {
     struct jg_nfqueue_group_config config;
     struct group_worker workers[JG_NETWORK_QUEUE_COUNT_MAX];
     bool joined;
-    int stop_fd;
+    int stop_pipe[2U];
 };
 
 /** @brief Add one counter with saturation at the largest representation. */
@@ -51,9 +53,9 @@ static void saturating_add(uint64_t value, uint64_t *total)
 /** @brief Notify every worker through the shared level-triggered event. */
 static int notify_stop(struct jg_nfqueue_group *group)
 {
-    const uint64_t notification = 1U;
+    const uint8_t notification = 1U;
     const ssize_t written =
-        write(group->stop_fd, &notification, sizeof(notification));
+        write(group->stop_pipe[1U], &notification, sizeof(notification));
 
     if (written == (ssize_t)sizeof(notification) ||
         (written < 0 && errno == EAGAIN)) {
@@ -69,15 +71,20 @@ static void *run_worker(void *context)
     int result = 0;
 
     if (worker->pin_worker) {
+#if defined(__linux__)
         cpu_set_t affinity;
 
         CPU_ZERO_S(sizeof(affinity), &affinity);
         CPU_SET_S((size_t)worker->cpu, sizeof(affinity), &affinity);
         result =
             pthread_setaffinity_np(pthread_self(), sizeof(affinity), &affinity);
+#else
+        result = ENOTSUP;
+#endif
     }
     if (result == 0) {
-        result = jg_nfqueue_worker_run(worker->queue, worker->group->stop_fd);
+        result =
+            jg_nfqueue_worker_run(worker->queue, worker->group->stop_pipe[0U]);
     } else {
         result = -result;
     }
@@ -100,8 +107,11 @@ static void release_group(struct jg_nfqueue_group *group)
     for (index = 0U; index < group->config.queue_count; ++index) {
         jg_nfqueue_worker_close(group->workers[index].queue);
     }
-    if (group->stop_fd >= 0) {
-        (void)close(group->stop_fd);
+    if (group->stop_pipe[0U] >= 0) {
+        (void)close(group->stop_pipe[0U]);
+    }
+    if (group->stop_pipe[1U] >= 0) {
+        (void)close(group->stop_pipe[1U]);
     }
     free(group);
 }
@@ -154,7 +164,9 @@ int jg_nfqueue_group_config_validate(
 {
     struct jg_nfqueue_worker_config worker_config;
     uint32_t queue_end = 0U;
+#if defined(__linux__)
     uint32_t cpu_end = 0U;
+#endif
     int result = 0;
 
     if (config == NULL || config->queue_count == 0U) {
@@ -164,12 +176,20 @@ int jg_nfqueue_group_config_validate(
         return -ERANGE;
     }
     queue_end = (uint32_t)config->queue_first + (uint32_t)config->queue_count;
-    cpu_end = config->first_cpu + (uint32_t)config->queue_count;
-    if (queue_end > 65536U ||
-        (config->pin_workers &&
-         (cpu_end < config->first_cpu || cpu_end > (uint32_t)CPU_SETSIZE))) {
+    if (queue_end > 65536U) {
         return -ERANGE;
     }
+#if defined(__linux__)
+    cpu_end = config->first_cpu + (uint32_t)config->queue_count;
+    if (config->pin_workers &&
+        (cpu_end < config->first_cpu || cpu_end > (uint32_t)CPU_SETSIZE)) {
+        return -ERANGE;
+    }
+#else
+    if (config->pin_workers) {
+        return -ENOTSUP;
+    }
+#endif
 
     worker_config.queue_number = config->queue_first;
     worker_config.ingress_index = config->ingress_index;
@@ -206,8 +226,9 @@ int jg_nfqueue_group_start(const struct jg_nfqueue_group_config *config,
         return -ENOMEM;
     }
     started->config = *config;
-    started->stop_fd = eventfd(0U, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (started->stop_fd < 0) {
+    started->stop_pipe[0U] = -1;
+    started->stop_pipe[1U] = -1;
+    if (pipe2(started->stop_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
         result = -errno;
     }
     for (index = 0U; result == 0 && index < config->queue_count; ++index) {

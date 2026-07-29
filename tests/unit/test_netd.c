@@ -248,6 +248,10 @@ static void test_unauthorized_connection(void **state)
     size_t request_size = 0U;
 
     (void)state;
+    if (geteuid() == 0U) {
+        skip();
+        return;
+    }
     assert_int_equal(
         socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets), 0);
     request_size = encode_request(JG_IPC_PING, NULL, 0U, request_data,
@@ -269,12 +273,16 @@ static void test_transport_boundaries(void **state)
     struct iovec payload;
     struct msghdr message;
     struct cmsghdr *header = NULL;
+    const int send_buffer_size = (int)(sizeof(oversized) * 2U);
     int sockets[2] = {-1, -1};
     size_t request_size = 0U;
 
     (void)state;
     assert_int_equal(
         socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets), 0);
+    assert_int_equal(setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF,
+                                &send_buffer_size, sizeof(send_buffer_size)),
+                     0);
     assert_int_equal(send(sockets[0], oversized, sizeof(oversized), 0),
                      (ssize_t)sizeof(oversized));
     assert_int_equal(jg_netd_handle_connection(sockets[1], geteuid()),

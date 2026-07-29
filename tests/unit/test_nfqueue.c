@@ -108,7 +108,11 @@ static void test_group_configuration(void **state)
         .first_cpu = UINT32_MAX,
         .pin_workers = true,
     };
+#if defined(__OpenBSD__)
+    assert_int_equal(jg_nfqueue_group_config_validate(&config), -ENOTSUP);
+#else
     assert_int_equal(jg_nfqueue_group_config_validate(&config), -ERANGE);
+#endif
 }
 
 /** @brief Run the single-queue transport test group. */

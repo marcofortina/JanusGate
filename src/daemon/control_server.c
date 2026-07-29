@@ -18,9 +18,9 @@
 #include <string.h>
 #include <time.h>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
-#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -51,7 +51,7 @@ struct jg_control_server {
     atomic_int result;
     uid_t allowed_uid;
     int server_fd;
-    int stop_fd;
+    int stop_pipe[2U];
     bool thread_started;
     bool joined;
     bool owns_path;
@@ -171,11 +171,21 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
     return 0;
 }
 
-/** @brief Verify one control peer through Linux socket credentials. */
+/** @brief Verify one control peer through local socket credentials. */
 static int authenticate_peer(int socket_fd, uid_t allowed_uid)
 {
+#if defined(__OpenBSD__)
+    uid_t peer_uid = 0U;
+    gid_t peer_gid = 0U;
+
+    if (getpeereid(socket_fd, &peer_uid, &peer_gid) != 0) {
+        return -errno;
+    }
+    (void)peer_gid;
+#else
     struct ucred credentials;
     socklen_t credentials_size = (socklen_t)sizeof(credentials);
+    uid_t peer_uid = 0U;
 
     if (getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &credentials,
                    &credentials_size) != 0) {
@@ -184,8 +194,9 @@ static int authenticate_peer(int socket_fd, uid_t allowed_uid)
     if (credentials_size != sizeof(credentials)) {
         return -EPROTO;
     }
-    return credentials.uid == 0U || credentials.uid == allowed_uid ? 0
-                                                                   : -EACCES;
+    peer_uid = credentials.uid;
+#endif
+    return peer_uid == 0U || peer_uid == allowed_uid ? 0 : -EACCES;
 }
 
 /** @brief Close the descriptor accepted by the bounded control buffer. */
@@ -316,9 +327,9 @@ int jg_control_handle_connection(int socket_fd,
 /** @brief Notify the server thread through its level-triggered event. */
 static int notify_stop(struct jg_control_server *server)
 {
-    const uint64_t notification = 1U;
+    const uint8_t notification = 1U;
     const ssize_t written =
-        write(server->stop_fd, &notification, sizeof(notification));
+        write(server->stop_pipe[1U], &notification, sizeof(notification));
 
     if (written == (ssize_t)sizeof(notification) ||
         (written < 0 && errno == EAGAIN)) {
@@ -498,7 +509,7 @@ static int serve_connections(struct jg_control_server *server)
 {
     struct pollfd descriptors[2U] = {
         {.fd = server->server_fd, .events = POLLIN},
-        {.fd = server->stop_fd, .events = POLLIN},
+        {.fd = server->stop_pipe[0U], .events = POLLIN},
     };
     uint64_t next_update_check = 0U;
     int result = 0;
@@ -573,8 +584,11 @@ static void release_server(struct jg_control_server *server)
     if (server->server_fd >= 0) {
         (void)close(server->server_fd);
     }
-    if (server->stop_fd >= 0) {
-        (void)close(server->stop_fd);
+    if (server->stop_pipe[0U] >= 0) {
+        (void)close(server->stop_pipe[0U]);
+    }
+    if (server->stop_pipe[1U] >= 0) {
+        (void)close(server->stop_pipe[1U]);
     }
     if (server->owns_path) {
         (void)unlink(JG_CONTROL_SOCKET_PATH);
@@ -606,10 +620,10 @@ int jg_control_server_start(struct jg_daemon_runtime *runtime,
     started->runtime = runtime;
     started->allowed_uid = allowed_uid;
     started->server_fd = -1;
-    started->stop_fd = -1;
+    started->stop_pipe[0U] = -1;
+    started->stop_pipe[1U] = -1;
     atomic_init(&started->result, 0);
-    started->stop_fd = eventfd(0U, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (started->stop_fd < 0) {
+    if (pipe2(started->stop_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
         result = -errno;
     }
     if (result == 0) {
