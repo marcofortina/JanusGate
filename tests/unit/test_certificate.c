@@ -192,6 +192,16 @@ static void test_certificate_installation(void **state)
     exported = NULL;
     exported_size = 0U;
 
+    assert_int_equal(chmod(path, 0640), 0);
+    assert_int_equal(jg_certificate_inspect_file(path, &inspected), 0);
+    assert_int_equal(
+        jg_certificate_install(path, material.certificate,
+                               material.certificate_size, material.private_key,
+                               material.private_key_size, &installed),
+        0);
+    assert_int_equal(stat(path, &metadata), 0);
+    assert_int_equal(metadata.st_mode & 0777U, S_IRUSR | S_IWUSR | S_IRGRP);
+
     assert_int_equal(chmod(path, 0644), 0);
     assert_int_equal(jg_certificate_inspect_file(path, &inspected), -EACCES);
     assert_int_equal(chmod(path, 0600), 0);

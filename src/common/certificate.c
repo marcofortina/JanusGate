@@ -304,18 +304,74 @@ static int write_exact(int descriptor, const char *data, size_t data_size)
     return 0;
 }
 
-/** @brief Check one existing destination without following its final link. */
-static int validate_destination(int directory, const char *leaf)
+/** Preserved ownership attributes for one secure destination. */
+struct secure_file_attributes {
+    gid_t group;
+    mode_t mode;
+    bool exists;
+};
+
+/** @brief Determine whether the process belongs to one service group. */
+static bool process_has_group(gid_t group)
+{
+    gid_t *groups = NULL;
+    int count = 0;
+    bool present = group == getegid();
+
+    if (present) {
+        return true;
+    }
+    count = getgroups(0, NULL);
+    if (count <= 0) {
+        return false;
+    }
+    groups = calloc((size_t)count, sizeof(*groups));
+    if (groups == NULL || getgroups(count, groups) != count) {
+        free(groups);
+        return false;
+    }
+    for (int index = 0; index < count && !present; ++index) {
+        present = groups[index] == group;
+    }
+    free(groups);
+    return present;
+}
+
+/** @brief Validate private owner or read-only service-group access. */
+static bool secure_file_valid(const struct stat *metadata, bool require_owner)
+{
+    const mode_t permissions = metadata->st_mode & 0777;
+    const bool owner = metadata->st_uid == geteuid();
+    const bool group_reader = permissions == 0640;
+
+    return S_ISREG(metadata->st_mode) &&
+           ((owner && (permissions == 0600 || group_reader)) ||
+            (!require_owner && group_reader &&
+             process_has_group(metadata->st_gid)));
+}
+
+/** @brief Check and capture one destination without following its final link.
+ */
+static int validate_destination(int directory,
+                                const char *leaf,
+                                struct secure_file_attributes *attributes)
 {
     struct stat metadata;
 
+    *attributes = (struct secure_file_attributes){
+        .group = getegid(),
+        .mode = 0600,
+        .exists = false,
+    };
     if (fstatat(directory, leaf, &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno == ENOENT ? 0 : -errno;
     }
-    if (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
-        (metadata.st_mode & (S_IXUSR | S_IRWXG | S_IRWXO)) != 0U) {
+    if (!secure_file_valid(&metadata, true)) {
         return -EACCES;
     }
+    attributes->group = metadata.st_gid;
+    attributes->mode = metadata.st_mode & 0777;
+    attributes->exists = true;
     return 0;
 }
 
@@ -355,8 +411,7 @@ static int read_secure_file(const char *path, uint8_t **data, size_t *data_size)
     }
     if (fstat(descriptor, &metadata) != 0) {
         result = -errno;
-    } else if (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
-               (metadata.st_mode & (S_IXUSR | S_IRWXG | S_IRWXO)) != 0U) {
+    } else if (!secure_file_valid(&metadata, false)) {
         result = -EACCES;
     } else if (metadata.st_size <= 0 ||
                metadata.st_size > (off_t)JG_CERTIFICATE_PEM_MAX) {
@@ -542,6 +597,7 @@ static int atomic_write(const char *path,
     char directory_path[PATH_MAX];
     char leaf[NAME_MAX + 1U];
     char temporary[64U] = {0};
+    struct secure_file_attributes attributes;
     int directory = -1;
     int descriptor = -1;
     bool temporary_exists = false;
@@ -562,11 +618,16 @@ static int atomic_write(const char *path,
         }
     }
     if (result == 0) {
-        result = validate_destination(directory, leaf);
+        result = validate_destination(directory, leaf, &attributes);
     }
     if (result == 0) {
         result = create_temporary_file(directory, temporary, &descriptor);
         temporary_exists = result == 0;
+    }
+    if (result == 0 && attributes.exists &&
+        (fchown(descriptor, (uid_t)-1, attributes.group) != 0 ||
+         fchmod(descriptor, attributes.mode) != 0)) {
+        result = -errno;
     }
     if (result == 0) {
         result = write_exact(descriptor, first, first_size);
@@ -678,6 +739,7 @@ int jg_certificate_private_key_remove(const char *path)
 {
     char directory_path[PATH_MAX];
     char leaf[NAME_MAX + 1U];
+    struct secure_file_attributes attributes;
     int directory = -1;
     int result = split_path(path, directory_path, leaf);
 
@@ -689,7 +751,7 @@ int jg_certificate_private_key_remove(const char *path)
         }
     }
     if (result == 0) {
-        result = validate_destination(directory, leaf);
+        result = validate_destination(directory, leaf, &attributes);
     }
     if (result == 0 && unlinkat(directory, leaf, 0) != 0) {
         result = -errno;

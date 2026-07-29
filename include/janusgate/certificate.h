@@ -95,7 +95,8 @@ JG_PUBLIC int jg_certificate_inspect(const char *certificate,
  *
  * @return 0 on success.
  * @return -EINVAL for malformed arguments or PEM.
- * @return -EACCES for insecure ownership, permissions, or file type.
+ * @return -EACCES unless the file is owned by the effective user with mode
+ * 0600, or uses mode 0640 with a read-only group available to the process.
  * @return A negative errno-style file or allocation error otherwise.
  *
  * @thread_safety This function is reentrant.
@@ -115,7 +116,8 @@ JG_PUBLIC int jg_certificate_inspect_file(const char *path,
  *
  * @return 0 on success.
  * @return -EINVAL for malformed arguments or PEM.
- * @return -EACCES for insecure ownership, permissions, or file type.
+ * @return -EACCES unless the file is owned by the effective user with mode
+ * 0600, or uses mode 0640 with a read-only group available to the process.
  * @return A negative errno-style file or allocation error otherwise.
  *
  * @thread_safety This function is reentrant.
@@ -152,7 +154,8 @@ JG_PUBLIC void jg_certificate_pem_clear(char *pem, size_t pem_size);
  * @return 0 on success.
  * @return -EINVAL for malformed arguments or PEM.
  * @return -EKEYREJECTED when the private key does not match.
- * @return -EACCES for an insecure existing destination.
+ * @return -EACCES for an insecure existing destination. A secure 0640
+ * destination owned by the effective user retains its service group.
  * @return A negative errno-style file or allocation error otherwise.
  *
  * @thread_safety Concurrent installation to the same path is unsupported.
@@ -176,7 +179,8 @@ JG_PUBLIC int jg_certificate_install(const char *path,
  *
  * @return 0 on success.
  * @return -EINVAL for malformed arguments or PEM.
- * @return -EACCES for an insecure existing destination.
+ * @return -EACCES for an insecure existing destination. A secure 0640
+ * destination owned by the effective user retains its service group.
  * @return A negative errno-style file or allocation error otherwise.
  *
  * @thread_safety Concurrent replacement of the same path is unsupported.
