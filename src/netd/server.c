@@ -14,8 +14,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include <poll.h>
+#include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -67,7 +69,7 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
 
     if (request == NULL || response == NULL || request->request_id == 0U ||
         request->operation < JG_IPC_PING ||
-        request->operation > JG_IPC_DAEMON_STATUS ||
+        request->operation > JG_IPC_SYSTEM_POWEROFF ||
         request->body_size > JG_IPC_MAX_BODY_SIZE ||
         (request->body_size != 0U && request->body == NULL) ||
         (response_body_size != 0U && response_body == NULL)) {
@@ -130,6 +132,11 @@ int jg_netd_process_request(const struct jg_ipc_message *request,
             } else {
                 response->error = body_error(result);
             }
+        }
+    } else if (request->operation == JG_IPC_SYSTEM_REBOOT ||
+               request->operation == JG_IPC_SYSTEM_POWEROFF) {
+        if (request->body_size != 0U) {
+            response->error = JG_IPC_ERROR_MALFORMED;
         }
     } else {
         response->error = JG_IPC_ERROR_UNSUPPORTED;
@@ -260,7 +267,29 @@ int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid)
     if (sent < 0) {
         return -errno;
     }
-    return (size_t)sent == response_size ? 0 : -EIO;
+    if ((size_t)sent != response_size) {
+        return -EIO;
+    }
+    if (response.error == JG_IPC_ERROR_NONE &&
+        (response.operation == JG_IPC_SYSTEM_REBOOT ||
+         response.operation == JG_IPC_SYSTEM_POWEROFF)) {
+        struct timespec delay = {
+            .tv_sec = 1,
+        };
+
+        while (nanosleep(&delay, &delay) != 0) {
+            if (errno != EINTR) {
+                return -errno;
+            }
+        }
+        sync();
+        if (reboot(response.operation == JG_IPC_SYSTEM_POWEROFF
+                       ? RB_POWER_OFF
+                       : RB_AUTOBOOT) != 0) {
+            return -errno;
+        }
+    }
+    return 0;
 }
 
 /** @brief Create or validate the fixed root-owned runtime directory. */

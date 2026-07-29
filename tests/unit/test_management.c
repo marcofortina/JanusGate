@@ -2523,6 +2523,135 @@ static void test_request_rejection(void **state)
     json_decref(response);
 }
 
+/** @brief Verify lifecycle actions require permission and confirmation. */
+static void test_system_actions(void **state)
+{
+    struct management_fixture *fixture = *state;
+    static const char password[] = "Correct-Horse-Battery-Staple-9!";
+    const struct jg_account_token_config system_config = {
+        .name = "system operations",
+        .permissions = JG_ACCESS_SYSTEM_WRITE,
+        .requests_per_minute = 20U,
+    };
+    const struct jg_account_token_config reader_config = {
+        .name = "status reader",
+        .permissions = JG_ACCESS_STATUS_READ,
+        .requests_per_minute = 20U,
+    };
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_api_token system_token;
+    struct jg_account_api_token reader_token;
+    struct jg_audit_record audit_record;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[1024U];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    uint64_t audit_total = 0U;
+    size_t audit_count = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &system_config, (uint64_t)now,
+                                            &system_token),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &reader_config, (uint64_t)now,
+                                            &reader_token),
+                     0);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restart-unconfirmed\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/service/restart\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"confirm\":false}}",
+        system_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    assert_int_equal(jg_management_take_system_action(fixture->management),
+                     JG_SYSTEM_ACTION_NONE);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restart-forbidden\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/service/restart\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"confirm\":true}}",
+        reader_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     403);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"restart-accepted\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/service/restart\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"confirm\":true}}",
+        system_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "accepted")));
+    assert_string_equal(json_string_value(json_object_get(body, "action")),
+                        "service.restart");
+    assert_int_equal(jg_management_take_system_action(fixture->management),
+                     JG_SYSTEM_ACTION_RESTART);
+    assert_int_equal(jg_management_take_system_action(fixture->management),
+                     JG_SYSTEM_ACTION_NONE);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"shutdown-accepted\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/system/shutdown\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"confirm\":true}}",
+        system_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    assert_int_equal(jg_management_take_system_action(fixture->management),
+                     JG_SYSTEM_ACTION_POWEROFF);
+    json_decref(response);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U,
+                                            &audit_record, 1U, &audit_count,
+                                            &audit_total),
+                     0);
+    assert_int_equal(audit_count, 1U);
+    assert_true(audit_total >= 2U);
+    assert_string_equal(audit_record.action, "system.shutdown");
+    assert_true(audit_record.success);
+    sodium_memzero(&system_token, sizeof(system_token));
+    sodium_memzero(&reader_token, sizeof(reader_token));
+    sodium_memzero(bootstrap, sizeof(bootstrap));
+}
+
 /** @brief Run the serialized management authentication test group. */
 int jg_test_management(void)
 {
@@ -2555,6 +2684,8 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_system_actions, setup_management,
+                                        teardown_management),
     };
 
     return cmocka_run_group_tests_name("management", tests, NULL, NULL);

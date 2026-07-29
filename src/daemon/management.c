@@ -85,6 +85,7 @@ struct jg_management {
     char certificate_path[PATH_MAX];
     char backup_directory[PATH_MAX];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
+    enum jg_system_action pending_system_action;
 };
 
 /** Validated borrowed view of one internal JSON request envelope. */
@@ -3468,6 +3469,36 @@ static int append_diagnostic_audit(struct jg_management *management,
     return result;
 }
 
+/** @brief Append one accepted appliance lifecycle action. */
+static int append_system_audit(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               const struct authenticated_actor *actor,
+                               const char *action,
+                               uint64_t now)
+{
+    char source[INET6_ADDRSTRLEN];
+    const struct jg_audit_event event = {
+        .occurred_at = now,
+        .actor_type = actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+        .has_actor_id = true,
+        .actor_id = actor->actor_id,
+        .source = source,
+        .action = action,
+        .object_type = "appliance",
+        .object_id = NULL,
+        .details = "{\"confirmed\":true}",
+        .success = true,
+        .request_id = request->request_id,
+    };
+
+    if (inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL) {
+        return -EINVAL;
+    }
+    return jg_database_audit_append(management->database, &event, NULL);
+}
+
 /** @brief Create, store, and record one complete backup archive. */
 static int create_backup(struct jg_management *management,
                          enum jg_backup_kind kind,
@@ -5046,6 +5077,72 @@ static int handle_configuration(struct jg_management *management,
         return -ENOMEM;
     }
     return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Authorize, audit, and defer one appliance lifecycle action. */
+static int handle_system_action(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                uint64_t now,
+                                enum jg_system_action action,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written)
+{
+    static const char *const fields[] = {
+        "confirm",
+    };
+    struct authenticated_actor actor;
+    const char *action_name = NULL;
+    json_t *body = NULL;
+    bool confirmed = false;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SYSTEM_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        json_object_size(request->body) != 1U ||
+        !required_boolean(request->body, "confirm", &confirmed) || !confirmed ||
+        action < JG_SYSTEM_ACTION_RESTART ||
+        action > JG_SYSTEM_ACTION_POWEROFF) {
+        return respond_error(
+            400, "confirmation_required",
+            "The lifecycle action requires an exact explicit confirmation.",
+            request->request_id, output, output_size, written);
+    }
+    if (management->pending_system_action != JG_SYSTEM_ACTION_NONE) {
+        return respond_error(409, "system_action_pending",
+                             "Another lifecycle action is already pending.",
+                             request->request_id, output, output_size, written);
+    }
+    action_name = action == JG_SYSTEM_ACTION_RESTART
+                      ? "service.restart"
+                      : (action == JG_SYSTEM_ACTION_REBOOT ? "system.reboot"
+                                                           : "system.shutdown");
+    result = append_system_audit(management, request, remote, &actor,
+                                 action_name, now);
+    if (result != 0) {
+        return respond_error(500, "audit_failure",
+                             "The lifecycle action could not be audited.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "accepted", json_true()) != 0 ||
+        json_object_set_new(body, "action", json_string(action_name)) != 0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    result = encode_response(202, body, NULL, output, output_size, written);
+    if (result == 0) {
+        management->pending_system_action = action;
+    }
+    return result;
 }
 
 /** @brief Format one UTC diagnostic archive filename. */
@@ -8738,6 +8835,21 @@ static int dispatch_request(struct jg_management *management,
         return handle_configuration(management, request, remote, now, true,
                                     output, output_size, written);
     }
+    if (strcmp(request->path, "/api/v1/service/restart") == 0 && post) {
+        return handle_system_action(management, request, remote, now,
+                                    JG_SYSTEM_ACTION_RESTART, output,
+                                    output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/system/reboot") == 0 && post) {
+        return handle_system_action(management, request, remote, now,
+                                    JG_SYSTEM_ACTION_REBOOT, output,
+                                    output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/system/shutdown") == 0 && post) {
+        return handle_system_action(management, request, remote, now,
+                                    JG_SYSTEM_ACTION_POWEROFF, output,
+                                    output_size, written);
+    }
     if (strcmp(request->path, "/api/v1/diagnostics") == 0 && post) {
         return handle_diagnostics_create(management, request, remote, now,
                                          output, output_size, written);
@@ -9015,6 +9127,19 @@ int jg_management_process(struct jg_management *management,
     }
     json_decref(root);
     return result;
+}
+
+/** @brief Consume one deferred lifecycle action. */
+enum jg_system_action jg_management_take_system_action(
+    struct jg_management *management)
+{
+    enum jg_system_action action = JG_SYSTEM_ACTION_NONE;
+
+    if (management != NULL) {
+        action = management->pending_system_action;
+        management->pending_system_action = JG_SYSTEM_ACTION_NONE;
+    }
+    return action;
 }
 
 /** @brief Clear the TOTP key and release management state. */

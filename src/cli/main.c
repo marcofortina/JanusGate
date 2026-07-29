@@ -142,6 +142,9 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] diagnostics create\n"
         "       janusgatectl [OPTIONS] config validate\n"
         "       janusgatectl [OPTIONS] config reload\n"
+        "       janusgatectl [OPTIONS] service restart\n"
+        "       janusgatectl [OPTIONS] system reboot\n"
+        "       janusgatectl [OPTIONS] system shutdown\n"
         "       janusgatectl [--socket PATH] [--json] ping\n"
         "       janusgatectl [--socket PATH] [--json] policy reload\n"
         "       janusgatectl --version\n"
@@ -2751,6 +2754,42 @@ static int run_record_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Confirm and request one authenticated appliance lifecycle action. */
+static int run_system_command(const struct cli_options *options,
+                              const char *family,
+                              const char *operation)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    char path[sizeof("/api/v1/service/restart")];
+    json_t *body = NULL;
+    const char *message =
+        strcmp(operation, "restart") == 0
+            ? "Restart the JanusGate service"
+            : (strcmp(operation, "reboot") == 0 ? "Reboot the appliance"
+                                                : "Shut down the appliance");
+    int result = 0;
+
+    if (!destructive_operation_confirmed(options, message)) {
+        return CLI_EXIT_USAGE;
+    }
+    result = load_token(options, token);
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    result = snprintf(path, sizeof(path), "/api/v1/%s/%s", family, operation);
+    body = json_object();
+    if (result <= 0 || (size_t)result >= sizeof(path) || body == NULL ||
+        json_object_set_new(body, "confirm", json_true()) != 0) {
+        result = CLI_EXIT_FAILURE;
+    } else {
+        result =
+            send_api_request(options, token, operation, "POST", path, body);
+    }
+    json_decref(body);
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Run one recognized CLI command. */
 static int run_command(const struct cli_options *options,
                        int argc,
@@ -2853,6 +2892,14 @@ static int run_command(const struct cli_options *options,
     if (argc == 2 && strcmp(argv[0], "diagnostics") == 0 &&
         strcmp(argv[1], "create") == 0) {
         return run_diagnostics_create(options);
+    }
+    if (argc == 2 && strcmp(argv[0], "service") == 0 &&
+        strcmp(argv[1], "restart") == 0) {
+        return run_system_command(options, argv[0], argv[1]);
+    }
+    if (argc == 2 && strcmp(argv[0], "system") == 0 &&
+        (strcmp(argv[1], "reboot") == 0 || strcmp(argv[1], "shutdown") == 0)) {
+        return run_system_command(options, argv[0], argv[1]);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {

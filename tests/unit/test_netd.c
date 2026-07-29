@@ -146,6 +146,20 @@ static void test_request_dispatch(void **state)
                      0);
     assert_false(network_state.has_confirmed);
     assert_false(network_state.pending);
+
+    request.operation = JG_IPC_SYSTEM_REBOOT;
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
+    assert_int_equal(response.error, JG_IPC_ERROR_NONE);
+
+    request.operation = JG_IPC_SYSTEM_POWEROFF;
+    request.body = body;
+    request.body_size = 1U;
+    assert_int_equal(jg_netd_process_request(&request, &response, response_body,
+                                             sizeof(response_body)),
+                     0);
+    assert_int_equal(response.error, JG_IPC_ERROR_MALFORMED);
 }
 
 /** @brief Verify bounded ruleset generation and failure-mode queue flags. */

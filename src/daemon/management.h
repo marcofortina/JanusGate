@@ -22,6 +22,18 @@ struct jg_management;
 /** Packet runtime borrowed for status and operational actions. */
 struct jg_daemon_runtime;
 
+/** Deferred host lifecycle action accepted by the management API. */
+enum jg_system_action {
+    /** No lifecycle action is pending. */
+    JG_SYSTEM_ACTION_NONE = 0,
+    /** Restart the main JanusGate service. */
+    JG_SYSTEM_ACTION_RESTART,
+    /** Reboot the appliance. */
+    JG_SYSTEM_ACTION_REBOOT,
+    /** Power off the appliance. */
+    JG_SYSTEM_ACTION_POWEROFF
+};
+
 /**
  * @brief Create management state around a borrowed database.
  *
@@ -101,6 +113,21 @@ int jg_management_process(struct jg_management *management,
 int jg_management_update_due_blocklists(struct jg_management *management,
                                         uint64_t now,
                                         size_t *attempts);
+
+/**
+ * @brief Consume one deferred authenticated lifecycle action.
+ *
+ * @param[in,out] management Management state.
+ *
+ * @return The pending action, or @ref JG_SYSTEM_ACTION_NONE.
+ *
+ * @thread_safety Calls must be serialized with
+ * @ref jg_management_process.
+ *
+ * @side_effects Clears the pending action.
+ */
+enum jg_system_action jg_management_take_system_action(
+    struct jg_management *management);
 
 /**
  * @brief Clear secrets and release management state.

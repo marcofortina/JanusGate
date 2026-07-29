@@ -18,6 +18,7 @@
 #include "janusgate/backup.h"
 #include "janusgate/certificate.h"
 #include "janusgate/policy.h"
+#include "management.h"
 #include "nfqueue.h"
 #include "packet_output.h"
 
@@ -343,6 +344,20 @@ int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
 int jg_daemon_runtime_update_blocklists(struct jg_daemon_runtime *runtime,
                                         uint64_t now,
                                         size_t *attempts);
+
+/**
+ * @brief Consume one lifecycle action accepted by the management API.
+ *
+ * @param[in,out] runtime Running runtime.
+ *
+ * @return The pending action, or @ref JG_SYSTEM_ACTION_NONE.
+ *
+ * @thread_safety Calls are serialized by the control-server thread.
+ *
+ * @side_effects Clears the pending action.
+ */
+enum jg_system_action jg_daemon_runtime_take_system_action(
+    struct jg_daemon_runtime *runtime);
 
 /**
  * @brief Stop and release the complete packet runtime.

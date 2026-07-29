@@ -10,6 +10,7 @@
 #ifndef JANUSGATE_DAEMON_NETD_CLIENT_H
 #define JANUSGATE_DAEMON_NETD_CLIENT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -108,5 +109,20 @@ int jg_netd_client_rollback(void);
  * @thread_safety Calls use independent short-lived connections.
  */
 int jg_netd_client_state(struct jg_network_state *state);
+
+/**
+ * @brief Request a privileged appliance reboot or poweroff.
+ *
+ * @param[in] poweroff Select poweroff when true and reboot when false.
+ *
+ * @return 0 when the helper accepts the operation.
+ * @return A negative errno-style connection, protocol, or remote error
+ * otherwise.
+ *
+ * @thread_safety Calls use an independent short-lived connection.
+ *
+ * @side_effects Reboots or powers off the host after the response is sent.
+ */
+int jg_netd_client_power(bool poweroff);
 
 #endif

@@ -77,7 +77,11 @@ enum jg_ipc_operation {
     /** Return one aggregate daemon status and counter snapshot. */
     JG_IPC_DAEMON_STATUS = 9,
     /** Process one authenticated management API request. */
-    JG_IPC_MANAGEMENT_REQUEST = 10
+    JG_IPC_MANAGEMENT_REQUEST = 10,
+    /** Reboot the appliance after an authenticated management request. */
+    JG_IPC_SYSTEM_REBOOT = 11,
+    /** Power off the appliance after an authenticated management request. */
+    JG_IPC_SYSTEM_POWEROFF = 12
 };
 
 /**

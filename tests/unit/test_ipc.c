@@ -20,7 +20,7 @@ int jg_test_ipc(void);
 static void test_request_round_trip(void **state)
 {
     static const uint8_t body[] = {0x10U, 0x20U, 0x30U};
-    const struct jg_ipc_message request = {
+    struct jg_ipc_message request = {
         .kind = JG_IPC_REQUEST,
         .operation = JG_IPC_NETWORK_VALIDATE,
         .request_id = UINT64_C(0x0123456789abcdef),
@@ -51,6 +51,12 @@ static void test_request_round_trip(void **state)
     assert_int_equal(decoded.body_size, sizeof(body));
     assert_ptr_equal(decoded.body, encoded + JG_IPC_HEADER_SIZE);
     assert_memory_equal(decoded.body, body, sizeof(body));
+
+    request.operation = JG_IPC_SYSTEM_POWEROFF;
+    assert_int_equal(
+        jg_ipc_encode(&request, encoded, sizeof(encoded), &encoded_size), 0);
+    assert_int_equal(jg_ipc_decode(encoded, encoded_size, &decoded), 0);
+    assert_int_equal(decoded.operation, JG_IPC_SYSTEM_POWEROFF);
 }
 
 /** @brief Verify response errors and empty operation bodies. */

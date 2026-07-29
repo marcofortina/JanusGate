@@ -661,6 +661,15 @@ int jg_daemon_runtime_update_blocklists(struct jg_daemon_runtime *runtime,
                                                attempts);
 }
 
+/** @brief Consume one deferred lifecycle action from management state. */
+enum jg_system_action jg_daemon_runtime_take_system_action(
+    struct jg_daemon_runtime *runtime)
+{
+    return runtime == NULL
+               ? JG_SYSTEM_ACTION_NONE
+               : jg_management_take_system_action(runtime->management);
+}
+
 /** @brief Release the packet runtime in reverse ownership order. */
 void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
 {

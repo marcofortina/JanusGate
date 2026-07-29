@@ -5,6 +5,7 @@
 #include "netd_client.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -90,4 +91,11 @@ int jg_netd_client_state(struct jg_network_state *state)
         result = jg_network_state_decode(body, body_size, state);
     }
     return result;
+}
+
+/** @brief Request one allowlisted host power operation. */
+int jg_netd_client_power(bool poweroff)
+{
+    return call_empty_operation(poweroff ? JG_IPC_SYSTEM_POWEROFF
+                                         : JG_IPC_SYSTEM_REBOOT);
 }

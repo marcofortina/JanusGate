@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include "control_protocol.h"
+#include "netd_client.h"
 
 /** Runtime directory containing local-control sockets. */
 #define JG_RUNTIME_DIRECTORY "/run/janusgate"
@@ -239,6 +240,22 @@ static int receive_request(int socket_fd,
     return 0;
 }
 
+/** @brief Execute one lifecycle action only after its response is delivered. */
+static int perform_system_action(struct jg_daemon_runtime *runtime)
+{
+    const enum jg_system_action action =
+        jg_daemon_runtime_take_system_action(runtime);
+
+    if (action == JG_SYSTEM_ACTION_RESTART) {
+        return jg_daemon_runtime_request_stop(runtime);
+    }
+    if (action == JG_SYSTEM_ACTION_REBOOT ||
+        action == JG_SYSTEM_ACTION_POWEROFF) {
+        return jg_netd_client_power(action == JG_SYSTEM_ACTION_POWEROFF);
+    }
+    return 0;
+}
+
 /** @brief Authenticate and exchange one bounded control request. */
 int jg_control_handle_connection(int socket_fd,
                                  uid_t allowed_uid,
@@ -283,7 +300,10 @@ int jg_control_handle_connection(int socket_fd,
     if (sent < 0) {
         return -errno;
     }
-    return (size_t)sent == response_size ? 0 : -EIO;
+    if ((size_t)sent != response_size) {
+        return -EIO;
+    }
+    return perform_system_action(runtime);
 }
 
 /** @brief Notify the server thread through its level-triggered event. */

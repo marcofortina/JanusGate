@@ -11,7 +11,7 @@ Before=janusgate-web.service
 [Service]
 Type=simple
 ExecStart=/usr/sbin/janusgated
-Restart=on-failure
+Restart=always
 RestartSec=2s
 UMask=0077
 NoNewPrivileges=yes
