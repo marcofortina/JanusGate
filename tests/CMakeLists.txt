@@ -3,6 +3,14 @@
 
 pkg_check_modules(CMOCKA REQUIRED IMPORTED_TARGET cmocka)
 
+configure_file(
+  "${CMAKE_SOURCE_DIR}/config/janusgate.conf.example"
+  "${CMAKE_CURRENT_BINARY_DIR}/janusgate-setup.conf"
+  COPYONLY)
+file(
+  CHMOD "${CMAKE_CURRENT_BINARY_DIR}/janusgate-setup.conf"
+  PERMISSIONS OWNER_READ OWNER_WRITE)
+
 add_executable(
   janusgate-unit-tests
   unit/test_access.c
@@ -56,4 +64,11 @@ add_test(NAME unit COMMAND janusgate-unit-tests)
 add_test(NAME cli-version COMMAND janusgatectl --version)
 add_test(NAME cli-help COMMAND janusgatectl --help)
 add_test(NAME web-version COMMAND janusgate-web --version)
+add_test(NAME setup-version COMMAND janusgate-setup --version)
+add_test(NAME setup-help COMMAND janusgate-setup --help)
+add_test(
+  NAME setup-config
+  COMMAND janusgate-setup --config
+          "${CMAKE_CURRENT_BINARY_DIR}/janusgate-setup.conf" --image-build
+          --validate-only)
 set_tests_properties(unit PROPERTIES TIMEOUT 30)

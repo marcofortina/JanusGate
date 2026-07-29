@@ -185,6 +185,11 @@ target_link_libraries(
   janusgate-web PRIVATE janusgate-web-core "${CIVETWEB_LIBRARY}")
 janusgate_apply_compiler_options(janusgate-web)
 
+add_executable(janusgate-setup src/setup/main.c)
+target_link_libraries(
+  janusgate-setup PRIVATE JanusGate::common PkgConfig::JANSSON)
+janusgate_apply_compiler_options(janusgate-setup)
+
 install(
   TARGETS janusgate-common
   EXPORT JanusGateTargets
@@ -216,7 +221,7 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"
   COMPONENT development)
 install(
-  TARGETS janusgate-netd janusgated janusgate-web
+  TARGETS janusgate-netd janusgated janusgate-web janusgate-setup
   RUNTIME DESTINATION "${CMAKE_INSTALL_SBINDIR}"
   COMPONENT runtime)
 install(
@@ -226,6 +231,10 @@ install(
 install(
   DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/web/"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/janusgate/web"
+  COMPONENT runtime)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/janusgate.conf.example"
+  DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/janusgate"
   COMPONENT runtime)
 install(
   PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/init/openrc/janusgate-netd"
@@ -266,7 +275,7 @@ add_custom_target(
 add_custom_target(
   check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS janusgate-netd janusgated janusgate-web janusgatectl
+  DEPENDS janusgate-netd janusgated janusgate-web janusgate-setup janusgatectl
           janusgate-unit-tests
   USES_TERMINAL)
 

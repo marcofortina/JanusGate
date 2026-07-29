@@ -1,0 +1,27 @@
+{
+  "_license": "SPDX-License-Identifier: AGPL-3.0-or-later; Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>",
+  "network": {
+    "bridge": "br-data",
+    "ingress": "enp1s0",
+    "egress": "enp2s0",
+    "management": "enp3s0",
+    "bridge_mtu": 0,
+    "queue_first": 100,
+    "queue_count": 4,
+    "queue_length": 4096,
+    "failure_mode": "fail_closed",
+    "stp": false,
+    "multicast_snooping": true,
+    "queue_cpu_fanout": true
+  },
+  "certificate": {
+    "source": null,
+    "common_name": "janusgate.local",
+    "alternative_names": [
+      "janusgate.local",
+      "192.168.77.1"
+    ],
+    "validity_days": 825
+  },
+  "enable_services": true
+}
