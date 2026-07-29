@@ -29,11 +29,13 @@
 
 #include "blocklist_update.h"
 #include "daemon_runtime.h"
+#include "diagnostic_bundle.h"
 #include "janusgate/access.h"
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
 #include "janusgate/backup.h"
 #include "janusgate/certificate.h"
+#include "janusgate/diagnostic.h"
 #include "janusgate/event.h"
 #include "janusgate/ipc.h"
 #include "metrics.h"
@@ -59,6 +61,12 @@
 
 /** Maximum distinct API-token rate windows retained in memory. */
 #define MANAGEMENT_TOKEN_RATE_SLOT_COUNT 256U
+
+/** Maximum diagnostic archive bytes carried by one management response. */
+#define MANAGEMENT_DIAGNOSTIC_ARCHIVE_SIZE_MAX 45000U
+
+/** Complete timestamped diagnostic archive filename bytes. */
+#define MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE 48U
 
 /** One bounded fixed-window token request counter. */
 struct token_rate_slot {
@@ -3404,6 +3412,62 @@ static int append_backup_audit(struct jg_management *management,
     return result;
 }
 
+/** @brief Append one successful diagnostic archive creation event. */
+static int append_diagnostic_audit(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   const struct authenticated_actor *actor,
+                                   const char *filename,
+                                   const char *checksum,
+                                   size_t archive_size,
+                                   uint64_t now)
+{
+    char source[INET6_ADDRSTRLEN];
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int result = 0;
+
+    if (inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL) {
+        result = -EINVAL;
+    }
+    if (result == 0 &&
+        (details == NULL ||
+         json_object_set_new(details, "checksum_sha256",
+                             json_string(checksum)) != 0 ||
+         json_object_set_new(details, "size_bytes",
+                             json_integer((json_int_t)archive_size)) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type =
+                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
+            .has_actor_id = true,
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = "diagnostics.create",
+            .object_type = "diagnostic_archive",
+            .object_id = filename,
+            .details = encoded,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
 /** @brief Create, store, and record one complete backup archive. */
 static int create_backup(struct jg_management *management,
                          enum jg_backup_kind kind,
@@ -4982,6 +5046,141 @@ static int handle_configuration(struct jg_management *management,
         return -ENOMEM;
     }
     return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Format one UTC diagnostic archive filename. */
+static int diagnostic_filename(
+    uint64_t now,
+    char filename[MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE])
+{
+    time_t timestamp = 0;
+    struct tm utc;
+
+    if (now > (uint64_t)INT64_MAX) {
+        return -EOVERFLOW;
+    }
+    timestamp = (time_t)now;
+    if ((uint64_t)timestamp != now || gmtime_r(&timestamp, &utc) == NULL ||
+        strftime(filename, MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE,
+                 "janusgate-diagnostics-%Y%m%dT%H%M%SZ.tar.gz", &utc) == 0U) {
+        return -EOVERFLOW;
+    }
+    return 0;
+}
+
+/** @brief Create and return one authenticated diagnostic archive. */
+static int handle_diagnostics_create(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    struct authenticated_actor actor;
+    uint8_t checksum[crypto_hash_sha256_BYTES];
+    char checksum_text[crypto_hash_sha256_BYTES * 2U + 1U];
+    char filename[MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE];
+    uint8_t *archive = NULL;
+    char *encoded = NULL;
+    json_t *body = NULL;
+    size_t archive_size = 0U;
+    size_t encoded_size = 0U;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_OPERATE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The diagnostic request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(
+            503, "runtime_unavailable",
+            "Diagnostics are unavailable while the service is offline.",
+            request->request_id, output, output_size, written);
+    }
+    result =
+        jg_diagnostic_bundle_create(management->database, management->runtime,
+                                    now, &archive, &archive_size);
+    if (result != 0) {
+        return respond_error(
+            result == -EMSGSIZE ? 413 : 500,
+            result == -EMSGSIZE ? "diagnostic_too_large"
+                                : "diagnostic_create_failed",
+            result == -EMSGSIZE
+                ? "The diagnostic archive exceeds its configured limit."
+                : "The diagnostic archive could not be created.",
+            request->request_id, output, output_size, written);
+    }
+    if (archive_size > MANAGEMENT_DIAGNOSTIC_ARCHIVE_SIZE_MAX) {
+        jg_diagnostic_archive_destroy(archive);
+        return respond_error(
+            413, "diagnostic_too_large",
+            "The diagnostic archive exceeds its management transfer limit.",
+            request->request_id, output, output_size, written);
+    }
+    encoded_size =
+        sodium_base64_encoded_len(archive_size, sodium_base64_VARIANT_ORIGINAL);
+    if (diagnostic_filename(now, filename) != 0 || encoded_size == 0U ||
+        encoded_size > JG_IPC_MAX_BODY_SIZE) {
+        jg_diagnostic_archive_destroy(archive);
+        return respond_error(500, "diagnostic_create_failed",
+                             "The diagnostic archive could not be encoded.",
+                             request->request_id, output, output_size, written);
+    }
+    encoded = malloc(encoded_size);
+    if (encoded == NULL) {
+        jg_diagnostic_archive_destroy(archive);
+        return -ENOMEM;
+    }
+    (void)crypto_hash_sha256(checksum, archive, archive_size);
+    (void)sodium_bin2hex(checksum_text, sizeof(checksum_text), checksum,
+                         sizeof(checksum));
+    if (sodium_bin2base64(encoded, encoded_size, archive, archive_size,
+                          sodium_base64_VARIANT_ORIGINAL) == NULL) {
+        sodium_memzero(checksum, sizeof(checksum));
+        jg_diagnostic_archive_destroy(archive);
+        free(encoded);
+        return respond_error(500, "diagnostic_create_failed",
+                             "The diagnostic archive could not be encoded.",
+                             request->request_id, output, output_size, written);
+    }
+    result =
+        append_diagnostic_audit(management, request, remote, &actor, filename,
+                                checksum_text, archive_size, now);
+    if (result != 0) {
+        sodium_memzero(checksum, sizeof(checksum));
+        jg_diagnostic_archive_destroy(archive);
+        free(encoded);
+        return respond_error(500, "audit_failure",
+                             "The diagnostic archive could not be audited.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "filename", json_string(filename)) != 0 ||
+        json_object_set_new(body, "media_type",
+                            json_string("application/gzip")) != 0 ||
+        json_object_set_new(body, "size_bytes",
+                            json_integer((json_int_t)archive_size)) != 0 ||
+        json_object_set_new(body, "checksum_sha256",
+                            json_string(checksum_text)) != 0 ||
+        json_object_set_new(body, "data_base64", json_string(encoded)) != 0) {
+        result = -ENOMEM;
+    }
+    sodium_memzero(checksum, sizeof(checksum));
+    jg_diagnostic_archive_destroy(archive);
+    free(encoded);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(201, body, NULL, output, output_size, written);
 }
 
 /** @brief Simulate one authenticated decision on the active policy snapshot. */
@@ -8538,6 +8737,10 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/config/reload") == 0 && post) {
         return handle_configuration(management, request, remote, now, true,
                                     output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/diagnostics") == 0 && post) {
+        return handle_diagnostics_create(management, request, remote, now,
+                                         output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/network") == 0 &&
         strcmp(request->method, "GET") == 0) {

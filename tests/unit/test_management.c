@@ -1743,7 +1743,7 @@ static void test_backup_restore_api(void **state)
     sodium_memzero(&token, sizeof(token));
 }
 
-/** @brief Verify configuration operation authorization and request bounds. */
+/** @brief Verify runtime operation authorization and request bounds. */
 static void test_configuration_api(void **state)
 {
     static const char password[] = "correct horse battery staple";
@@ -1811,6 +1811,33 @@ static void test_configuration_api(void **state)
         "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
         "\"body\":{\"unexpected\":true}}",
         token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"diagnostics-create\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/diagnostics\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"diagnostics-invalid\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/diagnostics\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{\"unexpected\":true}}",
+                 token.secret);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
