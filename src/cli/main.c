@@ -139,6 +139,7 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] backup create full\n"
         "       janusgatectl [OPTIONS] backup inspect ID\n"
         "       janusgatectl [OPTIONS] backup restore ID\n"
+        "       janusgatectl [OPTIONS] diagnostics create\n"
         "       janusgatectl [OPTIONS] config validate\n"
         "       janusgatectl [OPTIONS] config reload\n"
         "       janusgatectl [--socket PATH] [--json] ping\n"
@@ -2527,6 +2528,204 @@ static int run_config_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Validate one canonical root-level diagnostic archive filename. */
+static bool diagnostic_filename_valid(const char *filename, size_t size)
+{
+    static const char prefix[] = "janusgate-diagnostics-";
+    static const char suffix[] = ".tar.gz";
+    const size_t prefix_size = sizeof(prefix) - 1U;
+    const size_t suffix_size = sizeof(suffix) - 1U;
+    const size_t timestamp_size = 16U;
+    const char *timestamp = NULL;
+
+    if (filename == NULL ||
+        size != prefix_size + timestamp_size + suffix_size ||
+        memcmp(filename, prefix, prefix_size) != 0 ||
+        memcmp(filename + size - suffix_size, suffix, suffix_size) != 0) {
+        return false;
+    }
+    timestamp = filename + prefix_size;
+    for (size_t index = 0U; index < timestamp_size; ++index) {
+        if (index == 8U) {
+            if (timestamp[index] != 'T') {
+                return false;
+            }
+        } else if (index == 15U) {
+            if (timestamp[index] != 'Z') {
+                return false;
+            }
+        } else if (timestamp[index] < '0' || timestamp[index] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Write one verified diagnostic archive as a new private file. */
+static int write_diagnostic_archive(const char *filename,
+                                    const uint8_t *archive,
+                                    size_t archive_size)
+{
+    size_t offset = 0U;
+    int descriptor = open(
+        filename, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    int result = descriptor < 0 ? -errno : 0;
+
+    while (result == 0 && offset < archive_size) {
+        const ssize_t count =
+            write(descriptor, archive + offset, archive_size - offset);
+
+        if (count < 0 && errno != EINTR) {
+            result = -errno;
+        } else if (count > 0) {
+            offset += (size_t)count;
+        } else if (count == 0) {
+            result = -EIO;
+        }
+    }
+    if (result == 0 && fsync(descriptor) != 0) {
+        result = -errno;
+    }
+    if (descriptor >= 0 && close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (descriptor >= 0 && result != 0) {
+        (void)unlink(filename);
+    }
+    return result;
+}
+
+/** @brief Create, verify, and store one sanitized diagnostic archive. */
+static int run_diagnostics_create(const struct cli_options *options)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    uint8_t expected_checksum[crypto_hash_sha256_BYTES];
+    uint8_t actual_checksum[crypto_hash_sha256_BYTES];
+    json_t *request = NULL;
+    json_t *response = NULL;
+    json_t *filename_value = NULL;
+    json_t *media_type_value = NULL;
+    json_t *size_value = NULL;
+    json_t *checksum_value = NULL;
+    json_t *data_value = NULL;
+    const char *filename = NULL;
+    const char *checksum_text = NULL;
+    const char *data = NULL;
+    uint8_t *archive = NULL;
+    size_t filename_size = 0U;
+    size_t checksum_size = 0U;
+    size_t data_size = 0U;
+    size_t archive_size = 0U;
+    size_t checksum_bytes = 0U;
+    json_int_t expected_size = 0;
+    bool verification_failed = false;
+    int result = load_token(options, token);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        request = json_object();
+        if (request == NULL) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = post_api_object(options, token, "/api/v1/diagnostics", request,
+                                 &response);
+    }
+    sodium_memzero(token, sizeof(token));
+    json_decref(request);
+    if (result != CLI_EXIT_SUCCESS) {
+        json_decref(response);
+        return result;
+    }
+    filename_value = json_object_get(response, "filename");
+    media_type_value = json_object_get(response, "media_type");
+    size_value = json_object_get(response, "size_bytes");
+    checksum_value = json_object_get(response, "checksum_sha256");
+    data_value = json_object_get(response, "data_base64");
+    filename = json_string_value(filename_value);
+    checksum_text = json_string_value(checksum_value);
+    data = json_string_value(data_value);
+    filename_size = json_is_string(filename_value)
+                        ? json_string_length(filename_value)
+                        : 0U;
+    checksum_size = json_is_string(checksum_value)
+                        ? json_string_length(checksum_value)
+                        : 0U;
+    data_size =
+        json_is_string(data_value) ? json_string_length(data_value) : 0U;
+    expected_size =
+        json_is_integer(size_value) ? json_integer_value(size_value) : 0;
+    if (!diagnostic_filename_valid(filename, filename_size) ||
+        !json_is_string(media_type_value) ||
+        json_string_length(media_type_value) !=
+            sizeof("application/gzip") - 1U ||
+        strcmp(json_string_value(media_type_value), "application/gzip") != 0 ||
+        expected_size <= 0 ||
+        (uint64_t)expected_size > (uint64_t)JG_IPC_MAX_BODY_SIZE ||
+        checksum_size != crypto_hash_sha256_BYTES * 2U || data_size == 0U) {
+        verification_failed = true;
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        archive = malloc((size_t)expected_size);
+        if (archive == NULL) {
+            (void)fprintf(stderr, "janusgatectl: diagnostic archive: %s\n",
+                          strerror(ENOMEM));
+            result = CLI_EXIT_FAILURE;
+        } else if (sodium_hex2bin(expected_checksum, sizeof(expected_checksum),
+                                  checksum_text, checksum_size, NULL,
+                                  &checksum_bytes, NULL) != 0 ||
+                   checksum_bytes != sizeof(expected_checksum) ||
+                   sodium_base642bin(archive, (size_t)expected_size, data,
+                                     data_size, NULL, &archive_size, NULL,
+                                     sodium_base64_VARIANT_ORIGINAL) != 0 ||
+                   archive_size != (size_t)expected_size) {
+            verification_failed = true;
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        (void)crypto_hash_sha256(actual_checksum, archive, archive_size);
+        if (sodium_memcmp(actual_checksum, expected_checksum,
+                          sizeof(actual_checksum)) != 0) {
+            verification_failed = true;
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        const int write_result =
+            write_diagnostic_archive(filename, archive, archive_size);
+
+        if (write_result != 0) {
+            (void)fprintf(stderr, "janusgatectl: diagnostic archive: %s\n",
+                          strerror(-write_result));
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (result == CLI_EXIT_SUCCESS &&
+        (json_object_del(response, "data_base64") != 0 ||
+         json_object_set_new(response, "path", json_string(filename)) != 0)) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS && !options->quiet) {
+        if (options->json) {
+            result = present_object(options, response);
+        } else if (printf("Created %s (%zu bytes)\nSHA-256: %s\n", filename,
+                          archive_size, checksum_text) < 0) {
+            result = CLI_EXIT_FAILURE;
+        }
+    }
+    if (verification_failed) {
+        (void)fprintf(stderr,
+                      "janusgatectl: diagnostic archive verification failed\n");
+    }
+    sodium_memzero(actual_checksum, sizeof(actual_checksum));
+    sodium_memzero(expected_checksum, sizeof(expected_checksum));
+    free(archive);
+    json_decref(response);
+    return result;
+}
+
 /** @brief Query operational events or immutable audit records. */
 static int run_record_command(const struct cli_options *options,
                               int argc,
@@ -2650,6 +2849,10 @@ static int run_command(const struct cli_options *options,
     if (argc == 2 && strcmp(argv[0], "config") == 0 &&
         (strcmp(argv[1], "validate") == 0 || strcmp(argv[1], "reload") == 0)) {
         return run_config_command(options, argv[1]);
+    }
+    if (argc == 2 && strcmp(argv[0], "diagnostics") == 0 &&
+        strcmp(argv[1], "create") == 0) {
+        return run_diagnostics_create(options);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
