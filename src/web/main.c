@@ -17,6 +17,7 @@
 
 #include <civetweb.h>
 
+#include "janusgate/process_security.h"
 #include "janusgate/version.h"
 #include "web_server.h"
 
@@ -123,7 +124,13 @@ int main(int argc, char **argv)
         return 1;
     }
     (void)umask(0077);
-    result = block_shutdown_signals(&signals);
+    result = jg_process_harden();
+    if (result == 0) {
+        result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_WEB);
+    }
+    if (result == 0) {
+        result = block_shutdown_signals(&signals);
+    }
     if (result == 0) {
         initialized = mg_init_library(MG_FEATURES_TLS);
         if ((initialized & MG_FEATURES_TLS) == 0U) {
@@ -132,6 +139,9 @@ int main(int argc, char **argv)
     }
     if (result == 0) {
         result = jg_web_server_start(&config, &server);
+    }
+    if (result == 0) {
+        result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_WEB);
     }
     if (result == 0) {
         wait_result = sigwait(&signals, &signal_number);

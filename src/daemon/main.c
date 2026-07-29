@@ -18,6 +18,7 @@
 #include "control_server.h"
 #include "daemon_runtime.h"
 #include "janusgate/identity.h"
+#include "janusgate/process_security.h"
 #include "janusgate/version.h"
 
 /** Signals synchronously owned by the daemon control thread. */
@@ -27,15 +28,27 @@ struct shutdown_waiter {
     int result;
 };
 
-/** @brief Resolve the web service and shared control-socket group. */
-static int resolve_control_identity(uid_t *web_uid, gid_t *control_gid)
+/** @brief Resolve service identities and the shared control-socket group. */
+static int resolve_control_identity(uid_t *service_uid,
+                                    uid_t *web_uid,
+                                    gid_t *control_gid)
 {
+    const struct passwd *service_identity = NULL;
     const struct passwd *web_identity = NULL;
     const struct group *control_group = NULL;
 
-    if (web_uid == NULL || control_gid == NULL) {
+    if (service_uid == NULL || web_uid == NULL || control_gid == NULL) {
         return -EINVAL;
     }
+    errno = 0;
+    service_identity = getpwnam(JG_SERVICE_USER);
+    if (service_identity == NULL) {
+        return errno == 0 ? -ENOENT : -errno;
+    }
+    if (service_identity->pw_uid == 0U) {
+        return -EINVAL;
+    }
+    *service_uid = service_identity->pw_uid;
     errno = 0;
     web_identity = getpwnam(JG_WEB_SERVICE_USER);
     if (web_identity == NULL) {
@@ -96,6 +109,7 @@ int main(int argc, char **argv)
     struct jg_control_server *control_server = NULL;
     struct shutdown_waiter waiter;
     pthread_t signal_thread;
+    uid_t service_uid = 0U;
     uid_t web_uid = 0U;
     gid_t control_gid = 0U;
     bool signal_thread_started = false;
@@ -116,7 +130,13 @@ int main(int argc, char **argv)
         .runtime = NULL,
         .result = 0,
     };
-    result = resolve_control_identity(&web_uid, &control_gid);
+    result = jg_process_harden();
+    if (result == 0) {
+        result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_DAEMON);
+    }
+    if (result == 0) {
+        result = resolve_control_identity(&service_uid, &web_uid, &control_gid);
+    }
     if (result == 0) {
         result = block_shutdown_signals(&waiter.signals);
     }
@@ -124,8 +144,14 @@ int main(int argc, char **argv)
         result = jg_daemon_runtime_start(&config, &runtime);
     }
     if (result == 0) {
-        result = jg_control_server_start(runtime, web_uid, control_gid,
-                                         &control_server);
+        result = jg_control_server_start(runtime, service_uid, web_uid,
+                                         control_gid, &control_server);
+    }
+    if (result == 0) {
+        result = jg_process_drop_privileges(JG_SERVICE_USER);
+    }
+    if (result == 0) {
+        result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_DAEMON);
     }
     if (result == 0) {
         waiter.runtime = runtime;

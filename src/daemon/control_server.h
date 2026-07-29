@@ -74,12 +74,14 @@ int jg_control_handle_connection(int socket_fd,
  * @brief Open the fixed control socket and start its serial server thread.
  *
  * @param[in,out] runtime Running packet runtime.
+ * @param[in] owner_uid Dedicated policy service user identifier.
  * @param[in] allowed_uid Dedicated web service user identifier.
  * @param[in] socket_gid Dedicated local-control group identifier.
  * @param[out] server Receives the owned running server.
  *
  * @return 0 on success.
- * @return -EINVAL for a null runtime or destination or a root web identity.
+ * @return -EINVAL for a null runtime or destination or a root service
+ * identity.
  * @return A negative errno-style directory, socket, allocation, or thread
  * error otherwise.
  *
@@ -88,6 +90,7 @@ int jg_control_handle_connection(int socket_fd,
  * @side_effects Creates a Unix-domain socket and starts one control thread.
  */
 int jg_control_server_start(struct jg_daemon_runtime *runtime,
+                            uid_t owner_uid,
                             uid_t allowed_uid,
                             gid_t socket_gid,
                             struct jg_control_server **server);

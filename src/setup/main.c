@@ -935,6 +935,11 @@ static int ensure_directories(const struct service_identities *identities)
         result = ensure_directory("/run/janusgate", 0750, 0U,
                                   identities->control_group);
     }
+    if (result == 0) {
+        result = ensure_directory("/run/janusgate/control", 0750,
+                                  identities->service_user,
+                                  identities->control_group);
+    }
     return result;
 }
 

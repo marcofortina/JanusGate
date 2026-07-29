@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "janusgate/network.h"
+#include "janusgate/process_security.h"
 #include "rtnetlink.h"
 
 /** Runtime directory containing privileged local-control sockets. */
@@ -426,6 +427,9 @@ int jg_netd_run(uid_t allowed_uid, gid_t socket_gid)
         if (server_fd < 0) {
             result = server_fd;
         }
+    }
+    if (result == 0) {
+        result = jg_process_apply_seccomp(JG_PROCESS_PROFILE_NETD);
     }
     while (result == 0 && stop_requested == 0) {
         struct pollfd descriptor = {

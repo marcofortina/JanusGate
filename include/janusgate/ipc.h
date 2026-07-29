@@ -42,7 +42,7 @@
 #define JG_NETD_SOCKET_PATH "/run/janusgate/netd.sock"
 
 /** Fixed local socket exposed by the main policy daemon. */
-#define JG_CONTROL_SOCKET_PATH "/run/janusgate/control.sock"
+#define JG_CONTROL_SOCKET_PATH "/run/janusgate/control/control.sock"
 
 /**
  * @brief Direction and semantics of one protocol message.

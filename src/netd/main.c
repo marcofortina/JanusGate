@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "janusgate/identity.h"
+#include "janusgate/process_security.h"
 #include "janusgate/version.h"
 
 /** @brief Resolve the dedicated service and local-control identities. */
@@ -64,7 +65,13 @@ int main(int argc, char **argv)
     }
 
     (void)umask(0077);
-    result = resolve_service_identity(&service_uid, &control_gid);
+    result = jg_process_harden();
+    if (result == 0) {
+        result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_NETD);
+    }
+    if (result == 0) {
+        result = resolve_service_identity(&service_uid, &control_gid);
+    }
     if (result == 0) {
         result = jg_netd_run(service_uid, control_gid);
     }

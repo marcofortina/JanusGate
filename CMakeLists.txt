@@ -28,6 +28,8 @@ find_library(CIVETWEB_LIBRARY NAMES civetweb REQUIRED)
 pkg_check_modules(IDN2 REQUIRED IMPORTED_TARGET libidn2)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
+pkg_check_modules(LIBCAP REQUIRED IMPORTED_TARGET libcap)
+pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp)
 pkg_check_modules(MNL REQUIRED IMPORTED_TARGET libmnl)
 pkg_check_modules(NETFILTER_QUEUE REQUIRED IMPORTED_TARGET libnetfilter_queue)
 pkg_check_modules(NFTABLES REQUIRED IMPORTED_TARGET libnftables)
@@ -78,6 +80,7 @@ add_library(
   src/common/network.c
   src/common/packet.c
   src/common/policy.c
+  src/common/process_security.c
   src/common/tls_client_hello.c
   src/common/version.c)
 add_library(JanusGate::common ALIAS janusgate-common)
@@ -91,7 +94,8 @@ target_link_libraries(
   PUBLIC OpenSSL::Crypto PkgConfig::IDN2 PkgConfig::SODIUM ZLIB::ZLIB)
 target_link_libraries(
   janusgate-common
-  PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
+  PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::LIBCAP
+          PkgConfig::LIBSECCOMP PkgConfig::SQLITE3)
 janusgate_apply_compiler_options(janusgate-common)
 
 add_library(
@@ -222,6 +226,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/network.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/policy.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/process_security.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/tls_client_hello.h"
         "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/janusgate"

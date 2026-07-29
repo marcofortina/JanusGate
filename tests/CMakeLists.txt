@@ -49,6 +49,7 @@ add_executable(
   unit/test_packet.c
   unit/test_policy.c
   unit/test_policy_store.c
+  unit/test_process_security.c
   unit/test_tcp_reset.c
   unit/test_tcp_stream.c
   unit/test_tls_client_hello.c)

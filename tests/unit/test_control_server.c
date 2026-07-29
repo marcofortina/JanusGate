@@ -114,9 +114,10 @@ static void test_lifecycle_arguments(void **state)
     struct jg_control_server *server = NULL;
 
     (void)state;
-    assert_int_equal(jg_control_server_start(NULL, 1U, 1U, &server), -EINVAL);
+    assert_int_equal(jg_control_server_start(NULL, 1U, 1U, 1U, &server),
+                     -EINVAL);
     assert_null(server);
-    assert_int_equal(jg_control_server_start(NULL, 1U, 1U, NULL), -EINVAL);
+    assert_int_equal(jg_control_server_start(NULL, 1U, 1U, 1U, NULL), -EINVAL);
     assert_int_equal(jg_control_server_stop(NULL), -EINVAL);
     jg_control_server_destroy(NULL);
 }

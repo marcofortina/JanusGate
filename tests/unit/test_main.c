@@ -44,6 +44,7 @@ int jg_test_packet_output(void);
 int jg_test_packet(void);
 int jg_test_policy(void);
 int jg_test_policy_store(void);
+int jg_test_process_security(void);
 int jg_test_tcp_reset(void);
 int jg_test_tcp_stream(void);
 int jg_test_tls_client_hello(void);
@@ -88,6 +89,7 @@ int main(void)
     result |= jg_test_packet();
     result |= jg_test_policy();
     result |= jg_test_policy_store();
+    result |= jg_test_process_security();
     result |= jg_test_tcp_reset();
     result |= jg_test_tcp_stream();
     result |= jg_test_tls_client_hello();

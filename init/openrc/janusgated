@@ -18,6 +18,8 @@ depend() {
 }
 
 start_pre() {
+    checkpath --directory --owner janusgate:janusgate-control --mode 0750 \
+        /run/janusgate/control
     checkpath --directory --owner janusgate:janusgate --mode 0750 \
         /var/lib/janusgate
     checkpath --directory --owner janusgate:janusgate --mode 0700 \

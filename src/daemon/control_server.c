@@ -33,6 +33,9 @@
 /** Runtime directory containing local-control sockets. */
 #define JG_RUNTIME_DIRECTORY "/run/janusgate"
 
+/** Policy-daemon-owned directory containing its control socket. */
+#define JG_CONTROL_RUNTIME_DIRECTORY "/run/janusgate/control"
+
 /** Maximum wait for one local request or response. */
 #define JG_CONTROL_IO_TIMEOUT_SECONDS 5
 
@@ -320,8 +323,8 @@ static int notify_stop(struct jg_control_server *server)
     return written < 0 ? -errno : -EIO;
 }
 
-/** @brief Create or validate the shared root-owned runtime directory. */
-static int prepare_runtime_directory(gid_t socket_gid)
+/** @brief Create and secure shared and daemon-owned runtime directories. */
+static int prepare_runtime_directory(uid_t owner_uid, gid_t socket_gid)
 {
     struct stat status;
 
@@ -339,32 +342,48 @@ static int prepare_runtime_directory(gid_t socket_gid)
         chmod(JG_RUNTIME_DIRECTORY, 0750) != 0) {
         return -errno;
     }
+    if (mkdir(JG_CONTROL_RUNTIME_DIRECTORY, 0750) != 0 && errno != EEXIST) {
+        return -errno;
+    }
+    if (lstat(JG_CONTROL_RUNTIME_DIRECTORY, &status) != 0) {
+        return -errno;
+    }
+    if (!S_ISDIR(status.st_mode) ||
+        (status.st_mode & (S_IWGRP | S_IWOTH)) != 0U) {
+        return -EACCES;
+    }
+    if (chown(JG_CONTROL_RUNTIME_DIRECTORY, owner_uid, socket_gid) != 0 ||
+        chmod(JG_CONTROL_RUNTIME_DIRECTORY, 0750) != 0) {
+        return -errno;
+    }
     return 0;
 }
 
-/** @brief Remove only a stale root-owned control socket. */
-static int remove_stale_socket(void)
+/** @brief Remove only a stale daemon-owned control socket. */
+static int remove_stale_socket(uid_t owner_uid)
 {
     struct stat status;
 
     if (lstat(JG_CONTROL_SOCKET_PATH, &status) != 0) {
         return errno == ENOENT ? 0 : -errno;
     }
-    if (!S_ISSOCK(status.st_mode) || status.st_uid != 0U) {
+    if (!S_ISSOCK(status.st_mode) || status.st_uid != owner_uid) {
         return -EEXIST;
     }
     return unlink(JG_CONTROL_SOCKET_PATH) == 0 ? 0 : -errno;
 }
 
 /** @brief Open and permission the fixed non-blocking listening socket. */
-static int open_server_socket(gid_t socket_gid, bool *owns_path)
+static int open_server_socket(uid_t owner_uid,
+                              gid_t socket_gid,
+                              bool *owns_path)
 {
     struct sockaddr_un address;
     int socket_fd = -1;
-    int result = prepare_runtime_directory(socket_gid);
+    int result = prepare_runtime_directory(owner_uid, socket_gid);
 
     if (result == 0) {
-        result = remove_stale_socket();
+        result = remove_stale_socket(owner_uid);
     }
     if (result == 0) {
         socket_fd =
@@ -389,9 +408,10 @@ static int open_server_socket(gid_t socket_gid, bool *owns_path)
     } else if (result == 0) {
         *owns_path = true;
     }
-    if (result == 0 && (chown(JG_CONTROL_SOCKET_PATH, 0U, socket_gid) != 0 ||
-                        chmod(JG_CONTROL_SOCKET_PATH, 0660) != 0 ||
-                        listen(socket_fd, 16) != 0)) {
+    if (result == 0 &&
+        (chown(JG_CONTROL_SOCKET_PATH, owner_uid, socket_gid) != 0 ||
+         chmod(JG_CONTROL_SOCKET_PATH, 0660) != 0 ||
+         listen(socket_fd, 16) != 0)) {
         result = -errno;
     }
     if (result != 0 && socket_fd >= 0) {
@@ -548,6 +568,7 @@ static void release_server(struct jg_control_server *server)
 
 /** @brief Open the fixed control socket and start its serial thread. */
 int jg_control_server_start(struct jg_daemon_runtime *runtime,
+                            uid_t owner_uid,
                             uid_t allowed_uid,
                             gid_t socket_gid,
                             struct jg_control_server **server)
@@ -559,7 +580,7 @@ int jg_control_server_start(struct jg_daemon_runtime *runtime,
         return -EINVAL;
     }
     *server = NULL;
-    if (runtime == NULL || allowed_uid == 0U) {
+    if (runtime == NULL || owner_uid == 0U || allowed_uid == 0U) {
         return -EINVAL;
     }
     started = calloc(1U, sizeof(*started));
@@ -577,7 +598,7 @@ int jg_control_server_start(struct jg_daemon_runtime *runtime,
     }
     if (result == 0) {
         started->server_fd =
-            open_server_socket(socket_gid, &started->owns_path);
+            open_server_socket(owner_uid, socket_gid, &started->owns_path);
         if (started->server_fd < 0) {
             result = started->server_fd;
         }
