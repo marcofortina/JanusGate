@@ -1,0 +1,79 @@
+<!--
+SPDX-License-Identifier: AGPL-3.0-or-later
+Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+-->
+
+# Web administration
+
+The administration site is served over HTTPS on the dedicated management
+interface. The factory state exposes only account bootstrap. After the first
+administrator is created, normal authentication and role checks apply.
+
+## Authentication
+
+Sign in with a username, password, and TOTP code when enabled. The browser
+receives a secure, HTTP-only, same-site session cookie. State-changing
+requests also require the session CSRF value. Operators can change their
+password, provision or disable TOTP, inspect the current session, and sign out.
+
+Repeated invalid logins are rate-limited. Closing a browser does not replace
+an explicit sign-out on a shared workstation.
+
+## Dashboard and policy
+
+The dashboard shows service health, policy generation, queue and flow
+counters, recent events, and active configuration. Policy pages provide:
+
+- destination and domain rule listing, creation, editing, and removal;
+- exact-domain and optional subdomain behavior;
+- global and scoped allow or block effects;
+- UDP DNS actions: drop, REFUSED, NXDOMAIN, or sinkhole;
+- policy simulation before activation;
+- local blocklist import and export;
+- remote source creation, update, enable, disable, and refresh.
+
+Every write carries the revision last read by the browser. A concurrent change
+returns a conflict instead of silently overwriting newer state.
+
+## Network
+
+The network page displays bridge roles, management addressing, queue layout,
+MTU, failure mode, and optional encrypted-DNS controls. Validate a proposed
+document first. Applying a management-address change starts a confirmation
+window; reconnect through the new address and confirm it, or let JanusGate
+restore the previous configuration. Keep local console access during this
+operation.
+
+## Identities and access
+
+Administrators can list, add, update, or disable users; reset passwords; remove
+TOTP enrollment; and create or revoke scoped API tokens. Token secret material
+is returned only at creation. Use the least privileged role and scope that
+supports the task.
+
+## Certificates, backups, and diagnostics
+
+The certificate page displays the active certificate, installs a matching PEM
+certificate/key pair transactionally, and creates certificate-signing
+requests. A mismatch or failed service reload restores the previous pair.
+
+Configuration backups exclude private secrets. Full backups are encrypted
+with a passphrase and may include the server private key only when explicitly
+requested. The interface can create, inspect, and restore backups. Restore
+validates the archive, manifest, paths, schema, and integrity before replacing
+state.
+
+Diagnostics create a bounded archive containing versions, sanitized
+configuration, recent service information, and selected logs. Review it before
+sharing. Event and audit pages support bounded filters; audit verification
+checks the complete hash chain.
+
+## Service and appliance operations
+
+Configuration reload and service restart are separate operations. Reboot and
+shutdown require an administrator role and explicit confirmation. Prefer
+orderly shutdown before removing power.
+
+The canonical request and response schemas are in
+[`api/openapi.yaml`](../api/openapi.yaml). Equivalent command-line operations
+are listed in [CLI](cli.md).
