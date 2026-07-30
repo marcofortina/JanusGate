@@ -68,6 +68,21 @@ configuration, recent service information, and selected logs. Review it before
 sharing. Event and audit pages support bounded filters; audit verification
 checks the complete hash chain.
 
+## Operational logging and troubleshooting
+
+The System page reports the global level, diagnostic expiry, retained count,
+and rate-limit suppression. Operators can inspect the bounded trace window.
+Administrators can select destinations and capacity, set exact management,
+dataplane, or runtime overrides, and enable diagnostic verbosity for at most
+one hour.
+
+Domain and client identifiers are redacted by default. Enabling them requires
+an explicit confirmation and an expiring debug or trace configuration. The
+page preserves component overrides created through the CLI or API even when
+they are not among its built-in controls. See [Operations](operations.md) for
+the bounded troubleshooting workflow and [Privacy](privacy.md) before sharing
+any output.
+
 ## Service and appliance operations
 
 Configuration reload and service restart are separate operations. Reboot and

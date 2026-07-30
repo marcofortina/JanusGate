@@ -49,17 +49,106 @@ Monitor certificate expiry. Install certificate and key together; JanusGate
 checks their match and rolls back a failed reload. Retain console access while
 changing the management address or certificate trust chain.
 
+## Operational logging
+
+`janusgated` emits one JSON object per record to stderr, syslog, or both.
+Production defaults to `info`, 100 records per second, and a 16-record
+in-memory window. The web and network-helper processes use the same structured
+format for conservative lifecycle and failure events.
+
+| Level | Intended use | Normal operation |
+| --- | --- | --- |
+| `error` | Failed operations requiring attention | Retained |
+| `warning` | Recoverable degradation | Retained |
+| `info` | Lifecycle and reviewed configuration changes | Default |
+| `debug` | Detailed temporary diagnosis | Must expire |
+| `trace` | Fine-grained request or packet decisions | Must expire |
+
+The System page shows the active configuration and counters. Operators may
+inspect retained traces; administrators may change the configuration. Use a
+narrow component override instead of raising the global level:
+
+| Component | Evidence |
+| --- | --- |
+| `management` | Method, path, status, and request correlation ID |
+| `dataplane` | Queue, verdict, reason, rule ID, and flow correlation ID |
+| `runtime` | Enforcement lifecycle |
+
+The CLI exposes the same state:
+
+```sh
+janusgatectl --endpoint https://192.168.77.1 \
+  --token-file /secure/janusgate.token logging show
+janusgatectl --endpoint https://192.168.77.1 \
+  --token-file /secure/janusgate.token logging traces
+```
+
+`logging set FILE` reads the current revision and applies a strict document.
+This example traces management requests for 15 minutes while retaining
+identifier redaction:
+
+```json
+{
+  "global_level": "info",
+  "destinations": ["syslog"],
+  "rate_limit_per_second": 100,
+  "trace_capacity": 16,
+  "diagnostic_duration_seconds": 900,
+  "include_identifiers": false,
+  "overrides": [
+    {
+      "component": "management",
+      "level": "trace"
+    }
+  ]
+}
+```
+
+Use a `dataplane=trace` override only while reproducing a packet-policy
+decision. The packet payload is never logged. Domain and client fields remain
+`[redacted]` unless an administrator explicitly enables identifiers; that
+choice is valid only inside the same expiring diagnostic interval.
+
+Applying any logging configuration clears the in-memory window and counters.
+Expiration clamps `debug` and `trace` to `info` without requiring a service
+restart. Set `global_level` to `info`, clear diagnostic overrides, set the
+duration to zero, and disable identifiers to return explicitly to production
+settings. Syslog and service-supervisor retention remain external to
+JanusGate and must be configured separately.
+
 ## Troubleshooting
 
-1. Check link state, interface roles, bridge membership, and management
-   separation.
-2. Check service state and local `ping`.
-3. Inspect health, queue counters, active policy generation, and recent events.
-4. Validate configuration and audit history.
-5. Create a diagnostic bundle and review its sanitized contents.
-6. Use [Recovery](recovery.md) only when normal transactional rollback cannot
-   restore service.
+Use the least invasive evidence first:
+
+1. Check physical link state, interface roles, bridge membership, and
+   management separation.
+2. Check all three services and the local control-socket `ping`.
+3. Inspect `health`, `status`, metrics, recent events, policy generation, and
+   the audit chain.
+4. Run policy simulation before tracing a suspected rule decision.
+5. Enable one component trace for 5–15 minutes, reproduce once, then match the
+   correlation ID across records.
+6. Restore production logging or allow the diagnostic interval to expire.
+7. Create and inspect a diagnostic bundle before escalating.
+
+| Symptom | Check first | Focus |
+| --- | --- | --- |
+| Traffic does not pass | Links, bridge, health | Network and queues |
+| Wrong domain verdict | Policy simulation | Dataplane reason and rule |
+| API operation fails | Request ID and audit | Management correlation |
+| Queue loss | Metrics and status | Load and capacity |
+| Source refresh fails | Source health and events | URL, limits, schedule |
+| Trace is empty | `logging show` | Expiry, level, capacity |
+| Syslog is empty | Destinations | Platform logger |
+
+`diagnostics create` adds `logging.json` and a maximum of 16 recent
+`traces.json` records to the bounded archive. Trace detail objects are removed
+from that archive even when live identifier inclusion was enabled. Review the
+manifest and every included document before sharing it.
 
 An absent daemon behaves according to the configured queue failure mode.
 Switching modes changes the availability/security trade-off and must be an
 explicit incident decision.
+
+Use [Recovery](recovery.md) only when normal transactional rollback cannot
+restore service.

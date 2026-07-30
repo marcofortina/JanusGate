@@ -15,6 +15,34 @@ mode that meets their purpose, use short retention for client-identifying
 events, and prefer aggregate counters for routine monitoring. Audit retention
 should follow the organization's accountability requirement.
 
+## Logging and trace privacy
+
+Operational records contain a timestamp, severity, process, component, stable
+event code, message, and a correlation ID when applicable. Request bodies,
+packet payloads, credentials, and complete authentication headers are not
+recorded.
+
+Secret-named detail fields are always redacted recursively. Domain and client
+identifiers are separately redacted by default. An administrator can include
+identifiers only while `debug` or `trace` is configured with an automatic
+expiration of 60–3600 seconds. When that interval expires, diagnostic levels
+are clamped to `info` and identifiers are redacted again.
+
+The live trace window holds at most 32 process-local records in memory. It is
+cleared on configuration replacement and process restart. Its rate limiter is
+independent of packet counters; suppressed-record counts remain visible so an
+operator knows that the trace is incomplete.
+
+Live trace access requires the operator permission, and changing logging
+requires administrator system-write permission. Administrative changes are
+revision-checked and appended to the audit chain. Audit records are separate
+from operational verbosity and cannot be disabled through logging settings.
+
+Diagnostic archives include the active logging configuration and trace
+metadata, but always remove trace detail objects. Stderr capture and syslog
+forwarding may retain records longer than the in-memory window; their access,
+transport, rotation, and deletion are the deployer's responsibility.
+
 Do not place passwords, API tokens, session cookies, TOTP seeds, backup
 passphrases, private keys, or complete request bodies in logs. Remote list
 credentials and TLS material must remain in restricted files. Diagnostic

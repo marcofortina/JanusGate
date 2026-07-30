@@ -51,6 +51,8 @@ failures use `400` or `422`; missing resources use `404`; rate limiting uses
 - `/users/*` and `/tokens/*`: identities, roles, TOTP removal, and API tokens.
 - `/certificates/*`: inspection, replacement, and CSR creation.
 - `/backups/*` and `/diagnostics`: protected recovery and support artifacts.
+- `/logging` and `/logging/traces`: revisioned runtime configuration,
+  bounded counters, and the operator trace window.
 - `/service/restart`, `/system/reboot`, and `/system/shutdown`: explicit
   lifecycle actions.
 

@@ -45,6 +45,8 @@ management interface is never attached to the data bridge.
 - Transactional network changes with confirmation and rollback.
 - HTTPS administration, local and remote CLI, roles, TOTP, tokens, optional
   mTLS, CSRF protection, audit chain, metrics, backups, and diagnostics.
+- Structured stderr/syslog logging with bounded, expiring, privacy-aware
+  operational tracing.
 - Alpine 3.24 packages and VM image plus x86_64 and AArch64 Buildroot firmware.
 - Native OpenBSD 7.9 build, PF/divert packet path, rc.d services, and installer.
 - GCC/Clang, glibc/musl, sanitizer, fuzz, static-analysis, image, and

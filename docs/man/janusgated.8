@@ -22,6 +22,17 @@ dedicated
 identity.
 Command-line runtime tuning is deliberately not supported; persistent state
 is validated before it is used.
+.SH LOGGING
+The service emits structured JSON records to the configured stderr and syslog
+destinations.
+Production defaults to the
+.B info
+level.
+Authenticated runtime controls provide bounded per-component debug and trace
+levels with mandatory expiration, rate limiting, and identifier redaction.
+Use
+.BR janusgatectl (1)
+to inspect or change them.
 .SH OPTIONS
 .TP
 .B --version

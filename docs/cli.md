@@ -31,6 +31,8 @@ selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
 - `user list`, `token list`, and `certificate show` inspect access and TLS
   state.
 - `backup inspect ID` reports a stored backup without restoring it.
+- `logging show` reports configuration, expiry, buffered records, and
+  suppression; `logging traces` returns the bounded live trace window.
 
 ## Network and policy writes
 
@@ -64,6 +66,9 @@ selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
 ## Runtime operations
 
 - `config validate` checks active configuration; `config reload` publishes it.
+- `logging set FILE` revision-checks and activates a strict logging document.
+  Debug or trace levels require a 60–3600 second duration; identifier inclusion
+  is accepted only during that interval.
 - `service restart`, `system reboot`, and `system shutdown` require `--yes`
   in non-interactive use.
 - `--socket PATH ping` verifies the local daemon protocol.
@@ -77,3 +82,6 @@ selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
 `5` an unavailable service. Scripts should consume `--json` and the exit
 status rather than human-readable text. The installed
 `janusgatectl(1)` page is the concise offline reference.
+
+The configuration example, component names, and safe troubleshooting sequence
+are documented in [Operations](operations.md).
