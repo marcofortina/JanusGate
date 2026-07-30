@@ -312,11 +312,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Validate JavaScript
-        run: npx --yes eslint@9.39.2 web/js/app.js
+        run: npx --yes eslint@9.39.2 web/js/*.js
       - name: Validate CSS
         run: npx --yes stylelint@16.25.0 web/css/app.css
       - name: Validate HTML
         run: npx --yes html-validate@9.7.1 web/index.html
+      - name: Validate application assets
+        run: python3 scripts/validate-web-assets.py .
 
   sbom:
     name: SPDX SBOM

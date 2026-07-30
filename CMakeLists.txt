@@ -438,6 +438,13 @@ add_custom_target(
   VERBATIM)
 
 add_custom_target(
+  web-assets-check
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-web-assets.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+  VERBATIM)
+
+add_custom_target(
   man-check
   COMMAND "${CMAKE_COMMAND}" "-DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ManpageCheck.cmake"
@@ -459,7 +466,8 @@ set(janusgate_check_dependencies
     janusgate-setup
     janusgatectl
     man-check
-    openapi-check)
+    openapi-check
+    web-assets-check)
 if(BUILD_TESTING)
   list(APPEND janusgate_check_dependencies janusgate-integration-tests
               janusgate-unit-tests)
@@ -484,6 +492,11 @@ if(BUILD_TESTING)
     NAME man-pages
     COMMAND "${CMAKE_COMMAND}" "-DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ManpageCheck.cmake")
+  add_test(
+    NAME web-assets
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-web-assets.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 set(CPACK_PACKAGE_NAME "janusgate")
