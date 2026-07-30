@@ -8,9 +8,10 @@ export default [
     files: ["web/js/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
-      sourceType: "script",
+      sourceType: "module",
       globals: {
         AbortController: "readonly",
+        Blob: "readonly",
         FormData: "readonly",
         URL: "readonly",
         URLSearchParams: "readonly",

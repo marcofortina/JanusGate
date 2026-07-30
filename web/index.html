@@ -13,7 +13,7 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
     <link rel="icon" href="/icons/shield.svg" type="image/svg+xml">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="stylesheet" href="/css/app.css">
-    <script src="/js/app.js" defer></script>
+    <script src="/js/app.js" type="module"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
@@ -129,8 +129,9 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
       </section>
       <div class="layout" id="app-view" hidden>
         <nav aria-label="Administration">
-          <a class="active" href="#dashboard" aria-current="page">Dashboard</a>
-          <a href="#network">Network</a>
+          <a class="active" href="#dashboard" data-page-link="dashboard"
+             aria-current="page">Dashboard</a>
+          <a href="#network" data-page-link="network">Network</a>
           <a href="#policies">Policies</a>
           <a href="#blocklists">Blocklists</a>
           <a href="#events">Events</a>
@@ -140,67 +141,318 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
           <a href="#system">System</a>
         </nav>
         <div class="page-content">
-          <section class="page-heading" id="dashboard">
-            <div>
-              <p class="eyebrow">ENFORCEMENT OVERVIEW</p>
-              <h2>Dashboard</h2>
-              <p>Live packet-path state from the policy daemon.</p>
+          <div class="global-message" id="global-message"
+               role="status" aria-live="polite" hidden></div>
+          <section class="page" id="page-dashboard" data-page tabindex="-1">
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">ENFORCEMENT OVERVIEW</p>
+                <h2>Dashboard</h2>
+                <p>Live packet-path, helper, policy, and source state.</p>
+              </div>
+              <button id="dashboard-refresh" data-busy-label="Refreshing…"
+                      type="button">Refresh status</button>
+            </header>
+            <div class="error-summary" id="dashboard-error"
+                 role="alert" hidden></div>
+            <section class="health-banner" id="overall-health"
+                     aria-live="polite">
+              Checking enforcement services…
+            </section>
+            <section class="status-grid"
+                     aria-label="Current enforcement status">
+              <article>
+                <p class="metric-label">Enforcement</p>
+                <p class="metric-value" id="enforcement-status">Checking</p>
+                <p class="metric-detail">Authenticated daemon readiness</p>
+              </article>
+              <article>
+                <p class="metric-label">Failure mode</p>
+                <p class="metric-value" id="failure-mode">—</p>
+                <p class="metric-detail">Behavior if enforcement is unavailable</p>
+              </article>
+              <article>
+                <p class="metric-label">Policy generation</p>
+                <p class="metric-value" id="policy-generation">—</p>
+                <p class="metric-detail">Current immutable policy snapshot</p>
+              </article>
+              <article>
+                <p class="metric-label">Packets inspected</p>
+                <p class="metric-value" id="packet-count">—</p>
+                <p class="metric-detail">Packets evaluated by the data path</p>
+              </article>
+              <article>
+                <p class="metric-label">Allowed packets</p>
+                <p class="metric-value" id="allowed-count">—</p>
+                <p class="metric-detail">Accepted after policy evaluation</p>
+              </article>
+              <article>
+                <p class="metric-label">Blocked packets</p>
+                <p class="metric-value" id="blocked-count">—</p>
+                <p class="metric-detail">Denied by active policy</p>
+              </article>
+              <article>
+                <p class="metric-label">Malformed packets</p>
+                <p class="metric-value" id="malformed-count">—</p>
+                <p class="metric-detail">Rejected parser input</p>
+              </article>
+              <article>
+                <p class="metric-label">Queue drops</p>
+                <p class="metric-value" id="queue-drop-count">—</p>
+                <p class="metric-detail">Kernel queue drops and overflows</p>
+              </article>
+              <article>
+                <p class="metric-label">TCP resets</p>
+                <p class="metric-value" id="tcp-reset-count">—</p>
+                <p class="metric-detail">Blocked TCP flows terminated</p>
+              </article>
+              <article>
+                <p class="metric-label">Visible SNI</p>
+                <p class="metric-value" id="sni-count">—</p>
+                <p class="metric-detail">TLS ClientHello names inspected</p>
+              </article>
+              <article>
+                <p class="metric-label">Policy daemon</p>
+                <p class="metric-value" id="daemon-health">Checking</p>
+                <p class="metric-detail">Runtime control availability</p>
+              </article>
+              <article>
+                <p class="metric-label">Network helper</p>
+                <p class="metric-value" id="network-health">Checking</p>
+                <p class="metric-detail">Privileged helper availability</p>
+              </article>
+              <article>
+                <p class="metric-label">Bridge state</p>
+                <p class="metric-value" id="bridge-state">Checking</p>
+                <p class="metric-detail" id="network-transaction">—</p>
+              </article>
+            </section>
+            <div class="split-grid">
+              <section class="panel" aria-labelledby="source-health-title">
+                <div class="section-heading">
+                  <div>
+                    <h3 id="source-health-title">Blocklist health</h3>
+                    <p id="dashboard-sources-note">
+                      The five most recent configured sources are shown.
+                    </p>
+                  </div>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Source</th>
+                        <th scope="col">Health</th>
+                        <th scope="col">Entries</th>
+                        <th scope="col">Last success</th>
+                      </tr>
+                    </thead>
+                    <tbody id="dashboard-sources"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="panel" aria-labelledby="recent-events-title">
+                <div class="section-heading">
+                  <div>
+                    <h3 id="recent-events-title">Recent events</h3>
+                    <p>The latest operational and security signals.</p>
+                  </div>
+                </div>
+                <div class="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Severity</th>
+                        <th scope="col">Component</th>
+                        <th scope="col">Message</th>
+                      </tr>
+                    </thead>
+                    <tbody id="dashboard-events"></tbody>
+                  </table>
+                </div>
+              </section>
             </div>
-            <button id="refresh" type="button">Refresh status</button>
+            <section class="notice" aria-labelledby="scope-title">
+              <h3 id="scope-title">Inspection boundary</h3>
+              <p>
+                JanusGate filters classic DNS and configured visible
+                destinations. Full-tunnel VPN traffic and names protected by
+                ECH remain encrypted unless their outer endpoint is explicitly
+                covered by policy.
+              </p>
+            </section>
           </section>
-          <div class="error-summary" id="dashboard-error" role="alert" hidden></div>
-          <section class="status-grid" aria-label="Current enforcement status">
-            <article>
-              <p class="metric-label">Enforcement</p>
-              <p class="metric-value" id="enforcement-status">Checking</p>
-              <p class="metric-detail">Authenticated daemon readiness</p>
-            </article>
-            <article>
-              <p class="metric-label">Policy generation</p>
-              <p class="metric-value" id="policy-generation">—</p>
-              <p class="metric-detail">Current immutable policy snapshot</p>
-            </article>
-            <article>
-              <p class="metric-label">Allowed packets</p>
-              <p class="metric-value" id="allowed-count">—</p>
-              <p class="metric-detail">Accepted after policy evaluation</p>
-            </article>
-            <article>
-              <p class="metric-label">Blocked packets</p>
-              <p class="metric-value" id="blocked-count">—</p>
-              <p class="metric-detail">Denied by active policy</p>
-            </article>
-            <article>
-              <p class="metric-label">Malformed packets</p>
-              <p class="metric-value" id="malformed-count">—</p>
-              <p class="metric-detail">Rejected parser input</p>
-            </article>
-            <article>
-              <p class="metric-label">Queue drops</p>
-              <p class="metric-value" id="queue-drop-count">—</p>
-              <p class="metric-detail">Kernel queue drops and overflows</p>
-            </article>
-            <article>
-              <p class="metric-label">TCP resets</p>
-              <p class="metric-value" id="tcp-reset-count">—</p>
-              <p class="metric-detail">Blocked TCP flows terminated</p>
-            </article>
-            <article>
-              <p class="metric-label">Visible SNI</p>
-              <p class="metric-value" id="sni-count">—</p>
-              <p class="metric-detail">TLS ClientHello names inspected</p>
-            </article>
-          </section>
-          <section class="notice" aria-labelledby="scope-title">
-            <h3 id="scope-title">Inspection boundary</h3>
-            <p>
-              JanusGate filters classic DNS and configured visible destinations.
-              Full-tunnel VPN traffic and names protected by ECH remain encrypted
-              unless their outer endpoint is explicitly covered by policy.
-            </p>
+
+          <section class="page" id="page-network" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">TRANSACTIONAL CONFIGURATION</p>
+                <h2>Network</h2>
+                <p>
+                  Validate, stage, and explicitly confirm bridge and queue
+                  configuration.
+                </p>
+              </div>
+              <button id="network-refresh" type="button">Reload</button>
+            </header>
+            <div class="error-summary" id="network-error"
+                 role="alert" hidden></div>
+            <section class="summary-strip"
+                     aria-label="Network configuration metadata">
+              <div>
+                <span>Revision</span>
+                <strong id="network-revision">—</strong>
+              </div>
+              <div>
+                <span>Last changed</span>
+                <strong id="network-updated">—</strong>
+              </div>
+              <div>
+                <span>Helper state</span>
+                <strong id="network-runtime-state">—</strong>
+              </div>
+            </section>
+            <section class="warning-panel" id="network-pending" hidden>
+              <div>
+                <h3>Confirmation required</h3>
+                <p>
+                  Automatic rollback is due in
+                  <strong id="network-pending-seconds">—</strong> seconds.
+                </p>
+              </div>
+              <div class="button-row">
+                <button class="primary-action" id="network-confirm"
+                        type="button">Confirm connectivity</button>
+                <button class="danger-button" id="network-rollback"
+                        type="button">Roll back now</button>
+              </div>
+            </section>
+            <form class="panel form-panel" id="network-form">
+              <div class="section-heading">
+                <div>
+                  <h3>Bridge and interface roles</h3>
+                  <p>
+                    Interface changes remain provisional until connectivity is
+                    confirmed.
+                  </p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label>
+                  Bridge
+                  <input name="bridge" type="text" required maxlength="15"
+                         pattern="[A-Za-z0-9][A-Za-z0-9_.-]*">
+                </label>
+                <label>
+                  Data ingress
+                  <input name="ingress" type="text" required maxlength="15"
+                         pattern="[A-Za-z0-9][A-Za-z0-9_.-]*">
+                </label>
+                <label>
+                  Data egress
+                  <input name="egress" type="text" required maxlength="15"
+                         pattern="[A-Za-z0-9][A-Za-z0-9_.-]*">
+                </label>
+                <label>
+                  Management interface
+                  <input name="management" type="text" required maxlength="15"
+                         pattern="[A-Za-z0-9][A-Za-z0-9_.-]*">
+                </label>
+                <label>
+                  Bridge MTU
+                  <input name="bridge_mtu" type="number" min="0" max="65535"
+                         required>
+                  <span class="field-hint">Use 0 for automatic selection.</span>
+                </label>
+                <label>
+                  Failure mode
+                  <select name="failure_mode" required>
+                    <option value="fail_closed">Fail closed</option>
+                    <option value="fail_open">Fail open</option>
+                  </select>
+                </label>
+              </div>
+              <div class="section-heading compact-heading">
+                <div>
+                  <h3>Packet queues</h3>
+                  <p>Bounded NFQUEUE assignment and worker fan-out.</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label>
+                  First queue
+                  <input name="queue_first" type="number" min="0" max="65535"
+                         required>
+                </label>
+                <label>
+                  Queue count
+                  <input name="queue_count" type="number" min="1" max="64"
+                         required>
+                </label>
+                <label>
+                  Queue length
+                  <input name="queue_length" type="number" min="1"
+                         max="1048576" required>
+                </label>
+              </div>
+              <div class="check-grid">
+                <label class="check-label">
+                  <input name="stp" type="checkbox">
+                  Enable spanning tree
+                </label>
+                <label class="check-label">
+                  <input name="multicast_snooping" type="checkbox">
+                  Enable multicast snooping
+                </label>
+                <label class="check-label">
+                  <input name="queue_cpu_fanout" type="checkbox">
+                  Enable queue CPU fan-out
+                </label>
+              </div>
+              <div class="button-row form-actions">
+                <button id="network-validate" type="button">
+                  Validate only
+                </button>
+                <button class="primary-action" id="network-apply"
+                        data-busy-label="Applying…" type="submit">
+                  Apply transaction
+                </button>
+              </div>
+            </form>
+            <details class="panel technical-details">
+              <summary>Runtime transaction document</summary>
+              <pre id="network-runtime"></pre>
+            </details>
+            <details class="panel technical-details">
+              <summary>Last operation result</summary>
+              <pre id="network-result">No operation has been submitted.</pre>
+            </details>
           </section>
         </div>
       </div>
     </main>
+    <dialog id="confirmation-dialog" aria-labelledby="confirmation-title">
+      <form method="dialog">
+        <h2 id="confirmation-title">Confirm operation</h2>
+        <p id="confirmation-message"></p>
+        <div class="button-row">
+          <button type="submit" value="cancel">Cancel</button>
+          <button class="danger-button" id="confirmation-submit"
+                  type="submit" value="confirm">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="secret-dialog" aria-labelledby="secret-title">
+      <form method="dialog">
+        <h2 id="secret-title">One-time secret</h2>
+        <p id="secret-description"></p>
+        <textarea id="secret-value" rows="8" readonly></textarea>
+        <button class="primary-action" type="submit" value="close">
+          I have stored it
+        </button>
+      </form>
+    </dialog>
   </body>
 </html>

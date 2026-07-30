@@ -5,128 +5,99 @@
 
 "use strict";
 
+import {
+  ApiError,
+  api,
+  errorMessage,
+  initializeCsrf,
+  onUnauthorized,
+  rememberCsrf,
+} from "./api.js";
+import * as dashboard from "./dashboard.js";
+import * as network from "./network.js";
+import {
+  announce,
+  byId,
+  showError,
+  withBusyButton,
+} from "./ui.js";
+
+const pages = new Map([
+  ["dashboard", dashboard],
+  ["network", network],
+]);
+
 const elements = {
-  serviceState: document.querySelector("#service-state"),
+  serviceState: byId("service-state"),
   serviceContainer: document.querySelector(".service-state"),
-  accountState: document.querySelector("#account-state"),
-  currentUser: document.querySelector("#current-user"),
-  authView: document.querySelector("#auth-view"),
-  appView: document.querySelector("#app-view"),
-  loginForm: document.querySelector("#login-form"),
-  bootstrapForm: document.querySelector("#bootstrap-form"),
-  passwordForm: document.querySelector("#password-form"),
-  secondFactor: document.querySelector("#second-factor"),
-  loginError: document.querySelector("#login-error"),
-  bootstrapError: document.querySelector("#bootstrap-error"),
-  passwordError: document.querySelector("#password-error"),
-  dashboardError: document.querySelector("#dashboard-error"),
-  refresh: document.querySelector("#refresh"),
-  logout: document.querySelector("#logout"),
+  accountState: byId("account-state"),
+  currentUser: byId("current-user"),
+  authView: byId("auth-view"),
+  appView: byId("app-view"),
+  loginForm: byId("login-form"),
+  bootstrapForm: byId("bootstrap-form"),
+  passwordForm: byId("password-form"),
+  secondFactor: byId("second-factor"),
+  loginError: byId("login-error"),
+  bootstrapError: byId("bootstrap-error"),
+  passwordError: byId("password-error"),
+  logout: byId("logout"),
 };
 
-let csrfToken = localStorage.getItem("janusgate.csrf") || "";
+let currentUser = null;
 
 /**
- * Represent a structured API failure without exposing response internals.
+ * Return the requested page identifier or the dashboard fallback.
  */
-class ApiError extends Error {
-  /**
-   * Initialize one failure from its HTTP status and public error object.
-   */
-  constructor(status, code, message) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = code;
-  }
+function requestedPage() {
+  const identifier = window.location.hash.replace(/^#/, "");
+
+  return pages.has(identifier) ? identifier : "dashboard";
 }
 
 /**
- * Return a short safe message from a failed API response.
+ * Display and refresh exactly one application page.
  */
-function errorMessage(error) {
-  return error instanceof ApiError
-    ? error.message
-    : "The management request could not be completed.";
-}
+async function navigate() {
+  const identifier = requestedPage();
+  const page = pages.get(identifier);
 
-/**
- * Display one accessible form or page error.
- */
-function showError(container, message) {
-  container.textContent = message;
-  container.hidden = message.length === 0;
-}
+  announce("");
+  for (const section of document.querySelectorAll("[data-page]")) {
+    section.hidden = section.id !== `page-${identifier}`;
+  }
+  for (const link of document.querySelectorAll("[data-page-link]")) {
+    const active = link.dataset.pageLink === identifier;
 
-/**
- * Exchange one same-origin JSON API request.
- */
-async function api(path, options = {}) {
-  const method = options.method || "GET";
-  const headers = { Accept: "application/json" };
-  const request = {
-    method,
-    credentials: "same-origin",
-    cache: "no-store",
-    headers,
-  };
-
-  if (options.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    request.body = JSON.stringify(options.body);
+    link.classList.toggle("active", active);
+    if (active) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
   }
-  if (method !== "GET" && csrfToken.length > 0) {
-    headers["X-CSRF-Token"] = csrfToken;
-  }
-  const response = await fetch(path, request);
-  let payload;
-
-  try {
-    payload = await response.json();
-  } catch {
-    throw new ApiError(response.status, "invalid_response",
-      "The appliance returned an invalid response.");
-  }
-  if (!response.ok) {
-    const detail = payload && payload.error ? payload.error : {};
-    throw new ApiError(
-      response.status,
-      typeof detail.code === "string" ? detail.code : "request_failed",
-      typeof detail.message === "string"
-        ? detail.message
-        : "The management request failed.",
-    );
-  }
-  return payload;
-}
-
-/**
- * Persist the CSRF value shared by tabs using the same session cookie.
- */
-function rememberCsrf(value) {
-  csrfToken = typeof value === "string" ? value : "";
-  if (csrfToken.length > 0) {
-    localStorage.setItem("janusgate.csrf", csrfToken);
-  } else {
-    localStorage.removeItem("janusgate.csrf");
-  }
+  page.initialize();
+  await page.load(currentUser);
+  byId(`page-${identifier}`).focus();
 }
 
 /**
  * Switch the shell to an authenticated identity.
  */
 function showApplication(user) {
+  currentUser = user;
   elements.authView.hidden = true;
   elements.appView.hidden = false;
   elements.passwordForm.hidden = true;
   elements.accountState.hidden = false;
-  elements.currentUser.textContent = user.username;
+  elements.currentUser.textContent = `${user.username} · ${user.role}`;
 }
 
 /**
  * Restrict an authenticated identity to the required password form.
  */
 function showPasswordChange(user) {
+  currentUser = user;
   elements.appView.hidden = true;
   elements.authView.hidden = false;
   elements.loginForm.hidden = true;
@@ -134,7 +105,7 @@ function showPasswordChange(user) {
   elements.passwordForm.hidden = false;
   elements.accountState.hidden = false;
   elements.currentUser.textContent = user.username;
-  document.querySelector("#current-password").focus();
+  byId("current-password").focus();
 }
 
 /**
@@ -146,13 +117,14 @@ async function showIdentity(user) {
     return;
   }
   showApplication(user);
-  await refreshStatus();
+  await navigate();
 }
 
 /**
  * Return the shell to its unauthenticated state.
  */
 function showAuthentication() {
+  currentUser = null;
   elements.appView.hidden = true;
   elements.accountState.hidden = true;
   elements.authView.hidden = false;
@@ -163,50 +135,6 @@ function showAuthentication() {
   elements.passwordForm.reset();
   showError(elements.passwordError, "");
   rememberCsrf("");
-}
-
-/**
- * Format an integer counter for the active locale.
- */
-function formatCounter(value) {
-  return Number.isSafeInteger(value) ? value.toLocaleString() : "—";
-}
-
-/**
- * Fetch and render the authenticated packet-runtime snapshot.
- */
-async function refreshStatus() {
-  elements.refresh.disabled = true;
-  showError(elements.dashboardError, "");
-
-  try {
-    const status = await api("/api/v1/status");
-    document.querySelector("#enforcement-status").textContent =
-      status.ready ? "Ready" : "Not ready";
-    document.querySelector("#policy-generation").textContent =
-      formatCounter(status.policy_generation);
-    document.querySelector("#allowed-count").textContent =
-      formatCounter(status.dataplane.accepted);
-    document.querySelector("#blocked-count").textContent =
-      formatCounter(status.dataplane.blocked);
-    document.querySelector("#malformed-count").textContent =
-      formatCounter(status.dataplane.malformed);
-    document.querySelector("#queue-drop-count").textContent =
-      formatCounter(status.queues.dropped + status.queues.overflows);
-    document.querySelector("#tcp-reset-count").textContent =
-      formatCounter(status.dataplane.tcp_resets);
-    document.querySelector("#sni-count").textContent =
-      formatCounter(status.dataplane.sni_inspected);
-  } catch (error) {
-    if (error instanceof ApiError &&
-        error.code === "authentication_required") {
-      showAuthentication();
-    } else {
-      showError(elements.dashboardError, errorMessage(error));
-    }
-  } finally {
-    elements.refresh.disabled = false;
-  }
 }
 
 /**
@@ -229,24 +157,24 @@ async function submitLogin(event) {
     body.recovery_code = recovery;
   }
   const submit = elements.loginForm.querySelector("[type=submit]");
-  submit.disabled = true;
-  try {
-    const session = await api("/api/v1/auth/login", {
-      method: "POST",
-      body,
-    });
-    rememberCsrf(session.csrf);
-    elements.loginForm.reset();
-    await showIdentity(session.user);
-  } catch (error) {
-    if (error instanceof ApiError && error.code === "mfa_required") {
-      elements.secondFactor.hidden = false;
-      document.querySelector("#login-totp").focus();
+
+  await withBusyButton(submit, async () => {
+    try {
+      const session = await api("/api/v1/auth/login", {
+        method: "POST",
+        body,
+      });
+      rememberCsrf(session.csrf);
+      elements.loginForm.reset();
+      await showIdentity(session.user);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "mfa_required") {
+        elements.secondFactor.hidden = false;
+        byId("login-totp").focus();
+      }
+      showError(elements.loginError, errorMessage(error));
     }
-    showError(elements.loginError, errorMessage(error));
-  } finally {
-    submit.disabled = false;
-  }
+  });
 }
 
 /**
@@ -260,44 +188,47 @@ async function submitBootstrap(event) {
   const confirm = String(data.get("confirm"));
 
   if (password !== confirm) {
-    showError(elements.bootstrapError, "The password confirmation does not match.");
-    document.querySelector("#bootstrap-confirm").focus();
+    showError(
+      elements.bootstrapError,
+      "The password confirmation does not match.",
+    );
+    byId("bootstrap-confirm").focus();
     return;
   }
   const submit = elements.bootstrapForm.querySelector("[type=submit]");
-  submit.disabled = true;
-  try {
-    const session = await api("/api/v1/auth/bootstrap", {
-      method: "POST",
-      body: {
-        token: data.get("token"),
-        username: data.get("username"),
-        password,
-      },
-    });
-    rememberCsrf(session.csrf);
-    elements.bootstrapForm.reset();
-    await showIdentity(session.user);
-  } catch (error) {
-    showError(elements.bootstrapError, errorMessage(error));
-  } finally {
-    submit.disabled = false;
-  }
+
+  await withBusyButton(submit, async () => {
+    try {
+      const session = await api("/api/v1/auth/bootstrap", {
+        method: "POST",
+        body: {
+          token: data.get("token"),
+          username: data.get("username"),
+          password,
+        },
+      });
+      rememberCsrf(session.csrf);
+      elements.bootstrapForm.reset();
+      await showIdentity(session.user);
+    } catch (error) {
+      showError(elements.bootstrapError, errorMessage(error));
+    }
+  });
 }
 
 /**
  * Revoke the current session and clear all browser-local state.
  */
 async function logout() {
-  elements.logout.disabled = true;
-  try {
-    await api("/api/v1/auth/logout", { method: "POST", body: {} });
-  } catch {
-    // Local state is cleared even if an expired session is already invalid.
-  } finally {
-    elements.logout.disabled = false;
-    showAuthentication();
-  }
+  await withBusyButton(elements.logout, async () => {
+    try {
+      await api("/api/v1/auth/logout", { method: "POST", body: {} });
+    } catch {
+      // Local state is cleared even if the server session already expired.
+    } finally {
+      showAuthentication();
+    }
+  });
 }
 
 /**
@@ -314,44 +245,44 @@ async function submitPasswordChange(event) {
   if (password !== confirm) {
     showError(elements.passwordError,
       "The password confirmation does not match.");
-    document.querySelector("#confirm-password").focus();
+    byId("confirm-password").focus();
     return;
   }
   if (password === currentPassword) {
     showError(elements.passwordError,
       "Choose a password different from the current password.");
-    document.querySelector("#new-password").focus();
+    byId("new-password").focus();
     return;
   }
   const submit = elements.passwordForm.querySelector("[type=submit]");
-  submit.disabled = true;
-  try {
-    const session = await api("/api/v1/auth/password", {
-      method: "POST",
-      body: {
-        current_password: currentPassword,
-        new_password: password,
-      },
-    });
-    rememberCsrf(session.csrf);
-    elements.passwordForm.reset();
-    await showIdentity(session.user);
-  } catch (error) {
-    if (error instanceof ApiError &&
-        error.code === "authentication_required") {
-      showAuthentication();
-    } else {
-      showError(elements.passwordError, errorMessage(error));
+
+  await withBusyButton(submit, async () => {
+    try {
+      const session = await api("/api/v1/auth/password", {
+        method: "POST",
+        body: {
+          current_password: currentPassword,
+          new_password: password,
+        },
+      });
+      rememberCsrf(session.csrf);
+      elements.passwordForm.reset();
+      await showIdentity(session.user);
+    } catch (error) {
+      if (!(error instanceof ApiError &&
+            error.code === "authentication_required")) {
+        showError(elements.passwordError, errorMessage(error));
+      }
     }
-  } finally {
-    submit.disabled = false;
-  }
+  });
 }
 
 /**
  * Verify HTTPS health and restore an existing browser session.
  */
 async function initialize() {
+  initializeCsrf();
+  onUnauthorized(showAuthentication);
   try {
     const response = await fetch("/healthz", {
       credentials: "same-origin",
@@ -359,6 +290,7 @@ async function initialize() {
       cache: "no-store",
     });
     const health = await response.json();
+
     if (!response.ok || health.status !== "ok") {
       throw new Error("health state is unavailable");
     }
@@ -370,6 +302,7 @@ async function initialize() {
   }
   try {
     const session = await api("/api/v1/auth/session");
+
     await showIdentity(session.user);
   } catch {
     showAuthentication();
@@ -382,7 +315,7 @@ async function initialize() {
 function showBootstrapForm() {
   elements.loginForm.hidden = true;
   elements.bootstrapForm.hidden = false;
-  document.querySelector("#bootstrap-token").focus();
+  byId("bootstrap-token").focus();
 }
 
 /**
@@ -391,17 +324,20 @@ function showBootstrapForm() {
 function showLoginForm() {
   elements.bootstrapForm.hidden = true;
   elements.loginForm.hidden = false;
-  document.querySelector("#login-username").focus();
+  byId("login-username").focus();
 }
 
 elements.loginForm.addEventListener("submit", submitLogin);
 elements.bootstrapForm.addEventListener("submit", submitBootstrap);
 elements.passwordForm.addEventListener("submit", submitPasswordChange);
-elements.refresh.addEventListener("click", refreshStatus);
-elements.logout.addEventListener("click", logout);
-document.querySelector("#show-bootstrap").addEventListener(
-  "click",
-  showBootstrapForm,
-);
-document.querySelector("#show-login").addEventListener("click", showLoginForm);
+elements.logout.addEventListener("click", () => {
+  void logout();
+});
+byId("show-bootstrap").addEventListener("click", showBootstrapForm);
+byId("show-login").addEventListener("click", showLoginForm);
+window.addEventListener("hashchange", () => {
+  if (currentUser !== null) {
+    void navigate();
+  }
+});
 void initialize();
