@@ -12,6 +12,7 @@ export default [
       globals: {
         AbortController: "readonly",
         Blob: "readonly",
+        Event: "readonly",
         FormData: "readonly",
         URL: "readonly",
         URLSearchParams: "readonly",

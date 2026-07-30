@@ -304,6 +304,8 @@ static void test_browser_authentication(void **state)
     body = json_object_get(response, "body");
     value = json_object_get(json_object_get(body, "user"), "username");
     assert_string_equal(json_string_value(value), "administrator");
+    value = json_object_get(json_object_get(body, "user"), "role");
+    assert_string_equal(json_string_value(value), "administrator");
     json_decref(response);
 
     (void)memset(domain_rules, 0, sizeof(domain_rules));

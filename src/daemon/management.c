@@ -649,16 +649,39 @@ static int respond_error(int status,
                                           output_size, written);
 }
 
+/** @brief Return the stable external name for one fixed backend role. */
+static const char *role_name(enum jg_access_role role);
+
+/** @brief Resolve the one fixed role represented by an identity mask. */
+static const char *identity_role_name(uint32_t permissions)
+{
+    static const enum jg_access_role roles[] = {
+        JG_ACCESS_ROLE_ADMINISTRATOR,
+        JG_ACCESS_ROLE_OPERATOR,
+        JG_ACCESS_ROLE_AUDITOR,
+    };
+
+    for (size_t index = 0U; index < sizeof(roles) / sizeof(roles[0U]);
+         ++index) {
+        if (permissions == jg_access_role_permissions(roles[index])) {
+            return role_name(roles[index]);
+        }
+    }
+    return NULL;
+}
+
 /** @brief Convert an authenticated identity to stable response fields. */
 static json_t *identity_json(const struct jg_account_identity *identity)
 {
+    const char *role = identity_role_name(identity->permissions);
     json_t *user = json_object();
 
-    if (user == NULL ||
+    if (role == NULL || user == NULL ||
         json_object_set_new(user, "id",
                             json_integer((json_int_t)identity->user_id)) != 0 ||
         json_object_set_new(user, "username",
                             json_string(identity->username)) != 0 ||
+        json_object_set_new(user, "role", json_string(role)) != 0 ||
         json_object_set_new(user, "permissions",
                             json_integer((json_int_t)identity->permissions)) !=
             0 ||

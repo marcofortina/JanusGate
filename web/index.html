@@ -134,8 +134,8 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
           <a href="#network" data-page-link="network">Network</a>
           <a href="#policies" data-page-link="policies">Policies</a>
           <a href="#blocklists" data-page-link="blocklists">Blocklists</a>
-          <a href="#events">Events</a>
-          <a href="#access">Users and access</a>
+          <a href="#events" data-page-link="events">Events</a>
+          <a href="#access" data-page-link="access">Users and access</a>
           <a href="#certificates">Certificates</a>
           <a href="#backups">Backup and restore</a>
           <a href="#system">System</a>
@@ -964,6 +964,444 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
               <summary>Selected source or last update result</summary>
               <pre id="blocklist-result">Select Details or run an update.</pre>
             </details>
+          </section>
+
+          <section class="page" id="page-events" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">OBSERVABILITY AND ACCOUNTABILITY</p>
+                <h2>Events</h2>
+                <p>
+                  Filter operational signals and inspect the immutable
+                  administration audit chain.
+                </p>
+              </div>
+            </header>
+            <div class="error-summary" id="events-error"
+                 role="alert" hidden></div>
+            <section class="panel policy-section"
+                     aria-labelledby="operational-events-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="operational-events-title">Operational events</h3>
+                  <p>
+                    Bounded pages with optional five-second live refresh.
+                    Sensitive packet payloads are never displayed.
+                  </p>
+                </div>
+                <button id="event-export" type="button">Export loaded JSON</button>
+              </div>
+              <form id="event-filter-form">
+                <div class="filter-row">
+                  <label>
+                    Severity
+                    <select name="event_severity">
+                      <option value="">All severities</option>
+                      <option value="debug">Debug</option>
+                      <option value="info">Info</option>
+                      <option value="warning">Warning</option>
+                      <option value="error">Error</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </label>
+                  <label>
+                    Component
+                    <input name="event_component" type="text" maxlength="64"
+                           pattern="[a-z0-9_.-]+">
+                  </label>
+                  <label class="check-label live-control">
+                    <input id="event-live-refresh" type="checkbox">
+                    Refresh every five seconds
+                  </label>
+                  <button class="primary-action" id="event-filter-submit"
+                          data-busy-label="Filtering…" type="submit">
+                    Apply filters
+                  </button>
+                </div>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Time</th>
+                      <th scope="col">Severity</th>
+                      <th scope="col">Component</th>
+                      <th scope="col">Message</th>
+                      <th scope="col">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operational-event-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="event-load-more" type="button" hidden>
+                  Load older events
+                </button>
+              </div>
+            </section>
+
+            <section class="panel policy-section"
+                     aria-labelledby="audit-events-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="audit-events-title">Audit chain</h3>
+                  <p>
+                    Newest-first administrative actions with cryptographic
+                    link verification.
+                  </p>
+                </div>
+                <div class="button-row">
+                  <button id="audit-export" type="button">
+                    Export loaded JSON
+                  </button>
+                  <button class="primary-action" id="audit-verify"
+                          data-busy-label="Verifying…" type="button">
+                    Verify chain
+                  </button>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Time</th>
+                      <th scope="col">Actor</th>
+                      <th scope="col">Action</th>
+                      <th scope="col">Object</th>
+                      <th scope="col">Result</th>
+                      <th scope="col">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody id="audit-event-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="audit-load-more" type="button" hidden>
+                  Load older audit records
+                </button>
+              </div>
+            </section>
+            <details class="panel technical-details" open>
+              <summary>Selected event details</summary>
+              <pre id="event-details">Select Details on an event or audit record.</pre>
+            </details>
+          </section>
+
+          <section class="page" id="page-access" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">IDENTITY AND AUTHORIZATION</p>
+                <h2>Users and access</h2>
+                <p>
+                  Manage local roles, multifactor credentials, recovery data,
+                  and scoped API tokens.
+                </p>
+              </div>
+            </header>
+            <div class="error-summary" id="access-error"
+                 role="alert" hidden></div>
+            <section class="panel policy-section"
+                     aria-labelledby="current-account-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="current-account-title">Current account</h3>
+                  <p>Security state for this authenticated browser identity.</p>
+                </div>
+              </div>
+              <section class="summary-strip"
+                       aria-label="Current account security">
+                <div>
+                  <span>Username</span>
+                  <strong id="current-access-user">—</strong>
+                </div>
+                <div>
+                  <span>Role</span>
+                  <strong id="current-access-role">—</strong>
+                </div>
+                <div>
+                  <span>TOTP</span>
+                  <strong id="current-access-totp">—</strong>
+                </div>
+              </section>
+              <div id="totp-disabled-actions">
+                <button class="primary-action" id="totp-provision"
+                        data-busy-label="Provisioning…" type="button">
+                  Enroll TOTP
+                </button>
+                <form class="inline-editor" id="totp-confirm-form" hidden>
+                  <h4>Confirm authenticator</h4>
+                  <div class="form-grid">
+                    <label>
+                      Six-digit code
+                      <input id="totp-code" type="text" inputmode="numeric"
+                             pattern="[0-9]{6}" maxlength="6"
+                             autocomplete="one-time-code" required>
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button class="primary-action" id="totp-confirm"
+                            data-busy-label="Confirming…" type="submit">
+                      Enable TOTP
+                    </button>
+                  </div>
+                </form>
+              </div>
+              <form id="totp-enabled-actions">
+                <div class="form-grid">
+                  <label>
+                    Current six-digit code
+                    <input id="totp-disable-code" type="text"
+                           inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                           autocomplete="one-time-code" required>
+                  </label>
+                </div>
+                <div class="button-row form-actions">
+                  <button class="danger-button" type="submit">
+                    Disable TOTP
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section class="notice" id="access-restricted" hidden>
+              <h3>Account administration restricted</h3>
+              <p>
+                User and API-token inventories require the administrator role.
+                Current-account TOTP controls remain available above.
+              </p>
+            </section>
+            <div id="access-administrator">
+              <section class="panel policy-section"
+                       aria-labelledby="users-title">
+                <div class="section-heading">
+                  <div>
+                    <h3 id="users-title">Local users</h3>
+                    <p>
+                      Roles, lockout counters, password reset, and TOTP reset.
+                    </p>
+                  </div>
+                </div>
+                <form class="inline-editor" id="user-form">
+                  <h4 id="user-form-title">Add local user</h4>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Username
+                      <input name="user_username" type="text" maxlength="128"
+                             autocomplete="off" required>
+                    </label>
+                    <label>
+                      Initial password
+                      <input name="user_password" type="password"
+                             minlength="12" maxlength="256"
+                             autocomplete="new-password" required>
+                    </label>
+                    <label>
+                      Role
+                      <select name="user_role" required>
+                        <option value="operator">Operator</option>
+                        <option value="auditor">Auditor</option>
+                        <option value="administrator">Administrator</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="user_enabled" type="checkbox">
+                      Account enabled
+                    </label>
+                    <label class="check-label">
+                      <input name="user_force_password_change" type="checkbox">
+                      Require password change at next login
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="user-cancel" type="button" hidden>
+                      Cancel edit
+                    </button>
+                    <button class="primary-action" id="user-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Add user
+                    </button>
+                  </div>
+                </form>
+                <form class="inline-editor" id="user-password-form" hidden>
+                  <h4 id="user-password-title">Reset user password</h4>
+                  <div class="form-grid">
+                    <label>
+                      New password
+                      <input id="user-new-password" name="user_new_password"
+                             type="password" minlength="12" maxlength="256"
+                             autocomplete="new-password" required>
+                    </label>
+                    <label class="check-label">
+                      <input name="password_force_change" type="checkbox"
+                             checked>
+                      Require another change at next login
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="user-password-cancel" type="button">
+                      Cancel
+                    </button>
+                    <button class="primary-action" id="user-password-submit"
+                            data-busy-label="Resetting…" type="submit">
+                      Reset password
+                    </button>
+                  </div>
+                </form>
+                <div class="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">ID</th>
+                        <th scope="col">Username</th>
+                        <th scope="col">Role</th>
+                        <th scope="col">State</th>
+                        <th scope="col">TOTP</th>
+                        <th scope="col">Failed logins</th>
+                        <th scope="col">Last login</th>
+                        <th scope="col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="user-list"></tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="panel policy-section"
+                       aria-labelledby="tokens-title">
+                <div class="section-heading">
+                  <div>
+                    <h3 id="tokens-title">API tokens</h3>
+                    <p>
+                      Scoped, rate-limited bearer credentials with optional
+                      expiry and source-network restriction.
+                    </p>
+                  </div>
+                </div>
+                <form class="inline-editor" id="token-form">
+                  <h4>Create API token</h4>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Owner
+                      <select id="token-user-id" name="token_user_id"
+                              required></select>
+                    </label>
+                    <label>
+                      Name
+                      <input name="token_name" type="text" maxlength="128"
+                             required>
+                    </label>
+                    <label>
+                      Requests per minute
+                      <input name="requests_per_minute" type="number"
+                             min="1" max="60000" value="120" required>
+                    </label>
+                    <label>
+                      Expiry
+                      <input name="token_expiry" type="datetime-local">
+                    </label>
+                    <label class="span-two">
+                      Source network
+                      <input name="token_source_network" type="text"
+                             maxlength="49" placeholder="192.0.2.0/24">
+                    </label>
+                  </div>
+                  <fieldset class="scope-fieldset">
+                    <legend>Scopes</legend>
+                    <div class="check-grid">
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="status:read">
+                        Status read
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="policy:read">
+                        Policy read
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="policy:write">
+                        Policy write
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="events:read">
+                        Events read
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="audit:read">
+                        Audit read
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="operate">
+                        Operations
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="network:write">
+                        Network write
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="access:write">
+                        Access write
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="security:write">
+                        Security write
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="backups:write">
+                        Backups write
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="system:write">
+                        System write
+                      </label>
+                      <label class="check-label">
+                        <input name="token_scope[]" type="checkbox"
+                               value="metrics:read">
+                        Metrics read
+                      </label>
+                    </div>
+                  </fieldset>
+                  <div class="button-row form-actions">
+                    <button class="primary-action" id="token-submit"
+                            data-busy-label="Creating…" type="submit">
+                      Create token
+                    </button>
+                  </div>
+                </form>
+                <div class="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">ID</th>
+                        <th scope="col">Name</th>
+                        <th scope="col">Owner</th>
+                        <th scope="col">Scopes</th>
+                        <th scope="col">Source</th>
+                        <th scope="col">Expires</th>
+                        <th scope="col">Last used</th>
+                        <th scope="col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="token-list"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
           </section>
         </div>
       </div>

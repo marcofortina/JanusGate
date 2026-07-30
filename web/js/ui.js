@@ -135,6 +135,9 @@ export function showSecret(title, description, secret) {
   byId("secret-description").textContent = description;
   byId("secret-value").value = secret;
   dialog.showModal();
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", resolve, { once: true });
+  });
 }
 
 /**

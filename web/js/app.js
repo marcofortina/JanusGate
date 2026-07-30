@@ -13,8 +13,10 @@ import {
   onUnauthorized,
   rememberCsrf,
 } from "./api.js";
+import * as access from "./access.js";
 import * as blocklists from "./blocklists.js";
 import * as dashboard from "./dashboard.js";
+import * as events from "./events.js";
 import * as network from "./network.js";
 import * as policies from "./policies.js";
 import {
@@ -29,6 +31,8 @@ const pages = new Map([
   ["network", network],
   ["policies", policies],
   ["blocklists", blocklists],
+  ["events", events],
+  ["access", access],
 ]);
 
 const elements = {
@@ -49,6 +53,7 @@ const elements = {
 };
 
 let currentUser = null;
+let activePage = null;
 
 /**
  * Return the requested page identifier or the dashboard fallback.
@@ -67,6 +72,11 @@ async function navigate() {
   const page = pages.get(identifier);
 
   announce("");
+  if (activePage !== null && activePage !== page &&
+      typeof activePage.deactivate === "function") {
+    activePage.deactivate();
+  }
+  activePage = page;
   for (const section of document.querySelectorAll("[data-page]")) {
     section.hidden = section.id !== `page-${identifier}`;
   }
@@ -128,6 +138,10 @@ async function showIdentity(user) {
  * Return the shell to its unauthenticated state.
  */
 function showAuthentication() {
+  if (activePage !== null && typeof activePage.deactivate === "function") {
+    activePage.deactivate();
+  }
+  activePage = null;
   currentUser = null;
   elements.appView.hidden = true;
   elements.accountState.hidden = true;
@@ -344,4 +358,5 @@ window.addEventListener("hashchange", () => {
     void navigate();
   }
 });
+window.addEventListener("janusgate:session-ended", showAuthentication);
 void initialize();

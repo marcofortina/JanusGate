@@ -764,6 +764,46 @@ tbody tr:last-child td {
   background: #102820;
 }
 
+.filter-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(12rem, 1fr) auto auto;
+  align-items: end;
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.filter-row > label:not(.check-label) {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.live-control {
+  min-height: 2.85rem;
+}
+
+.status-success {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.status-failure {
+  color: #ff9aa3;
+  font-weight: 700;
+}
+
+.scope-fieldset {
+  margin-top: 1rem;
+  padding: 0.8rem 1rem 1rem;
+  border: 1px solid #304753;
+  border-radius: 0.5rem;
+}
+
+.scope-fieldset legend {
+  padding: 0 0.4rem;
+  font-weight: 700;
+}
+
 .technical-details {
   margin-top: 1rem;
 }
@@ -898,6 +938,11 @@ dialog .button-row {
   .warning-panel {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .filter-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }
 
