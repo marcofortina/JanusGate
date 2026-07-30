@@ -64,6 +64,8 @@ static const struct web_asset web_assets[] = {
      false},
     {"/js/network.js", "js/network.js", "text/javascript; charset=utf-8",
      false},
+    {"/js/policies.js", "js/policies.js", "text/javascript; charset=utf-8",
+     false},
     {"/js/ui.js", "js/ui.js", "text/javascript; charset=utf-8", false},
     {"/manifest.webmanifest", "manifest.webmanifest",
      "application/manifest+json", false},

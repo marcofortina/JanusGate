@@ -15,6 +15,7 @@ import {
 } from "./api.js";
 import * as dashboard from "./dashboard.js";
 import * as network from "./network.js";
+import * as policies from "./policies.js";
 import {
   announce,
   byId,
@@ -25,6 +26,7 @@ import {
 const pages = new Map([
   ["dashboard", dashboard],
   ["network", network],
+  ["policies", policies],
 ]);
 
 const elements = {

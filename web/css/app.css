@@ -24,6 +24,18 @@
   display: none !important;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -604,11 +616,19 @@ tbody tr:last-child td {
   gap: 1rem;
 }
 
+.form-grid.three-columns {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .form-grid label {
   display: grid;
   align-content: start;
   gap: 0.4rem;
   margin: 0;
+}
+
+.span-two {
+  grid-column: span 2;
 }
 
 .field-hint {
@@ -645,6 +665,55 @@ tbody tr:last-child td {
 
 .form-actions {
   margin-top: 1.4rem;
+}
+
+.plain-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.policy-section {
+  margin-top: 1rem;
+}
+
+.inline-editor {
+  margin: 1rem 0 1.4rem;
+  padding: 1rem;
+  border: 1px solid #304753;
+  border-radius: 0.55rem;
+  background: #101a22;
+}
+
+.inline-editor h4 {
+  margin: 0 0 1rem;
+  font-size: 1.05rem;
+}
+
+.table-actions {
+  display: flex;
+  min-width: 8.5rem;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.table-action {
+  min-height: 2rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.table-footer {
+  margin-top: 1rem;
+}
+
+.result-banner {
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border-left: 4px solid var(--accent);
+  border-radius: 0.35rem;
+  background: #102820;
 }
 
 .technical-details {
@@ -760,8 +829,13 @@ dialog .button-row {
 
   .split-grid,
   .form-grid,
+  .form-grid.three-columns,
   .summary-strip {
     grid-template-columns: 1fr;
+  }
+
+  .span-two {
+    grid-column: auto;
   }
 
   .summary-strip div {

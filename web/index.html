@@ -132,7 +132,7 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
           <a class="active" href="#dashboard" data-page-link="dashboard"
              aria-current="page">Dashboard</a>
           <a href="#network" data-page-link="network">Network</a>
-          <a href="#policies">Policies</a>
+          <a href="#policies" data-page-link="policies">Policies</a>
           <a href="#blocklists">Blocklists</a>
           <a href="#events">Events</a>
           <a href="#access">Users and access</a>
@@ -429,6 +429,321 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
               <summary>Last operation result</summary>
               <pre id="network-result">No operation has been submitted.</pre>
             </details>
+          </section>
+
+          <section class="page" id="page-policies" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">EXPLICIT POLICY</p>
+                <h2>Policies</h2>
+                <p>
+                  Manage domain, visible SNI, IP, CIDR, port, client, and VLAN
+                  rules using the same matcher as the packet path.
+                </p>
+              </div>
+            </header>
+            <div class="error-summary" id="policies-error"
+                 role="alert" hidden></div>
+            <section class="notice" id="policy-read-only" hidden>
+              <h3>Read-only access</h3>
+              <p>
+                Your auditor role can inspect and simulate policy but cannot
+                change it.
+              </p>
+            </section>
+            <section class="panel policy-section"
+                     aria-labelledby="domain-rules-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="domain-rules-title">Domain and visible SNI rules</h3>
+                  <p>
+                    Exact or suffix matches for classic DNS and visible TLS
+                    ClientHello names.
+                  </p>
+                </div>
+              </div>
+              <form class="inline-editor" id="domain-rule-form">
+                <h4 id="domain-form-title">Add domain rule</h4>
+                <fieldset class="plain-fieldset" id="domain-rule-fieldset">
+                  <legend class="visually-hidden">Domain rule values</legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Domain
+                      <input name="domain" type="text" maxlength="1024"
+                             placeholder="example.com" required>
+                    </label>
+                    <label>
+                      Action
+                      <select name="action" required>
+                        <option value="block">Block</option>
+                        <option value="allow">Allow</option>
+                      </select>
+                    </label>
+                    <label>
+                      Inspection target
+                      <select name="target" required>
+                        <option value="dns">Classic DNS</option>
+                        <option value="tls_sni">Visible TLS SNI</option>
+                      </select>
+                    </label>
+                    <label>
+                      Client scope
+                      <select name="domain_scope_type" required>
+                        <option value="global">Global</option>
+                        <option value="ipv4">IPv4 network</option>
+                        <option value="ipv6">IPv6 network</option>
+                        <option value="mac">MAC address</option>
+                        <option value="vlan">VLAN</option>
+                      </select>
+                    </label>
+                    <label>
+                      Scope value
+                      <input name="domain_scope_value" type="text"
+                             maxlength="45">
+                    </label>
+                    <label>
+                      Scope prefix length
+                      <input name="domain_scope_prefix" type="number"
+                             min="0" max="128">
+                    </label>
+                    <label class="span-two">
+                      Attribution
+                      <input name="attribution" type="text" maxlength="255"
+                             placeholder="Reason, owner, or ticket" required>
+                    </label>
+                  </div>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="include_subdomains" type="checkbox">
+                      Include subdomains
+                    </label>
+                    <label class="check-label">
+                      <input name="domain_enabled" type="checkbox">
+                      Rule enabled
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="domain-cancel" type="button" hidden>
+                      Cancel edit
+                    </button>
+                    <button class="primary-action" id="domain-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Add rule
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Domain</th>
+                      <th scope="col">Match</th>
+                      <th scope="col">Decision</th>
+                      <th scope="col">Scope</th>
+                      <th scope="col">Attribution</th>
+                      <th scope="col">State</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="domain-rule-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="domain-load-more" type="button" hidden>
+                  Load more
+                </button>
+              </div>
+            </section>
+
+            <section class="panel policy-section"
+                     aria-labelledby="destination-rules-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="destination-rules-title">Destination rules</h3>
+                  <p>
+                    IP, CIDR, transport, and port controls, including known
+                    DoT, DoQ, VPN, and encrypted-DNS endpoints.
+                  </p>
+                </div>
+              </div>
+              <form class="inline-editor" id="destination-rule-form">
+                <h4 id="destination-form-title">Add destination rule</h4>
+                <fieldset class="plain-fieldset"
+                          id="destination-rule-fieldset">
+                  <legend class="visually-hidden">
+                    Destination rule values
+                  </legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Action
+                      <select name="destination_action" required>
+                        <option value="block">Block</option>
+                        <option value="allow">Allow</option>
+                      </select>
+                    </label>
+                    <label>
+                      Transport
+                      <select name="transport" required>
+                        <option value="any">Any</option>
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                      </select>
+                    </label>
+                    <label>
+                      Destination address
+                      <input name="address" type="text" maxlength="45"
+                             placeholder="192.0.2.0">
+                    </label>
+                    <label>
+                      Prefix length
+                      <input name="prefix_length" type="number"
+                             min="0" max="128">
+                    </label>
+                    <label>
+                      Destination port
+                      <input name="port" type="number" min="1" max="65535"
+                             placeholder="853">
+                    </label>
+                    <label>
+                      Client scope
+                      <select name="destination_scope_type" required>
+                        <option value="global">Global</option>
+                        <option value="ipv4">IPv4 network</option>
+                        <option value="ipv6">IPv6 network</option>
+                        <option value="mac">MAC address</option>
+                        <option value="vlan">VLAN</option>
+                      </select>
+                    </label>
+                    <label>
+                      Scope value
+                      <input name="destination_scope_value" type="text"
+                             maxlength="45">
+                    </label>
+                    <label>
+                      Scope prefix length
+                      <input name="destination_scope_prefix" type="number"
+                             min="0" max="128">
+                    </label>
+                    <label>
+                      Attribution
+                      <input name="destination_attribution" type="text"
+                             maxlength="255"
+                             placeholder="Reason, owner, or ticket" required>
+                    </label>
+                  </div>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="destination_enabled" type="checkbox">
+                      Rule enabled
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="destination-cancel" type="button" hidden>
+                      Cancel edit
+                    </button>
+                    <button class="primary-action" id="destination-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Add rule
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Destination</th>
+                      <th scope="col">Transport</th>
+                      <th scope="col">Action</th>
+                      <th scope="col">Scope</th>
+                      <th scope="col">Attribution</th>
+                      <th scope="col">State</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="destination-rule-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="destination-load-more" type="button" hidden>
+                  Load more
+                </button>
+              </div>
+            </section>
+
+            <section class="panel policy-section"
+                     aria-labelledby="simulation-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="simulation-title">Policy simulation</h3>
+                  <p>
+                    Explain a decision with the production matcher without
+                    changing active policy.
+                  </p>
+                </div>
+              </div>
+              <form id="policy-simulation-form">
+                <div class="form-grid three-columns">
+                  <label>
+                    Domain
+                    <input name="simulation_domain" type="text"
+                           maxlength="1024" required>
+                  </label>
+                  <label>
+                    Target
+                    <select name="simulation_target">
+                      <option value="dns">Classic DNS</option>
+                      <option value="tls_sni">Visible TLS SNI</option>
+                    </select>
+                  </label>
+                  <label>
+                    Source IP
+                    <input name="source_ip" type="text" maxlength="45">
+                  </label>
+                  <label>
+                    Source MAC
+                    <input name="source_mac" type="text" maxlength="17"
+                           pattern="[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}">
+                  </label>
+                  <label>
+                    VLAN
+                    <input name="simulation_vlan" type="number"
+                           min="0" max="4094">
+                  </label>
+                  <label>
+                    Destination resolver IP
+                    <input name="destination_ip" type="text" maxlength="45">
+                  </label>
+                  <label>
+                    Destination port
+                    <input name="destination_port" type="number"
+                           min="1" max="65535">
+                  </label>
+                  <label>
+                    Destination transport
+                    <select name="simulation_transport">
+                      <option value="">Not specified</option>
+                      <option value="udp">UDP</option>
+                      <option value="tcp">TCP</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="button-row form-actions">
+                  <button class="primary-action" id="simulation-submit"
+                          data-busy-label="Simulating…" type="submit">
+                    Simulate decision
+                  </button>
+                </div>
+              </form>
+              <div class="result-banner" id="simulation-summary">
+                No simulation has been run.
+              </div>
+              <pre id="simulation-result">Simulation details will appear here.</pre>
+            </section>
           </section>
         </div>
       </div>
