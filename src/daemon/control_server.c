@@ -348,9 +348,16 @@ static int prepare_runtime_directory(uid_t owner_uid, gid_t socket_gid)
         (status.st_mode & (S_IWGRP | S_IWOTH)) != 0U) {
         return -EACCES;
     }
-    if (chown(JG_RUNTIME_DIRECTORY, 0U, socket_gid) != 0 ||
-        chmod(JG_RUNTIME_DIRECTORY, 0750) != 0) {
-        return -errno;
+    if (status.st_gid != socket_gid || (status.st_mode & 0777U) != 0750U) {
+        if (chown(JG_RUNTIME_DIRECTORY, 0U, socket_gid) != 0 ||
+            chmod(JG_RUNTIME_DIRECTORY, 0750) != 0 ||
+            lstat(JG_RUNTIME_DIRECTORY, &status) != 0) {
+            return -errno;
+        }
+    }
+    if (status.st_uid != 0U || status.st_gid != socket_gid ||
+        (status.st_mode & 0777U) != 0750U) {
+        return -EACCES;
     }
     if (mkdir(JG_CONTROL_RUNTIME_DIRECTORY, 0750) == 0) {
         control_directory_created = true;

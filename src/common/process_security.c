@@ -142,6 +142,7 @@ static const char *const common_system_calls[] = {
     "stat64",
     "statx",
     "sysinfo",
+    "tkill",
     "tgkill",
     "time",
     "uname",
@@ -311,6 +312,10 @@ int jg_process_restrict_capabilities(enum jg_process_profile profile)
 /** @brief Permanently assume one dedicated non-root service identity. */
 int jg_process_drop_privileges(const char *user_name)
 {
+    static const cap_value_t runtime_capabilities[] = {
+        CAP_NET_ADMIN,
+        CAP_NET_RAW,
+    };
     const struct passwd *identity = NULL;
     uid_t user_id = 0U;
     gid_t group_id = 0U;
@@ -329,12 +334,24 @@ int jg_process_drop_privileges(const char *user_name)
     }
     user_id = identity->pw_uid;
     group_id = identity->pw_gid;
-    if (initgroups(user_name, group_id) != 0 ||
-        setresgid(group_id, group_id, group_id) != 0 ||
-        setresuid(user_id, user_id, user_id) != 0) {
-        return -errno;
+    if (prctl(PR_SET_KEEPCAPS, 1L, 0L, 0L, 0L) != 0) {
+        result = -errno;
     }
-    result = clear_capabilities();
+    if (result == 0 && (initgroups(user_name, group_id) != 0 ||
+                        setresgid(group_id, group_id, group_id) != 0 ||
+                        setresuid(user_id, user_id, user_id) != 0)) {
+        result = -errno;
+    }
+    if (result == 0) {
+        result = install_capabilities(runtime_capabilities,
+                                      ARRAY_SIZE(runtime_capabilities));
+    }
+    if (prctl(PR_SET_KEEPCAPS, 0L, 0L, 0L, 0L) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result != 0) {
+        (void)clear_capabilities();
+    }
     if (result == 0 && (getuid() != user_id || geteuid() != user_id ||
                         getgid() != group_id || getegid() != group_id)) {
         result = -EPERM;

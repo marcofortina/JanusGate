@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <arpa/inet.h>
 #include <linux/netfilter.h>
@@ -17,12 +18,17 @@
 #include <poll.h>
 #include <sys/socket.h>
 
+#include <libmnl/libmnl.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
 #include "janusgate/network.h"
+#include "janusgate/packet.h"
 
 /** Largest netlink datagram retained by one worker. */
 #define JG_NFQUEUE_MESSAGE_MAX 131072U
+
+/** Ethernet header plus the maximum supported VLAN stack. */
+#define JG_NFQUEUE_LINK_HEADER_MAX (14U + (4U * JG_PACKET_VLAN_LIMIT))
 
 /** Internal independently updated queue counters. */
 struct atomic_stats {
@@ -42,8 +48,24 @@ struct jg_nfqueue_worker {
     struct nfq_q_handle *queue;
     jg_nfqueue_processor processor;
     void *processor_context;
+    unsigned char *messages;
+    unsigned char *frame;
+    unsigned char link_header[JG_NFQUEUE_LINK_HEADER_MAX];
+    size_t link_header_size;
     struct atomic_stats stats;
     int socket_fd;
+};
+
+/** Link-layer attributes carried beside one queued IP packet. */
+struct link_attributes {
+    const struct nlattr *header;
+    const struct nlattr *vlan;
+};
+
+/** Offloaded VLAN fields carried in one nested queue attribute. */
+struct vlan_attributes {
+    const struct nlattr *protocol;
+    const struct nlattr *tci;
 };
 
 /** @brief Convert one libnetfilter_queue failure to errno style. */
@@ -68,6 +90,76 @@ static void initialize_stats(struct atomic_stats *stats)
     atomic_init(&stats->overflows, 0U);
     atomic_init(&stats->message_errors, 0U);
     atomic_init(&stats->verdict_errors, 0U);
+}
+
+/** @brief Collect relevant link-layer attributes from one queue message. */
+static int collect_link_attribute(const struct nlattr *attribute, void *context)
+{
+    struct link_attributes *attributes = context;
+
+    if (mnl_attr_get_type(attribute) == NFQA_L2HDR) {
+        attributes->header = attribute;
+    } else if (mnl_attr_get_type(attribute) == NFQA_VLAN) {
+        attributes->vlan = attribute;
+    }
+    return MNL_CB_OK;
+}
+
+/** @brief Collect protocol and tag fields from one nested VLAN attribute. */
+static int collect_vlan_attribute(const struct nlattr *attribute, void *context)
+{
+    struct vlan_attributes *attributes = context;
+
+    if (mnl_attr_get_type(attribute) == NFQA_VLAN_PROTO) {
+        attributes->protocol = attribute;
+    } else if (mnl_attr_get_type(attribute) == NFQA_VLAN_TCI) {
+        attributes->tci = attribute;
+    }
+    return MNL_CB_OK;
+}
+
+/** @brief Recover the Ethernet header delivered separately by NFQUEUE. */
+static void prepare_link_header(struct jg_nfqueue_worker *worker,
+                                const struct nlmsghdr *message)
+{
+    struct link_attributes attributes = {0};
+    size_t header_size = 0U;
+
+    worker->link_header_size = 0U;
+    if (message->nlmsg_type == NLMSG_ERROR ||
+        mnl_attr_parse(message, sizeof(struct nfgenmsg), collect_link_attribute,
+                       &attributes) < 0 ||
+        attributes.header == NULL) {
+        return;
+    }
+
+    header_size = mnl_attr_get_payload_len(attributes.header);
+    if (header_size < 14U || header_size > sizeof(worker->link_header)) {
+        return;
+    }
+    (void)memcpy(worker->link_header, mnl_attr_get_payload(attributes.header),
+                 header_size);
+
+    if (attributes.vlan != NULL) {
+        struct vlan_attributes vlan = {0};
+
+        if (header_size + 4U > sizeof(worker->link_header) ||
+            mnl_attr_parse_nested(attributes.vlan, collect_vlan_attribute,
+                                  &vlan) < 0 ||
+            vlan.protocol == NULL || vlan.tci == NULL ||
+            mnl_attr_get_payload_len(vlan.protocol) != sizeof(uint16_t) ||
+            mnl_attr_get_payload_len(vlan.tci) != sizeof(uint16_t)) {
+            return;
+        }
+        (void)memmove(worker->link_header + 16U, worker->link_header + 12U,
+                      header_size - 12U);
+        (void)memcpy(worker->link_header + 12U,
+                     mnl_attr_get_payload(vlan.protocol), sizeof(uint16_t));
+        (void)memcpy(worker->link_header + 14U, mnl_attr_get_payload(vlan.tci),
+                     sizeof(uint16_t));
+        header_size += 4U;
+    }
+    worker->link_header_size = header_size;
 }
 
 /** @brief Send one definitive verdict and update its outcome counters. */
@@ -135,6 +227,7 @@ static int queue_callback(struct nfq_q_handle *queue,
     struct nfqnl_msg_packet_hdr *header = NULL;
     unsigned char *payload = NULL;
     enum jg_nfqueue_verdict verdict = JG_NFQUEUE_DROP;
+    size_t frame_size = 0U;
     uint32_t packet_id = 0U;
     int payload_size = -1;
 
@@ -149,7 +242,19 @@ static int queue_callback(struct nfq_q_handle *queue,
     packet_id = ntohl(header->packet_id);
     payload_size = nfq_get_payload(queue_data, &payload);
     increment(&worker->stats.packets);
-    verdict = process_packet(worker, queue_data, payload, payload_size);
+    if (payload_size > 0 && payload != NULL && worker->link_header_size > 0U &&
+        (size_t)payload_size <=
+            JG_NFQUEUE_MESSAGE_MAX - worker->link_header_size) {
+        frame_size = worker->link_header_size + (size_t)payload_size;
+        (void)memcpy(worker->frame, worker->link_header,
+                     worker->link_header_size);
+        (void)memcpy(worker->frame + worker->link_header_size, payload,
+                     (size_t)payload_size);
+        verdict =
+            process_packet(worker, queue_data, worker->frame, (int)frame_size);
+    } else {
+        increment(&worker->stats.malformed);
+    }
     return send_verdict(worker, packet_id, verdict);
 }
 
@@ -177,22 +282,48 @@ static int configure_queue(struct jg_nfqueue_worker *worker)
 /** @brief Receive and dispatch one netlink datagram. */
 static int receive_messages(struct jg_nfqueue_worker *worker, int flags)
 {
-    unsigned char messages[JG_NFQUEUE_MESSAGE_MAX];
-    ssize_t received =
-        recv(worker->socket_fd, messages, sizeof(messages), flags | MSG_TRUNC);
+    ssize_t received = recv(worker->socket_fd, worker->messages,
+                            JG_NFQUEUE_MESSAGE_MAX, flags | MSG_TRUNC);
 
     if (received > 0) {
-        int dispatch_result = 0;
+        size_t offset = 0U;
+        size_t remaining = (size_t)received;
 
-        if ((size_t)received > sizeof(messages)) {
+        if ((size_t)received > JG_NFQUEUE_MESSAGE_MAX) {
             increment(&worker->stats.message_errors);
             return -EMSGSIZE;
         }
-        dispatch_result =
-            nfq_handle_packet(worker->handle, (char *)messages, (int)received);
-        if (dispatch_result < 0) {
-            increment(&worker->stats.message_errors);
-            return dispatch_result == -1 ? queue_error() : dispatch_result;
+        while (remaining > 0U) {
+            struct nlmsghdr *message = NULL;
+            size_t aligned_size = 0U;
+            size_t message_size = 0U;
+            int dispatch_result = 0;
+
+            if (remaining < sizeof(*message)) {
+                increment(&worker->stats.message_errors);
+                return -EPROTO;
+            }
+            message = (struct nlmsghdr *)(void *)(worker->messages + offset);
+            message_size = message->nlmsg_len;
+            if (message_size < sizeof(*message) || message_size > remaining ||
+                message_size > (size_t)INT32_MAX) {
+                increment(&worker->stats.message_errors);
+                return -EPROTO;
+            }
+            prepare_link_header(worker, message);
+            dispatch_result = nfq_handle_packet(worker->handle, (char *)message,
+                                                (int)message_size);
+            worker->link_header_size = 0U;
+            if (dispatch_result < 0) {
+                increment(&worker->stats.message_errors);
+                return dispatch_result == -1 ? queue_error() : dispatch_result;
+            }
+            aligned_size = NLMSG_ALIGN(message_size);
+            if (aligned_size > remaining) {
+                aligned_size = message_size;
+            }
+            offset += aligned_size;
+            remaining -= aligned_size;
         }
         return 1;
     }
@@ -271,9 +402,16 @@ int jg_nfqueue_worker_open(const struct jg_nfqueue_worker_config *config,
     opened->processor_context = context;
     opened->socket_fd = -1;
     initialize_stats(&opened->stats);
-    opened->handle = nfq_open();
-    if (opened->handle == NULL) {
-        result = queue_error();
+    opened->messages = malloc(JG_NFQUEUE_MESSAGE_MAX);
+    opened->frame = malloc(JG_NFQUEUE_MESSAGE_MAX);
+    if (opened->messages == NULL || opened->frame == NULL) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        opened->handle = nfq_open();
+        if (opened->handle == NULL) {
+            result = queue_error();
+        }
     }
     if (result == 0) {
         opened->queue =
@@ -375,5 +513,7 @@ void jg_nfqueue_worker_close(struct jg_nfqueue_worker *worker)
     if (worker->handle != NULL) {
         (void)nfq_close(worker->handle);
     }
+    free(worker->frame);
+    free(worker->messages);
     free(worker);
 }

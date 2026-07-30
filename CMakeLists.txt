@@ -200,7 +200,7 @@ target_link_libraries(
   PRIVATE PkgConfig::JANSSON)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(janusgate-daemon-core
-                        PRIVATE PkgConfig::NETFILTER_QUEUE)
+                        PRIVATE PkgConfig::MNL PkgConfig::NETFILTER_QUEUE)
 endif()
 janusgate_apply_compiler_options(janusgate-daemon-core)
 

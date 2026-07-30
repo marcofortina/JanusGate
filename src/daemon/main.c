@@ -144,6 +144,12 @@ int main(int argc, char **argv)
         operation = "block shutdown signals";
         result = block_shutdown_signals(&waiter.signals);
     }
+#if defined(__linux__)
+    if (result == 0) {
+        operation = "drop privileges";
+        result = jg_process_drop_privileges(JG_SERVICE_USER);
+    }
+#endif
     if (result == 0) {
         operation = "start packet runtime";
         result = jg_daemon_runtime_start(&config, &runtime);
@@ -153,10 +159,12 @@ int main(int argc, char **argv)
         result = jg_control_server_start(runtime, service_uid, web_uid,
                                          control_gid, &control_server);
     }
+#if !defined(__linux__)
     if (result == 0) {
         operation = "drop privileges";
         result = jg_process_drop_privileges(JG_SERVICE_USER);
     }
+#endif
     if (result == 0) {
         operation = "install system-call filter";
         result = jg_process_apply_system_call_filter(JG_PROCESS_PROFILE_DAEMON);

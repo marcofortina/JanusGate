@@ -62,7 +62,8 @@ int jg_process_restrict_capabilities(enum jg_process_profile profile);
  *
  * Supplementary groups are initialized from the account database before the
  * real, effective, and saved group and user identifiers are replaced. All
- * platform privileges are cleared after the transition.
+ * startup privileges are cleared after the transition; Linux retains only
+ * CAP_NET_ADMIN and CAP_NET_RAW for packet queue and raw-socket operation.
  *
  * @param[in] user_name Existing non-root account name.
  *
