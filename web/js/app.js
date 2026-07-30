@@ -13,6 +13,7 @@ import {
   onUnauthorized,
   rememberCsrf,
 } from "./api.js";
+import * as blocklists from "./blocklists.js";
 import * as dashboard from "./dashboard.js";
 import * as network from "./network.js";
 import * as policies from "./policies.js";
@@ -27,6 +28,7 @@ const pages = new Map([
   ["dashboard", dashboard],
   ["network", network],
   ["policies", policies],
+  ["blocklists", blocklists],
 ]);
 
 const elements = {

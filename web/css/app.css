@@ -691,11 +691,59 @@ tbody tr:last-child td {
   font-size: 1.05rem;
 }
 
+.advanced-fields {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border: 1px solid #2e424e;
+  border-radius: 0.45rem;
+}
+
+.advanced-fields summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.advanced-fields[open] summary {
+  margin-bottom: 1rem;
+}
+
+.textarea-label {
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+.health-pill {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid #526a77;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.health-healthy {
+  border-color: #3b9f7f;
+  color: var(--accent-strong);
+}
+
+.health-degraded,
+.health-failed {
+  border-color: #a94f59;
+  color: #ff9aa3;
+}
+
 .table-actions {
   display: flex;
   min-width: 8.5rem;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.blocklist-actions {
+  min-width: 15rem;
 }
 
 .table-action {

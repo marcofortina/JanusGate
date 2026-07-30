@@ -133,7 +133,7 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
              aria-current="page">Dashboard</a>
           <a href="#network" data-page-link="network">Network</a>
           <a href="#policies" data-page-link="policies">Policies</a>
-          <a href="#blocklists">Blocklists</a>
+          <a href="#blocklists" data-page-link="blocklists">Blocklists</a>
           <a href="#events">Events</a>
           <a href="#access">Users and access</a>
           <a href="#certificates">Certificates</a>
@@ -744,6 +744,226 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
               </div>
               <pre id="simulation-result">Simulation details will appear here.</pre>
             </section>
+          </section>
+
+          <section class="page" id="page-blocklists" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">CURATED POLICY SOURCES</p>
+                <h2>Blocklists</h2>
+                <p>
+                  Import local lists and maintain bounded, verified HTTPS
+                  sources with retained last-known-good data.
+                </p>
+              </div>
+              <button id="source-export-all" type="button">
+                Export source configuration
+              </button>
+            </header>
+            <div class="error-summary" id="blocklists-error"
+                 role="alert" hidden></div>
+            <section class="notice" id="blocklists-read-only" hidden>
+              <h3>Read-only access</h3>
+              <p>
+                Your auditor role can inspect and export source state but
+                cannot change or refresh lists.
+              </p>
+            </section>
+            <section class="panel policy-section"
+                     aria-labelledby="sources-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="sources-title">Sources and update health</h3>
+                  <p>
+                    Failed downloads never replace the active
+                    last-known-good list.
+                  </p>
+                </div>
+              </div>
+              <form class="inline-editor" id="source-form">
+                <h4 id="source-form-title">Add blocklist source</h4>
+                <fieldset class="plain-fieldset" id="source-fieldset">
+                  <legend class="visually-hidden">
+                    Blocklist source values
+                  </legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Name
+                      <input name="source_name" type="text" maxlength="128"
+                             required>
+                    </label>
+                    <label>
+                      Format
+                      <select name="source_format" required>
+                        <option value="domain">Domain list</option>
+                        <option value="hosts">Hosts file</option>
+                        <option value="category">Category list</option>
+                        <option value="rpz">Response Policy Zone</option>
+                        <option value="json">JanusGate JSON</option>
+                      </select>
+                    </label>
+                    <label>
+                      Parse mode
+                      <select name="source_mode" required>
+                        <option value="strict">Strict</option>
+                        <option value="tolerant">Tolerant</option>
+                      </select>
+                    </label>
+                    <label class="span-two">
+                      Content URL
+                      <input name="source_url" type="url" maxlength="2048"
+                             pattern="[Hh][Tt][Tt][Pp][Ss]://.*"
+                             placeholder="https://lists.example/list.txt">
+                      <span class="field-hint">
+                        Leave empty for a local import source.
+                      </span>
+                    </label>
+                    <label>
+                      Update interval in seconds
+                      <input name="update_interval_seconds" type="number"
+                             min="300" max="2592000" required>
+                    </label>
+                  </div>
+                  <details class="advanced-fields">
+                    <summary>Integrity, limits, and retry policy</summary>
+                    <div class="form-grid three-columns">
+                      <label class="span-two">
+                        Signature URL
+                        <input name="signature_url" type="url" maxlength="2048"
+                               pattern="[Hh][Tt][Tt][Pp][Ss]://.*">
+                      </label>
+                      <label>
+                        Redirect limit
+                        <input name="redirect_limit" type="number"
+                               min="0" max="20" required>
+                      </label>
+                      <label class="span-two">
+                        SHA-256 pin
+                        <input name="sha256_pin" type="text" minlength="64"
+                               maxlength="64" pattern="[0-9A-Fa-f]{64}">
+                      </label>
+                      <label class="span-two">
+                        Ed25519 public key
+                        <input name="ed25519_public_key" type="text"
+                               minlength="64" maxlength="64"
+                               pattern="[0-9A-Fa-f]{64}">
+                      </label>
+                      <label>
+                        Maximum download bytes
+                        <input name="max_download_bytes" type="number"
+                               min="1" required>
+                      </label>
+                      <label>
+                        Maximum decompressed bytes
+                        <input name="max_decompressed_bytes" type="number"
+                               min="1" required>
+                      </label>
+                      <label>
+                        Connect timeout in milliseconds
+                        <input name="connect_timeout_ms" type="number"
+                               min="1" max="2147483647" required>
+                      </label>
+                      <label>
+                        Transfer timeout in milliseconds
+                        <input name="transfer_timeout_ms" type="number"
+                               min="1" max="2147483647" required>
+                      </label>
+                      <label>
+                        Initial retry delay in seconds
+                        <input name="retry_base_seconds" type="number"
+                               min="1" required>
+                      </label>
+                      <label>
+                        Maximum retry delay in seconds
+                        <input name="retry_max_seconds" type="number"
+                               min="1" required>
+                      </label>
+                    </div>
+                  </details>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="source_enabled" type="checkbox">
+                      Source enabled
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="source-cancel" type="button" hidden>
+                      Cancel edit
+                    </button>
+                    <button class="primary-action" id="source-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Add source
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Source</th>
+                      <th scope="col">Type</th>
+                      <th scope="col">Health</th>
+                      <th scope="col">Active</th>
+                      <th scope="col">Rejected</th>
+                      <th scope="col">Last success</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="source-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="source-load-more" type="button" hidden>
+                  Load more
+                </button>
+              </div>
+            </section>
+
+            <section class="panel policy-section"
+                     aria-labelledby="local-import-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="local-import-title">Local list import</h3>
+                  <p>
+                    Import bounded text into an existing local source. Larger
+                    files remain available through <code>janusgatectl</code>.
+                  </p>
+                </div>
+              </div>
+              <form id="blocklist-import-form">
+                <fieldset class="plain-fieldset" id="import-fieldset">
+                  <legend class="visually-hidden">Local import values</legend>
+                  <div class="form-grid">
+                    <label>
+                      Local source
+                      <select id="import-source" name="source" required></select>
+                    </label>
+                    <label>
+                      Load text file
+                      <input id="import-file" type="file" accept="text/plain">
+                    </label>
+                  </div>
+                  <label class="textarea-label" for="import-content">
+                    List content
+                  </label>
+                  <textarea id="import-content" name="content" rows="12"
+                            maxlength="60000" required></textarea>
+                  <div class="button-row form-actions">
+                    <button class="primary-action" id="import-submit"
+                            data-busy-label="Importing…" type="submit">
+                      Import and publish
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+            </section>
+            <details class="panel technical-details">
+              <summary>Selected source or last update result</summary>
+              <pre id="blocklist-result">Select Details or run an update.</pre>
+            </details>
           </section>
         </div>
       </div>

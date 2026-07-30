@@ -60,6 +60,8 @@ static const struct web_asset web_assets[] = {
     {"/css/app.css", "css/app.css", "text/css; charset=utf-8", false},
     {"/js/app.js", "js/app.js", "text/javascript; charset=utf-8", false},
     {"/js/api.js", "js/api.js", "text/javascript; charset=utf-8", false},
+    {"/js/blocklists.js", "js/blocklists.js", "text/javascript; charset=utf-8",
+     false},
     {"/js/dashboard.js", "js/dashboard.js", "text/javascript; charset=utf-8",
      false},
     {"/js/network.js", "js/network.js", "text/javascript; charset=utf-8",
