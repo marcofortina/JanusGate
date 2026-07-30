@@ -30,6 +30,7 @@ tags:
   - name: Access
   - name: Certificates
   - name: Backups
+  - name: Logging
   - name: System
 security:
   - bearerAuth: []
@@ -229,6 +230,43 @@ paths:
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
         $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /logging:
+    get:
+      tags: [Logging]
+      operationId: getLoggingConfiguration
+      summary: Return active logging configuration and bounded counters
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    put:
+      tags: [Logging]
+      operationId: updateLoggingConfiguration
+      summary: Revision-check and activate temporary diagnostic logging
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoggingUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /logging/traces:
+    get:
+      tags: [Logging]
+      operationId: getLoggingTraces
+      summary: Return the bounded in-memory diagnostic trace window
       responses:
         '200':
           $ref: '#/components/responses/JsonSuccess'
@@ -1164,6 +1202,68 @@ components:
           type: integer
           minimum: 0
           maximum: 999999
+    LoggingUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - revision
+        - global_level
+        - destinations
+        - rate_limit_per_second
+        - trace_capacity
+        - diagnostic_duration_seconds
+        - include_identifiers
+        - overrides
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        global_level:
+          type: string
+          enum: [error, warning, info, debug, trace]
+        destinations:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items:
+            type: string
+            enum: [stderr, syslog]
+        rate_limit_per_second:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        trace_capacity:
+          type: integer
+          minimum: 0
+          maximum: 32
+        diagnostic_duration_seconds:
+          type: integer
+          minimum: 0
+          maximum: 3600
+          description: |
+            Must be zero for error, warning, and info configurations. Debug
+            or trace configurations require a value from 60 through 3600.
+        include_identifiers:
+          type: boolean
+          description: Permit client and domain identifiers in live traces.
+        overrides:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/LoggingOverride'
+    LoggingOverride:
+      type: object
+      additionalProperties: false
+      required: [component, level]
+      properties:
+        component:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z0-9][a-z0-9._-]*$'
+        level:
+          type: string
+          enum: [error, warning, info, debug, trace]
     NetworkConfiguration:
       type: object
       additionalProperties: false

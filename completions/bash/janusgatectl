@@ -33,8 +33,8 @@ _janusgatectl()
         --client-cert --client-key --ca-file --timeout --json --quiet
         --verbose --yes --include-private-key --help --version"
     local commands="status health stats network policy domain blocklist source
-        events audit user token certificate backup diagnostics config service
-        system ping"
+        events audit user token certificate backup diagnostics logging config
+        service system ping"
 
     COMPREPLY=()
     if ((COMP_CWORD > 0)); then
@@ -171,6 +171,13 @@ _janusgatectl()
         diagnostics)
             if ((position == 1)); then
                 _janusgatectl_values "create" "${current}"
+            fi
+            ;;
+        logging)
+            if ((position == 1)); then
+                _janusgatectl_values "show set traces" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == set ]]; then
+                _janusgatectl_files "${current}"
             fi
             ;;
         config)

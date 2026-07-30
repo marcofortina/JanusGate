@@ -42,6 +42,7 @@ case ${state} in
       'certificate:manage the server identity'
       'backup:create, inspect, or restore backups'
       'diagnostics:create a diagnostic archive'
+      'logging:manage operational logging'
       'config:validate or reload configuration'
       'service:manage JanusGate services'
       'system:manage appliance power'
@@ -122,6 +123,13 @@ case ${state} in
         ;;
       diagnostics)
         _values 'diagnostics command' create
+        ;;
+      logging)
+        if (( ${#line} == 1 )); then
+          _values 'logging command' show set traces
+        elif [[ ${line[2]} == set ]]; then
+          _files
+        fi
         ;;
       config)
         _values 'configuration command' validate reload

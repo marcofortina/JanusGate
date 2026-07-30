@@ -5,7 +5,8 @@
 function __janusgatectl_needs_command
     not __fish_seen_subcommand_from \
         status health stats network policy domain blocklist source events \
-        audit user token certificate backup diagnostics config service system ping
+        audit user token certificate backup diagnostics logging config service \
+        system ping
 end
 
 # Test whether one command family still needs its immediate subcommand.
@@ -79,6 +80,8 @@ complete --command janusgatectl --condition __janusgatectl_needs_command \
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments diagnostics --description 'Create a diagnostic archive'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
+    --arguments logging --description 'Manage operational logging'
+complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments config --description 'Validate or reload configuration'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments service --description 'Manage JanusGate services'
@@ -120,6 +123,9 @@ complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand diagnostics create' \
     --arguments create
 complete --command janusgatectl \
+    --condition '__janusgatectl_needs_subcommand logging show set traces' \
+    --arguments 'show set traces'
+complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand config validate reload' \
     --arguments 'validate reload'
 complete --command janusgatectl \
@@ -138,6 +144,9 @@ complete --command janusgatectl \
 
 complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from network; and __fish_seen_subcommand_from validate apply set' \
+    --force-files
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from logging; and __fish_seen_subcommand_from set' \
     --force-files
 complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from add update simulate' \

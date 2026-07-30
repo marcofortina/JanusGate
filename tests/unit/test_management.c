@@ -27,6 +27,7 @@
 #include "janusgate/certificate.h"
 #include "janusgate/event.h"
 #include "janusgate/ipc.h"
+#include "janusgate/logging.h"
 #include "management.h"
 
 int jg_test_management(void);
@@ -2674,6 +2675,122 @@ static void test_system_actions(void **state)
     sodium_memzero(bootstrap, sizeof(bootstrap));
 }
 
+/** @brief Verify logging authorization, activation, traces, and auditing. */
+static void test_logging_api(void **state)
+{
+    struct management_fixture *fixture = *state;
+    static const char password[] = "Correct-Horse-Battery-Staple-9!";
+    const struct jg_account_token_config token_config = {
+        .name = "logging administrator",
+        .permissions =
+            JG_ACCESS_STATUS_READ | JG_ACCESS_OPERATE | JG_ACCESS_SYSTEM_WRITE,
+        .requests_per_minute = 20U,
+    };
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_api_token token;
+    struct jg_audit_record audit_record;
+    struct jg_logging_config logging;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[2048U];
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *records = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    uint64_t audit_total = 0U;
+    size_t audit_count = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_logging_config_default(&logging);
+    logging.destinations = JG_LOG_DESTINATION_SYSLOG;
+    assert_int_equal(jg_logging_initialize("management-test", &logging), 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"logging-show\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/logging\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 1);
+    assert_string_equal(
+        json_string_value(json_object_get(body, "global_level")), "info");
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"logging-update\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/logging\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{"
+        "\"revision\":1,\"global_level\":\"debug\","
+        "\"destinations\":[\"syslog\"],\"rate_limit_per_second\":100,"
+        "\"trace_capacity\":4,\"diagnostic_duration_seconds\":120,"
+        "\"include_identifiers\":false,\"overrides\":["
+        "{\"component\":\"management\",\"level\":\"trace\"}]}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 2);
+    assert_true(json_is_true(json_object_get(body, "diagnostic_active")));
+    assert_false(json_is_true(json_object_get(body, "include_identifiers")));
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"logging-traces\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/logging/traces\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\",\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    records = json_object_get(body, "records");
+    assert_true(json_is_array(records));
+    assert_true(json_array_size(records) >= 1U);
+    assert_string_equal(json_string_value(json_object_get(
+                            json_array_get(records, 0U), "correlation_id")),
+                        "logging-update");
+    json_decref(response);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U,
+                                            &audit_record, 1U, &audit_count,
+                                            &audit_total),
+                     0);
+    assert_int_equal(audit_count, 1U);
+    assert_true(audit_total >= 1U);
+    assert_string_equal(audit_record.action, "logging.update");
+    assert_true(audit_record.success);
+    jg_logging_shutdown();
+    sodium_memzero(&token, sizeof(token));
+    sodium_memzero(bootstrap, sizeof(bootstrap));
+}
+
 /** @brief Run the serialized management authentication test group. */
 int jg_test_management(void)
 {
@@ -2707,6 +2824,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_system_actions, setup_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_logging_api, setup_management,
                                         teardown_management),
     };
 

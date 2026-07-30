@@ -140,6 +140,9 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] backup inspect ID\n"
         "       janusgatectl [OPTIONS] backup restore ID\n"
         "       janusgatectl [OPTIONS] diagnostics create\n"
+        "       janusgatectl [OPTIONS] logging show\n"
+        "       janusgatectl [OPTIONS] logging set FILE\n"
+        "       janusgatectl [OPTIONS] logging traces\n"
         "       janusgatectl [OPTIONS] config validate\n"
         "       janusgatectl [OPTIONS] config reload\n"
         "       janusgatectl [OPTIONS] service restart\n"
@@ -2530,6 +2533,60 @@ static int run_config_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Show, replace, or inspect bounded operational logging state. */
+static int run_logging_command(const struct cli_options *options,
+                               int argc,
+                               char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    json_t *body = NULL;
+    json_t *current = NULL;
+    json_t *revision = NULL;
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "traces") == 0) {
+        const char *path = strcmp(argv[1], "show") == 0
+                               ? "/api/v1/logging"
+                               : "/api/v1/logging/traces";
+
+        result = fetch_api_object(options, token, path, NULL, &body);
+        if (result == CLI_EXIT_SUCCESS) {
+            result = present_object(options, body);
+        }
+    } else {
+        body = read_json_object(argv[2], &result);
+        if (body == NULL) {
+            (void)fprintf(stderr, "janusgatectl: logging document: %s\n",
+                          strerror(-result));
+            result = result == -EINVAL || result == -EMSGSIZE
+                         ? CLI_EXIT_USAGE
+                         : CLI_EXIT_FAILURE;
+        }
+        if (result == CLI_EXIT_SUCCESS) {
+            result = fetch_api_object(options, token, "/api/v1/logging", NULL,
+                                      &current);
+        }
+        revision = json_object_get(current, "revision");
+        if (result == CLI_EXIT_SUCCESS &&
+            (!json_is_integer(revision) ||
+             json_object_set(body, "revision", revision) != 0)) {
+            result = CLI_EXIT_FAILURE;
+        }
+        if (result == CLI_EXIT_SUCCESS) {
+            result = send_api_request(options, token, "logging set", "PUT",
+                                      "/api/v1/logging", body);
+        }
+    }
+    json_decref(current);
+    json_decref(body);
+    sodium_memzero(token, sizeof(token));
+    (void)argc;
+    return result;
+}
+
 /** @brief Validate one canonical root-level diagnostic archive filename. */
 static bool diagnostic_filename_valid(const char *filename, size_t size)
 {
@@ -2891,6 +2948,12 @@ static int run_command(const struct cli_options *options,
     if (argc == 2 && strcmp(argv[0], "diagnostics") == 0 &&
         strcmp(argv[1], "create") == 0) {
         return run_diagnostics_create(options);
+    }
+    if (argc >= 2 && strcmp(argv[0], "logging") == 0 &&
+        ((argc == 2 &&
+          (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "traces") == 0)) ||
+         (argc == 3 && strcmp(argv[1], "set") == 0))) {
+        return run_logging_command(options, argc, argv);
     }
     if (argc == 2 && strcmp(argv[0], "service") == 0 &&
         strcmp(argv[1], "restart") == 0) {

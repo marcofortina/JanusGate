@@ -277,6 +277,16 @@ confirmation.
 .B diagnostics create
 Create and save a bounded sanitized diagnostic archive.
 .TP
+.B logging show
+Show active structured-logging configuration and bounded counters.
+.TP
+.BI "logging set " file
+Revision-check and activate the logging configuration in a strict JSON file.
+Debug and trace levels must include an automatic expiration.
+.TP
+.B logging traces
+Show the bounded in-memory diagnostic trace window.
+.TP
 .B config validate
 Validate all persistent runtime configuration.
 .TP
