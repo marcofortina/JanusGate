@@ -38,7 +38,8 @@ jobs:
       - name: Validate Markdown
         run: >-
           npx --yes markdownlint-cli2@0.17.2
-          README.md SECURITY.md CONTRIBUTING.md 'docs/*.md'
+          README.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md
+          '.github/**/*.md' 'docs/*.md'
 
   ubuntu-build:
     name: Ubuntu ${{ matrix.name }} build
