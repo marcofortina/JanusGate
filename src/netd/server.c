@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -36,6 +37,13 @@
 
 /** Process-wide orderly-shutdown request set by signal handlers. */
 static volatile sig_atomic_t stop_requested = 0;
+
+/** Heap-backed storage for one maximum-sized helper exchange. */
+struct netd_connection_buffers {
+    uint8_t request[JG_IPC_MAX_MESSAGE_SIZE];
+    uint8_t response[JG_IPC_MAX_MESSAGE_SIZE];
+    uint8_t response_body[JG_NETWORK_STATE_WIRE_SIZE];
+};
 
 /** @brief Convert a typed-body decoding result into a protocol error. */
 static enum jg_ipc_error body_error(int result)
@@ -237,9 +245,7 @@ static int receive_request(int socket_fd,
 /** @brief Authenticate and exchange one bounded request and response. */
 int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid)
 {
-    uint8_t request_data[JG_IPC_MAX_MESSAGE_SIZE];
-    uint8_t response_data[JG_IPC_MAX_MESSAGE_SIZE];
-    uint8_t response_body[JG_NETWORK_STATE_WIRE_SIZE];
+    struct netd_connection_buffers *buffers = NULL;
     struct jg_ipc_message request;
     struct jg_ipc_message response;
     size_t request_size = 0U;
@@ -254,28 +260,35 @@ int jg_netd_handle_connection(int socket_fd, uid_t allowed_uid)
     if (result != 0) {
         return result;
     }
-    result = receive_request(socket_fd, request_data, sizeof(request_data),
-                             &request_size);
+    buffers = malloc(sizeof(*buffers));
+    if (buffers == NULL) {
+        return -ENOMEM;
+    }
+    result = receive_request(socket_fd, buffers->request,
+                             sizeof(buffers->request), &request_size);
     if (result == 0) {
-        result = jg_ipc_decode(request_data, request_size, &request);
+        result = jg_ipc_decode(buffers->request, request_size, &request);
     }
     if (result == 0) {
-        result = jg_netd_process_request(&request, &response, response_body,
-                                         sizeof(response_body));
+        result =
+            jg_netd_process_request(&request, &response, buffers->response_body,
+                                    sizeof(buffers->response_body));
     }
     if (result == 0) {
-        result = jg_ipc_encode(&response, response_data, sizeof(response_data),
-                               &response_size);
+        result = jg_ipc_encode(&response, buffers->response,
+                               sizeof(buffers->response), &response_size);
     }
+    if (result == 0) {
+        sent = send(socket_fd, buffers->response, response_size, MSG_NOSIGNAL);
+        if (sent < 0) {
+            result = -errno;
+        } else if ((size_t)sent != response_size) {
+            result = -EIO;
+        }
+    }
+    free(buffers);
     if (result != 0) {
         return result;
-    }
-    sent = send(socket_fd, response_data, response_size, MSG_NOSIGNAL);
-    if (sent < 0) {
-        return -errno;
-    }
-    if ((size_t)sent != response_size) {
-        return -EIO;
     }
     if (response.error == JG_IPC_ERROR_NONE &&
         (response.operation == JG_IPC_SYSTEM_REBOOT ||

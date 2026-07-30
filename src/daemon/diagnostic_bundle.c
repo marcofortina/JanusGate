@@ -741,15 +741,19 @@ static const char *event_severity_name(enum jg_event_severity severity)
 /** @brief Collect recent severe operational events without detail payloads. */
 static json_t *events_document(struct jg_database *database)
 {
-    struct jg_event_record records[DIAGNOSTIC_EVENT_COUNT];
+    struct jg_event_record *records = NULL;
     json_t *object = json_object();
     json_t *items = json_array();
     size_t count = 0U;
-    int result = jg_database_event_list_recent_errors(
-        database, records, DIAGNOSTIC_EVENT_COUNT, &count);
+    int result = 0;
 
-    if (result == 0 && (object == NULL || items == NULL)) {
+    records = calloc(DIAGNOSTIC_EVENT_COUNT, sizeof(*records));
+    if (records == NULL || object == NULL || items == NULL) {
         result = -ENOMEM;
+    }
+    if (result == 0) {
+        result = jg_database_event_list_recent_errors(
+            database, records, DIAGNOSTIC_EVENT_COUNT, &count);
     }
     for (size_t index = 0U; result == 0 && index < count; ++index) {
         json_t *item = json_object();
@@ -778,9 +782,11 @@ static json_t *events_document(struct jg_database *database)
         json_object_set(object, "events", items) != 0) {
         json_decref(items);
         json_decref(object);
+        free(records);
         return NULL;
     }
     json_decref(items);
+    free(records);
     return object;
 }
 

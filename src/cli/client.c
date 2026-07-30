@@ -427,7 +427,7 @@ int jg_cli_local_request(const char *socket_path,
                          json_t *body,
                          struct jg_cli_response *response)
 {
-    uint8_t daemon_response[JG_IPC_MAX_BODY_SIZE];
+    uint8_t *daemon_response = NULL;
     char *envelope = NULL;
     size_t envelope_size = 0U;
     size_t daemon_response_size = 0U;
@@ -439,12 +439,16 @@ int jg_cli_local_request(const char *socket_path,
         !json_is_object(body) || response == NULL || response->body != NULL) {
         return -EINVAL;
     }
+    daemon_response = malloc(JG_IPC_MAX_BODY_SIZE);
+    if (daemon_response == NULL) {
+        return -ENOMEM;
+    }
     result = build_envelope(token, method, path, query, body, response,
                             &envelope, &envelope_size);
     if (result == 0) {
         result = jg_ipc_client_call(socket_path, JG_IPC_MANAGEMENT_REQUEST,
                                     (const uint8_t *)envelope, envelope_size,
-                                    daemon_response, sizeof(daemon_response),
+                                    daemon_response, JG_IPC_MAX_BODY_SIZE,
                                     &daemon_response_size);
     }
     if (envelope != NULL) {
@@ -456,6 +460,7 @@ int jg_cli_local_request(const char *socket_path,
                                         response);
     }
     sodium_memzero(daemon_response, daemon_response_size);
+    free(daemon_response);
     if (result != 0) {
         jg_cli_response_clear(response);
     }

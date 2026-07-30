@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <sys/socket.h>
@@ -50,16 +51,16 @@ static int remote_error(enum jg_ipc_error error)
     }
 }
 
-/** @brief Exchange one exact request and correlated response. */
-int jg_ipc_client_exchange(int socket_fd,
-                           enum jg_ipc_operation operation,
-                           const uint8_t *request_body,
-                           size_t request_size,
-                           uint8_t *response_body,
-                           size_t response_capacity,
-                           size_t *response_size)
+/** @brief Exchange one message using caller-owned transport storage. */
+static int exchange_message(int socket_fd,
+                            enum jg_ipc_operation operation,
+                            const uint8_t *request_body,
+                            size_t request_size,
+                            uint8_t *response_body,
+                            size_t response_capacity,
+                            size_t *response_size,
+                            uint8_t *data)
 {
-    uint8_t data[JG_IPC_MAX_MESSAGE_SIZE];
     const struct jg_ipc_message request = {
         .kind = JG_IPC_REQUEST,
         .operation = operation,
@@ -73,12 +74,8 @@ int jg_ipc_client_exchange(int socket_fd,
     ssize_t transferred = 0;
     int result = 0;
 
-    if (socket_fd < 0 || response_size == NULL ||
-        (response_capacity != 0U && response_body == NULL)) {
-        return -EINVAL;
-    }
-    *response_size = 0U;
-    result = jg_ipc_encode(&request, data, sizeof(data), &encoded_size);
+    result =
+        jg_ipc_encode(&request, data, JG_IPC_MAX_MESSAGE_SIZE, &encoded_size);
     if (result != 0) {
         return result;
     }
@@ -89,14 +86,14 @@ int jg_ipc_client_exchange(int socket_fd,
     if ((size_t)transferred != encoded_size) {
         return -EIO;
     }
-    transferred = recv(socket_fd, data, sizeof(data), MSG_TRUNC);
+    transferred = recv(socket_fd, data, JG_IPC_MAX_MESSAGE_SIZE, MSG_TRUNC);
     if (transferred < 0) {
         return -errno;
     }
     if (transferred == 0) {
         return -ECONNRESET;
     }
-    if ((size_t)transferred > sizeof(data)) {
+    if ((size_t)transferred > JG_IPC_MAX_MESSAGE_SIZE) {
         return -EMSGSIZE;
     }
     result = jg_ipc_decode(data, (size_t)transferred, &response);
@@ -121,6 +118,34 @@ int jg_ipc_client_exchange(int socket_fd,
     }
     *response_size = response.body_size;
     return 0;
+}
+
+/** @brief Exchange one exact request and correlated response. */
+int jg_ipc_client_exchange(int socket_fd,
+                           enum jg_ipc_operation operation,
+                           const uint8_t *request_body,
+                           size_t request_size,
+                           uint8_t *response_body,
+                           size_t response_capacity,
+                           size_t *response_size)
+{
+    uint8_t *data = NULL;
+    int result = 0;
+
+    if (socket_fd < 0 || response_size == NULL ||
+        (response_capacity != 0U && response_body == NULL)) {
+        return -EINVAL;
+    }
+    *response_size = 0U;
+    data = malloc(JG_IPC_MAX_MESSAGE_SIZE);
+    if (data == NULL) {
+        return -ENOMEM;
+    }
+    result =
+        exchange_message(socket_fd, operation, request_body, request_size,
+                         response_body, response_capacity, response_size, data);
+    free(data);
+    return result;
 }
 
 /** @brief Open one fixed-timeout local sequential-packet connection. */
