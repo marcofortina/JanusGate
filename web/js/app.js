@@ -15,10 +15,13 @@ import {
 } from "./api.js";
 import * as access from "./access.js";
 import * as blocklists from "./blocklists.js";
+import * as backups from "./backups.js";
+import * as certificates from "./certificates.js";
 import * as dashboard from "./dashboard.js";
 import * as events from "./events.js";
 import * as network from "./network.js";
 import * as policies from "./policies.js";
+import * as system from "./system.js";
 import {
   announce,
   byId,
@@ -33,6 +36,9 @@ const pages = new Map([
   ["blocklists", blocklists],
   ["events", events],
   ["access", access],
+  ["certificates", certificates],
+  ["backups", backups],
+  ["system", system],
 ]);
 
 const elements = {

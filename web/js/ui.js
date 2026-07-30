@@ -96,13 +96,14 @@ export function tableCell(value, className = "") {
  */
 export async function withBusyButton(button, action) {
   const original = button.textContent;
+  const originallyDisabled = button.disabled;
 
   button.disabled = true;
   button.textContent = button.dataset.busyLabel || "Working…";
   try {
     return await action();
   } finally {
-    button.disabled = false;
+    button.disabled = originallyDisabled;
     button.textContent = original;
   }
 }
@@ -141,19 +142,47 @@ export function showSecret(title, description, secret) {
 }
 
 /**
- * Download a browser-generated JSON document.
+ * Download one browser-generated file without retaining its object URL.
  */
-export function downloadJson(filename, value) {
-  const data = JSON.stringify(value, null, 2);
-  const url = URL.createObjectURL(new Blob([`${data}\n`], {
-    type: "application/json",
-  }));
+function download(filename, data, mediaType) {
+  const url = URL.createObjectURL(new Blob([data], { type: mediaType }));
   const link = document.createElement("a");
 
   link.href = url;
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Download a browser-generated JSON document.
+ */
+export function downloadJson(filename, value) {
+  download(
+    filename,
+    `${JSON.stringify(value, null, 2)}\n`,
+    "application/json",
+  );
+}
+
+/**
+ * Download one plain-text management artifact.
+ */
+export function downloadText(filename, value, mediaType = "text/plain") {
+  download(filename, value, mediaType);
+}
+
+/**
+ * Decode and download one base64 management artifact.
+ */
+export function downloadBase64(filename, value, mediaType) {
+  const decoded = atob(value);
+  const bytes = new Uint8Array(decoded.length);
+
+  for (let index = 0; index < decoded.length; index += 1) {
+    bytes[index] = decoded.charCodeAt(index);
+  }
+  download(filename, bytes, mediaType);
 }
 
 /**

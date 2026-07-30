@@ -471,8 +471,16 @@ button:disabled {
   border-left-color: var(--accent);
 }
 
+.health-banner[data-state="warning"] {
+  border-left-color: #c79b43;
+}
+
 .health-banner[data-state="degraded"] {
   border-left-color: #e16e78;
+}
+
+.page > .panel {
+  margin-top: 1rem;
 }
 
 .split-grid {
@@ -604,6 +612,39 @@ tbody tr:last-child td {
 .warning-panel p {
   margin-top: 0.3rem;
   color: #ebd9ae;
+}
+
+.certificate-details {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.8fr) minmax(18rem, 1.2fr);
+  gap: 1rem;
+}
+
+.certificate-details p:not(.metric-label) {
+  margin: 0.45rem 0 0;
+}
+
+.certificate-value {
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+}
+
+.monospace-value {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+#full-backup-fields {
+  display: grid;
+  gap: 0.8rem;
+}
+
+#restore-panel {
+  display: block;
+}
+
+#restore-panel form {
+  margin-top: 1rem;
 }
 
 .form-panel {
@@ -918,6 +959,7 @@ dialog .button-row {
   .split-grid,
   .form-grid,
   .form-grid.three-columns,
+  .certificate-details,
   .summary-strip {
     grid-template-columns: 1fr;
   }

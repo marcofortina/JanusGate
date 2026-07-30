@@ -130,9 +130,11 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
           <a href="#blocklists" data-page-link="blocklists">Blocklists</a>
           <a href="#events" data-page-link="events">Events</a>
           <a href="#access" data-page-link="access">Users and access</a>
-          <a href="#certificates">Certificates</a>
-          <a href="#backups">Backup and restore</a>
-          <a href="#system">System</a>
+          <a href="#certificates"
+             data-page-link="certificates">Certificates</a>
+          <a href="#backups"
+             data-page-link="backups">Backup and restore</a>
+          <a href="#system" data-page-link="system">System</a>
         </nav>
         <div class="page-content">
           <div class="global-message" id="global-message"
@@ -1396,6 +1398,396 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                 </div>
               </section>
             </div>
+          </section>
+          <section class="page" id="page-certificates" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">HTTPS IDENTITY</p>
+                <h2>Certificates</h2>
+                <p>
+                  Inspect, request, and atomically replace the management
+                  server identity.
+                </p>
+              </div>
+              <button id="certificate-refresh"
+                      data-busy-label="Refreshing…" type="button">
+                Refresh certificate
+              </button>
+            </header>
+            <div class="error-summary" id="certificates-error"
+                 role="alert" hidden></div>
+            <section class="health-banner" id="certificate-warning"
+                     aria-live="polite">
+              Checking the active certificate…
+            </section>
+            <section class="status-grid"
+                     aria-label="Active server certificate">
+              <article>
+                <p class="metric-label">Subject</p>
+                <p class="metric-value certificate-value"
+                   id="certificate-subject">Checking</p>
+                <p class="metric-detail">Presented server identity</p>
+              </article>
+              <article>
+                <p class="metric-label">Issuer</p>
+                <p class="metric-value certificate-value"
+                   id="certificate-issuer">Checking</p>
+                <p class="metric-detail">Signing authority</p>
+              </article>
+              <article>
+                <p class="metric-label">Private key</p>
+                <p class="metric-value" id="certificate-key-state">
+                  Checking
+                </p>
+                <p class="metric-detail">Stored key and certificate match</p>
+              </article>
+            </section>
+            <section class="panel certificate-details">
+              <div>
+                <p class="metric-label">Validity</p>
+                <p id="certificate-validity">Checking</p>
+              </div>
+              <div>
+                <p class="metric-label">SHA-256 fingerprint</p>
+                <p class="monospace-value"
+                   id="certificate-fingerprint">Checking</p>
+              </div>
+            </section>
+            <div id="certificate-controls">
+              <div class="split-grid">
+                <section class="panel">
+                  <div class="section-heading">
+                    <div>
+                      <h3>Create signing request</h3>
+                      <p>
+                        The generated private key remains protected on this
+                        appliance.
+                      </p>
+                    </div>
+                  </div>
+                  <form id="csr-form">
+                    <div class="form-grid">
+                      <label>
+                        Common name
+                        <input name="common_name" type="text" maxlength="253"
+                               placeholder="janusgate.example.net" required>
+                      </label>
+                      <label>
+                        Alternative names
+                        <textarea name="alternative_names" rows="5"
+                                  maxlength="8127"
+                                  placeholder="janusgate.example.net&#10;192.168.77.1"></textarea>
+                        <span class="field-hint">
+                          One DNS name or IP address per line, at most 32.
+                        </span>
+                      </label>
+                    </div>
+                    <div class="button-row form-actions">
+                      <button class="primary-action" id="csr-submit"
+                              data-busy-label="Creating…" type="submit">
+                        Create and download CSR
+                      </button>
+                    </div>
+                  </form>
+                  <div id="csr-result-panel" hidden>
+                    <div class="button-row compact-heading">
+                      <button id="csr-download" type="button">
+                        Download CSR again
+                      </button>
+                    </div>
+                    <pre id="csr-result"></pre>
+                  </div>
+                </section>
+                <section class="panel">
+                  <div class="section-heading">
+                    <div>
+                      <h3>Install server identity</h3>
+                      <p>
+                        Use the retained CSR key or supply a matching private
+                        key explicitly.
+                      </p>
+                    </div>
+                  </div>
+                  <form id="certificate-install-form">
+                    <div class="form-grid">
+                      <label>
+                        Certificate file
+                        <input id="certificate-file" type="file"
+                               accept=".pem,.crt,.cer,application/x-pem-file">
+                      </label>
+                      <label>
+                        Certificate PEM
+                        <textarea name="certificate" rows="8"
+                                  maxlength="65536" required></textarea>
+                      </label>
+                      <label>
+                        Private-key file
+                        <input id="private-key-file" type="file"
+                               accept=".pem,.key,application/x-pem-file">
+                      </label>
+                      <label>
+                        Private key PEM
+                        <textarea name="private_key" rows="8"
+                                  maxlength="65536"></textarea>
+                        <span class="field-hint">
+                          Leave empty to use the most recently generated CSR
+                          key.
+                        </span>
+                      </label>
+                    </div>
+                    <div class="button-row form-actions">
+                      <button class="primary-action"
+                              id="certificate-install-submit"
+                              data-busy-label="Installing…" type="submit">
+                        Validate and install
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              </div>
+            </div>
+          </section>
+          <section class="page" id="page-backups" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">RECOVERY CONTROL</p>
+                <h2>Backup and restore</h2>
+                <p>
+                  Create verified backups and inspect every change before a
+                  transactional restore.
+                </p>
+              </div>
+              <button id="backup-refresh" data-busy-label="Refreshing…"
+                      type="button">Refresh backups</button>
+            </header>
+            <div class="error-summary" id="backups-error"
+                 role="alert" hidden></div>
+            <section class="panel" id="backup-controls">
+              <div class="section-heading">
+                <div>
+                  <h3>Create backup</h3>
+                  <p>
+                    Configuration backups contain no secrets. Full backups
+                    are always passphrase-encrypted.
+                  </p>
+                </div>
+              </div>
+              <form id="backup-create-form">
+                <div class="form-grid">
+                  <label>
+                    Backup kind
+                    <select id="backup-kind" name="backup_kind">
+                      <option value="configuration">Configuration</option>
+                      <option value="full">Encrypted full backup</option>
+                    </select>
+                  </label>
+                  <div id="full-backup-fields" hidden>
+                    <label>
+                      Encryption passphrase
+                      <input name="backup_passphrase" type="password"
+                             autocomplete="new-password" minlength="8"
+                             maxlength="1024">
+                    </label>
+                    <label class="check-label">
+                      <input name="include_private_key" type="checkbox">
+                      Include the active HTTPS private key
+                    </label>
+                  </div>
+                </div>
+                <div class="button-row form-actions">
+                  <button class="primary-action" id="backup-create-submit"
+                          data-busy-label="Creating…" type="submit">
+                    Create backup
+                  </button>
+                </div>
+              </form>
+            </section>
+            <section class="panel">
+              <div class="section-heading">
+                <div>
+                  <h3>Stored backups</h3>
+                  <p>
+                    Metadata and manifests are verified before inspection or
+                    restore.
+                  </p>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Created</th>
+                      <th scope="col">Kind</th>
+                      <th scope="col">Encrypted</th>
+                      <th scope="col">Bytes</th>
+                      <th scope="col">Schema</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="backup-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="backup-load-more" type="button" hidden>
+                  Load more
+                </button>
+              </div>
+            </section>
+            <section class="panel" id="backup-details-panel" hidden>
+              <div class="section-heading">
+                <div>
+                  <h3>Verified backup manifest</h3>
+                  <p>Archive metadata returned after integrity validation.</p>
+                </div>
+              </div>
+              <pre id="backup-details"></pre>
+            </section>
+            <section class="panel warning-panel" id="restore-panel" hidden>
+              <div>
+                <p class="eyebrow">TRANSACTIONAL RESTORE</p>
+                <h3 id="restore-selection">Selected backup</h3>
+                <p>
+                  A successful dry run is required before the restore button
+                  is enabled. Applying changes creates an automatic
+                  pre-restore checkpoint.
+                </p>
+              </div>
+              <form id="restore-form">
+                <label id="restore-passphrase-row">
+                  Backup passphrase
+                  <input id="restore-passphrase" name="restore_passphrase"
+                         type="password" autocomplete="current-password"
+                         minlength="8" maxlength="1024">
+                </label>
+                <div class="button-row form-actions">
+                  <button id="restore-validate"
+                          data-busy-label="Validating…" type="submit">
+                    Run dry run
+                  </button>
+                  <button class="danger-button" id="restore-apply"
+                          data-busy-label="Restoring…" type="button" disabled>
+                    Apply restore
+                  </button>
+                  <button id="restore-cancel" type="button">Cancel</button>
+                </div>
+                <pre id="restore-result"></pre>
+              </form>
+            </section>
+          </section>
+          <section class="page" id="page-system" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">APPLIANCE OPERATIONS</p>
+                <h2>System</h2>
+                <p>
+                  Inspect runtime health, validate configuration, and perform
+                  audited lifecycle operations.
+                </p>
+              </div>
+              <button id="system-refresh" data-busy-label="Refreshing…"
+                      type="button">Refresh system</button>
+            </header>
+            <div class="error-summary" id="system-error"
+                 role="alert" hidden></div>
+            <section class="health-banner" id="system-health"
+                     aria-live="polite">
+              Checking appliance health…
+            </section>
+            <section class="status-grid" aria-label="Appliance runtime status">
+              <article>
+                <p class="metric-label">Readiness</p>
+                <p class="metric-value" id="system-readiness">Checking</p>
+                <p class="metric-detail">Authenticated service health</p>
+              </article>
+              <article>
+                <p class="metric-label">Policy generation</p>
+                <p class="metric-value"
+                   id="system-policy-generation">Checking</p>
+                <p class="metric-detail">Currently published policy</p>
+              </article>
+              <article>
+                <p class="metric-label">Packets inspected</p>
+                <p class="metric-value" id="system-packets">Checking</p>
+                <p class="metric-detail">Dataplane total</p>
+              </article>
+              <article>
+                <p class="metric-label">Packets blocked</p>
+                <p class="metric-value" id="system-blocked">Checking</p>
+                <p class="metric-detail">Enforced policy decisions</p>
+              </article>
+              <article>
+                <p class="metric-label">Queue overflows</p>
+                <p class="metric-value"
+                   id="system-queue-overflows">Checking</p>
+                <p class="metric-detail">Dataplane pressure indicator</p>
+              </article>
+            </section>
+            <div class="split-grid">
+              <section class="panel" id="system-operate-controls">
+                <div class="section-heading">
+                  <div>
+                    <h3>Configuration and diagnostics</h3>
+                    <p>
+                      Validate persistent state before reloading it, or
+                      download a bounded sanitized diagnostic archive.
+                    </p>
+                  </div>
+                </div>
+                <div class="button-row">
+                  <button id="config-validate"
+                          data-busy-label="Validating…" type="button">
+                    Validate configuration
+                  </button>
+                  <button class="primary-action" id="config-reload"
+                          data-busy-label="Reloading…" type="button">
+                    Validate and reload
+                  </button>
+                  <button id="diagnostics-create"
+                          data-busy-label="Creating…" type="button">
+                    Download diagnostics
+                  </button>
+                </div>
+              </section>
+              <section class="panel" id="system-lifecycle-controls">
+                <div class="section-heading">
+                  <div>
+                    <h3>Lifecycle</h3>
+                    <p>
+                      Every action requires confirmation and is written to the
+                      audit chain before execution.
+                    </p>
+                  </div>
+                </div>
+                <div class="button-row">
+                  <button id="service-restart" type="button">
+                    Restart JanusGate
+                  </button>
+                  <button class="danger-button" id="system-reboot"
+                          type="button">Reboot appliance</button>
+                  <button class="danger-button" id="system-shutdown"
+                          type="button">Shut down appliance</button>
+                </div>
+              </section>
+            </div>
+            <section class="panel">
+              <details class="technical-details">
+                <summary>Complete status response</summary>
+                <pre id="system-status-details"></pre>
+              </details>
+              <details class="technical-details">
+                <summary>Prometheus metrics</summary>
+                <pre id="system-metrics"></pre>
+              </details>
+              <details class="technical-details" open>
+                <summary>Last operation result</summary>
+                <pre id="system-operation-result">
+No operation has been requested in this session.</pre>
+              </details>
+            </section>
           </section>
         </div>
       </div>
