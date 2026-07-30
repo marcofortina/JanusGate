@@ -11,17 +11,38 @@ the kernel forwarding path. Linux uses nftables and NFQUEUE for selected DNS
 and encrypted-DNS traffic. OpenBSD uses a PF anchor and divert sockets for the
 same policy boundary.
 
-```text
-LAN ── data-in ──┐                    ┌── data-out ── router
-                 ├──── OS bridge ─────┤
-                 │       │ selected packets
-                 │       v
-                 │   policy workers
-                 │       │ verdict or response
-                 └───────┘
+```mermaid
+flowchart LR
+    lan[LAN]
+    router[Router]
+    management[Management]
 
-management ── HTTPS ── janusgate-web ── local control socket ── janusgated
-                                                           └── janusgate-netd
+    subgraph janusgate[JanusGate appliance]
+        direction TB
+
+        subgraph data_plane[Data plane]
+            direction TB
+            bridge[OS bridge]
+            workers[Policy workers]
+
+            bridge -->|selected packets| workers
+            workers -->|verdict or response| bridge
+        end
+
+        subgraph management_plane[Management plane]
+            direction LR
+            web[janusgate-web]
+            daemon[janusgated]
+            netd[janusgate-netd]
+
+            web -->|local control socket| daemon
+            daemon -->|validated privileged requests| netd
+        end
+    end
+
+    lan -->|data-in| bridge
+    bridge -->|data-out| router
+    management -->|HTTPS| web
 ```
 
 ## Processes and privilege

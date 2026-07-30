@@ -10,14 +10,24 @@ applies domain and destination policy to traffic crossing an inline Layer-2
 bridge. Classic DNS sent to arbitrary resolvers remains subject to policy
 while ordinary traffic stays in the kernel forwarding path.
 
-```text
-protected LAN ── data-in ── JanusGate bridge ── data-out ── router
-                                  │
-                             selected DNS
-                                  │
-                           policy workers
+```mermaid
+flowchart LR
+    protected[Protected LAN]
+    router[Router]
+    management[Management LAN]
 
-management LAN ── management NIC ── HTTPS / CLI
+    subgraph janusgate[JanusGate]
+        direction TB
+        bridge[Layer-2 bridge]
+        workers[Policy workers]
+        administration[HTTPS / CLI]
+
+        bridge -->|selected DNS| workers
+    end
+
+    protected -->|data-in| bridge
+    bridge -->|data-out| router
+    management -->|management NIC| administration
 ```
 
 The appliance separates unprivileged policy processing, privileged network
