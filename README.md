@@ -94,6 +94,15 @@ CLI, backup creation, and an orderly reboot.
   [recovery](docs/recovery.md)
 - [Security policy](SECURITY.md) and [contribution guide](CONTRIBUTING.md)
 
+## Support
+
+Ways to support the project:
+
+- GitHub Sponsors: use the repository **Sponsor** button or sponsor
+  `@marcofortina`.
+- PayPal: `https://paypal.me/marcofortina`.
+- Bitcoin: `36jDV57roGb4o59TwK1CB7viPrXToQHGiP`.
+
 ## License
 
 JanusGate is licensed under the GNU Affero General Public License, version 3 or
