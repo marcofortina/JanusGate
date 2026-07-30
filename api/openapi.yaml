@@ -1245,7 +1245,9 @@ components:
             or trace configurations require a value from 60 through 3600.
         include_identifiers:
           type: boolean
-          description: Permit client and domain identifiers in live traces.
+          description: |
+            Permit client and domain identifiers only during an active,
+            automatically expiring debug or trace interval.
         overrides:
           type: array
           maxItems: 16

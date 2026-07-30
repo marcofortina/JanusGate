@@ -776,6 +776,11 @@ tbody tr:last-child td {
   color: #ff9aa3;
 }
 
+.health-diagnostic {
+  border-color: #c79b43;
+  color: #ffd166;
+}
+
 .table-actions {
   display: flex;
   min-width: 8.5rem;

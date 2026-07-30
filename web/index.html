@@ -1773,6 +1773,183 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                 </div>
               </section>
             </div>
+            <section class="panel" aria-labelledby="logging-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="logging-title">Operational logging</h3>
+                  <p>
+                    Keep production logging conservative. Diagnostic levels
+                    expire automatically and retained records are bounded.
+                  </p>
+                </div>
+                <span class="health-pill" id="logging-diagnostic-state">
+                  Checking
+                </span>
+              </div>
+              <div class="summary-strip" role="group"
+                   aria-label="Logging status">
+                <div>
+                  <span>Global level</span>
+                  <strong id="logging-level">Checking</strong>
+                </div>
+                <div>
+                  <span>Buffered records</span>
+                  <strong id="logging-buffered">Checking</strong>
+                </div>
+                <div>
+                  <span>Suppressed records</span>
+                  <strong id="logging-suppressed">Checking</strong>
+                </div>
+              </div>
+              <form class="inline-editor" id="logging-form" hidden>
+                <h4>Logging configuration</h4>
+                <div class="form-grid">
+                  <label>
+                    Global level
+                    <select name="logging_global_level" required>
+                      <option value="error">Error</option>
+                      <option value="warning">Warning</option>
+                      <option value="info">Info</option>
+                      <option value="debug">Debug</option>
+                      <option value="trace">Trace</option>
+                    </select>
+                  </label>
+                  <label>
+                    Diagnostic duration
+                    <input name="logging_duration" type="number" min="60"
+                           max="3600" value="900" required>
+                    <span class="field-hint">
+                      Seconds; required only while debug or trace is selected.
+                    </span>
+                  </label>
+                  <label>
+                    Records per second
+                    <input name="logging_rate" type="number" min="1"
+                           max="1000" required>
+                  </label>
+                  <label>
+                    Retained records
+                    <input name="logging_capacity" type="number" min="0"
+                           max="32" required>
+                  </label>
+                </div>
+                <fieldset class="scope-fieldset">
+                  <legend>Destinations</legend>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="logging_destination[]" type="checkbox"
+                             value="stderr">
+                      Standard error
+                    </label>
+                    <label class="check-label">
+                      <input name="logging_destination[]" type="checkbox"
+                             value="syslog">
+                      Syslog
+                    </label>
+                  </div>
+                </fieldset>
+                <fieldset class="scope-fieldset">
+                  <legend>Component overrides</legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Management API
+                      <select name="logging_management">
+                        <option value="">Inherit global level</option>
+                        <option value="error">Error</option>
+                        <option value="warning">Warning</option>
+                        <option value="info">Info</option>
+                        <option value="debug">Debug</option>
+                        <option value="trace">Trace</option>
+                      </select>
+                    </label>
+                    <label>
+                      Packet dataplane
+                      <select name="logging_dataplane">
+                        <option value="">Inherit global level</option>
+                        <option value="error">Error</option>
+                        <option value="warning">Warning</option>
+                        <option value="info">Info</option>
+                        <option value="debug">Debug</option>
+                        <option value="trace">Trace</option>
+                      </select>
+                    </label>
+                    <label>
+                      Runtime lifecycle
+                      <select name="logging_runtime">
+                        <option value="">Inherit global level</option>
+                        <option value="error">Error</option>
+                        <option value="warning">Warning</option>
+                        <option value="info">Info</option>
+                        <option value="debug">Debug</option>
+                        <option value="trace">Trace</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p class="field-hint" id="logging-additional-overrides"
+                     hidden></p>
+                </fieldset>
+                <div class="warning-panel">
+                  <div>
+                    <h3>Identifier privacy</h3>
+                    <p>
+                      Domain and client identifiers are redacted by default.
+                      Include them only for a reviewed, time-bounded
+                      troubleshooting session.
+                    </p>
+                  </div>
+                  <label class="check-label">
+                    <input name="logging_identifiers" type="checkbox">
+                    Include identifiers
+                  </label>
+                </div>
+                <div class="button-row form-actions">
+                  <button class="primary-action" id="logging-save"
+                          data-busy-label="Applying…" type="submit">
+                    Apply logging configuration
+                  </button>
+                </div>
+              </form>
+              <p class="field-hint" id="logging-read-only" hidden>
+                Only an administrator can change logging configuration.
+              </p>
+            </section>
+            <section class="panel" id="logging-trace-panel"
+                     aria-labelledby="logging-trace-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="logging-trace-title">Diagnostic trace window</h3>
+                  <p>
+                    Recent records are process-local, rate-limited, and shown
+                    in chronological order. No packet payload is retained.
+                  </p>
+                </div>
+                <button id="logging-trace-refresh"
+                        data-busy-label="Refreshing…" type="button">
+                  Refresh traces
+                </button>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Time</th>
+                      <th scope="col">Severity</th>
+                      <th scope="col">Component</th>
+                      <th scope="col">Event</th>
+                      <th scope="col">Correlation</th>
+                      <th scope="col">Message</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="logging-trace-list"></tbody>
+                </table>
+              </div>
+              <details class="technical-details">
+                <summary>Selected trace record</summary>
+                <pre id="logging-trace-details">
+Select a trace record to inspect its redacted fields.</pre>
+              </details>
+            </section>
             <section class="panel">
               <details class="technical-details">
                 <summary>Complete status response</summary>
