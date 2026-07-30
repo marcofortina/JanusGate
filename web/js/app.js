@@ -54,6 +54,7 @@ const elements = {
 
 let currentUser = null;
 let activePage = null;
+let setupRequired = false;
 
 /**
  * Return the requested page identifier or the dashboard fallback.
@@ -146,13 +147,14 @@ function showAuthentication() {
   elements.appView.hidden = true;
   elements.accountState.hidden = true;
   elements.authView.hidden = false;
-  elements.loginForm.hidden = false;
-  elements.bootstrapForm.hidden = true;
+  elements.loginForm.hidden = setupRequired;
+  elements.bootstrapForm.hidden = !setupRequired;
   elements.passwordForm.hidden = true;
   elements.secondFactor.hidden = true;
   elements.passwordForm.reset();
   showError(elements.passwordError, "");
   rememberCsrf("");
+  byId(setupRequired ? "bootstrap-token" : "login-username").focus();
 }
 
 /**
@@ -225,6 +227,7 @@ async function submitBootstrap(event) {
           password,
         },
       });
+      setupRequired = false;
       rememberCsrf(session.csrf);
       elements.bootstrapForm.reset();
       await showIdentity(session.user);
@@ -319,6 +322,19 @@ async function initialize() {
     return;
   }
   try {
+    const authentication = await api("/api/v1/auth/state");
+
+    setupRequired = authentication.setup_required;
+  } catch {
+    elements.serviceState.textContent = "Appliance setup state unavailable";
+    elements.serviceContainer.classList.remove("ready");
+    return;
+  }
+  if (setupRequired) {
+    showAuthentication();
+    return;
+  }
+  try {
     const session = await api("/api/v1/auth/session");
 
     await showIdentity(session.user);
@@ -327,32 +343,12 @@ async function initialize() {
   }
 }
 
-/**
- * Display the first-boot administrator form.
- */
-function showBootstrapForm() {
-  elements.loginForm.hidden = true;
-  elements.bootstrapForm.hidden = false;
-  byId("bootstrap-token").focus();
-}
-
-/**
- * Return from first-boot setup to the login form.
- */
-function showLoginForm() {
-  elements.bootstrapForm.hidden = true;
-  elements.loginForm.hidden = false;
-  byId("login-username").focus();
-}
-
 elements.loginForm.addEventListener("submit", submitLogin);
 elements.bootstrapForm.addEventListener("submit", submitBootstrap);
 elements.passwordForm.addEventListener("submit", submitPasswordChange);
 elements.logout.addEventListener("click", () => {
   void logout();
 });
-byId("show-bootstrap").addEventListener("click", showBootstrapForm);
-byId("show-login").addEventListener("click", showLoginForm);
 window.addEventListener("hashchange", () => {
   if (currentUser !== null) {
     void navigate();

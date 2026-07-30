@@ -201,6 +201,16 @@ static void test_browser_authentication(void **state)
     int written = 0;
 
     assert_true(now > 0);
+    response = process_request(
+        fixture, "{\"request_id\":\"auth-state-new\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/auth/state\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"body\":{}}");
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "setup_required")));
+    json_decref(response);
+
     assert_int_equal(jg_account_bootstrap_issue(fixture->database,
                                                 (uint64_t)now, 600U, token),
                      0);
@@ -228,6 +238,16 @@ static void test_browser_authentication(void **state)
     value = json_object_get(body, "csrf");
     assert_true(json_is_string(value));
     (void)snprintf(csrf, sizeof(csrf), "%s", json_string_value(value));
+    json_decref(response);
+
+    response = process_request(
+        fixture, "{\"request_id\":\"auth-state-ready\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/auth/state\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"body\":{}}");
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "setup_required")));
     json_decref(response);
 
     assert_int_equal(jg_account_token_issue(fixture->database, user_id,

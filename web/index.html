@@ -49,7 +49,7 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
           </div>
         </div>
         <div class="auth-card">
-          <form id="login-form">
+          <form id="login-form" hidden>
             <div class="form-heading">
               <p class="eyebrow">AUTHENTICATION</p>
               <h3>Sign in</h3>
@@ -72,9 +72,6 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                      autocomplete="off" maxlength="43">
             </div>
             <button class="primary-button" type="submit">Sign in securely</button>
-            <button class="text-button" id="show-bootstrap" type="button">
-              Configure a new appliance
-            </button>
           </form>
           <form id="bootstrap-form" hidden>
             <div class="form-heading">
@@ -96,9 +93,6 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
             <input id="bootstrap-confirm" name="confirm" type="password"
                    autocomplete="new-password" minlength="12" maxlength="256" required>
             <button class="primary-button" type="submit">Create administrator</button>
-            <button class="text-button" id="show-login" type="button">
-              Return to sign in
-            </button>
           </form>
           <form id="password-form" hidden>
             <div class="form-heading">

@@ -3880,6 +3880,41 @@ static int handle_login(struct jg_management *management,
                          output_size, written);
 }
 
+/** @brief Report whether the appliance still requires initial setup. */
+static int handle_authentication_state(struct jg_management *management,
+                                       const struct management_request *request,
+                                       uint8_t *output,
+                                       size_t output_size,
+                                       size_t *written)
+{
+    struct jg_account_user user;
+    size_t count = 0U;
+    uint64_t total = 0U;
+    json_t *body = NULL;
+    int result = 0;
+
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The authentication-state request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_user_list(management->database, 0U, &user, 1U, &count,
+                                  &total);
+    if (result != 0) {
+        return respond_error(
+            503, "authentication_state_unavailable",
+            "The appliance setup state could not be determined.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    if (body == NULL || json_object_set_new(body, "setup_required",
+                                            json_boolean(total == 0U)) != 0) {
+        json_decref(body);
+        return -ENOMEM;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Consume bootstrap access and create the first administrator. */
 static int handle_bootstrap(struct jg_management *management,
                             const struct management_request *request,
@@ -9085,6 +9120,11 @@ static int dispatch_request(struct jg_management *management,
                                    &user_id)) {
         return handle_user_update(management, request, remote, user_id, now,
                                   output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/auth/state") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_authentication_state(management, request, output,
+                                           output_size, written);
     }
     if (strcmp(request->path, "/api/v1/auth/bootstrap") == 0 && post) {
         return handle_bootstrap(management, request, remote, now, output,

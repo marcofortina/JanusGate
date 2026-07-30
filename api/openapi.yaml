@@ -35,6 +35,17 @@ security:
   - bearerAuth: []
   - sessionCookie: []
 paths:
+  /auth/state:
+    get:
+      tags: [Authentication]
+      operationId: getAuthenticationState
+      summary: Report whether initial appliance setup is required
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
   /auth/bootstrap:
     post:
       tags: [Authentication]
