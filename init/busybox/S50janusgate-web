@@ -6,6 +6,23 @@ set -eu
 
 pid_file=/run/janusgate-web.pid
 
+# Stop one recorded process and wait until its PID no longer matches.
+stop_service()
+{
+    attempts=0
+
+    start-stop-daemon -K -q -p "$pid_file" -s TERM 2>/dev/null || true
+    while start-stop-daemon -K -q -t -p "$pid_file" 2>/dev/null; do
+        if [ "$attempts" -eq 10 ]; then
+            start-stop-daemon -K -q -p "$pid_file" -s KILL 2>/dev/null ||
+                true
+        fi
+        [ "$attempts" -lt 15 ] || return 1
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+}
+
 case ${1-} in
     start)
         start-stop-daemon -S -q -b -m -p "$pid_file" \
@@ -13,7 +30,7 @@ case ${1-} in
             -x /usr/sbin/janusgate-web -- --hsts
         ;;
     stop)
-        start-stop-daemon -K -q -p "$pid_file" -R TERM/10/KILL/5 || true
+        stop_service
         rm -f "$pid_file"
         ;;
     restart)
