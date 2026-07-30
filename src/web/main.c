@@ -17,6 +17,7 @@
 
 #include <civetweb.h>
 
+#include "janusgate/logging.h"
 #include "janusgate/process_security.h"
 #include "janusgate/version.h"
 #include "web_server.h"
@@ -103,6 +104,7 @@ int main(int argc, char **argv)
 {
     struct jg_web_config config;
     struct jg_web_server *server = NULL;
+    struct jg_logging_config logging;
     sigset_t signals;
     unsigned initialized = 0U;
     int signal_number = 0;
@@ -124,6 +126,13 @@ int main(int argc, char **argv)
         return 1;
     }
     (void)umask(0077);
+    jg_logging_config_default(&logging);
+    result = jg_logging_initialize("janusgate-web", &logging);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgate-web: initialize logging: %s\n",
+                      strerror(-result));
+        return 1;
+    }
     result = jg_process_harden();
     if (result == 0) {
         result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_WEB);
@@ -144,6 +153,8 @@ int main(int argc, char **argv)
         result = jg_process_apply_system_call_filter(JG_PROCESS_PROFILE_WEB);
     }
     if (result == 0) {
+        (void)jg_log_emit(JG_LOG_INFO, "web", "web.started", NULL,
+                          "HTTPS management service started", NULL);
         wait_result = sigwait(&signals, &signal_number);
         if (wait_result != 0) {
             result = -wait_result;
@@ -155,8 +166,17 @@ int main(int argc, char **argv)
         (void)mg_exit_library();
     }
     if (result != 0) {
-        (void)fprintf(stderr, "janusgate-web: %s\n", strerror(-result));
+        char details[64U];
+
+        (void)snprintf(details, sizeof(details), "{\"error_number\":%d}",
+                       -result);
+        (void)jg_log_emit(JG_LOG_ERROR, "web", "web.failed", NULL,
+                          "HTTPS management service failed", details);
+        jg_logging_shutdown();
         return 1;
     }
+    (void)jg_log_emit(JG_LOG_INFO, "web", "web.stopped", NULL,
+                      "HTTPS management service stopped", NULL);
+    jg_logging_shutdown();
     return 0;
 }

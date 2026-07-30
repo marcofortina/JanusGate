@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include <time.h>
@@ -22,6 +23,7 @@
 #include "dataplane.h"
 #include "dns_response.h"
 #include "janusgate/checked.h"
+#include "janusgate/logging.h"
 #include "janusgate/tls_client_hello.h"
 
 /** Independently updated counters for one data-plane worker. */
@@ -121,6 +123,89 @@ static void account_result(struct jg_dataplane_worker *worker,
         increment(&worker->stats.fragments);
     } else if (result->reason == JG_DATAPLANE_STREAM_PENDING) {
         increment(&worker->stats.streams);
+    }
+}
+
+/** @brief Return one stable data-plane decision name. */
+static const char *decision_name(enum jg_dataplane_reason reason)
+{
+    switch (reason) {
+    case JG_DATAPLANE_PASS:
+        return "pass";
+    case JG_DATAPLANE_POLICY_ALLOW:
+        return "policy_allow";
+    case JG_DATAPLANE_POLICY_BLOCK:
+        return "policy_block";
+    case JG_DATAPLANE_MALFORMED:
+        return "malformed";
+    case JG_DATAPLANE_FRAGMENT_PENDING:
+        return "fragment_pending";
+    case JG_DATAPLANE_STREAM_PENDING:
+        return "stream_pending";
+    case JG_DATAPLANE_SNI_ENCRYPTED_OR_UNAVAILABLE:
+        return "sni_unavailable";
+    default:
+        return "unknown";
+    }
+}
+
+/** @brief Emit one bounded packet decision without packet payload bytes. */
+static void trace_decision(struct jg_dataplane_worker *worker,
+                           const struct jg_nfqueue_packet *packet,
+                           const struct jg_dataplane_result *decision,
+                           const char *domain,
+                           int operation_result)
+{
+    const enum jg_log_level level =
+        operation_result == 0 ? JG_LOG_TRACE : JG_LOG_WARNING;
+    const uint64_t packet_number =
+        atomic_load_explicit(&worker->stats.packets, memory_order_relaxed);
+    const uint64_t rule_id = decision == NULL
+                                 ? 0U
+                                 : (decision->policy.rule_id != 0U
+                                        ? decision->policy.rule_id
+                                        : decision->destination_policy.rule_id);
+    char correlation[JG_LOG_CORRELATION_MAX + 1U];
+    char details[JG_LOG_DETAILS_MAX + 1U];
+    int written = 0;
+
+    if (!jg_log_enabled("dataplane", level)) {
+        return;
+    }
+    written = snprintf(correlation, sizeof(correlation), "queue-%u-packet-%llu",
+                       (unsigned)packet->queue_number,
+                       (unsigned long long)packet_number);
+    if (written <= 0 || (size_t)written >= sizeof(correlation)) {
+        return;
+    }
+    if (domain == NULL) {
+        written = snprintf(
+            details, sizeof(details),
+            "{\"operation_result\":%d,\"queue\":%u,\"reason\":\"%s\","
+            "\"rule_id\":%llu,\"verdict\":\"%s\"}",
+            operation_result, (unsigned)packet->queue_number,
+            decision == NULL ? "unavailable" : decision_name(decision->reason),
+            (unsigned long long)rule_id,
+            decision != NULL && decision->verdict == JG_NFQUEUE_ACCEPT
+                ? "accept"
+                : "drop");
+    } else {
+        written = snprintf(
+            details, sizeof(details),
+            "{\"domain\":\"%s\",\"operation_result\":%d,\"queue\":%u,"
+            "\"reason\":\"%s\",\"rule_id\":%llu,\"verdict\":\"%s\"}",
+            domain, operation_result, (unsigned)packet->queue_number,
+            decision_name(decision->reason), (unsigned long long)rule_id,
+            decision->verdict == JG_NFQUEUE_ACCEPT ? "accept" : "drop");
+    }
+    if (written > 0 && (size_t)written < sizeof(details)) {
+        (void)jg_log_emit(
+            level, "dataplane",
+            operation_result == 0 ? "dataplane.decision" : "dataplane.error",
+            correlation,
+            operation_result == 0 ? "Packet policy decision completed"
+                                  : "Packet policy decision failed",
+            details);
     }
 }
 
@@ -574,6 +659,7 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
     struct jg_dataplane_worker *worker = context;
     const struct jg_policy_snapshot *snapshot = NULL;
     struct jg_dataplane_result result;
+    char domain[JG_DOMAIN_NAME_MAX + 1U] = {0};
     int evaluation_result = 0;
 
     if (packet == NULL || worker == NULL || packet->data == NULL) {
@@ -584,6 +670,7 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
     if (snapshot == NULL) {
         increment(&worker->stats.internal_errors);
         increment(&worker->stats.blocked);
+        trace_decision(worker, packet, NULL, NULL, -EIO);
         return JG_NFQUEUE_DROP;
     }
     evaluation_result = jg_dataplane_evaluate(
@@ -612,13 +699,20 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
                 result.packet.destination_port == 853U)) {
         evaluation_result = process_tls_stream(worker, snapshot, &result);
     }
+    if (result.policy.domain != NULL) {
+        (void)snprintf(domain, sizeof(domain), "%s", result.policy.domain);
+    }
     jg_policy_store_release(worker->store, worker->reader_index);
     if (evaluation_result != 0) {
         increment(&worker->stats.internal_errors);
         increment(&worker->stats.blocked);
+        trace_decision(worker, packet, &result,
+                       domain[0U] == '\0' ? NULL : domain, evaluation_result);
         return JG_NFQUEUE_DROP;
     }
     account_result(worker, &result);
+    trace_decision(worker, packet, &result, domain[0U] == '\0' ? NULL : domain,
+                   0);
     return result.verdict;
 }
 

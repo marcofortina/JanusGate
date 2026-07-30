@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -38,6 +39,8 @@
 /** Process-global bounded logger state. */
 static struct {
     pthread_mutex_t lock;
+    atomic_uint_fast32_t maximum_level;
+    atomic_uint_fast64_t diagnostic_until;
     struct jg_logging_config config;
     struct jg_log_trace_record records[JG_LOG_TRACE_CAPACITY_MAX];
     char process[JG_LOG_PROCESS_MAX + 1U];
@@ -52,6 +55,8 @@ static struct {
     bool syslog_open;
 } logger = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
+    .maximum_level = JG_LOG_ERROR,
+    .diagnostic_until = 0U,
 };
 
 /** @brief Return one bounded string length or one past the maximum. */
@@ -202,6 +207,13 @@ int jg_logging_config_validate(const struct jg_logging_config *config)
     }
     if (diagnostic_levels_configured(config) &&
         config->diagnostic_until == 0U) {
+        return -EINVAL;
+    }
+    if (!diagnostic_levels_configured(config) &&
+        config->diagnostic_until != 0U) {
+        return -EINVAL;
+    }
+    if (config->include_identifiers && !diagnostic_levels_configured(config)) {
         return -EINVAL;
     }
     if (config->diagnostic_until > (uint64_t)INT64_MAX) {
@@ -562,6 +574,20 @@ static enum jg_log_level configured_level_locked(const char *component,
     return selected;
 }
 
+/** @brief Return the greatest configured severity for fast-path filtering. */
+static enum jg_log_level maximum_configured_level(
+    const struct jg_logging_config *config)
+{
+    enum jg_log_level maximum = config->global_level;
+
+    for (size_t index = 0U; index < config->override_count; ++index) {
+        if (config->overrides[index].level > maximum) {
+            maximum = config->overrides[index].level;
+        }
+    }
+    return maximum;
+}
+
 /** @brief Configure syslog ownership while holding the logger lock. */
 static void configure_syslog_locked(void)
 {
@@ -610,6 +636,8 @@ int jg_logging_initialize(const char *process,
     }
     (void)memcpy(logger.process, process, process_size + 1U);
     logger.config = *config;
+    atomic_store(&logger.maximum_level, maximum_configured_level(config));
+    atomic_store(&logger.diagnostic_until, config->diagnostic_until);
     logger.initialized = true;
     reset_runtime_locked();
     configure_syslog_locked();
@@ -634,6 +662,8 @@ int jg_logging_configure(const struct jg_logging_config *config)
         logger.initialized = true;
     }
     logger.config = *config;
+    atomic_store(&logger.maximum_level, maximum_configured_level(config));
+    atomic_store(&logger.diagnostic_until, config->diagnostic_until);
     reset_runtime_locked();
     configure_syslog_locked();
     result = pthread_mutex_unlock(&logger.lock);
@@ -692,7 +722,10 @@ bool jg_log_enabled(const char *component, enum jg_log_level level)
     int result = 0;
 
     if (!identifier_valid(component, JG_LOG_COMPONENT_MAX) ||
-        jg_log_level_name(level) == NULL || realtime_seconds(&now) != 0) {
+        jg_log_level_name(level) == NULL ||
+        level > (enum jg_log_level)atomic_load(&logger.maximum_level) ||
+        realtime_seconds(&now) != 0 ||
+        (level > JG_LOG_INFO && now >= atomic_load(&logger.diagnostic_until))) {
         return false;
     }
     result = pthread_mutex_lock(&logger.lock);
@@ -1017,10 +1050,16 @@ int jg_log_emit(enum jg_log_level level,
         message_size > JG_LOG_MESSAGE_MAX) {
         return -EINVAL;
     }
+    if (level > (enum jg_log_level)atomic_load(&logger.maximum_level)) {
+        return 0;
+    }
     result = timestamp_now(timestamp, &now, &milliseconds);
     (void)milliseconds;
     if (result != 0) {
         return result;
+    }
+    if (level > JG_LOG_INFO && now >= atomic_load(&logger.diagnostic_until)) {
+        return 0;
     }
     result = pthread_mutex_lock(&logger.lock);
     if (result != 0) {
@@ -1031,7 +1070,10 @@ int jg_log_emit(enum jg_log_level level,
         (void)pthread_mutex_unlock(&logger.lock);
         return 0;
     }
-    result = safe_details(details, logger.config.include_identifiers, &safe);
+    result = safe_details(details,
+                          logger.config.include_identifiers &&
+                              diagnostic_active_locked(now),
+                          &safe);
     if (result == 0 && !rate_accept_locked(now)) {
         json_decref(safe);
         (void)pthread_mutex_unlock(&logger.lock);
@@ -1121,6 +1163,8 @@ void jg_logging_shutdown(void)
         closelog();
     }
     (void)memset(&logger.config, 0, sizeof(logger.config));
+    atomic_store(&logger.maximum_level, JG_LOG_ERROR);
+    atomic_store(&logger.diagnostic_until, 0U);
     (void)memset(logger.records, 0, sizeof(logger.records));
     (void)memset(logger.process, 0, sizeof(logger.process));
     logger.emitted = 0U;

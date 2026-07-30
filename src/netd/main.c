@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "janusgate/identity.h"
+#include "janusgate/logging.h"
 #include "janusgate/process_security.h"
 #include "janusgate/version.h"
 
@@ -49,6 +50,7 @@ int main(int argc, char **argv)
 {
     uid_t service_uid = 0U;
     gid_t control_gid = 0U;
+    struct jg_logging_config logging;
     int result = 0;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -65,6 +67,13 @@ int main(int argc, char **argv)
     }
 
     (void)umask(0077);
+    jg_logging_config_default(&logging);
+    result = jg_logging_initialize("janusgate-netd", &logging);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgate-netd: initialize logging: %s\n",
+                      strerror(-result));
+        return 1;
+    }
     result = jg_process_harden();
     if (result == 0) {
         result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_NETD);
@@ -73,11 +82,22 @@ int main(int argc, char **argv)
         result = resolve_service_identity(&service_uid, &control_gid);
     }
     if (result == 0) {
+        (void)jg_log_emit(JG_LOG_INFO, "network", "network.started", NULL,
+                          "Network helper started", NULL);
         result = jg_netd_run(service_uid, control_gid);
     }
     if (result != 0) {
-        (void)fprintf(stderr, "janusgate-netd: %s\n", strerror(-result));
+        char details[64U];
+
+        (void)snprintf(details, sizeof(details), "{\"error_number\":%d}",
+                       -result);
+        (void)jg_log_emit(JG_LOG_ERROR, "network", "network.failed", NULL,
+                          "Network helper failed", details);
+        jg_logging_shutdown();
         return 1;
     }
+    (void)jg_log_emit(JG_LOG_INFO, "network", "network.stopped", NULL,
+                      "Network helper stopped", NULL);
+    jg_logging_shutdown();
     return 0;
 }

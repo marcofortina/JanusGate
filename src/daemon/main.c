@@ -130,6 +130,11 @@ int main(int argc, char **argv)
     (void)umask(0077);
     jg_logging_config_default(&logging);
     result = jg_logging_initialize("janusgated", &logging);
+    if (result != 0) {
+        (void)fprintf(stderr, "janusgated: initialize logging: %s\n",
+                      strerror(-result));
+        return 1;
+    }
     jg_daemon_runtime_config_default(&config);
     waiter = (struct shutdown_waiter){
         .runtime = NULL,

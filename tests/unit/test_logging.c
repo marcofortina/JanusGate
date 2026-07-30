@@ -62,6 +62,12 @@ static void test_configuration(void **state)
     config.overrides[0U].level = JG_LOG_DEBUG;
     config.overrides[1U] = config.overrides[0U];
     assert_int_equal(jg_logging_config_validate(&config), -EINVAL);
+    jg_logging_config_default(&config);
+    config.diagnostic_until = 1U;
+    assert_int_equal(jg_logging_config_validate(&config), -EINVAL);
+    jg_logging_config_default(&config);
+    config.include_identifiers = true;
+    assert_int_equal(jg_logging_config_validate(&config), -EINVAL);
     assert_int_equal(jg_logging_config_decode("{\"unknown\":true}",
                                               sizeof("{\"unknown\":true}") - 1U,
                                               &decoded),

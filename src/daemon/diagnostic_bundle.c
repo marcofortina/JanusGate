@@ -46,6 +46,7 @@
 
 #include "janusgate/diagnostic.h"
 #include "janusgate/event.h"
+#include "janusgate/logging.h"
 #include "janusgate/network.h"
 #include "janusgate/version.h"
 #include "netd_client.h"
@@ -53,11 +54,14 @@
 /** Number of recent severe operational events retained in a bundle. */
 #define DIAGNOSTIC_EVENT_COUNT 20U
 
+/** Number of redacted operational trace excerpts retained in a bundle. */
+#define DIAGNOSTIC_TRACE_COUNT 16U
+
 /** Maximum fixed operating-system release file bytes. */
 #define DIAGNOSTIC_OS_RELEASE_SIZE_MAX 16384U
 
 /** Number of JSON documents in the current bundle. */
-#define DIAGNOSTIC_DOCUMENT_COUNT 7U
+#define DIAGNOSTIC_DOCUMENT_COUNT 9U
 
 /** One JSON document retained until archive compression completes. */
 struct diagnostic_document {
@@ -790,6 +794,99 @@ static json_t *events_document(struct jg_database *database)
     return object;
 }
 
+/** @brief Collect active logging configuration and bounded counters. */
+static json_t *logging_document(struct jg_database *database)
+{
+    char encoded[JG_LOG_CONFIG_JSON_MAX + 1U];
+    struct jg_database_logging_config record;
+    struct jg_logging_stats stats;
+    json_error_t error;
+    json_t *object = NULL;
+    size_t encoded_size = 0U;
+    int result = jg_database_load_logging_config(database, &record);
+
+    if (result == 0) {
+        result = jg_logging_config_encode(&record.config, encoded,
+                                          sizeof(encoded), &encoded_size);
+    }
+    if (result == 0) {
+        result = jg_logging_get(NULL, &stats);
+    }
+    if (result == 0) {
+        object =
+            json_loadb(encoded, encoded_size, JSON_REJECT_DUPLICATES, &error);
+        if (!json_is_object(object)) {
+            json_decref(object);
+            object = NULL;
+            result = -EILSEQ;
+        }
+    }
+    if (result == 0 &&
+        (set_counter(object, "revision", record.revision) != 0 ||
+         set_counter(object, "updated_at", record.updated_at) != 0 ||
+         set_counter(object, "emitted", stats.emitted) != 0 ||
+         set_counter(object, "suppressed", stats.suppressed) != 0 ||
+         set_counter(object, "buffered", (uint64_t)stats.buffered) != 0 ||
+         json_object_set_new(object, "diagnostic_active",
+                             json_boolean(stats.diagnostic_active)) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result != 0) {
+        json_decref(object);
+        return NULL;
+    }
+    return object;
+}
+
+/** @brief Collect trace metadata without variable detail payloads. */
+static json_t *traces_document(void)
+{
+    struct jg_log_trace_record *records =
+        calloc(DIAGNOSTIC_TRACE_COUNT, sizeof(*records));
+    struct jg_logging_stats stats;
+    json_t *object = json_object();
+    json_t *values = json_array();
+    size_t count = 0U;
+    int result =
+        records == NULL || object == NULL || values == NULL ? -ENOMEM : 0;
+
+    if (result == 0) {
+        result = jg_logging_trace_snapshot(records, DIAGNOSTIC_TRACE_COUNT,
+                                           &count, &stats);
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_error_t error;
+        json_t *value =
+            json_loads(records[index].json, JSON_REJECT_DUPLICATES, &error);
+
+        if (!json_is_object(value)) {
+            json_decref(value);
+            result = -EILSEQ;
+        } else {
+            json_object_del(value, "details");
+            if (json_array_append_new(values, value) != 0) {
+                result = -ENOMEM;
+            }
+        }
+    }
+    free(records);
+    if (result == 0 &&
+        (json_object_set_new(object, "details_included", json_false()) != 0 ||
+         json_object_set_new(object, "identifiers_included", json_false()) !=
+             0 ||
+         set_counter(object, "count", (uint64_t)count) != 0 ||
+         set_counter(object, "suppressed", stats.suppressed) != 0 ||
+         json_object_set(object, "records", values) != 0)) {
+        result = -ENOMEM;
+    }
+    json_decref(values);
+    if (result != 0) {
+        json_decref(object);
+        return NULL;
+    }
+    return object;
+}
+
 /** @brief Serialize a complete queue and parser counter snapshot. */
 static json_t *counters_document(const struct jg_daemon_runtime *runtime)
 {
@@ -993,8 +1090,9 @@ static int append_manifest_values(json_t *array,
 static json_t *manifest_document(uint64_t created_at)
 {
     static const char *const included[] = {
-        "manifest.json", "configuration.json", "network.json", "system.json",
-        "events.json",   "counters.json",      "health.json",
+        "manifest.json", "configuration.json", "network.json",
+        "system.json",   "events.json",        "counters.json",
+        "health.json",   "logging.json",       "traces.json",
     };
     static const char *const excluded[] = {
         "passwords and password hashes",
@@ -1003,6 +1101,7 @@ static json_t *manifest_document(uint64_t created_at)
         "TOTP secrets and recovery codes",
         "full query logs",
         "event detail payloads",
+        "trace detail payloads",
         "unrelated system files",
     };
     json_t *object = json_object();
@@ -1092,7 +1191,8 @@ int jg_diagnostic_bundle_create(struct jg_database *database,
         {.name = "manifest.json"}, {.name = "configuration.json"},
         {.name = "network.json"},  {.name = "system.json"},
         {.name = "events.json"},   {.name = "counters.json"},
-        {.name = "health.json"},
+        {.name = "health.json"},   {.name = "logging.json"},
+        {.name = "traces.json"},
     };
     int result = 0;
 
@@ -1109,6 +1209,8 @@ int jg_diagnostic_bundle_create(struct jg_database *database,
     documents[4U].value = events_document(database);
     documents[5U].value = counters_document(runtime);
     documents[6U].value = health_document(database);
+    documents[7U].value = logging_document(database);
+    documents[8U].value = traces_document();
     result = create_archive(documents, DIAGNOSTIC_DOCUMENT_COUNT, created_at,
                             archive, archive_size);
     clear_documents(documents, DIAGNOSTIC_DOCUMENT_COUNT);
