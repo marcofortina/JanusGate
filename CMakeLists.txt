@@ -139,6 +139,7 @@ add_library(
   src/common/event.c
   src/common/ipc.c
   src/common/ipc_client.c
+  src/common/logging.c
   src/common/network.c
   src/common/packet.c
   src/common/policy.c
@@ -153,7 +154,8 @@ target_include_directories(
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 target_link_libraries(
   janusgate-common
-  PUBLIC OpenSSL::Crypto PkgConfig::IDN2 PkgConfig::SODIUM ZLIB::ZLIB)
+  PUBLIC OpenSSL::Crypto PkgConfig::IDN2 PkgConfig::SODIUM Threads::Threads
+         ZLIB::ZLIB)
 target_link_libraries(
   janusgate-common
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON PkgConfig::SQLITE3)
@@ -291,6 +293,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/identity.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/ipc.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/ipc_client.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/logging.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/network.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/policy.h"
