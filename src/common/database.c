@@ -603,6 +603,28 @@ static const char *const migration_9[] = {
     migration_9_settings,
 };
 
+/** Add bounded operational logging configuration. */
+static const char migration_10_logging[] =
+    "CREATE TABLE logging_configuration ("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "value TEXT NOT NULL CHECK(length(CAST(value AS BLOB)) BETWEEN 1 AND 4096),"
+    "revision INTEGER NOT NULL CHECK(revision > 0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at >= 0)"
+    ") STRICT;"
+    "INSERT INTO logging_configuration(id,value,revision,updated_at) VALUES("
+    "1,'{\"destinations\":[\"stderr\",\"syslog\"],"
+    "\"diagnostic_until\":0,\"global_level\":\"info\","
+    "\"include_identifiers\":false,\"overrides\":[],"
+    "\"rate_limit_per_second\":100,\"trace_capacity\":16}',1,unixepoch());"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(10,unixepoch());"
+    "PRAGMA user_version=10;";
+
+/** Ordered statement groups composing schema version ten. */
+static const char *const migration_10[] = {
+    migration_10_logging,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -614,6 +636,7 @@ static const struct database_migration migrations[] = {
     {7U, migration_7, sizeof(migration_7) / sizeof(migration_7[0])},
     {8U, migration_8, sizeof(migration_8) / sizeof(migration_8[0])},
     {9U, migration_9, sizeof(migration_9) / sizeof(migration_9[0])},
+    {10U, migration_10, sizeof(migration_10) / sizeof(migration_10[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1746,6 +1769,137 @@ int jg_database_replace_network_config(
     }
     if (result == 0) {
         result = jg_database_load_network_config_record(database, &current);
+    }
+    if (result == 0) {
+        *updated = current;
+    }
+    return result;
+}
+
+/** @brief Load validated logging configuration and concurrency metadata. */
+int jg_database_load_logging_config(struct jg_database *database,
+                                    struct jg_database_logging_config *record)
+{
+    static const char query[] =
+        "SELECT value,updated_at,revision FROM logging_configuration"
+        " WHERE id=1;";
+    struct jg_database_logging_config loaded;
+    sqlite3_stmt *statement = NULL;
+    const char *text = NULL;
+    size_t text_size = 0U;
+    sqlite3_int64 updated_at = 0;
+    sqlite3_int64 revision = 0;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || record == NULL) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = required_text(statement, 0, &text, &text_size);
+    }
+    if (result == 0 &&
+        jg_logging_config_decode(text, text_size, &loaded.config) != 0) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        updated_at = sqlite3_column_int64(statement, 1);
+        revision = sqlite3_column_int64(statement, 2);
+        if (sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+            sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
+            updated_at < 0 || revision <= 0) {
+            result = -EILSEQ;
+        } else {
+            loaded.updated_at = (uint64_t)updated_at;
+            loaded.revision = (uint64_t)revision;
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *record = loaded;
+    }
+    return result;
+}
+
+/** @brief Replace logging configuration at its expected revision. */
+int jg_database_replace_logging_config(
+    struct jg_database *database,
+    const struct jg_logging_config *config,
+    uint64_t expected_revision,
+    struct jg_database_logging_config *updated)
+{
+    static const char update[] =
+        "UPDATE logging_configuration SET value=?1,updated_at=unixepoch(),"
+        "revision=revision+1 WHERE id=1"
+        " AND revision=?2 AND revision<9223372036854775807;";
+    char encoded[JG_LOG_CONFIG_JSON_MAX + 1U];
+    struct jg_database_logging_config current;
+    sqlite3_stmt *statement = NULL;
+    size_t encoded_size = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || expected_revision == 0U ||
+        expected_revision > (uint64_t)INT64_MAX || updated == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(updated, 0, sizeof(*updated));
+    result = jg_logging_config_encode(config, encoded, sizeof(encoded),
+                                      &encoded_size);
+    if (result != 0) {
+        return result;
+    }
+    status = sqlite3_prepare_v3(database->handle, update, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_text64(statement, 1, encoded,
+                                     (sqlite3_uint64)encoded_size,
+                                     SQLITE_TRANSIENT, SQLITE_UTF8);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 2,
+                                        (sqlite3_int64)expected_revision);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = jg_database_load_logging_config(database, &current);
+        if (result == 0 && current.revision != expected_revision) {
+            result = -EAGAIN;
+        } else if (result == 0 && current.revision == (uint64_t)INT64_MAX) {
+            result = -EOVERFLOW;
+        } else if (result == 0) {
+            result = -EIO;
+        }
+    }
+    if (result == 0) {
+        result = jg_database_load_logging_config(database, &current);
     }
     if (result == 0) {
         *updated = current;

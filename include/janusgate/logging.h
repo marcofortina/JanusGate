@@ -43,6 +43,9 @@
 /** Largest complete structured record excluding its terminator. */
 #define JG_LOG_RECORD_MAX 1536U
 
+/** Largest canonical logging configuration excluding its terminator. */
+#define JG_LOG_CONFIG_JSON_MAX 4096U
+
 /** Maximum number of component-level overrides. */
 #define JG_LOG_OVERRIDE_COUNT_MAX 16U
 

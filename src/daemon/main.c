@@ -18,6 +18,7 @@
 #include "control_server.h"
 #include "daemon_runtime.h"
 #include "janusgate/identity.h"
+#include "janusgate/logging.h"
 #include "janusgate/process_security.h"
 #include "janusgate/version.h"
 
@@ -114,6 +115,7 @@ int main(int argc, char **argv)
     gid_t control_gid = 0U;
     bool signal_thread_started = false;
     const char *operation = "harden process";
+    struct jg_logging_config logging;
     int result = 0;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -126,12 +128,16 @@ int main(int argc, char **argv)
     }
 
     (void)umask(0077);
+    jg_logging_config_default(&logging);
+    result = jg_logging_initialize("janusgated", &logging);
     jg_daemon_runtime_config_default(&config);
     waiter = (struct shutdown_waiter){
         .runtime = NULL,
         .result = 0,
     };
-    result = jg_process_harden();
+    if (result == 0) {
+        result = jg_process_harden();
+    }
     if (result == 0) {
         operation = "restrict capabilities";
         result = jg_process_restrict_capabilities(JG_PROCESS_PROFILE_DAEMON);
@@ -182,6 +188,8 @@ int main(int argc, char **argv)
     }
     if (result == 0) {
         operation = "run packet workers";
+        (void)jg_log_emit(JG_LOG_INFO, "runtime", "runtime.started", NULL,
+                          "JanusGate enforcement started", NULL);
         result = jg_daemon_runtime_wait(runtime);
     } else if (runtime != NULL) {
         (void)jg_daemon_runtime_request_stop(runtime);
@@ -214,9 +222,18 @@ int main(int argc, char **argv)
     jg_control_server_destroy(control_server);
     jg_daemon_runtime_destroy(runtime);
     if (result != 0) {
-        (void)fprintf(stderr, "janusgated: %s: %s\n", operation,
-                      strerror(-result));
+        char details[256U];
+
+        (void)snprintf(details, sizeof(details),
+                       "{\"operation\":\"%s\",\"error_number\":%d}", operation,
+                       -result);
+        (void)jg_log_emit(JG_LOG_ERROR, "runtime", "runtime.failed", NULL,
+                          "JanusGate enforcement failed", details);
+        jg_logging_shutdown();
         return 1;
     }
+    (void)jg_log_emit(JG_LOG_INFO, "runtime", "runtime.stopped", NULL,
+                      "JanusGate enforcement stopped", NULL);
+    jg_logging_shutdown();
     return 0;
 }

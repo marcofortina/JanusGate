@@ -15,6 +15,7 @@
 
 #include "dataplane_worker.h"
 #include "janusgate/database.h"
+#include "janusgate/logging.h"
 #include "janusgate/network.h"
 #include "management.h"
 #include "netd_client.h"
@@ -288,6 +289,7 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     struct jg_policy_snapshot *snapshot = NULL;
     struct jg_network_config network;
     struct jg_dns_response_config dns_response = {0};
+    struct jg_database_logging_config logging;
     uint32_t ingress_index = 0U;
     uint32_t egress_index = 0U;
     int result = 0;
@@ -311,6 +313,12 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
         result = jg_database_open(config->database_path,
                                   config->database_busy_timeout_ms,
                                   &started->database);
+    }
+    if (result == 0) {
+        result = jg_database_load_logging_config(started->database, &logging);
+    }
+    if (result == 0) {
+        result = jg_logging_configure(&logging.config);
     }
     if (result == 0) {
         result = jg_management_create(

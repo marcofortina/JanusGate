@@ -440,6 +440,8 @@ static void test_initial_migration(void **state)
                               "rejected_entries"));
     assert_true(table_exists(inspection, "network_configuration"));
     assert_true(column_exists(inspection, "network_configuration", "revision"));
+    assert_true(table_exists(inspection, "logging_configuration"));
+    assert_true(column_exists(inspection, "logging_configuration", "revision"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -788,6 +790,8 @@ static void test_version_one_migration(void **state)
                               "rejected_entries"));
     assert_true(table_exists(inspection, "network_configuration"));
     assert_true(column_exists(inspection, "network_configuration", "revision"));
+    assert_true(table_exists(inspection, "logging_configuration"));
+    assert_true(column_exists(inspection, "logging_configuration", "revision"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));
@@ -1289,8 +1293,9 @@ static void test_network_configuration_migration(void **state)
         "INSERT INTO system_settings(key,value,updated_at) "
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
+        "DROP TABLE logging_configuration;"
         "DROP TABLE network_configuration;"
-        "DELETE FROM schema_migrations WHERE version=9;"
+        "DELETE FROM schema_migrations WHERE version>=9;"
         "PRAGMA user_version=8;";
     char directory[64U];
     char path[512U];
@@ -1316,6 +1321,60 @@ static void test_network_configuration_migration(void **state)
                      0);
     assert_int_equal(record.revision, 1U);
     assert_network_config_equal(&record.config, &expected);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify persistent logging configuration and revision conflicts. */
+static void test_logging_configuration(void **state)
+{
+    static const char corrupt[] =
+        "UPDATE logging_configuration SET value='{\"unknown\":true}'"
+        " WHERE id=1;";
+    char directory[64U];
+    char path[512U];
+    struct jg_database_logging_config record;
+    struct jg_database_logging_config updated;
+    struct jg_logging_config replacement;
+    struct jg_database *database = NULL;
+    sqlite3 *handle = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_logging_config(database, &record), 0);
+    assert_int_equal(record.revision, 1U);
+    assert_int_equal(record.config.global_level, JG_LOG_INFO);
+    assert_false(record.config.include_identifiers);
+
+    replacement = record.config;
+    replacement.global_level = JG_LOG_DEBUG;
+    replacement.diagnostic_until = UINT64_C(2000000000);
+    replacement.destinations = JG_LOG_DESTINATION_STDERR;
+    assert_int_equal(jg_database_replace_logging_config(
+                         database, &replacement, record.revision, &updated),
+                     0);
+    assert_int_equal(updated.revision, 2U);
+    assert_int_equal(updated.config.global_level, JG_LOG_DEBUG);
+    assert_int_equal(jg_database_replace_logging_config(
+                         database, &record.config, record.revision, &updated),
+                     -EAGAIN);
+    assert_int_equal(jg_database_load_logging_config(NULL, &record), -EINVAL);
+    assert_int_equal(jg_database_load_logging_config(database, NULL), -EINVAL);
+    assert_int_equal(jg_database_replace_logging_config(database, &replacement,
+                                                        0U, &updated),
+                     -EINVAL);
+    jg_database_close(database);
+
+    assert_int_equal(
+        sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_exec(handle, corrupt, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(handle), SQLITE_OK);
+    database = NULL;
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_load_logging_config(database, &record),
+                     -EILSEQ);
     jg_database_close(database);
     remove_database(directory, path);
 }
@@ -1744,6 +1803,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
         cmocka_unit_test(test_network_configuration_migration),
+        cmocka_unit_test(test_logging_configuration),
         cmocka_unit_test(test_dns_response_configuration),
         cmocka_unit_test(test_blocklist_source_page),
         cmocka_unit_test(test_blocklist_source_creation),
