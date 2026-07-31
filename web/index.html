@@ -1510,7 +1510,9 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       <h3>Install server identity</h3>
                       <p>
                         Use the retained CSR key or supply a matching private
-                        key explicitly.
+                        key explicitly. Files are replaced atomically before
+                        listener reload, without automatic post-reload
+                        rollback.
                       </p>
                     </div>
                   </div>

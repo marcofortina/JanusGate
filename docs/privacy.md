@@ -9,11 +9,17 @@ DNS names, source addresses, user identities, policy matches, and
 administrative actions can reveal sensitive behavior. Collect only what is
 needed for operation and incident response.
 
-JanusGate separates counters, bounded operational events, and tamper-evident
+JanusGate separates counters, bounded operational events, and hash-chained
 administrative audit records. Operators should choose the least detailed event
 mode that meets their purpose, use short retention for client-identifying
 events, and prefer aggregate counters for routine monitoring. Audit retention
 should follow the organization's accountability requirement.
+
+The unkeyed chain detects corruption and edits that are not followed by a
+consistent recomputation. It does not prove integrity against an attacker who
+can rewrite the complete database. Deploy protected remote logging, signed
+chain-head checkpoints, or append-only external storage when that stronger
+property is required.
 
 ## Logging and trace privacy
 

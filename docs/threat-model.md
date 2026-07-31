@@ -53,9 +53,10 @@ storage, and the software supply chain.
 - Dependency substitution is reduced by pinned Buildroot versions and hashes,
   verified Alpine inputs, source metadata checks, SBOM output, and release
   checksums.
-- Failed network changes are protected by validation, a confirmation window,
-  and rollback. Database and certificate changes use transactional or
-  replace-with-rollback workflows.
+- Failed bridge and packet-selection changes are protected by validation, a
+  confirmation window, and rollback. Database replacement uses transactional
+  rollback; certificate files are validated and atomically replaced before a
+  listener reload.
 
 ## Residual risks
 
@@ -63,6 +64,12 @@ JanusGate cannot inspect names hidden inside a full-tunnel VPN, an unidentified
 encrypted proxy, DoH to an unknown endpoint, or ECH without another usable
 policy signal. Blocking a shared CDN address can affect unrelated services.
 Policy decisions are only as good as the configured lists and exceptions.
+
+The audit hash chain is unkeyed and stored with its records. It detects
+inconsistent modification but cannot prevent a privileged database attacker
+from rewriting and recomputing the complete chain. Certificate activation
+also has no automatic post-reload file rollback. Stronger guarantees require
+protected external logs or checkpoints and retained console recovery access.
 
 The appliance is not an intrusion-prevention system and does not inspect
 arbitrary application content. It cannot prevent a physical bypass. Hardware

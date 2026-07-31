@@ -47,11 +47,13 @@ state, then start the web service.
 
 ## Certificate recovery
 
-A rejected certificate operation leaves the active pair unchanged. If HTTPS
-cannot start after external file changes, restore a matching certificate and
-key from console with restrictive ownership and modes, validate their public
-keys with OpenSSL, and restart only `janusgate-web`. Replace a potentially
-exposed key rather than reusing it.
+A rejected certificate operation leaves the active pair unchanged. An
+accepted operation validates and atomically replaces the files before the web
+listener reload, but does not automatically restore them if activation fails.
+If HTTPS cannot start, restore a matching certificate and key from console
+with restrictive ownership and modes, validate their public keys with OpenSSL,
+and restart only `janusgate-web`. Replace a potentially exposed key rather
+than reusing it.
 
 ## Firmware data recovery
 

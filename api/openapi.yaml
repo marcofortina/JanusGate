@@ -847,6 +847,10 @@ paths:
       tags: [Certificates]
       operationId: installCertificate
       summary: Validate and atomically install a server identity
+      description: |
+        Successful file replacement triggers an HTTPS listener reload.
+        Activation failure requires console recovery; installed files are not
+        rolled back automatically after the reload begins.
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:

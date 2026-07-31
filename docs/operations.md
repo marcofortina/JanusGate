@@ -48,7 +48,9 @@ backups to cases that require them.
 
 Monitor certificate expiry. Install certificate and key together; JanusGate
 checks their match before replacement. Retain a recovery copy and console
-access while changing the management address or certificate trust chain.
+access while changing OS-owned management addressing or the certificate trust
+chain. A WebGUI certificate change reloads the HTTPS listeners but does not
+provide automatic post-reload file rollback.
 
 Treat the remote client CA key as offline trust material. Review mappings and
 tokens independently, revoke both when retiring an automation identity, and
