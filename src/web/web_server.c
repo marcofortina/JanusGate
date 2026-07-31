@@ -589,6 +589,7 @@ static int handle_request(struct mg_connection *connection, void *context)
         listener == NULL ? NULL : listener->server;
     const struct mg_request_info *request = mg_get_request_info(connection);
     const struct web_asset *asset = NULL;
+    const bool hsts = server != NULL && server->config.hsts;
     bool head_only = false;
     int result = 0;
     int status = 200;
@@ -599,7 +600,7 @@ static int handle_request(struct mg_connection *connection, void *context)
         (void)send_json(connection, 400, "Bad Request",
                         "{\"error\":{\"code\":\"invalid_request\","
                         "\"message\":\"The request is not valid.\"}}\n",
-                        server->config.hsts);
+                        hsts);
         return 400;
     }
     if (strcmp(request->local_uri, "/healthz") == 0) {

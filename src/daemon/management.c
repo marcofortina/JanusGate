@@ -10226,6 +10226,84 @@ static int handle_totp_disable(struct jg_management *management,
     return encode_response(200, body, &session, output, output_size, written);
 }
 
+/** @brief Return whether one path identifies an implemented API resource. */
+static bool management_path_known(const char *path)
+{
+    static const char *const exact_paths[] = {
+        "/api/v1/audit",
+        "/api/v1/audit/verify",
+        "/api/v1/auth/bootstrap",
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/password",
+        "/api/v1/auth/session",
+        "/api/v1/auth/state",
+        "/api/v1/auth/totp/confirm",
+        "/api/v1/auth/totp/disable",
+        "/api/v1/auth/totp/provision",
+        "/api/v1/backups",
+        "/api/v1/blocklists",
+        "/api/v1/certificates",
+        "/api/v1/certificates/csr",
+        "/api/v1/certificates/install",
+        "/api/v1/config/reload",
+        "/api/v1/config/validate",
+        "/api/v1/diagnostics",
+        "/api/v1/domains",
+        "/api/v1/events",
+        "/api/v1/health",
+        "/api/v1/logging",
+        "/api/v1/logging/traces",
+        "/api/v1/metrics",
+        "/api/v1/mtls/authorities",
+        "/api/v1/mtls/mappings",
+        "/api/v1/network",
+        "/api/v1/network/apply",
+        "/api/v1/network/confirm",
+        "/api/v1/network/rollback",
+        "/api/v1/network/validate",
+        "/api/v1/policies/destinations",
+        "/api/v1/policies/simulate",
+        "/api/v1/service/restart",
+        "/api/v1/sources",
+        "/api/v1/status",
+        "/api/v1/system/reboot",
+        "/api/v1/system/shutdown",
+        "/api/v1/tokens",
+        "/api/v1/users",
+    };
+    uint64_t identifier = 0U;
+
+    for (size_t index = 0U; index < sizeof(exact_paths) / sizeof(*exact_paths);
+         ++index) {
+        if (strcmp(path, exact_paths[index]) == 0) {
+            return true;
+        }
+    }
+    return collection_path_identifier(path, "/api/v1/backups/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/backups/", "/restore",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/domains/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/mtls/mappings/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/policies/destinations/",
+                                      "", &identifier) ||
+           collection_path_identifier(path, "/api/v1/sources/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/sources/", "/refresh",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/tokens/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/users/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/users/", "/password",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/users/", "/totp",
+                                      &identifier);
+}
+
 /** @brief Dispatch one valid authentication management request. */
 static int dispatch_request(struct jg_management *management,
                             const struct management_request *request,
@@ -10579,6 +10657,11 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/auth/totp/disable") == 0 && post) {
         return handle_totp_disable(management, request, remote, now, output,
                                    output_size, written);
+    }
+    if (management_path_known(request->path)) {
+        return respond_error(405, "method_not_allowed",
+                             "The method is not allowed for this resource.",
+                             request->request_id, output, output_size, written);
     }
     return respond_error(404, "not_found",
                          "The requested API resource was not found.",

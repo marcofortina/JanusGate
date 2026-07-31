@@ -3017,11 +3017,12 @@ static void test_event_api(void **state)
     json_decref(response);
 }
 
-/** @brief Verify malformed and cross-origin requests fail closed. */
+/** @brief Verify malformed, cross-origin, and routing requests fail closed. */
 static void test_request_rejection(void **state)
 {
     struct management_fixture *fixture = *state;
     json_t *response = process_request(fixture, "{}");
+    json_t *error = NULL;
     const char invalid_origin[] =
         "{\"request_id\":\"login-1\",\"method\":\"POST\","
         "\"path\":\"/api/v1/auth/login\","
@@ -3032,6 +3033,18 @@ static void test_request_rejection(void **state)
         "{\"request_id\":\"nul-1\",\"method\":\"GET\\u0000POST\","
         "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
         "\"remote_address\":\"192.0.2.10\",\"body\":{}}";
+    const char wrong_static_method[] =
+        "{\"request_id\":\"method-static\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/auth/login\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    const char wrong_dynamic_method[] =
+        "{\"request_id\":\"method-dynamic\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/sources/1\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    const char unknown_path[] =
+        "{\"request_id\":\"path-unknown\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/unknown\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
 
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      400);
@@ -3043,6 +3056,27 @@ static void test_request_rejection(void **state)
     response = process_request(fixture, embedded_null);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      400);
+    json_decref(response);
+
+    response = process_local_request(fixture, wrong_static_method);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     405);
+    error = json_object_get(json_object_get(response, "body"), "error");
+    assert_string_equal(json_string_value(json_object_get(error, "code")),
+                        "method_not_allowed");
+    json_decref(response);
+
+    response = process_local_request(fixture, wrong_dynamic_method);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     405);
+    json_decref(response);
+
+    response = process_local_request(fixture, unknown_path);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     404);
+    error = json_object_get(json_object_get(response, "body"), "error");
+    assert_string_equal(json_string_value(json_object_get(error, "code")),
+                        "not_found");
     json_decref(response);
 }
 

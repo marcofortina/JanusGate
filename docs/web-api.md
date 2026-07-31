@@ -44,8 +44,9 @@ refetch rather than overwrite another operator's work.
 
 Errors contain a stable machine code, a concise message, and the request
 identifier. Authentication and role failures use `401` and `403`; schema
-failures use `400` or `422`; missing resources use `404`; rate limiting uses
-`429`; internal or temporarily unavailable operations use `5xx`.
+failures use `400` or `422`; missing resources use `404`; known resources with
+an unsupported method use `405`; rate limiting uses `429`; internal or
+temporarily unavailable operations use `5xx`.
 
 ## Resource groups
 
