@@ -25,6 +25,9 @@
 /** Maximum requested subject alternative names. */
 #define JG_CERTIFICATE_SAN_MAX 32U
 
+/** Maximum CA certificates accepted in one client trust store. */
+#define JG_CERTIFICATE_AUTHORITY_MAX 64U
+
 /** Maximum certificate validity accepted for local generation. */
 #define JG_CERTIFICATE_VALIDITY_DAYS_MAX 3650U
 
@@ -86,6 +89,101 @@ JG_PUBLIC int jg_certificate_inspect(const char *certificate,
                                      const char *private_key,
                                      size_t private_key_size,
                                      struct jg_certificate_info *info);
+
+/**
+ * @brief Inspect one PEM trust store containing only CA certificates.
+ *
+ * Public, private, and self-hosted authorities are handled identically. Every
+ * certificate must assert the CA basic constraint; private keys, leaf
+ * certificates, CRLs, malformed trailing data, and duplicate certificates
+ * are rejected.
+ *
+ * @param[in] pem Exact PEM trust-store bytes.
+ * @param[in] pem_size PEM byte count.
+ * @param[out] authorities Receives authority metadata in PEM order.
+ * @param[in] capacity Available metadata records from one through
+ * JG_CERTIFICATE_AUTHORITY_MAX.
+ * @param[out] authority_count Receives the number of authorities.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or trust material.
+ * @return -ENOSPC when @p capacity is insufficient.
+ * @return A negative errno-style allocation or conversion error otherwise.
+ *
+ * @thread_safety OpenSSL initialization must be process-wide and complete.
+ */
+JG_PUBLIC int jg_certificate_trust_store_inspect(
+    const char *pem,
+    size_t pem_size,
+    struct jg_certificate_info *authorities,
+    size_t capacity,
+    size_t *authority_count);
+
+/**
+ * @brief Inspect one securely installed client-certificate trust store.
+ *
+ * @param[in] path Absolute regular-file path.
+ * @param[out] authorities Receives authority metadata in PEM order.
+ * @param[in] capacity Available metadata records.
+ * @param[out] authority_count Receives the number of authorities.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when no trust store is installed.
+ * @return -EACCES unless the file is securely owned and permissioned.
+ * @return Another result from jg_certificate_trust_store_inspect().
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_certificate_trust_store_inspect_file(
+    const char *path,
+    struct jg_certificate_info *authorities,
+    size_t capacity,
+    size_t *authority_count);
+
+/**
+ * @brief Validate and atomically install a shared client trust store.
+ *
+ * A newly created file inherits the containing directory group and is stored
+ * with mode 0640 so the unprivileged HTTPS service can read public CA data.
+ * Existing secure ownership and permissions are preserved.
+ *
+ * @param[in] path Absolute destination path.
+ * @param[in] pem Exact PEM trust-store bytes.
+ * @param[in] pem_size PEM byte count.
+ * @param[out] authorities Receives installed authority metadata.
+ * @param[in] capacity Available metadata records.
+ * @param[out] authority_count Receives the number of authorities.
+ *
+ * @return 0 on success.
+ * @return A result from jg_certificate_trust_store_inspect() or a negative
+ * errno-style filesystem error.
+ *
+ * @thread_safety Concurrent writers to the same path require serialization.
+ *
+ * @side_effects Atomically creates or replaces @p path.
+ */
+JG_PUBLIC int jg_certificate_trust_store_install(
+    const char *path,
+    const char *pem,
+    size_t pem_size,
+    struct jg_certificate_info *authorities,
+    size_t capacity,
+    size_t *authority_count);
+
+/**
+ * @brief Securely remove an installed client trust store.
+ *
+ * @param[in] path Absolute regular-file path.
+ *
+ * @return 0 when absent or removed.
+ * @return -EACCES for an unsafe target.
+ * @return A negative errno-style filesystem error otherwise.
+ *
+ * @thread_safety Concurrent access to the same path requires serialization.
+ *
+ * @side_effects Removes the trust-store file when present.
+ */
+JG_PUBLIC int jg_certificate_trust_store_remove(const char *path);
 
 /**
  * @brief Inspect one securely installed combined certificate PEM.

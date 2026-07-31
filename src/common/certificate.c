@@ -226,6 +226,69 @@ int jg_certificate_inspect(const char *certificate,
     return result;
 }
 
+/** @brief Inspect a CA-only PEM bundle in its encoded order. */
+int jg_certificate_trust_store_inspect(const char *pem,
+                                       size_t pem_size,
+                                       struct jg_certificate_info *authorities,
+                                       size_t capacity,
+                                       size_t *authority_count)
+{
+    STACK_OF(X509_INFO) *records = NULL;
+    BIO *memory = NULL;
+    int result = 0;
+
+    if (authority_count != NULL) {
+        *authority_count = 0U;
+    }
+    if (pem == NULL || pem_size == 0U || pem_size > JG_CERTIFICATE_PEM_MAX ||
+        pem_size > (size_t)INT_MAX || authorities == NULL || capacity == 0U ||
+        capacity > JG_CERTIFICATE_AUTHORITY_MAX || authority_count == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(authorities, 0, capacity * sizeof(*authorities));
+    memory = BIO_new_mem_buf(pem, (int)pem_size);
+    records = memory == NULL ? NULL
+                             : PEM_X509_INFO_read_bio(memory, NULL, NULL, NULL);
+    if (records == NULL || sk_X509_INFO_num(records) <= 0) {
+        result = memory == NULL ? -ENOMEM : -EINVAL;
+    }
+    if (result == 0 &&
+        sk_X509_INFO_num(records) > (int)JG_CERTIFICATE_AUTHORITY_MAX) {
+        result = -EINVAL;
+    }
+    if (result == 0 && sk_X509_INFO_num(records) > (int)capacity) {
+        result = -ENOSPC;
+    }
+    for (int index = 0; result == 0 && index < sk_X509_INFO_num(records);
+         ++index) {
+        X509_INFO *record = sk_X509_INFO_value(records, index);
+
+        if (record == NULL || record->x509 == NULL || record->crl != NULL ||
+            record->x_pkey != NULL || X509_check_ca(record->x509) <= 0) {
+            result = -EINVAL;
+        } else {
+            result = inspect_certificate(record->x509, NULL,
+                                         &authorities[(size_t)index]);
+        }
+        for (int previous = 0; result == 0 && previous < index; ++previous) {
+            if (sodium_memcmp(authorities[(size_t)previous].fingerprint_sha256,
+                              authorities[(size_t)index].fingerprint_sha256,
+                              sizeof(authorities[0U].fingerprint_sha256)) ==
+                0) {
+                result = -EINVAL;
+            }
+        }
+    }
+    if (result == 0) {
+        *authority_count = (size_t)sk_X509_INFO_num(records);
+    } else {
+        (void)memset(authorities, 0, capacity * sizeof(*authorities));
+    }
+    sk_X509_INFO_pop_free(records, X509_INFO_free);
+    BIO_free(memory);
+    return result;
+}
+
 /** @brief Split one safe absolute path into directory and leaf components. */
 static int split_path(const char *path,
                       char directory[PATH_MAX],
@@ -464,6 +527,34 @@ int jg_certificate_inspect_file(const char *path,
     return result;
 }
 
+/** @brief Inspect one securely installed client trust store. */
+int jg_certificate_trust_store_inspect_file(
+    const char *path,
+    struct jg_certificate_info *authorities,
+    size_t capacity,
+    size_t *authority_count)
+{
+    uint8_t *data = NULL;
+    size_t data_size = 0U;
+    int result = 0;
+
+    if (authorities == NULL || authority_count == NULL) {
+        return -EINVAL;
+    }
+    *authority_count = 0U;
+    result = read_secure_file(path, &data, &data_size);
+    if (result == 0) {
+        result = jg_certificate_trust_store_inspect((const char *)data,
+                                                    data_size, authorities,
+                                                    capacity, authority_count);
+    }
+    if (data != NULL) {
+        sodium_memzero(data, data_size);
+        free(data);
+    }
+    return result;
+}
+
 /** @brief Return the first private-key PEM marker in canonical identity data.
  */
 static uint8_t *find_private_key(uint8_t *data)
@@ -592,12 +683,14 @@ static int atomic_write(const char *path,
                         const char *first,
                         size_t first_size,
                         const char *second,
-                        size_t second_size)
+                        size_t second_size,
+                        bool group_readable)
 {
     char directory_path[PATH_MAX];
     char leaf[NAME_MAX + 1U];
     char temporary[64U] = {0};
     struct secure_file_attributes attributes;
+    struct stat directory_metadata;
     int directory = -1;
     int descriptor = -1;
     bool temporary_exists = false;
@@ -620,11 +713,21 @@ static int atomic_write(const char *path,
     if (result == 0) {
         result = validate_destination(directory, leaf, &attributes);
     }
+    if (result == 0 && group_readable) {
+        if (fstat(directory, &directory_metadata) != 0) {
+            result = -errno;
+        } else if (!process_has_group(directory_metadata.st_gid)) {
+            result = -EACCES;
+        } else {
+            attributes.group = directory_metadata.st_gid;
+            attributes.mode = 0640;
+        }
+    }
     if (result == 0) {
         result = create_temporary_file(directory, temporary, &descriptor);
         temporary_exists = result == 0;
     }
-    if (result == 0 && attributes.exists &&
+    if (result == 0 && (attributes.exists || group_readable) &&
         (fchown(descriptor, (uid_t)-1, attributes.group) != 0 ||
          fchmod(descriptor, attributes.mode) != 0)) {
         result = -errno;
@@ -676,7 +779,7 @@ int jg_certificate_install(const char *path,
                                     private_key_size, info);
     if (result == 0) {
         result = atomic_write(path, certificate, certificate_size, private_key,
-                              private_key_size);
+                              private_key_size, false);
     }
     if (result != 0) {
         (void)memset(info, 0, sizeof(*info));
@@ -695,7 +798,7 @@ int jg_certificate_private_key_store(const char *path,
     if (parsed == NULL) {
         return -EINVAL;
     }
-    result = atomic_write(path, private_key, private_key_size, NULL, 0U);
+    result = atomic_write(path, private_key, private_key_size, NULL, 0U, false);
     EVP_PKEY_free(parsed);
     return result;
 }
@@ -763,6 +866,38 @@ int jg_certificate_private_key_remove(const char *path)
         (void)close(directory);
     }
     return result;
+}
+
+/** @brief Validate and atomically install a shared client trust store. */
+int jg_certificate_trust_store_install(const char *path,
+                                       const char *pem,
+                                       size_t pem_size,
+                                       struct jg_certificate_info *authorities,
+                                       size_t capacity,
+                                       size_t *authority_count)
+{
+    int result = jg_certificate_trust_store_inspect(pem, pem_size, authorities,
+                                                    capacity, authority_count);
+
+    if (result == 0) {
+        result = atomic_write(path, pem, pem_size, NULL, 0U, true);
+    }
+    if (result != 0 && authorities != NULL && capacity != 0U &&
+        capacity <= JG_CERTIFICATE_AUTHORITY_MAX) {
+        (void)memset(authorities, 0, capacity * sizeof(*authorities));
+        if (authority_count != NULL) {
+            *authority_count = 0U;
+        }
+    }
+    return result;
+}
+
+/** @brief Securely remove an installed client trust store. */
+int jg_certificate_trust_store_remove(const char *path)
+{
+    const int result = jg_certificate_private_key_remove(path);
+
+    return result == -ENOENT ? 0 : result;
 }
 
 /** @brief Validate a common name accepted by X.509 generation. */

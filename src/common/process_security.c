@@ -63,6 +63,7 @@ static const char *const common_system_calls[] = {
     "getegid",
     "geteuid",
     "getgid",
+    "getgroups",
     "getpeername",
     "getpid",
     "getppid",

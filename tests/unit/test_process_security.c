@@ -65,7 +65,7 @@ static void test_system_call_filter(void **state)
     if (child == 0) {
         if (jg_process_harden() != 0 ||
             jg_process_apply_system_call_filter(JG_PROCESS_PROFILE_WEB) != 0 ||
-            getpid() <= 0) {
+            getpid() <= 0 || getgroups(0, NULL) < 0) {
             _exit(1);
         }
 #if defined(__OpenBSD__)

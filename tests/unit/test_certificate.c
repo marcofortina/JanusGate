@@ -20,12 +20,78 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <sodium.h>
 
 #include "janusgate/certificate.h"
 
 int jg_test_certificate(void);
+
+/** @brief Create one private self-signed CA fixture in memory. */
+static void create_test_authority(char **pem, size_t *pem_size)
+{
+    char constraints_text[] = "critical,CA:TRUE,pathlen:1";
+    char usage_text[] = "critical,keyCertSign,cRLSign";
+    EVP_PKEY_CTX *key_context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY *private_key = NULL;
+    X509 *certificate = X509_new();
+    X509_NAME *subject = X509_NAME_new();
+    X509_EXTENSION *constraints = NULL;
+    X509_EXTENSION *usage = NULL;
+    BIO *memory = BIO_new(BIO_s_mem());
+    BUF_MEM *contents = NULL;
+
+    *pem = NULL;
+    *pem_size = 0U;
+    assert_non_null(key_context);
+    assert_non_null(certificate);
+    assert_non_null(subject);
+    assert_non_null(memory);
+    assert_int_equal(EVP_PKEY_keygen_init(key_context), 1);
+    assert_int_equal(EVP_PKEY_CTX_set_rsa_keygen_bits(key_context, 2048), 1);
+    assert_int_equal(EVP_PKEY_keygen(key_context, &private_key), 1);
+    assert_non_null(private_key);
+    assert_int_equal(X509_NAME_add_entry_by_txt(
+                         subject, "CN", MBSTRING_ASC,
+                         (const unsigned char *)"JanusGate home lab CA", -1, -1,
+                         0),
+                     1);
+    assert_int_equal(X509_set_version(certificate, 2L), 1);
+    assert_int_equal(ASN1_INTEGER_set(X509_get_serialNumber(certificate), 1L),
+                     1);
+    assert_int_equal(X509_set_subject_name(certificate, subject), 1);
+    assert_int_equal(X509_set_issuer_name(certificate, subject), 1);
+    assert_int_equal(X509_set_pubkey(certificate, private_key), 1);
+    assert_non_null(X509_gmtime_adj(X509_getm_notBefore(certificate), -60L));
+    assert_non_null(X509_gmtime_adj(X509_getm_notAfter(certificate), 86400L));
+    constraints = X509V3_EXT_conf_nid(NULL, NULL, NID_basic_constraints,
+                                      constraints_text);
+    usage = X509V3_EXT_conf_nid(NULL, NULL, NID_key_usage, usage_text);
+    assert_non_null(constraints);
+    assert_non_null(usage);
+    assert_int_equal(X509_add_ext(certificate, constraints, -1), 1);
+    assert_int_equal(X509_add_ext(certificate, usage, -1), 1);
+    assert_true(X509_sign(certificate, private_key, EVP_sha256()) > 0);
+    assert_int_equal(PEM_write_bio_X509(memory, certificate), 1);
+    BIO_get_mem_ptr(memory, &contents);
+    assert_non_null(contents);
+    assert_true(contents->length > 0U);
+    *pem = malloc(contents->length + 1U);
+    assert_non_null(*pem);
+    (void)memcpy(*pem, contents->data, contents->length);
+    (*pem)[contents->length] = '\0';
+    *pem_size = contents->length;
+
+    X509_EXTENSION_free(usage);
+    X509_EXTENSION_free(constraints);
+    BIO_free(memory);
+    X509_NAME_free(subject);
+    X509_free(certificate);
+    EVP_PKEY_free(private_key);
+    EVP_PKEY_CTX_free(key_context);
+}
 
 /** @brief Verify self-signed generation, metadata, and key matching. */
 static void test_self_signed_certificate(void **state)
@@ -234,6 +300,73 @@ static void test_certificate_installation(void **state)
     jg_certificate_material_clear(&material);
 }
 
+/** @brief Verify private CA-bundle validation, installation, and removal. */
+static void test_client_trust_store(void **state)
+{
+    static const char template[] = "/tmp/janusgate-client-ca-XXXXXX";
+    char directory[sizeof(template)];
+    char path[256U];
+    char *authority = NULL;
+    char *duplicate = NULL;
+    size_t authority_size = 0U;
+    size_t authority_count = 0U;
+    struct stat metadata;
+    struct jg_certificate_info authorities[2U];
+    struct jg_certificate_material server;
+    int written = 0;
+
+    (void)state;
+    (void)memcpy(directory, template, sizeof(template));
+    assert_non_null(mkdtemp(directory));
+    written = snprintf(path, sizeof(path), "%s/client-ca.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(path));
+    create_test_authority(&authority, &authority_size);
+    assert_int_equal(
+        jg_certificate_trust_store_inspect(authority, authority_size,
+                                           authorities, 2U, &authority_count),
+        0);
+    assert_int_equal(authority_count, 1U);
+    assert_string_equal(authorities[0U].subject, "CN=JanusGate home lab CA");
+    assert_true(authorities[0U].self_signed);
+
+    duplicate = malloc(authority_size * 2U);
+    assert_non_null(duplicate);
+    (void)memcpy(duplicate, authority, authority_size);
+    (void)memcpy(duplicate + authority_size, authority, authority_size);
+    assert_int_equal(
+        jg_certificate_trust_store_inspect(duplicate, authority_size * 2U,
+                                           authorities, 2U, &authority_count),
+        -EINVAL);
+    assert_int_equal(jg_certificate_create_self_signed("janusgate.local", NULL,
+                                                       0U, 30U, &server),
+                     0);
+    assert_int_equal(jg_certificate_trust_store_inspect(
+                         server.certificate, server.certificate_size,
+                         authorities, 2U, &authority_count),
+                     -EINVAL);
+
+    assert_int_equal(
+        jg_certificate_trust_store_install(path, authority, authority_size,
+                                           authorities, 2U, &authority_count),
+        0);
+    assert_int_equal(stat(path, &metadata), 0);
+    assert_int_equal(metadata.st_mode & 0777U, S_IRUSR | S_IWUSR | S_IRGRP);
+    assert_int_equal(jg_certificate_trust_store_inspect_file(
+                         path, authorities, 2U, &authority_count),
+                     0);
+    assert_int_equal(authority_count, 1U);
+    assert_int_equal(jg_certificate_trust_store_remove(path), 0);
+    assert_int_equal(jg_certificate_trust_store_remove(path), 0);
+
+    jg_certificate_material_clear(&server);
+    sodium_memzero(duplicate, authority_size * 2U);
+    free(duplicate);
+    sodium_memzero(authority, authority_size);
+    free(authority);
+    assert_int_equal(rmdir(directory), 0);
+}
+
 /** @brief Run the certificate-management unit-test group. */
 int jg_test_certificate(void)
 {
@@ -242,6 +375,7 @@ int jg_test_certificate(void)
         cmocka_unit_test(test_certificate_request),
         cmocka_unit_test(test_certificate_validation),
         cmocka_unit_test(test_certificate_installation),
+        cmocka_unit_test(test_client_trust_store),
     };
 
     return cmocka_run_group_tests_name("certificate", tests, NULL, NULL);
