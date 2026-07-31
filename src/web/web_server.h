@@ -27,6 +27,9 @@
 #define JG_WEB_DEFAULT_PORT 443U
 #endif
 
+/** Default mTLS remote API port. */
+#define JG_WEB_DEFAULT_API_PORT 9443U
+
 /** Default combined certificate and private-key PEM. */
 #define JG_WEB_DEFAULT_CERTIFICATE JG_CERTIFICATE_DEFAULT_PATH
 
@@ -46,8 +49,12 @@ struct jg_web_config {
     const char *listen_address;
     /** HTTPS TCP port. */
     uint16_t port;
+    /** Dedicated mTLS remote API port. */
+    uint16_t api_port;
     /** Absolute combined certificate and private-key PEM path. */
     const char *certificate_path;
+    /** Absolute trusted client-certificate authority bundle path. */
+    const char *client_ca_path;
     /** Absolute local static-asset root. */
     const char *web_root;
     /** Absolute daemon management control-socket path. */
@@ -71,6 +78,7 @@ int jg_web_config_validate(const struct jg_web_config *config);
 
 /** @brief Build the exact CivetWeb TLS listener expression. */
 int jg_web_build_listener(const struct jg_web_config *config,
+                          uint16_t port,
                           char *output,
                           size_t output_size);
 

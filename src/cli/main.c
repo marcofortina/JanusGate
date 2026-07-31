@@ -27,6 +27,7 @@
 
 #include "client.h"
 #include "janusgate/backup.h"
+#include "janusgate/certificate.h"
 #include "janusgate/ipc.h"
 #include "janusgate/ipc_client.h"
 #include "janusgate/version.h"
@@ -135,6 +136,13 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] certificate show\n"
         "       janusgatectl [OPTIONS] certificate install FILE\n"
         "       janusgatectl [OPTIONS] certificate csr FILE\n"
+        "       janusgatectl [OPTIONS] mtls ca show\n"
+        "       janusgatectl [OPTIONS] mtls ca install FILE\n"
+        "       janusgatectl [OPTIONS] mtls ca remove\n"
+        "       janusgatectl [OPTIONS] mtls mapping list\n"
+        "       janusgatectl [OPTIONS] mtls mapping add FILE user ID\n"
+        "       janusgatectl [OPTIONS] mtls mapping add FILE role ROLE\n"
+        "       janusgatectl [OPTIONS] mtls mapping revoke ID\n"
         "       janusgatectl [OPTIONS] backup create configuration\n"
         "       janusgatectl [OPTIONS] backup create full\n"
         "       janusgatectl [OPTIONS] backup inspect ID\n"
@@ -158,8 +166,8 @@ static void print_usage(FILE *output)
         "  --token-file PATH   remote API token in a private file\n"
         "  --passphrase-file PATH\n"
         "                      private full-backup passphrase file\n"
-        "  --client-cert PATH  optional mTLS client certificate\n"
-        "  --client-key PATH   optional mTLS client private key\n"
+        "  --client-cert PATH  required remote mTLS client certificate\n"
+        "  --client-key PATH   required remote mTLS client private key\n"
         "  --ca-file PATH      optional PEM trust-anchor file\n"
         "  --timeout SECONDS   remote request timeout (1-300)\n"
         "\n"
@@ -336,8 +344,8 @@ static int parse_options(int argc,
          ((options->client_certificate != NULL || options->client_key != NULL ||
            options->ca_file != NULL) &&
           options->endpoint == NULL) ||
-         ((options->client_certificate == NULL) !=
-          (options->client_key == NULL)))) {
+         (options->endpoint != NULL && (options->client_certificate == NULL ||
+                                        options->client_key == NULL)))) {
         result = -EINVAL;
     }
     *command_index = optind;
@@ -2282,6 +2290,217 @@ static int run_certificate_command(const struct cli_options *options,
     return result;
 }
 
+/** @brief Show the current remote client-authority trust store. */
+static int run_mtls_ca_show(const struct cli_options *options,
+                            const char *token)
+{
+    json_t *body = NULL;
+    int result = fetch_api_object(options, token, "/api/v1/mtls/authorities",
+                                  NULL, &body);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Install one bounded client-authority PEM bundle. */
+static int run_mtls_ca_install(const struct cli_options *options,
+                               const char *token,
+                               const char *file)
+{
+    char *pem = NULL;
+    size_t pem_size = 0U;
+    json_t *body = NULL;
+    int read_result = 0;
+    int result = CLI_EXIT_SUCCESS;
+
+    if (!destructive_operation_confirmed(
+            options, "Replace the remote client CA trust store")) {
+        return CLI_EXIT_FAILURE;
+    }
+    pem = read_text(file, &pem_size, &read_result);
+    if (pem == NULL || pem_size > JG_CERTIFICATE_PEM_MAX) {
+        (void)fprintf(stderr, "janusgatectl: client CA bundle: %s\n",
+                      strerror(pem == NULL ? -read_result : EFBIG));
+        free(pem);
+        return read_result == -EINVAL || read_result == -EMSGSIZE ||
+                       pem_size > JG_CERTIFICATE_PEM_MAX
+                   ? CLI_EXIT_USAGE
+                   : CLI_EXIT_FAILURE;
+    }
+    body = json_object();
+    if (body == NULL || json_object_set_new(body, "certificate_authorities",
+                                            json_stringn(pem, pem_size)) != 0) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "mTLS CA install", "PUT",
+                                  "/api/v1/mtls/authorities", body);
+    }
+    json_decref(body);
+    free(pem);
+    return result;
+}
+
+/** @brief Remove the remote client-authority trust store. */
+static int run_mtls_ca_remove(const struct cli_options *options,
+                              const char *token)
+{
+    json_t *body = NULL;
+    int result = CLI_EXIT_SUCCESS;
+
+    if (!destructive_operation_confirmed(
+            options, "Remove the remote client CA trust store")) {
+        return CLI_EXIT_FAILURE;
+    }
+    body = json_object();
+    if (body == NULL) {
+        return CLI_EXIT_FAILURE;
+    }
+    result = send_api_request(options, token, "mTLS CA remove", "DELETE",
+                              "/api/v1/mtls/authorities", body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief List persistent client-certificate identity mappings. */
+static int run_mtls_mapping_list(const struct cli_options *options,
+                                 const char *token)
+{
+    json_t *body = NULL;
+    int result = fetch_api_object(options, token, "/api/v1/mtls/mappings",
+                                  "limit=100", &body);
+
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, body);
+    }
+    json_decref(body);
+    return result;
+}
+
+/** @brief Return whether one CLI role is valid for an mTLS mapping. */
+static bool mtls_role_valid(const char *role)
+{
+    return strcmp(role, "administrator") == 0 ||
+           strcmp(role, "operator") == 0 || strcmp(role, "auditor") == 0;
+}
+
+/** @brief Create one client-certificate mapping from a PEM leaf. */
+static int run_mtls_mapping_add(const struct cli_options *options,
+                                const char *token,
+                                const char *file,
+                                const char *target_kind,
+                                const char *target)
+{
+    char *pem = NULL;
+    size_t pem_size = 0U;
+    uint64_t user_id = 0U;
+    json_t *body = NULL;
+    int read_result = 0;
+    int result = CLI_EXIT_SUCCESS;
+
+    if ((strcmp(target_kind, "user") == 0 &&
+         parse_identifier(target, &user_id) != 0) ||
+        (strcmp(target_kind, "role") == 0 && !mtls_role_valid(target)) ||
+        (strcmp(target_kind, "user") != 0 &&
+         strcmp(target_kind, "role") != 0)) {
+        return CLI_EXIT_USAGE;
+    }
+    pem = read_text(file, &pem_size, &read_result);
+    if (pem == NULL || pem_size > JG_CERTIFICATE_PEM_MAX) {
+        (void)fprintf(stderr, "janusgatectl: client certificate: %s\n",
+                      strerror(pem == NULL ? -read_result : EFBIG));
+        free(pem);
+        return read_result == -EINVAL || read_result == -EMSGSIZE ||
+                       pem_size > JG_CERTIFICATE_PEM_MAX
+                   ? CLI_EXIT_USAGE
+                   : CLI_EXIT_FAILURE;
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "certificate", json_stringn(pem, pem_size)) !=
+            0 ||
+        json_object_set_new(body, "user_id",
+                            user_id == 0U
+                                ? json_null()
+                                : json_integer((json_int_t)user_id)) != 0 ||
+        json_object_set_new(body, "role",
+                            user_id == 0U ? json_string(target)
+                                          : json_null()) != 0) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = send_api_request(options, token, "mTLS mapping add", "POST",
+                                  "/api/v1/mtls/mappings", body);
+    }
+    json_decref(body);
+    free(pem);
+    return result;
+}
+
+/** @brief Revoke one persistent client-certificate mapping. */
+static int run_mtls_mapping_revoke(const struct cli_options *options,
+                                   const char *token,
+                                   const char *identifier_text)
+{
+    char path[96U];
+    uint64_t identifier = 0U;
+    json_t *body = NULL;
+    int written = 0;
+    int result = parse_identifier(identifier_text, &identifier);
+
+    if (result != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    if (!destructive_operation_confirmed(
+            options, "Revoke the client-certificate mapping")) {
+        return CLI_EXIT_FAILURE;
+    }
+    written = snprintf(path, sizeof(path), "/api/v1/mtls/mappings/%llu",
+                       (unsigned long long)identifier);
+    body = json_object();
+    if (written <= 0 || (size_t)written >= sizeof(path) || body == NULL) {
+        json_decref(body);
+        return CLI_EXIT_FAILURE;
+    }
+    result = send_api_request(options, token, "mTLS mapping revoke", "DELETE",
+                              path, body);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Run one recognized mTLS administration command. */
+static int run_mtls_command(const struct cli_options *options,
+                            int argc,
+                            char **argv)
+{
+    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
+    int result = load_token(options, token);
+
+    if (result != CLI_EXIT_SUCCESS) {
+        return result;
+    }
+    if (strcmp(argv[1], "ca") == 0 && strcmp(argv[2], "show") == 0) {
+        result = run_mtls_ca_show(options, token);
+    } else if (strcmp(argv[1], "ca") == 0 && strcmp(argv[2], "install") == 0) {
+        result = run_mtls_ca_install(options, token, argv[3]);
+    } else if (strcmp(argv[1], "ca") == 0) {
+        result = run_mtls_ca_remove(options, token);
+    } else if (strcmp(argv[2], "list") == 0) {
+        result = run_mtls_mapping_list(options, token);
+    } else if (strcmp(argv[2], "add") == 0) {
+        result =
+            run_mtls_mapping_add(options, token, argv[3], argv[4], argv[5]);
+    } else {
+        result = run_mtls_mapping_revoke(options, token, argv[3]);
+    }
+    (void)argc;
+    sodium_memzero(token, sizeof(token));
+    return result;
+}
+
 /** @brief Create one configuration or full backup through the API. */
 static int run_backup_create(const struct cli_options *options,
                              const char *token,
@@ -2938,6 +3157,17 @@ static int run_command(const struct cli_options *options,
          (argc == 3 &&
           (strcmp(argv[1], "install") == 0 || strcmp(argv[1], "csr") == 0)))) {
         return run_certificate_command(options, argc, argv);
+    }
+    if (argc >= 3 && strcmp(argv[0], "mtls") == 0 &&
+        ((strcmp(argv[1], "ca") == 0 &&
+          ((argc == 3 &&
+            (strcmp(argv[2], "show") == 0 || strcmp(argv[2], "remove") == 0)) ||
+           (argc == 4 && strcmp(argv[2], "install") == 0))) ||
+         (strcmp(argv[1], "mapping") == 0 &&
+          ((argc == 3 && strcmp(argv[2], "list") == 0) ||
+           (argc == 4 && strcmp(argv[2], "revoke") == 0) ||
+           (argc == 6 && strcmp(argv[2], "add") == 0))))) {
+        return run_mtls_command(options, argc, argv);
     }
     if (argc == 3 && strcmp(argv[0], "backup") == 0 &&
         ((strcmp(argv[1], "create") == 0 &&

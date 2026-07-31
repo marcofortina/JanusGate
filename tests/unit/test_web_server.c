@@ -25,6 +25,9 @@ static void test_web_config_validation(void **state)
     (void)state;
     jg_web_config_default(&config);
     assert_int_equal(jg_web_config_validate(&config), 0);
+    assert_int_equal(config.api_port, JG_WEB_DEFAULT_API_PORT);
+    assert_string_equal(config.client_ca_path,
+                        JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH);
     config.listen_address = "0.0.0.0";
     assert_int_equal(jg_web_config_validate(&config), -EINVAL);
     config.listen_address = "::";
@@ -36,6 +39,12 @@ static void test_web_config_validation(void **state)
     config.control_socket_path = "relative";
     assert_int_equal(jg_web_config_validate(&config), -EINVAL);
     config.control_socket_path = JG_CONTROL_SOCKET_PATH;
+    config.api_port = config.port;
+    assert_int_equal(jg_web_config_validate(&config), -EINVAL);
+    config.api_port = JG_WEB_DEFAULT_API_PORT;
+    config.client_ca_path = "relative";
+    assert_int_equal(jg_web_config_validate(&config), -EINVAL);
+    config.client_ca_path = JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH;
     config.worker_count = 1U;
     assert_int_equal(jg_web_config_validate(&config), -ERANGE);
 }
@@ -48,8 +57,9 @@ static void test_web_listener(void **state)
 
     (void)state;
     jg_web_config_default(&config);
-    assert_int_equal(jg_web_build_listener(&config, listener, sizeof(listener)),
-                     0);
+    assert_int_equal(
+        jg_web_build_listener(&config, config.port, listener, sizeof(listener)),
+        0);
 #if defined(__OpenBSD__)
     assert_string_equal(listener, "192.168.77.1:8443s");
 #else
@@ -57,10 +67,16 @@ static void test_web_listener(void **state)
 #endif
     config.listen_address = "2001:db8::1";
     config.port = 8443U;
-    assert_int_equal(jg_web_build_listener(&config, listener, sizeof(listener)),
-                     0);
+    assert_int_equal(
+        jg_web_build_listener(&config, config.port, listener, sizeof(listener)),
+        0);
     assert_string_equal(listener, "[2001:db8::1]:8443s");
-    assert_int_equal(jg_web_build_listener(&config, listener, 4U), -ENOSPC);
+    assert_int_equal(jg_web_build_listener(&config, config.api_port, listener,
+                                           sizeof(listener)),
+                     0);
+    assert_string_equal(listener, "[2001:db8::1]:9443s");
+    assert_int_equal(jg_web_build_listener(&config, config.port, listener, 4U),
+                     -ENOSPC);
     assert_string_equal(listener, "[20");
 }
 

@@ -31,9 +31,9 @@ struct jg_cli_remote_config {
     const char *endpoint;
     /** Exact opaque API token. */
     const char *token;
-    /** Optional PEM client certificate path. */
+    /** Required PEM client certificate path. */
     const char *client_certificate;
-    /** Optional PEM client private-key path. */
+    /** Required PEM client private-key path. */
     const char *client_key;
     /** Optional PEM trust-anchor path. */
     const char *ca_file;

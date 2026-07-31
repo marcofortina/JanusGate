@@ -24,6 +24,8 @@
 #include <unistd.h>
 
 #include <civetweb.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
 
 #include "web_gateway.h"
 
@@ -81,12 +83,23 @@ static const struct web_asset web_assets[] = {
     {"/icons/shield.svg", "icons/shield.svg", "image/svg+xml", false},
 };
 
-/** Complete ownership of one CivetWeb server. */
+/** Per-listener request boundary owned by the complete web service. */
+struct web_listener_context {
+    struct jg_web_server *server;
+    enum jg_web_gateway_mode mode;
+    uint16_t port;
+};
+
+/** Complete ownership of the browser and optional remote API listeners. */
 struct jg_web_server {
-    struct mg_context *context;
+    struct mg_context *web_context;
+    struct mg_context *api_context;
+    struct web_listener_context web_listener;
+    struct web_listener_context api_listener;
     struct jg_web_config config;
     char *listen_address;
     char *certificate_path;
+    char *client_ca_path;
     char *web_root;
     char *control_socket_path;
 };
@@ -98,7 +111,9 @@ void jg_web_config_default(struct jg_web_config *config)
         *config = (struct jg_web_config){
             .listen_address = JG_WEB_DEFAULT_ADDRESS,
             .port = JG_WEB_DEFAULT_PORT,
+            .api_port = JG_WEB_DEFAULT_API_PORT,
             .certificate_path = JG_WEB_DEFAULT_CERTIFICATE,
+            .client_ca_path = JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH,
             .web_root = JG_WEB_DEFAULT_ROOT,
             .control_socket_path = JG_CONTROL_SOCKET_PATH,
             .max_request_size = 65536U,
@@ -156,7 +171,10 @@ static int address_family(const char *address)
 int jg_web_config_validate(const struct jg_web_config *config)
 {
     if (config == NULL || address_family(config->listen_address) == AF_UNSPEC ||
-        config->port == 0U || !absolute_path_valid(config->certificate_path) ||
+        config->port == 0U || config->api_port == 0U ||
+        config->port == config->api_port ||
+        !absolute_path_valid(config->certificate_path) ||
+        !absolute_path_valid(config->client_ca_path) ||
         !absolute_path_valid(config->web_root) ||
         !absolute_path_valid(config->control_socket_path)) {
         return -EINVAL;
@@ -171,6 +189,7 @@ int jg_web_config_validate(const struct jg_web_config *config)
 
 /** @brief Build one exact TLS-only CivetWeb listener expression. */
 int jg_web_build_listener(const struct jg_web_config *config,
+                          uint16_t port,
                           char *output,
                           size_t output_size)
 {
@@ -179,7 +198,7 @@ int jg_web_build_listener(const struct jg_web_config *config,
     int written = 0;
     int result = jg_web_config_validate(config);
 
-    if (output == NULL) {
+    if (output == NULL || port == 0U) {
         return -EINVAL;
     }
     if (output_size != 0U) {
@@ -190,10 +209,10 @@ int jg_web_build_listener(const struct jg_web_config *config,
     }
     if (family == AF_INET6) {
         written = snprintf(output, output_size, "[%s]:%us",
-                           config->listen_address, (unsigned int)config->port);
+                           config->listen_address, (unsigned int)port);
     } else {
         written = snprintf(output, output_size, "%s:%us",
-                           config->listen_address, (unsigned int)config->port);
+                           config->listen_address, (unsigned int)port);
     }
     return written < 0 || (size_t)written >= output_size ? -ENOSPC : 0;
 }
@@ -258,7 +277,8 @@ static const char *request_header(const struct mg_connection *connection,
 
 /** @brief Validate the request Host against the configured listener address. */
 static bool host_valid(const struct mg_connection *connection,
-                       const struct jg_web_config *config)
+                       const struct jg_web_config *config,
+                       uint16_t port)
 {
     const char *host = request_header(connection, "Host");
     char expected[INET6_ADDRSTRLEN + 16U];
@@ -270,12 +290,12 @@ static bool host_valid(const struct mg_connection *connection,
     }
     if (address_family(config->listen_address) == AF_INET6) {
         written = snprintf(expected, sizeof(expected), "[%s]:%u",
-                           config->listen_address, (unsigned int)config->port);
+                           config->listen_address, (unsigned int)port);
         (void)snprintf(expected_without_port, sizeof(expected_without_port),
                        "[%s]", config->listen_address);
     } else {
         written = snprintf(expected, sizeof(expected), "%s:%u",
-                           config->listen_address, (unsigned int)config->port);
+                           config->listen_address, (unsigned int)port);
         (void)snprintf(expected_without_port, sizeof(expected_without_port),
                        "%s", config->listen_address);
     }
@@ -462,18 +482,62 @@ static int gateway_headers(const struct jg_web_gateway_response *response,
     return written < 0 || (size_t)written >= headers_size ? -ENOSPC : 0;
 }
 
+/** @brief Render the verified TLS peer certificate SHA-256 fingerprint. */
+static int client_certificate_fingerprint(const struct mg_request_info *request,
+                                          char fingerprint[65U])
+{
+    static const char hexadecimal[] = "0123456789abcdef";
+    uint8_t digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_size = 0U;
+    X509 *certificate = NULL;
+
+    if (request == NULL || request->client_cert == NULL ||
+        request->client_cert->peer_cert == NULL) {
+        return -EACCES;
+    }
+    certificate = request->client_cert->peer_cert;
+    if (X509_digest(certificate, EVP_sha256(), digest, &digest_size) != 1 ||
+        digest_size != 32U) {
+        return -EIO;
+    }
+    for (size_t index = 0U; index < digest_size; ++index) {
+        fingerprint[index * 2U] = hexadecimal[digest[index] >> 4U];
+        fingerprint[index * 2U + 1U] =
+            hexadecimal[digest[index] & UINT8_C(0x0f)];
+    }
+    fingerprint[digest_size * 2U] = '\0';
+    return 0;
+}
+
 /** @brief Process and send one validated management API response. */
 static int send_gateway_response(struct mg_connection *connection,
-                                 const struct jg_web_server *server)
+                                 const struct web_listener_context *listener,
+                                 const struct mg_request_info *request)
 {
+    const struct jg_web_server *server = listener->server;
     struct jg_web_gateway_response response;
     char headers[512U];
-    int result =
-        jg_web_gateway_process(connection, server->config.control_socket_path,
-                               server->config.max_request_size,
-                               JG_WEB_GATEWAY_BROWSER, NULL, &response);
+    char fingerprint[65U];
+    const char *client_certificate = NULL;
+    int result = 0;
     int status = 500;
 
+    if (listener->mode == JG_WEB_GATEWAY_REMOTE_API) {
+        result = client_certificate_fingerprint(request, fingerprint);
+        if (result != 0) {
+            (void)send_json(connection, 401, "Unauthorized",
+                            "{\"error\":{\"code\":\"client_certificate_"
+                            "required\",\"message\":\"A trusted client "
+                            "certificate is required.\"}}\n",
+                            server->config.hsts);
+            return 401;
+        }
+        client_certificate = fingerprint;
+    }
+    result =
+        jg_web_gateway_process(connection, server->config.control_socket_path,
+                               server->config.max_request_size, listener->mode,
+                               client_certificate, &response);
     if (result == 0) {
         result = gateway_headers(&response, headers, sizeof(headers));
     }
@@ -503,16 +567,18 @@ static int send_gateway_response(struct mg_connection *connection,
 /** @brief Dispatch one HTTPS management request. */
 static int handle_request(struct mg_connection *connection, void *context)
 {
-    const struct jg_web_server *server = context;
+    const struct web_listener_context *listener = context;
+    const struct jg_web_server *server =
+        listener == NULL ? NULL : listener->server;
     const struct mg_request_info *request = mg_get_request_info(connection);
     const struct web_asset *asset = NULL;
     bool head_only = false;
     int result = 0;
     int status = 200;
 
-    if (request == NULL || request->local_uri == NULL ||
+    if (server == NULL || request == NULL || request->local_uri == NULL ||
         request->request_method == NULL || request->is_ssl != 1 ||
-        !host_valid(connection, &server->config)) {
+        !host_valid(connection, &server->config, listener->port)) {
         (void)send_json(connection, 400, "Bad Request",
                         "{\"error\":{\"code\":\"invalid_request\","
                         "\"message\":\"The request is not valid.\"}}\n",
@@ -527,14 +593,23 @@ static int handle_request(struct mg_connection *connection, void *context)
                             server->config.hsts);
             return 405;
         }
-        result =
-            send_json(connection, 200, "OK",
-                      "{\"status\":\"ok\",\"service\":\"janusgate-web\"}\n",
-                      server->config.hsts);
+        result = send_json(
+            connection, 200, "OK",
+            listener->mode == JG_WEB_GATEWAY_REMOTE_API
+                ? "{\"status\":\"ok\",\"service\":\"janusgate-api\"}\n"
+                : "{\"status\":\"ok\",\"service\":\"janusgate-web\"}\n",
+            server->config.hsts);
         return result == 0 ? 200 : 500;
     }
     if (strncmp(request->local_uri, "/api/v1/", sizeof("/api/v1/") - 1U) == 0) {
-        return send_gateway_response(connection, server);
+        return send_gateway_response(connection, listener, request);
+    }
+    if (listener->mode == JG_WEB_GATEWAY_REMOTE_API) {
+        (void)send_json(connection, 404, "Not Found",
+                        "{\"error\":{\"code\":\"not_found\","
+                        "\"message\":\"The resource was not found.\"}}\n",
+                        server->config.hsts);
+        return 404;
     }
     asset = find_asset(request->local_uri);
     if (asset == NULL) {
@@ -582,6 +657,10 @@ static int own_config(struct jg_web_server *server,
                                   &server->certificate_path);
     }
     if (result == 0) {
+        result =
+            duplicate_string(config->client_ca_path, &server->client_ca_path);
+    }
+    if (result == 0) {
         result = duplicate_string(config->web_root, &server->web_root);
     }
     if (result == 0) {
@@ -592,23 +671,110 @@ static int own_config(struct jg_web_server *server,
         server->config = *config;
         server->config.listen_address = server->listen_address;
         server->config.certificate_path = server->certificate_path;
+        server->config.client_ca_path = server->client_ca_path;
         server->config.web_root = server->web_root;
         server->config.control_socket_path = server->control_socket_path;
     }
     return result;
 }
 
-/** @brief Start one TLS-only CivetWeb management context. */
+/** @brief Determine whether a valid client-authority store is installed. */
+static int client_trust_store_available(const char *path, bool *available)
+{
+    struct jg_certificate_info *authorities =
+        calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    size_t authority_count = 0U;
+    int result = 0;
+
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_certificate_trust_store_inspect_file(
+        path, authorities, JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    free(authorities);
+    if (result == -ENOENT) {
+        *available = false;
+        return 0;
+    }
+    if (result == 0) {
+        *available = authority_count != 0U;
+    }
+    return result;
+}
+
+/** @brief Start one isolated TLS listener with its authentication boundary. */
+static int start_listener(struct jg_web_server *server,
+                          const char *listener,
+                          struct web_listener_context *listener_context,
+                          struct mg_context **context)
+{
+    struct mg_callbacks callbacks;
+    char request_size[16U];
+    char worker_count[8U];
+    const char *options[39U];
+    size_t option = 0U;
+
+    (void)snprintf(request_size, sizeof(request_size), "%u",
+                   (unsigned int)server->config.max_request_size);
+    (void)snprintf(worker_count, sizeof(worker_count), "%u",
+                   (unsigned int)server->config.worker_count);
+    options[option++] = "listening_ports";
+    options[option++] = listener;
+    options[option++] = "ssl_certificate";
+    options[option++] = server->certificate_path;
+    options[option++] = "ssl_protocol_version";
+    options[option++] = "4";
+    options[option++] = "ssl_cipher_list";
+    options[option++] = "ECDHE-ECDSA-AES256-GCM-SHA384:"
+                        "ECDHE-RSA-AES256-GCM-SHA384:"
+                        "ECDHE-ECDSA-AES128-GCM-SHA256:"
+                        "ECDHE-RSA-AES128-GCM-SHA256";
+    options[option++] = "ssl_short_trust";
+    options[option++] = "yes";
+    if (listener_context->mode == JG_WEB_GATEWAY_REMOTE_API) {
+        options[option++] = "ssl_ca_file";
+        options[option++] = server->client_ca_path;
+        options[option++] = "ssl_verify_peer";
+        options[option++] = "yes";
+        options[option++] = "ssl_verify_depth";
+        options[option++] = "8";
+    }
+    options[option++] = "enable_directory_listing";
+    options[option++] = "no";
+    options[option++] = "enable_webdav";
+    options[option++] = "no";
+    options[option++] = "enable_keep_alive";
+    options[option++] = "yes";
+    options[option++] = "keep_alive_timeout_ms";
+    options[option++] = "5000";
+    options[option++] = "request_timeout_ms";
+    options[option++] = "15000";
+    options[option++] = "max_request_size";
+    options[option++] = request_size;
+    options[option++] = "num_threads";
+    options[option++] = worker_count;
+    options[option++] = "decode_url";
+    options[option++] = "yes";
+    options[option++] = "tcp_nodelay";
+    options[option++] = "1";
+    options[option] = NULL;
+    (void)memset(&callbacks, 0, sizeof(callbacks));
+    *context = mg_start(&callbacks, listener_context, options);
+    if (*context == NULL) {
+        return -EIO;
+    }
+    mg_set_request_handler(*context, "/", handle_request, listener_context);
+    return 0;
+}
+
+/** @brief Start the browser listener and optional mTLS remote API. */
 int jg_web_server_start(const struct jg_web_config *config,
                         struct jg_web_server **server)
 {
     struct jg_web_server *started = NULL;
-    struct mg_callbacks callbacks;
-    char listener[INET6_ADDRSTRLEN + 16U];
-    char request_size[16U];
-    char worker_count[8U];
-    const char *options[31U];
-    size_t option = 0U;
+    char web_listener[INET6_ADDRSTRLEN + 16U];
+    char api_listener[INET6_ADDRSTRLEN + 16U];
+    bool remote_api = false;
     int result = 0;
 
     if (server == NULL) {
@@ -623,7 +789,16 @@ int jg_web_server_start(const struct jg_web_config *config,
         result = validate_web_root(config->web_root);
     }
     if (result == 0) {
-        result = jg_web_build_listener(config, listener, sizeof(listener));
+        result =
+            client_trust_store_available(config->client_ca_path, &remote_api);
+    }
+    if (result == 0) {
+        result = jg_web_build_listener(config, config->port, web_listener,
+                                       sizeof(web_listener));
+    }
+    if (result == 0 && remote_api) {
+        result = jg_web_build_listener(config, config->api_port, api_listener,
+                                       sizeof(api_listener));
     }
     if (result == 0) {
         started = calloc(1U, sizeof(*started));
@@ -635,50 +810,24 @@ int jg_web_server_start(const struct jg_web_config *config,
         result = own_config(started, config);
     }
     if (result == 0) {
-        (void)snprintf(request_size, sizeof(request_size), "%u",
-                       (unsigned int)config->max_request_size);
-        (void)snprintf(worker_count, sizeof(worker_count), "%u",
-                       (unsigned int)config->worker_count);
-        options[option++] = "listening_ports";
-        options[option++] = listener;
-        options[option++] = "ssl_certificate";
-        options[option++] = started->certificate_path;
-        options[option++] = "ssl_protocol_version";
-        options[option++] = "4";
-        options[option++] = "ssl_cipher_list";
-        options[option++] = "ECDHE-ECDSA-AES256-GCM-SHA384:"
-                            "ECDHE-RSA-AES256-GCM-SHA384:"
-                            "ECDHE-ECDSA-AES128-GCM-SHA256:"
-                            "ECDHE-RSA-AES128-GCM-SHA256";
-        options[option++] = "ssl_short_trust";
-        options[option++] = "yes";
-        options[option++] = "enable_directory_listing";
-        options[option++] = "no";
-        options[option++] = "enable_webdav";
-        options[option++] = "no";
-        options[option++] = "enable_keep_alive";
-        options[option++] = "yes";
-        options[option++] = "keep_alive_timeout_ms";
-        options[option++] = "5000";
-        options[option++] = "request_timeout_ms";
-        options[option++] = "15000";
-        options[option++] = "max_request_size";
-        options[option++] = request_size;
-        options[option++] = "num_threads";
-        options[option++] = worker_count;
-        options[option++] = "decode_url";
-        options[option++] = "yes";
-        options[option++] = "tcp_nodelay";
-        options[option++] = "1";
-        options[option] = NULL;
-        (void)memset(&callbacks, 0, sizeof(callbacks));
-        started->context = mg_start(&callbacks, started, options);
-        if (started->context == NULL) {
-            result = -EIO;
-        }
+        started->web_listener = (struct web_listener_context){
+            .server = started,
+            .mode = JG_WEB_GATEWAY_BROWSER,
+            .port = config->port,
+        };
+        result = start_listener(started, web_listener, &started->web_listener,
+                                &started->web_context);
+    }
+    if (result == 0 && remote_api) {
+        started->api_listener = (struct web_listener_context){
+            .server = started,
+            .mode = JG_WEB_GATEWAY_REMOTE_API,
+            .port = config->api_port,
+        };
+        result = start_listener(started, api_listener, &started->api_listener,
+                                &started->api_context);
     }
     if (result == 0) {
-        mg_set_request_handler(started->context, "/", handle_request, started);
         *server = started;
     } else {
         jg_web_server_destroy(started);
@@ -692,12 +841,16 @@ void jg_web_server_destroy(struct jg_web_server *server)
     if (server == NULL) {
         return;
     }
-    if (server->context != NULL) {
-        mg_stop(server->context);
+    if (server->api_context != NULL) {
+        mg_stop(server->api_context);
+    }
+    if (server->web_context != NULL) {
+        mg_stop(server->web_context);
     }
     free(server->web_root);
     free(server->control_socket_path);
     free(server->certificate_path);
+    free(server->client_ca_path);
     free(server->listen_address);
     free(server);
 }

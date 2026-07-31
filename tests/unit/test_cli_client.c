@@ -88,6 +88,9 @@ static void test_remote_config_validation(void **state)
     jg_cli_remote_config_default(&config);
     config.endpoint = "https://janusgate.example";
     config.token = token;
+    assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
+    config.client_certificate = "/tmp/client.pem";
+    config.client_key = "/tmp/client.key";
     assert_int_equal(jg_cli_remote_config_validate(&config), 0);
     config.endpoint = "http://janusgate.example";
     assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
@@ -96,7 +99,7 @@ static void test_remote_config_validation(void **state)
     config.endpoint = "https://janusgate.example/api";
     assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
     config.endpoint = "https://janusgate.example/";
-    config.client_certificate = "/tmp/client.pem";
+    config.client_key = NULL;
     assert_int_equal(jg_cli_remote_config_validate(&config), -EINVAL);
     config.client_key = "/tmp/client.key";
     assert_int_equal(jg_cli_remote_config_validate(&config), 0);

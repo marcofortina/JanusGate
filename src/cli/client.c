@@ -118,10 +118,27 @@ static bool endpoint_valid(const char *endpoint)
     return slash == NULL || slash[1U] == '\0';
 }
 
+/** @brief Validate an absolute file path without control bytes. */
+static bool absolute_path_valid(const char *path)
+{
+    size_t size = 0U;
+
+    if (path == NULL || path[0U] != '/' || path[1U] == '\0') {
+        return false;
+    }
+    while (size <= CLI_ENDPOINT_SIZE_MAX && path[size] != '\0') {
+        if (!visible_ascii(path[size])) {
+            return false;
+        }
+        ++size;
+    }
+    return size <= CLI_ENDPOINT_SIZE_MAX;
+}
+
 /** @brief Validate an optional absolute file path. */
 static bool optional_path_valid(const char *path)
 {
-    return path == NULL || path[0U] == '/';
+    return path == NULL || absolute_path_valid(path);
 }
 
 /** @brief Translate one libcurl transport result to errno style. */
@@ -193,11 +210,9 @@ int jg_cli_remote_config_validate(const struct jg_cli_remote_config *config)
     if (config == NULL || !endpoint_valid(config->endpoint) ||
         config->token == NULL ||
         strlen(config->token) != JG_AUTH_SECRET_TEXT_SIZE - 1U ||
-        !optional_path_valid(config->client_certificate) ||
-        !optional_path_valid(config->client_key) ||
-        !optional_path_valid(config->ca_file) ||
-        ((config->client_certificate == NULL) !=
-         (config->client_key == NULL))) {
+        !absolute_path_valid(config->client_certificate) ||
+        !absolute_path_valid(config->client_key) ||
+        !optional_path_valid(config->ca_file)) {
         return -EINVAL;
     }
     return config->timeout_seconds == 0U ||
@@ -638,7 +653,7 @@ int jg_cli_remote_request(const struct jg_cli_remote_config *config,
         JG_CLI_CURL_SETOPT(CURLOPT_POSTFIELDSIZE_LARGE,
                            (curl_off_t)strlen(encoded));
     }
-    if (result == 0 && config->client_certificate != NULL) {
+    if (result == 0) {
         JG_CLI_CURL_SETOPT(CURLOPT_SSLCERT, config->client_certificate);
         JG_CLI_CURL_SETOPT(CURLOPT_SSLKEY, config->client_key);
     }
