@@ -23,7 +23,7 @@
 #define JG_BACKUP_PAYLOAD_MAX (256U * 1024U * 1024U)
 
 /** Minimum full-backup passphrase bytes. */
-#define JG_BACKUP_PASSPHRASE_MIN 8U
+#define JG_BACKUP_PASSPHRASE_MIN 16U
 
 /** Maximum full-backup passphrase bytes. */
 #define JG_BACKUP_PASSPHRASE_MAX 1024U

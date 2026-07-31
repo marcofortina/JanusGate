@@ -73,10 +73,10 @@ home-lab CA example.
 ## Backups and diagnostics
 
 Configuration backups exclude private secrets. Full backups are encrypted
-with a passphrase and may include the server private key only when explicitly
-requested. The interface can create, inspect, and restore backups. Restore
-validates the archive, manifest, paths, schema, and integrity before replacing
-state.
+with a passphrase of at least 16 characters and may include the server private
+key only when explicitly requested. The interface can create, inspect, and
+restore backups. Restore validates the archive, manifest, paths, schema, and
+integrity before replacing state.
 
 Diagnostics create a bounded archive containing versions, sanitized
 configuration, recent service information, and selected logs. Review it before

@@ -19,6 +19,8 @@ import {
   withBusyButton,
 } from "./ui.js";
 
+const backupPassphraseMinimum = 16;
+
 let initialized = false;
 let backups = [];
 let nextCursor = null;
@@ -151,10 +153,11 @@ async function validateRestore(event) {
   }
   const passphrase = restorePassphrase();
 
-  if (selectedBackup.encrypted && passphrase.length < 8) {
+  if (selectedBackup.encrypted &&
+      passphrase.length < backupPassphraseMinimum) {
     showError(
       byId("backups-error"),
-      "The full-backup passphrase must contain at least 8 characters.",
+      `The full-backup passphrase must contain at least ${backupPassphraseMinimum} characters.`,
     );
     return;
   }
@@ -256,10 +259,10 @@ async function createBackup(event) {
     full && form.elements.include_private_key.checked;
 
   showError(byId("backups-error"), "");
-  if (full && passphrase.length < 8) {
+  if (full && passphrase.length < backupPassphraseMinimum) {
     showError(
       byId("backups-error"),
-      "A full-backup passphrase must contain at least 8 characters.",
+      `A full-backup passphrase must contain at least ${backupPassphraseMinimum} characters.`,
     );
     return;
   }

@@ -91,13 +91,14 @@ static void test_encrypted_archive(void **state)
     static const uint8_t database[] = "SQLite snapshot with credentials";
     static const uint8_t private_certificate[] =
         "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n";
-    static const char passphrase[] = "correct horse battery staple";
+    static const char passphrase[] = "minimum phrase!!";
     struct jg_backup_info info;
     struct jg_backup_contents contents;
     uint8_t *archive = NULL;
     size_t archive_size = 0U;
 
     (void)state;
+    assert_int_equal(sizeof(passphrase) - 1U, JG_BACKUP_PASSPHRASE_MIN);
     assert_int_equal(
         jg_backup_create(JG_BACKUP_FULL, database, sizeof(database) - 1U,
                          private_certificate, sizeof(private_certificate) - 1U,
@@ -129,6 +130,7 @@ static void test_archive_rejection(void **state)
 {
     static const uint8_t database[] = "database";
     static const char passphrase[] = "long enough passphrase";
+    static const char short_passphrase[] = "minimum phrase!";
     struct jg_backup_info info;
     struct jg_backup_contents contents;
     uint8_t *archive = NULL;
@@ -136,6 +138,8 @@ static void test_archive_rejection(void **state)
     size_t archive_size = 0U;
 
     (void)state;
+    assert_int_equal(sizeof(short_passphrase) - 1U,
+                     JG_BACKUP_PASSPHRASE_MIN - 1U);
     assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, database,
                                       sizeof(database) - 1U, NULL, 0U, NULL, 0U,
                                       1U, 9U, &archive, &archive_size),
@@ -164,11 +168,11 @@ static void test_archive_rejection(void **state)
                                       "unexpected", sizeof("unexpected") - 1U,
                                       1U, 9U, &archive, &archive_size),
                      -EINVAL);
-    assert_int_equal(jg_backup_create(JG_BACKUP_FULL, database,
-                                      sizeof(database) - 1U, NULL, 0U, "short",
-                                      sizeof("short") - 1U, 1U, 9U, &archive,
-                                      &archive_size),
-                     -EINVAL);
+    assert_int_equal(
+        jg_backup_create(JG_BACKUP_FULL, database, sizeof(database) - 1U, NULL,
+                         0U, short_passphrase, sizeof(short_passphrase) - 1U,
+                         1U, 9U, &archive, &archive_size),
+        -EINVAL);
     assert_int_equal(jg_backup_create(JG_BACKUP_FULL, database,
                                       sizeof(database) - 1U, NULL, 0U,
                                       passphrase, sizeof(passphrase) - 1U, 1U,

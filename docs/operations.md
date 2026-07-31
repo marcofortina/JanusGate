@@ -42,8 +42,9 @@ small and documented.
 ## Backups and certificates
 
 Create configuration backups after reviewed changes and encrypted full backups
-before upgrades. Store passphrases separately and test restoration on an
-isolated appliance. Restrict private-key backups to cases that require them.
+before upgrades. Use a unique passphrase of at least 16 characters, store it
+separately, and test restoration on an isolated appliance. Restrict private-key
+backups to cases that require them.
 
 Monitor certificate expiry. Install certificate and key together; JanusGate
 checks their match before replacement. Retain a recovery copy and console

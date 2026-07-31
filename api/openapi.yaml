@@ -1909,7 +1909,7 @@ components:
             properties:
               passphrase:
                 type: string
-                minLength: 8
+                minLength: 16
     BackupRestore:
       type: object
       additionalProperties: false
@@ -1917,6 +1917,7 @@ components:
       properties:
         passphrase:
           type: [string, 'null']
+          minLength: 16
           maxLength: 1024
         dry_run:
           type: boolean
