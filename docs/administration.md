@@ -51,11 +51,23 @@ TOTP enrollment; and create or revoke scoped API tokens. Token secret material
 is returned only at creation. Use the least privileged role and scope that
 supports the task.
 
-## Certificates, backups, and diagnostics
+## Certificates and remote API trust
 
 The certificate page displays the active certificate, installs a matching PEM
 certificate/key pair transactionally, and creates certificate-signing
-requests. A mismatch or failed service reload restores the previous pair.
+requests. It also installs or removes the remote client CA bundle, lists its
+authorities, creates user- or role-bound client-certificate mappings, and
+revokes those mappings. Private, self-hosted, home-lab, and public CAs are
+supported. HTTPS listeners reload automatically after certificate or trust
+changes made through the WebGUI.
+
+Browser login remains protected by password and optional TOTP and never
+requests a client certificate. The separate TCP 9443 automation listener
+requires both a trusted mapped client certificate and an API token. See
+[Remote API](remote-api.md) for the complete trust model and an OpenSSL
+home-lab CA example.
+
+## Backups and diagnostics
 
 Configuration backups exclude private secrets. Full backups are encrypted
 with a passphrase and may include the server private key only when explicitly

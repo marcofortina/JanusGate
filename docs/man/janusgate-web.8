@@ -13,8 +13,13 @@ janusgate-web \- serve the JanusGate HTTPS management interface
 serves static management assets and proxies versioned API requests to
 .BR janusgated (8)
 over the authenticated local control socket.
-It listens only on a configured numeric management address and provides no
-plaintext HTTP listener.
+The browser interface and the remote automation API use separate HTTPS
+listeners on the same configured numeric management address.
+The browser listener uses password, optional TOTP, and session authentication;
+it never requests a client certificate.
+The remote API listener requires both a trusted mapped client certificate and
+a compatible bearer token.
+No plaintext HTTP listener is provided.
 .PP
 The service refuses to run as root.
 Lifecycle and failure records use the structured JanusGate logging format.
@@ -27,15 +32,30 @@ The default is
 Wildcard and multicast addresses are rejected.
 .TP
 .BI --port " port"
-Listen on the nonzero TCP
+Serve the browser interface on the nonzero TCP
 .IR port .
 The default is 443 on Linux and 8443 on OpenBSD.
+.TP
+.BI --api-port " port"
+Serve the mutual-TLS remote automation API on the distinct nonzero TCP
+.IR port .
+The default is 9443.
+The listener remains disabled until a valid client certification-authority
+bundle is installed.
 .TP
 .BI --certificate " path"
 Load the combined PEM certificate and private key at
 .IR path .
 The default is
 .IR /etc/janusgate/certs/server.pem .
+.TP
+.BI --client-ca " path"
+Trust client certificates issued by the root and intermediate certification
+authorities in the PEM bundle at
+.IR path .
+The default is
+.IR /etc/janusgate/certs/client-ca.pem .
+The service refuses to start if this file exists but is invalid.
 .TP
 .BI --web-root " path"
 Serve static files from the absolute
@@ -68,10 +88,16 @@ Stop accepting requests and shut down cleanly.
 .TP
 .B SIGINT
 Stop accepting requests and shut down cleanly.
+.TP
+.B SIGHUP
+Validate current TLS material and reload both HTTPS listeners.
 .SH FILES
 .TP
 .I /etc/janusgate/certs/server.pem
 Default server certificate and private key.
+.TP
+.I /etc/janusgate/certs/client-ca.pem
+Default client certification-authority bundle for the remote API listener.
 .TP
 .I /usr/share/janusgate/web/
 Default immutable web assets on Linux.
@@ -98,6 +124,13 @@ The command line was invalid.
 Use a dedicated unprivileged identity and keep the server PEM private.
 Enable HSTS only after confirming that clients trust the permanent
 certificate.
+The browser listener deliberately does not use mutual TLS.
+Remote API requests are accepted only when the client certificate chains to
+the configured trust bundle, its leaf fingerprint has an active user or role
+mapping, and the bearer token belongs to a compatible principal.
+Private, self-hosted, and public certification authorities are supported;
+the appliance never accepts a leaf certificate or private key as a trust
+anchor.
 .SH SEE ALSO
 .BR janusgatectl (1),
 .BR janusgated (8),

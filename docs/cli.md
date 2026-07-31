@@ -13,19 +13,24 @@ credentials and must run as root:
 sudo janusgatectl status
 ```
 
-Specify `--endpoint` to use the remote HTTPS management API. Remote requests
-require an API token:
+Specify `--endpoint` to use the remote HTTPS management API on TCP 9443.
+Remote requests require both an API token and a client certificate:
 
 ```sh
-janusgatectl --endpoint https://192.168.77.1 \
-  --token-file /secure/janusgate.token status
+janusgatectl --endpoint https://192.168.77.1:9443 \
+  --token-file /secure/janusgate.token \
+  --client-cert /secure/operator.pem \
+  --client-key /secure/operator.key \
+  --ca-file /secure/root-ca.pem status
 ```
 
-`--token-file`, `--ca-file`, `--client-cert`, `--client-key`, and `--timeout`
-apply only to remote requests. Secret and passphrase files must be regular,
-caller-owned, private files. `--timeout` accepts 1–300 seconds. `--json`
-selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
-`--include-private-key` control output and explicit high-impact operations.
+`--token-file`, `--client-cert`, and `--client-key` are mandatory with
+`--endpoint`. `--ca-file` is optional when the server identity is already in
+the system trust store. These options and `--timeout` apply only to remote
+requests. Secret and passphrase files must be regular, caller-owned, private
+files. `--timeout` accepts 1–300 seconds. `--json` selects stable compact
+output; `--quiet`, `--verbose`, `--yes`, and `--include-private-key` control
+output and explicit high-impact operations.
 
 ## Read operations
 
@@ -36,8 +41,8 @@ selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
 - `blocklist list`, `blocklist export`, and `source list` inspect list state.
 - `events [QUERY]` and `audit [QUERY]` accept a bounded query string;
   `audit verify` validates the chain.
-- `user list`, `token list`, and `certificate show` inspect access and TLS
-  state.
+- `user list`, `token list`, `certificate show`, `mtls ca show`, and
+  `mtls mapping list` inspect access and TLS state.
 - `backup inspect ID` reports a stored backup without restoring it.
 - `logging show` reports configuration, expiry, buffered records, and
   suppression; `logging traces` returns the bounded live trace window.
@@ -64,6 +69,9 @@ selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
   it.
 - `certificate install FILE` performs a transactional PEM replacement;
   `certificate csr FILE` creates a signing request.
+- `mtls ca install FILE` and `mtls ca remove` manage the remote client trust
+  store. `mtls mapping add FILE user ID` or `mtls mapping add FILE role ROLE`
+  binds one client leaf; `mtls mapping revoke ID` invalidates it.
 - `backup create configuration` creates a non-secret backup.
 - `backup create full` requires `--passphrase-file`; private-key inclusion also
   requires `--include-private-key`.
@@ -92,4 +100,5 @@ status rather than human-readable text. The installed
 `janusgatectl(1)` page is the concise offline reference.
 
 The configuration example, component names, and safe troubleshooting sequence
-are documented in [Operations](operations.md).
+are documented in [Operations](operations.md). Private and home-lab CA setup is
+documented in [Remote API](remote-api.md).

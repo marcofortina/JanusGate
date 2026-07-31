@@ -50,9 +50,11 @@ bundles omit or redact secret fields, but an operator must still inspect a
 bundle before sharing it.
 
 Access to management data should be limited by role and by network placement.
-Use HTTPS with a trusted certificate; consider mTLS for high-value
-deployments. Forward logs only to an authorized destination over a protected
-channel, and document who can query events or export backups.
+Browser administration uses HTTPS, password, and optional TOTP without a
+client certificate. Remote API automation always adds mTLS and a mapped client
+identity to its scoped bearer token. Forward logs only to an authorized
+destination over a protected channel, and document who can query events or
+export backups.
 
 Blocking by domain necessarily exposes classic DNS names to the appliance.
 JanusGate does not decrypt application TLS. Attempts to gain visibility by

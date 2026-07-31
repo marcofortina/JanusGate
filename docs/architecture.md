@@ -15,7 +15,8 @@ same policy boundary.
 flowchart LR
     lan[LAN]
     router[Router]
-    management[Management]
+    browser[Management browser]
+    automation[Remote API client]
 
     subgraph janusgate[JanusGate appliance]
         direction TB
@@ -42,7 +43,8 @@ flowchart LR
 
     lan -->|data-in| bridge
     bridge -->|data-out| router
-    management -->|HTTPS| web
+    browser -->|HTTPS session| web
+    automation -->|mTLS + token on 9443| web
 ```
 
 ## Processes and privilege
@@ -52,10 +54,12 @@ flowchart LR
   control protocol. It runs as the unprivileged `janusgate` account.
 - `janusgate-netd` is the narrow privileged helper. It validates every request
   before changing bridge, address, packet selection, or appliance power state.
-- `janusgate-web` terminates management HTTPS as `janusgate-web`. It validates
-  HTTP limits and forwards structured requests over the local control socket.
+- `janusgate-web` terminates two isolated HTTPS boundaries as `janusgate-web`.
+  The browser listener uses sessions without mTLS. The optional TCP 9443 API
+  listener requires a trusted client certificate and token. Both validate HTTP
+  limits and forward structured requests over the local control socket.
 - `janusgatectl` provides full administration either as root through the local
-  control socket or remotely through the HTTPS API.
+  control socket or remotely through the mandatory-mTLS HTTPS API.
 - `janusgate-setup` validates and applies an explicit non-interactive
   installation document.
 

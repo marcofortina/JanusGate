@@ -5,15 +5,24 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
 # Management API
 
-The versioned API is rooted at `/api/v1` and served only through management
-HTTPS by default. `api/openapi.yaml` is the normative OpenAPI 3.1 contract.
+The versioned API is rooted at `/api/v1`. Browser administration is served on
+the normal management HTTPS listener. Remote automation is served separately
+on TCP 9443 only after a client CA bundle is installed. `api/openapi.yaml` is
+the normative OpenAPI 3.1 contract.
 
 ## Authentication and request rules
 
-Interactive clients authenticate through `/auth/login` and use the secure
+Interactive browsers authenticate through `/auth/login` and use the secure
 session cookie plus the returned CSRF value for every state-changing request.
-Automation sends `Authorization: Bearer TOKEN`. Deployments may additionally
-require a validated client certificate.
+The browser listener uses username, password, and optional TOTP; it does not
+request a client certificate.
+
+Automation connects to TCP 9443 with a trusted client certificate and sends
+`Authorization: Bearer TOKEN`. Both factors are mandatory. The leaf
+certificate fingerprint must have a current user or role mapping compatible
+with the token owner. Authentication routes and static WebGUI assets are not
+available on this listener. See [Remote API](remote-api.md) for private and
+home-lab CA setup.
 
 Requests must use the configured management host, an accepted media type, and
 bounded JSON. Unknown object fields, invalid UTF-8, trailing content, and
@@ -22,7 +31,7 @@ identifier suitable for audit correlation.
 
 ```http
 GET /api/v1/status HTTP/1.1
-Host: 192.168.77.1
+Host: 192.168.77.1:9443
 Authorization: Bearer <token>
 Accept: application/json
 ```
@@ -50,6 +59,8 @@ failures use `400` or `422`; missing resources use `404`; rate limiting uses
 - `/events`, `/audit`, and `/audit/verify`: bounded operational history.
 - `/users/*` and `/tokens/*`: identities, roles, TOTP removal, and API tokens.
 - `/certificates/*`: inspection, replacement, and CSR creation.
+- `/mtls/authorities` and `/mtls/mappings/*`: client trust and revocable
+  certificate identities for remote automation.
 - `/backups/*` and `/diagnostics`: protected recovery and support artifacts.
 - `/logging` and `/logging/traces`: revisioned runtime configuration,
   bounded counters, and the operator trace window.

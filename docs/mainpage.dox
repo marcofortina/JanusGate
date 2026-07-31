@@ -17,8 +17,9 @@
  * authentication, policy, backup, certificate, event, and IPC primitives.
  * `janusgated` owns immutable policy publication and packet processing.
  * `janusgate-netd` owns bridge, native packet selection, packet queues, and
- * appliance power operations. `janusgate-web` terminates HTTPS and proxies
- * authenticated API envelopes over the local control protocol.
+ * appliance power operations. `janusgate-web` keeps browser session
+ * authentication separate from the mandatory-mTLS remote automation listener
+ * and proxies authenticated API envelopes over the local control protocol.
  * `janusgatectl` and `janusgate-setup` provide deterministic administration
  * workflows.
  *

@@ -22,8 +22,11 @@ socket, authenticated by privileged Unix peer credentials.
 Local administration must run as root.
 Specifying
 .B --endpoint
-selects the versioned remote HTTPS management API and requires
-.BR --token-file .
+selects the dedicated versioned remote HTTPS management API and requires
+.BR --token-file ,
+.BR --client-cert ,
+and
+.BR --client-key .
 .PP
 Inputs are bounded and validated before transmission.
 JSON output is stable and suitable for automation.
@@ -47,6 +50,7 @@ on OpenBSD.
 Use the HTTPS management origin at
 .IR URL .
 The value must identify an HTTPS origin without a path, query, or fragment.
+The appliance default is port 9443.
 .TP
 .BI --token-file " path"
 Read one remote API bearer token from a private regular file.
@@ -61,13 +65,17 @@ This avoids exposing the passphrase in process arguments.
 .BI --client-cert " path"
 Use the PEM client certificate at
 .I path
-for optional mutual TLS.
+for mandatory remote mutual TLS.
+This option requires
+.BR --endpoint .
 .TP
 .BI --client-key " path"
 Use the PEM private key at
 .IR path .
 This option must be used with
-.BR --client-cert .
+.BR --client-cert
+and requires
+.BR --endpoint .
 .TP
 .BI --ca-file " path"
 Trust the PEM certification authorities in
@@ -256,6 +264,39 @@ object.
 .BI "certificate csr " file
 Create a private key on the appliance and return its certificate signing
 request.
+.SH MUTUAL-TLS COMMANDS
+.TP
+.B mtls ca show
+Inspect the client certification-authority bundle trusted by the remote API.
+.TP
+.BI "mtls ca install " file
+Validate and atomically install a PEM bundle containing only root and
+intermediate certification authorities.
+.TP
+.B mtls ca remove
+Remove the client trust bundle and disable the remote API listener.
+.TP
+.B mtls mapping list
+List active and revoked client-certificate mappings.
+.TP
+.BI "mtls mapping add " "file user id"
+Map the leaf certificate in PEM
+.I file
+to the existing user
+.IR id .
+.TP
+.BI "mtls mapping add " "file role role"
+Map the leaf certificate in PEM
+.I file
+to the named
+.B administrator,
+.BR operator ,
+or
+.B auditor
+role.
+.TP
+.BI "mtls mapping revoke " id
+Revoke a client-certificate mapping immediately.
 .SH BACKUP COMMANDS
 .TP
 .B backup create configuration
@@ -346,21 +387,30 @@ sudo janusgatectl status
 
 sudo janusgatectl domain block example.org
 
-janusgatectl --endpoint https://192.168.77.1 \\
-  --token-file /root/.config/janusgate/token status
-
-janusgatectl --endpoint https://192.168.77.1 \\
+janusgatectl --endpoint https://192.168.77.1:9443 \\
   --token-file /root/.config/janusgate/token \\
+  --client-cert /root/.config/janusgate/client.crt \\
+  --client-key /root/.config/janusgate/client.key status
+
+janusgatectl --endpoint https://192.168.77.1:9443 \\
+  --token-file /root/.config/janusgate/token \\
+  --client-cert /root/.config/janusgate/client.crt \\
+  --client-key /root/.config/janusgate/client.key \\
   network apply network.json
 
-janusgatectl --endpoint https://192.168.77.1 \\
+janusgatectl --endpoint https://192.168.77.1:9443 \\
   --token-file /root/.config/janusgate/token \\
+  --client-cert /root/.config/janusgate/client.crt \\
+  --client-key /root/.config/janusgate/client.key \\
   --yes system reboot
 .fi
 .SH SECURITY
 Keep token, private-key, passphrase, and input files private.
 Local administration is equivalent to root appliance access and is accepted
 only from a root Unix-socket peer.
+Remote administration is accepted only on the dedicated mutual-TLS listener.
+The client certificate must chain to an appliance trust anchor, have an active
+leaf-fingerprint mapping, and match the bearer token's user or role.
 Prefer
 .B --ca-file
 or the system trust store over disabling certificate verification; the client

@@ -46,8 +46,13 @@ before upgrades. Store passphrases separately and test restoration on an
 isolated appliance. Restrict private-key backups to cases that require them.
 
 Monitor certificate expiry. Install certificate and key together; JanusGate
-checks their match and rolls back a failed reload. Retain console access while
-changing the management address or certificate trust chain.
+checks their match before replacement. Retain a recovery copy and console
+access while changing the management address or certificate trust chain.
+
+Treat the remote client CA key as offline trust material. Review mappings and
+tokens independently, revoke both when retiring an automation identity, and
+test TCP 9443 with a valid and an unmapped certificate after trust changes.
+Private and home-lab CA procedures are in [Remote API](remote-api.md).
 
 ## Operational logging
 
@@ -77,10 +82,14 @@ narrow component override instead of raising the global level:
 The CLI exposes the same state:
 
 ```sh
-janusgatectl --endpoint https://192.168.77.1 \
-  --token-file /secure/janusgate.token logging show
-janusgatectl --endpoint https://192.168.77.1 \
-  --token-file /secure/janusgate.token logging traces
+janusgatectl --endpoint https://192.168.77.1:9443 \
+  --token-file /secure/janusgate.token \
+  --client-cert /secure/operator.pem --client-key /secure/operator.key \
+  --ca-file /secure/root-ca.pem logging show
+janusgatectl --endpoint https://192.168.77.1:9443 \
+  --token-file /secure/janusgate.token \
+  --client-cert /secure/operator.pem --client-key /secure/operator.key \
+  --ca-file /secure/root-ca.pem logging traces
 ```
 
 `logging set FILE` reads the current revision and applies a strict document.

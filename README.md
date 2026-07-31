@@ -43,8 +43,9 @@ management interface is never attached to the data bridge.
 - Bounded TCP reassembly, fragmentation handling, DoT/DoQ controls, known
   endpoint sets, and visible TLS SNI policy without TLS interception.
 - Transactional network changes with confirmation and rollback.
-- HTTPS administration, local and remote CLI, roles, TOTP, tokens, optional
-  mTLS, CSRF protection, audit chain, metrics, backups, and diagnostics.
+- HTTPS administration, privileged local CLI, mandatory-mTLS remote CLI,
+  roles, TOTP, tokens, CSRF protection, audit chain, metrics, backups, and
+  diagnostics.
 - Structured stderr/syslog logging with bounded, expiring, privacy-aware
   operational tracing.
 - Alpine 3.24 packages and VM image plus x86_64 and AArch64 Buildroot firmware.
@@ -88,8 +89,8 @@ CLI, backup creation, and an orderly reboot.
 
 - [Architecture](docs/architecture.md) and [packet path](docs/packet-path.md)
 - [Threat model](docs/threat-model.md) and [limitations](docs/limitations.md)
-- [Web administration](docs/administration.md), [CLI](docs/cli.md), and
-  [management API](docs/web-api.md)
+- [Web administration](docs/administration.md), [CLI](docs/cli.md),
+  [management API](docs/web-api.md), and [private-CA remote access](docs/remote-api.md)
 - [Build](docs/build.md), [images and firmware](docs/firmware.md),
   [dependencies](docs/dependencies.md), and [performance](docs/performance.md)
 - [Operations](docs/operations.md), [privacy](docs/privacy.md), and

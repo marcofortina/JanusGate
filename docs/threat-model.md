@@ -27,8 +27,9 @@ storage, and the software supply chain.
   injection. HTTPS limits, origin and CSRF validation, rate limits, strict
   schemas, role checks, and non-shell execution address these cases.
 - Stolen operator credentials remain dangerous. Password hashing, optional
-  TOTP and mTLS, scoped tokens, session expiration, token revocation, and audit
-  records reduce exposure but cannot make a compromised administrator safe.
+  TOTP, session expiration, and audit records protect browser access. Remote
+  automation additionally requires a scoped token and a trusted, explicitly
+  mapped client certificate; either identity can be revoked independently.
 - A compromised `janusgate-web` process is contained by an unprivileged
   account, restricted files, local protocol validation, and the absence of
   direct network-administration capability.
