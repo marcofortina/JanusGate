@@ -470,7 +470,8 @@ static int send_gateway_response(struct mg_connection *connection,
     char headers[512U];
     int result =
         jg_web_gateway_process(connection, server->config.control_socket_path,
-                               server->config.max_request_size, &response);
+                               server->config.max_request_size,
+                               JG_WEB_GATEWAY_BROWSER, NULL, &response);
     int status = 500;
 
     if (result == 0) {

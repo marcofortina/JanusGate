@@ -287,10 +287,30 @@ static int find_bearer_token(const struct mg_connection *connection,
     return 0;
 }
 
+/** @brief Validate one exact printable SHA-256 certificate fingerprint. */
+static bool fingerprint_valid(const char *fingerprint)
+{
+    if (fingerprint == NULL || strlen(fingerprint) != 64U) {
+        return false;
+    }
+    for (size_t index = 0U; index < 64U; ++index) {
+        const char character = fingerprint[index];
+
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f') ||
+              (character >= 'A' && character <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** @brief Build one compact validated daemon request envelope. */
 static int build_envelope(const struct mg_connection *connection,
                           const struct mg_request_info *request,
                           const struct jg_web_gateway_response *response,
+                          enum jg_web_gateway_mode mode,
+                          const char *client_certificate,
                           json_t *body,
                           char **encoded,
                           size_t *encoded_size)
@@ -303,11 +323,19 @@ static int build_envelope(const struct mg_connection *connection,
     char session[JG_AUTH_SECRET_TEXT_SIZE];
     char bearer[JG_AUTH_SECRET_TEXT_SIZE];
     json_t *envelope = NULL;
-    int result = optional_header(connection, "Origin", 256U, &origin);
+    int result = mode == JG_WEB_GATEWAY_BROWSER
+                     ? optional_header(connection, "Origin", 256U, &origin)
+                     : 0;
 
     *encoded = NULL;
     *encoded_size = 0U;
-    if (result == 0) {
+    session[0U] = '\0';
+    bearer[0U] = '\0';
+    if (mode == JG_WEB_GATEWAY_REMOTE_API) {
+        origin = "";
+        csrf = "";
+    }
+    if (result == 0 && mode == JG_WEB_GATEWAY_BROWSER) {
         result = optional_header(connection, "X-CSRF-Token",
                                  JG_AUTH_SECRET_TEXT_SIZE - 1U, &csrf);
     }
@@ -316,6 +344,15 @@ static int build_envelope(const struct mg_connection *connection,
     }
     if (result == 0) {
         result = find_bearer_token(connection, bearer);
+    }
+    if (result == 0 &&
+        ((mode == JG_WEB_GATEWAY_BROWSER && bearer[0U] != '\0') ||
+         (mode == JG_WEB_GATEWAY_REMOTE_API &&
+          (session[0U] != '\0' || bearer[0U] == '\0' ||
+           !fingerprint_valid(client_certificate))) ||
+         (mode != JG_WEB_GATEWAY_BROWSER &&
+          mode != JG_WEB_GATEWAY_REMOTE_API))) {
+        result = -EACCES;
     }
     if (result == 0 && (host == NULL || bounded_length(host, 128U) > 128U ||
                         bounded_length(request->remote_addr, 47U) > 47U ||
@@ -340,6 +377,10 @@ static int build_envelope(const struct mg_connection *connection,
                 0 ||
             json_object_set_new(envelope, "csrf", json_string(csrf)) != 0 ||
             json_object_set_new(envelope, "bearer", json_string(bearer)) != 0 ||
+            json_object_set_new(envelope, "client_certificate",
+                                json_string(mode == JG_WEB_GATEWAY_REMOTE_API
+                                                ? client_certificate
+                                                : "")) != 0 ||
             json_object_set(envelope, "body", body) != 0) {
             result = -ENOMEM;
         }
@@ -502,6 +543,8 @@ static bool method_valid(const char *method)
 int jg_web_gateway_process(struct mg_connection *connection,
                            const char *control_socket_path,
                            uint32_t maximum_body_size,
+                           enum jg_web_gateway_mode mode,
+                           const char *client_certificate,
                            struct jg_web_gateway_response *response)
 {
     const struct mg_request_info *request = NULL;
@@ -542,15 +585,23 @@ int jg_web_gateway_process(struct mg_connection *connection,
             result == -ENOMEM ? "The request could not be processed."
                               : "A bounded JSON object body is required.");
     }
-    result = build_envelope(connection, request, response, body, &envelope,
-                            &envelope_size);
+    result =
+        build_envelope(connection, request, response, mode, client_certificate,
+                       body, &envelope, &envelope_size);
     json_decref(body);
     if (result != 0) {
         return set_error_response(
-            response, result == -ENOMEM ? 500 : 400,
-            result == -ENOMEM ? "internal_error" : "invalid_request",
+            response,
+            result == -ENOMEM   ? 500
+            : result == -EACCES ? 401
+                                : 400,
+            result == -ENOMEM   ? "internal_error"
+            : result == -EACCES ? "authentication_required"
+                                : "invalid_request",
             result == -ENOMEM ? "The request could not be processed."
-                              : "The API request is not valid.");
+            : result == -EACCES
+                ? "The listener requires its designated authentication."
+                : "The API request is not valid.");
     }
     daemon_response = malloc(JG_IPC_MAX_BODY_SIZE);
     if (daemon_response == NULL) {

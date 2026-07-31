@@ -107,6 +107,7 @@ struct management_request {
     const char *session;
     const char *csrf;
     const char *bearer;
+    const char *client_certificate;
     json_t *body;
     bool local_administrator;
 };
@@ -416,8 +417,18 @@ static int parse_request(const uint8_t *data,
                          struct management_request *request)
 {
     static const char *const fields[] = {
-        "request_id",     "method",  "path", "query",  "host", "origin",
-        "remote_address", "session", "csrf", "bearer", "body",
+        "request_id",
+        "method",
+        "path",
+        "query",
+        "host",
+        "origin",
+        "remote_address",
+        "session",
+        "csrf",
+        "bearer",
+        "client_certificate",
+        "body",
     };
     json_error_t error;
     json_t *parsed = NULL;
@@ -451,12 +462,15 @@ static int parse_request(const uint8_t *data,
             optional_string(parsed, "csrf", JG_AUTH_SECRET_TEXT_SIZE - 1U);
         request->bearer =
             optional_string(parsed, "bearer", JG_AUTH_SECRET_TEXT_SIZE - 1U);
+        request->client_certificate =
+            optional_string(parsed, "client_certificate", 64U);
         request->body = json_object_get(parsed, "body");
         if (!request_id_valid(request->request_id) || request->method == NULL ||
             request->path == NULL || request->query == NULL ||
             !host_valid(request->host) || request->origin == NULL ||
             request->remote_address == NULL || request->session == NULL ||
             request->csrf == NULL || request->bearer == NULL ||
+            request->client_certificate == NULL ||
             !json_is_object(request->body)) {
             result = -EINVAL;
         }
@@ -522,6 +536,27 @@ static int hexadecimal_value(char character, uint8_t *value)
         return 0;
     }
     return -EINVAL;
+}
+
+/** @brief Decode one exact SHA-256 client-certificate fingerprint. */
+static int parse_certificate_fingerprint(const char *text,
+                                         uint8_t fingerprint[32U])
+{
+    if (text == NULL || strlen(text) != 64U) {
+        return -EINVAL;
+    }
+    for (size_t index = 0U; index < 32U; ++index) {
+        uint8_t high = 0U;
+        uint8_t low = 0U;
+
+        if (hexadecimal_value(text[index * 2U], &high) != 0 ||
+            hexadecimal_value(text[index * 2U + 1U], &low) != 0) {
+            (void)memset(fingerprint, 0, 32U);
+            return -EINVAL;
+        }
+        fingerprint[index] = (uint8_t)((high << 4U) | low);
+    }
+    return 0;
 }
 
 /** @brief Parse one exact colon-separated 48-bit MAC address. */
@@ -4195,13 +4230,16 @@ static int authenticate_actor(struct jg_management *management,
 {
     const bool has_session = request->session[0U] != '\0';
     const bool has_bearer = request->bearer[0U] != '\0';
+    const bool has_certificate = request->client_certificate[0U] != '\0';
+    uint8_t certificate_fingerprint[32U];
     uint32_t requests_per_minute = 0U;
     uint64_t token_id = 0U;
     int result = 0;
 
     (void)memset(actor, 0, sizeof(*actor));
+    (void)memset(certificate_fingerprint, 0, sizeof(certificate_fingerprint));
     if (request->local_administrator) {
-        if (has_session || has_bearer) {
+        if (has_session || has_bearer || has_certificate) {
             return -EACCES;
         }
         actor->identity.permissions = JG_ACCESS_PERMISSION_ALL;
@@ -4209,17 +4247,24 @@ static int authenticate_actor(struct jg_management *management,
         actor->kind = AUTHENTICATED_ACTOR_LOCAL;
         return 0;
     }
-    if (has_session == has_bearer) {
+    if (has_session == has_bearer || has_certificate != has_bearer) {
         return -EACCES;
     }
     if (has_bearer) {
-        if (strlen(request->bearer) != JG_AUTH_SECRET_TEXT_SIZE - 1U) {
+        if (strlen(request->bearer) != JG_AUTH_SECRET_TEXT_SIZE - 1U ||
+            parse_certificate_fingerprint(request->client_certificate,
+                                          certificate_fingerprint) != 0) {
             return -EACCES;
         }
         result = jg_account_token_validate(
             management->database, (const uint8_t *)request->bearer,
             strlen(request->bearer), now, remote->family, remote->address,
             &actor->identity, &token_id, &requests_per_minute);
+        if (result == 0) {
+            result = jg_account_mtls_mapping_authorize(
+                management->database, certificate_fingerprint,
+                actor->identity.user_id, now);
+        }
         if (result == 0) {
             result = token_rate_accept(management, token_id,
                                        requests_per_minute, now);
@@ -4242,6 +4287,7 @@ static int authenticate_actor(struct jg_management *management,
     if (result != 0) {
         sodium_memzero(actor, sizeof(*actor));
     }
+    sodium_memzero(certificate_fingerprint, sizeof(certificate_fingerprint));
     return result;
 }
 
@@ -9385,6 +9431,11 @@ static int dispatch_request(struct jg_management *management,
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
 
+    if (request->client_certificate[0U] != '\0' && authentication_path) {
+        return respond_error(404, "not_found",
+                             "The requested API resource was not found.",
+                             request->request_id, output, output_size, written);
+    }
     if (!request->local_administrator && state_change &&
         (request->bearer[0U] == '\0' || authentication_path) &&
         !origin_valid(request->origin, request->host)) {

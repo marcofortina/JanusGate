@@ -21,6 +21,14 @@ struct mg_connection;
 /** Maximum response content-type bytes excluding the terminator. */
 #define JG_WEB_CONTENT_TYPE_MAX 79U
 
+/** Authentication boundary represented by one HTTPS listener. */
+enum jg_web_gateway_mode {
+    /** Browser-only listener using secure sessions and CSRF protection. */
+    JG_WEB_GATEWAY_BROWSER = 1,
+    /** Automation-only listener using mTLS and bearer tokens. */
+    JG_WEB_GATEWAY_REMOTE_API = 2
+};
+
 /** Cookie mutation requested by one daemon management response. */
 enum jg_web_cookie_action {
     /** Preserve the browser's current session cookie. */
@@ -55,6 +63,9 @@ struct jg_web_gateway_response {
  * @param[in,out] connection CivetWeb connection borrowed for the call.
  * @param[in] control_socket_path Absolute daemon control-socket path.
  * @param[in] maximum_body_size Maximum accepted JSON request bytes.
+ * @param[in] mode Authentication boundary of the accepting listener.
+ * @param[in] client_certificate SHA-256 peer-certificate fingerprint for the
+ * remote API, or null for the browser listener.
  * @param[out] response Receives an owned validated API response.
  *
  * @return 0 when @p response contains an HTTP-level result.
@@ -69,6 +80,8 @@ struct jg_web_gateway_response {
 int jg_web_gateway_process(struct mg_connection *connection,
                            const char *control_socket_path,
                            uint32_t maximum_body_size,
+                           enum jg_web_gateway_mode mode,
+                           const char *client_certificate,
                            struct jg_web_gateway_response *response);
 
 /**

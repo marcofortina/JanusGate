@@ -32,6 +32,10 @@
 
 int jg_test_management(void);
 
+/** Stable certificate fingerprint injected into remote-API test envelopes. */
+static const char management_client_fingerprint[] =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+
 /** Complete private filesystem and database fixture for management tests. */
 struct management_fixture {
     char directory[64U];
@@ -66,10 +70,18 @@ static int setup_management(void **state)
 {
     static const char template[] = "/tmp/janusgate-management-XXXXXX";
     uint8_t key[JG_AUTH_TOTP_KEY_SIZE];
+    struct jg_account_mtls_mapping_config mapping_config = {
+        .subject = "CN=management-test-client",
+        .issuer = "CN=management-test-ca",
+        .role = JG_ACCESS_ROLE_ADMINISTRATOR,
+    };
+    struct jg_account_mtls_mapping mapping;
     struct management_fixture *fixture = calloc(1U, sizeof(*fixture));
+    const time_t now = time(NULL);
     int written = 0;
 
     assert_non_null(fixture);
+    assert_true(now > 1);
     (void)snprintf(fixture->directory, sizeof(fixture->directory), "%s",
                    template);
     assert_non_null(mkdtemp(fixture->directory));
@@ -92,6 +104,14 @@ static int setup_management(void **state)
     write_private_file(fixture->key_path, key, sizeof(key));
     assert_int_equal(
         jg_database_open(fixture->database_path, 1000U, &fixture->database), 0);
+    (void)memset(mapping_config.fingerprint_sha256, 0x11,
+                 sizeof(mapping_config.fingerprint_sha256));
+    mapping_config.not_before = (uint64_t)now - 1U;
+    mapping_config.not_after = (uint64_t)now + 86400U;
+    assert_int_equal(jg_account_mtls_mapping_create(fixture->database,
+                                                    &mapping_config,
+                                                    (uint64_t)now, &mapping),
+                     0);
     assert_int_equal(jg_management_create(fixture->database, fixture->key_path,
                                           fixture->certificate_path,
                                           fixture->directory, NULL,
@@ -156,14 +176,31 @@ static json_t *process_request(struct management_fixture *fixture,
 {
     uint8_t response[JG_IPC_MAX_BODY_SIZE];
     json_error_t error;
+    json_t *envelope = NULL;
     json_t *parsed = NULL;
+    char *encoded = NULL;
     size_t response_size = 0U;
 
+    envelope = json_loads(request, JSON_REJECT_DUPLICATES, &error);
+    if (json_is_object(envelope) &&
+        json_object_get(envelope, "bearer") != NULL &&
+        json_object_get(envelope, "client_certificate") == NULL) {
+        assert_int_equal(
+            json_object_set_new(envelope, "client_certificate",
+                                json_string(management_client_fingerprint)),
+            0);
+    }
+    encoded = envelope == NULL
+                  ? strdup(request)
+                  : json_dumps(envelope, JSON_COMPACT | JSON_SORT_KEYS);
+    assert_non_null(encoded);
     assert_int_equal(jg_management_process(fixture->management,
-                                           (const uint8_t *)request,
-                                           strlen(request), false, response,
+                                           (const uint8_t *)encoded,
+                                           strlen(encoded), false, response,
                                            sizeof(response), &response_size),
                      0);
+    free(encoded);
+    json_decref(envelope);
     parsed = json_loadb((const char *)response, response_size,
                         JSON_REJECT_DUPLICATES, &error);
     assert_non_null(parsed);
@@ -234,6 +271,124 @@ static void test_local_administration(void **state)
     assert_false(audit.has_actor_id);
     assert_string_equal(audit.action, "logging.update");
     jg_logging_shutdown();
+}
+
+/** @brief Verify remote tokens require one current mapped mTLS identity. */
+static void test_remote_api_authentication(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    const struct jg_account_token_config token_config = {
+        .name = "remote API authentication",
+        .permissions = JG_ACCESS_STATUS_READ,
+        .requests_per_minute = 20U,
+    };
+    struct management_fixture *fixture = *state;
+    struct jg_account_mtls_mapping mapping;
+    struct jg_account_api_token token;
+    struct jg_auth_password_policy password_policy;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[1024U];
+    json_t *response = NULL;
+    const time_t now = time(NULL);
+    uint64_t total = 0U;
+    uint64_t user_id = 0U;
+    size_t count = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, (uint64_t)now,
+                         &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"remote-mapped\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{}}",
+                       token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    json_decref(response);
+
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"remote-no-cert\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"client_certificate\":\"\",\"body\":{}}",
+                       token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     401);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"remote-unmapped\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"client_certificate\":"
+        "\"2222222222222222222222222222222222222222222222222222222222222222\","
+        "\"body\":{}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     401);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"remote-auth-hidden\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/auth/state\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     404);
+    json_decref(response);
+
+    assert_int_equal(jg_account_mtls_mapping_list(fixture->database, 0U,
+                                                  &mapping, 1U, &count, &total),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(jg_account_mtls_mapping_revoke(fixture->database,
+                                                    mapping.mapping_id,
+                                                    (uint64_t)now + 1U),
+                     0);
+    written = snprintf(request, sizeof(request),
+                       "{\"request_id\":\"remote-revoked\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/status\",\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{}}",
+                       token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     401);
+    json_decref(response);
+    sodium_memzero(&token, sizeof(token));
+    sodium_memzero(bootstrap, sizeof(bootstrap));
 }
 
 /** @brief Verify bootstrap, login session validation, CSRF, and logout. */
@@ -2861,6 +3016,8 @@ int jg_test_management(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_local_administration,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_remote_api_authentication,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_browser_authentication,
                                         setup_management, teardown_management),
