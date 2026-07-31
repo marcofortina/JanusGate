@@ -143,11 +143,12 @@ JG_PUBLIC bool jg_blocklist_remote_due(
 /**
  * @brief Fetch, verify, and import one remote blocklist update.
  *
- * Only HTTPS is permitted for the original URL, redirects, and optional
- * signature URL. Certificate and hostname verification cannot be disabled.
- * HTTP validators are committed to @p state only after complete success.
- * A failed attempted transfer updates retry scheduling but preserves existing
- * validators. Argument validation failures leave @p state unchanged.
+ * Only HTTPS to public-unicast destinations is permitted for the original
+ * URL, every redirect, and the optional signature URL. Certificate and
+ * hostname verification cannot be disabled, and environment proxy settings
+ * are ignored. HTTP validators are committed to @p state only after complete
+ * success. A failed attempted transfer updates retry scheduling but preserves
+ * existing validators. Argument validation failures leave @p state unchanged.
  *
  * @param[in] config Secure source configuration.
  * @param[in,out] state Persistent validators and retry schedule.
@@ -160,7 +161,8 @@ JG_PUBLIC bool jg_blocklist_remote_due(
  *
  * @return 0 when an update check completed successfully.
  * @return -EINVAL for invalid configuration or arguments.
- * @return -EACCES for TLS, digest, or signature verification failure.
+ * @return -EACCES for a non-public destination or TLS, digest, or signature
+ * verification failure.
  * @return -EFBIG when transfer limits are exceeded.
  * @return -ETIMEDOUT for connection or transfer timeout.
  * @return -EPROTO for an unexpected HTTP response.

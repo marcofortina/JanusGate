@@ -88,29 +88,39 @@ static void test_invalid_configuration(void **state)
                      -EINVAL);
 }
 
-/** @brief Verify a transport failure preserves output and schedules retry. */
-static void test_failed_attempt(void **state)
+/** @brief Verify non-public destinations are rejected and schedule retry. */
+static void test_non_public_destinations(void **state)
 {
-    const struct jg_blocklist_remote_config config = test_config();
-    struct jg_blocklist_remote_state remote_state;
-    struct jg_blocklist_remote_report report;
-    enum jg_blocklist_remote_status status;
-    struct jg_blocklist *blocklist = NULL;
-    int result = 0;
+    static const char *const urls[] = {
+        [0U] = "https://127.0.0.1:1/blocklist",
+        [1U] = "https://10.0.0.1/blocklist",
+        [2U] = "https://[::1]:1/blocklist",
+        [3U] = "https://[2001:db8::1]/blocklist",
+        [4U] = "https://[2002:7f00:1::]/blocklist",
+    };
 
     (void)state;
-    jg_blocklist_remote_state_init(&remote_state);
-    result = jg_blocklist_remote_update(&config, &remote_state, 100U, &status,
-                                        &blocklist, &report);
+    for (size_t index = 0U; index < sizeof(urls) / sizeof(*urls); ++index) {
+        struct jg_blocklist_remote_config config = test_config();
+        struct jg_blocklist_remote_state remote_state;
+        struct jg_blocklist_remote_report report;
+        enum jg_blocklist_remote_status status;
+        struct jg_blocklist *blocklist = NULL;
 
-    assert_true(result < 0);
-    assert_null(blocklist);
-    assert_int_equal(report.http_status, 0L);
-    assert_int_equal(remote_state.last_attempt_at, 100U);
-    assert_int_equal(remote_state.last_success_at, 0U);
-    assert_int_equal(remote_state.consecutive_failures, 1U);
-    assert_true(remote_state.next_attempt_at >= 110U);
-    assert_true(remote_state.next_attempt_at <= 112U);
+        config.url = urls[index];
+        jg_blocklist_remote_state_init(&remote_state);
+        assert_int_equal(jg_blocklist_remote_update(&config, &remote_state,
+                                                    100U, &status, &blocklist,
+                                                    &report),
+                         -EACCES);
+        assert_null(blocklist);
+        assert_int_equal(report.http_status, 0L);
+        assert_int_equal(remote_state.last_attempt_at, 100U);
+        assert_int_equal(remote_state.last_success_at, 0U);
+        assert_int_equal(remote_state.consecutive_failures, 1U);
+        assert_true(remote_state.next_attempt_at >= 110U);
+        assert_true(remote_state.next_attempt_at <= 112U);
+    }
 }
 
 /** @brief Run the secure remote-blocklist update test group. */
@@ -119,7 +129,7 @@ int jg_test_blocklist_remote(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_schedule_state),
         cmocka_unit_test(test_invalid_configuration),
-        cmocka_unit_test(test_failed_attempt),
+        cmocka_unit_test(test_non_public_destinations),
     };
 
     return cmocka_run_group_tests_name("blocklist remote", tests, NULL, NULL);

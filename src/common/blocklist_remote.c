@@ -13,6 +13,9 @@
 #include <string.h>
 #include <strings.h>
 
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 #include <curl/curl.h>
 #include <sodium.h>
 
@@ -29,6 +32,81 @@ struct download_response {
     int callback_error;
     long status;
 };
+
+/** Per-transfer record of an address rejected before socket creation. */
+struct socket_policy {
+    bool rejected;
+};
+
+/** @brief Return whether one IPv4 address is public unicast. */
+static bool ipv4_public(const uint8_t address[4U])
+{
+    return address[0U] != 0U && address[0U] != 10U && address[0U] != 127U &&
+           !(address[0U] == 100U && (address[1U] & UINT8_C(0xc0)) == 64U) &&
+           !(address[0U] == 169U && address[1U] == 254U) &&
+           !(address[0U] == 172U && (address[1U] & UINT8_C(0xf0)) == 16U) &&
+           !(address[0U] == 192U && address[1U] == 0U && address[2U] == 0U) &&
+           !(address[0U] == 192U && address[1U] == 0U && address[2U] == 2U) &&
+           !(address[0U] == 192U && address[1U] == 88U && address[2U] == 99U) &&
+           !(address[0U] == 192U && address[1U] == 168U) &&
+           !(address[0U] == 198U &&
+             (address[1U] == 18U || address[1U] == 19U)) &&
+           !(address[0U] == 198U && address[1U] == 51U &&
+             address[2U] == 100U) &&
+           !(address[0U] == 203U && address[1U] == 0U && address[2U] == 113U) &&
+           address[0U] < 224U;
+}
+
+/** @brief Return whether one IPv6 address is public unicast. */
+static bool ipv6_public(const uint8_t address[16U])
+{
+    const bool protocol_assignment = address[0U] == UINT8_C(0x20) &&
+                                     address[1U] == UINT8_C(0x01) &&
+                                     (address[2U] & UINT8_C(0xfe)) == 0U;
+    const bool documentation =
+        address[0U] == UINT8_C(0x20) && address[1U] == UINT8_C(0x01) &&
+        address[2U] == UINT8_C(0x0d) && address[3U] == UINT8_C(0xb8);
+    const bool six_to_four =
+        address[0U] == UINT8_C(0x20) && address[1U] == UINT8_C(0x02);
+    const bool extended_documentation = address[0U] == UINT8_C(0x3f) &&
+                                        address[1U] == UINT8_C(0xff) &&
+                                        (address[2U] & UINT8_C(0xf0)) == 0U;
+
+    return (address[0U] & UINT8_C(0xe0)) == UINT8_C(0x20) &&
+           !protocol_assignment && !documentation && !six_to_four &&
+           !extended_documentation;
+}
+
+/** @brief Open only sockets whose resolved destination is public unicast. */
+static curl_socket_t open_public_socket(void *user_data,
+                                        curlsocktype purpose,
+                                        struct curl_sockaddr *address)
+{
+    struct socket_policy *policy = user_data;
+    bool permitted = false;
+
+    if (purpose == CURLSOCKTYPE_IPCXN && address != NULL &&
+        address->family == AF_INET &&
+        address->addrlen >= (socklen_t)sizeof(struct sockaddr_in)) {
+        struct sockaddr_in ipv4;
+
+        (void)memcpy(&ipv4, &address->addr, sizeof(ipv4));
+        permitted = ipv4_public((const uint8_t *)&ipv4.sin_addr);
+    } else if (purpose == CURLSOCKTYPE_IPCXN && address != NULL &&
+               address->family == AF_INET6 &&
+               address->addrlen >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        struct sockaddr_in6 ipv6;
+
+        (void)memcpy(&ipv6, &address->addr, sizeof(ipv6));
+        permitted = ipv6_public((const uint8_t *)&ipv6.sin6_addr);
+    }
+    if (!permitted) {
+        policy->rejected = true;
+        errno = EACCES;
+        return CURL_SOCKET_BAD;
+    }
+    return socket(address->family, address->socktype, address->protocol);
+}
 
 /** @brief Validate that a URL explicitly selects HTTPS. */
 static bool is_https_url(const char *url)
@@ -266,6 +344,7 @@ static int fetch_https(const char *url,
 {
     CURL *curl = NULL;
     struct curl_slist *headers = NULL;
+    struct socket_policy socket_policy = {0};
     CURLcode status = CURLE_OK;
     int result = 0;
 
@@ -303,6 +382,7 @@ static int fetch_https(const char *url,
     JG_CURL_SETOPT(CURLOPT_TIMEOUT_MS, (long)transfer_timeout_ms);
     JG_CURL_SETOPT(CURLOPT_SSL_VERIFYPEER, 1L);
     JG_CURL_SETOPT(CURLOPT_SSL_VERIFYHOST, 2L);
+    JG_CURL_SETOPT(CURLOPT_PROXY, "");
     JG_CURL_SETOPT(CURLOPT_ACCEPT_ENCODING, "");
     JG_CURL_SETOPT(CURLOPT_NOSIGNAL, 1L);
     JG_CURL_SETOPT(CURLOPT_USERAGENT, "JanusGate/0.1");
@@ -311,6 +391,8 @@ static int fetch_https(const char *url,
     JG_CURL_SETOPT(CURLOPT_WRITEDATA, response);
     JG_CURL_SETOPT(CURLOPT_HEADERFUNCTION, receive_header);
     JG_CURL_SETOPT(CURLOPT_HEADERDATA, response);
+    JG_CURL_SETOPT(CURLOPT_OPENSOCKETFUNCTION, open_public_socket);
+    JG_CURL_SETOPT(CURLOPT_OPENSOCKETDATA, &socket_policy);
     if (headers != NULL) {
         JG_CURL_SETOPT(CURLOPT_HTTPHEADER, headers);
     }
@@ -318,8 +400,11 @@ static int fetch_https(const char *url,
 
     if (result == 0) {
         status = curl_easy_perform(curl);
-        result = response->callback_error != 0 ? response->callback_error
-                                               : curl_result(status);
+        result = response->callback_error != 0
+                     ? response->callback_error
+                     : (status != CURLE_OK && socket_policy.rejected
+                            ? -EACCES
+                            : curl_result(status));
     }
     if (result == 0) {
         status =

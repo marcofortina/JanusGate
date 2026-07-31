@@ -22,6 +22,8 @@ storage, and the software supply chain.
 - Hostile blocklists may contain invalid names, excessive lines, compression
   bombs, or misleading content. Downloads have transport, size, decompression,
   and rule-count limits and are activated only after complete validation.
+  Remote sources use HTTPS directly and may connect only to public-unicast
+  addresses, including after DNS resolution and redirects.
 - Hostile web clients may attempt brute force, CSRF, fixation, path traversal,
   oversized bodies, malformed JSON, host-header abuse, role bypass, or command
   injection. HTTPS limits, source and global login limits, correct-password
