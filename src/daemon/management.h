@@ -59,6 +59,8 @@ int jg_management_request_validate(const uint8_t *request_data,
  * @param[in] totp_key_path Secure regular file containing exactly one raw
  * TOTP protection key.
  * @param[in] certificate_path Absolute combined server certificate PEM path.
+ * @param[in] client_ca_path Absolute trusted client-certificate authority
+ * bundle path.
  * @param[in] backup_directory Absolute owner-private archive directory.
  * @param[in] runtime Packet runtime borrowed for the complete lifetime; null
  * is accepted by isolated authentication tests.
@@ -74,6 +76,7 @@ int jg_management_request_validate(const uint8_t *request_data,
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
                          const char *certificate_path,
+                         const char *client_ca_path,
                          const char *backup_directory,
                          struct jg_daemon_runtime *runtime,
                          struct jg_management **management);

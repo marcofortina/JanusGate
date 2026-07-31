@@ -246,6 +246,7 @@ void jg_daemon_runtime_config_default(struct jg_daemon_runtime_config *config)
         .database_path = JG_DAEMON_DATABASE_PATH,
         .totp_key_path = JG_DAEMON_TOTP_KEY_PATH,
         .certificate_path = JG_CERTIFICATE_DEFAULT_PATH,
+        .client_ca_path = JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH,
         .backup_directory = JG_BACKUP_DEFAULT_DIRECTORY,
         .database_busy_timeout_ms = 5000U,
         .queue_receive_buffer_size = JG_NFQUEUE_RECEIVE_BUFFER_DEFAULT,
@@ -263,7 +264,8 @@ int jg_daemon_runtime_config_validate(
         config->totp_key_path == NULL || config->totp_key_path[0] != '/' ||
         config->totp_key_path[1] == '\0' || config->certificate_path == NULL ||
         config->certificate_path[0] != '/' ||
-        config->certificate_path[1] == '\0' ||
+        config->certificate_path[1] == '\0' || config->client_ca_path == NULL ||
+        config->client_ca_path[0] != '/' || config->client_ca_path[1] == '\0' ||
         config->backup_directory == NULL ||
         config->backup_directory[0] != '/' ||
         config->backup_directory[1] == '\0' ||
@@ -323,7 +325,8 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     if (result == 0) {
         result = jg_management_create(
             started->database, config->totp_key_path, config->certificate_path,
-            config->backup_directory, started, &started->management);
+            config->client_ca_path, config->backup_directory, started,
+            &started->management);
     }
     if (result == 0) {
         result = jg_database_load_network_config(started->database, &network);

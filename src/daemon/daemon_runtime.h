@@ -38,6 +38,8 @@ struct jg_daemon_runtime_config {
     const char *totp_key_path;
     /** Absolute combined server certificate PEM path. */
     const char *certificate_path;
+    /** Absolute trusted client-certificate authority bundle path. */
+    const char *client_ca_path;
     /** Absolute private backup archive directory. */
     const char *backup_directory;
     /** SQLite busy timeout in milliseconds. */

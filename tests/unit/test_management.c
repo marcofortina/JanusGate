@@ -19,6 +19,12 @@
 
 #include <cmocka.h>
 #include <jansson.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <sodium.h>
 
 #include "janusgate/account.h"
@@ -42,6 +48,7 @@ struct management_fixture {
     char database_path[128U];
     char key_path[128U];
     char certificate_path[128U];
+    char client_ca_path[128U];
     struct jg_database *database;
     struct jg_management *management;
 };
@@ -63,6 +70,70 @@ static void write_private_file(const char *path,
         offset += (size_t)count;
     }
     assert_int_equal(close(descriptor), 0);
+}
+
+/** @brief Create one private self-signed CA bundle for management tests. */
+static void create_management_test_authority(char **pem, size_t *pem_size)
+{
+    char constraints_text[] = "critical,CA:TRUE,pathlen:1";
+    char usage_text[] = "critical,keyCertSign,cRLSign";
+    EVP_PKEY_CTX *key_context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY *private_key = NULL;
+    X509 *certificate = X509_new();
+    X509_NAME *subject = X509_NAME_new();
+    X509_EXTENSION *constraints = NULL;
+    X509_EXTENSION *usage = NULL;
+    BIO *memory = BIO_new(BIO_s_mem());
+    BUF_MEM *contents = NULL;
+
+    *pem = NULL;
+    *pem_size = 0U;
+    assert_non_null(key_context);
+    assert_non_null(certificate);
+    assert_non_null(subject);
+    assert_non_null(memory);
+    assert_int_equal(EVP_PKEY_keygen_init(key_context), 1);
+    assert_int_equal(EVP_PKEY_CTX_set_rsa_keygen_bits(key_context, 2048), 1);
+    assert_int_equal(EVP_PKEY_keygen(key_context, &private_key), 1);
+    assert_non_null(private_key);
+    assert_int_equal(X509_NAME_add_entry_by_txt(
+                         subject, "CN", MBSTRING_ASC,
+                         (const unsigned char *)"JanusGate private CA", -1, -1,
+                         0),
+                     1);
+    assert_int_equal(X509_set_version(certificate, 2L), 1);
+    assert_int_equal(ASN1_INTEGER_set(X509_get_serialNumber(certificate), 1L),
+                     1);
+    assert_int_equal(X509_set_subject_name(certificate, subject), 1);
+    assert_int_equal(X509_set_issuer_name(certificate, subject), 1);
+    assert_int_equal(X509_set_pubkey(certificate, private_key), 1);
+    assert_non_null(X509_gmtime_adj(X509_getm_notBefore(certificate), -60L));
+    assert_non_null(X509_gmtime_adj(X509_getm_notAfter(certificate), 86400L));
+    constraints = X509V3_EXT_conf_nid(NULL, NULL, NID_basic_constraints,
+                                      constraints_text);
+    usage = X509V3_EXT_conf_nid(NULL, NULL, NID_key_usage, usage_text);
+    assert_non_null(constraints);
+    assert_non_null(usage);
+    assert_int_equal(X509_add_ext(certificate, constraints, -1), 1);
+    assert_int_equal(X509_add_ext(certificate, usage, -1), 1);
+    assert_true(X509_sign(certificate, private_key, EVP_sha256()) > 0);
+    assert_int_equal(PEM_write_bio_X509(memory, certificate), 1);
+    BIO_get_mem_ptr(memory, &contents);
+    assert_non_null(contents);
+    assert_true(contents->length > 0U);
+    *pem = malloc(contents->length + 1U);
+    assert_non_null(*pem);
+    (void)memcpy(*pem, contents->data, contents->length);
+    (*pem)[contents->length] = '\0';
+    *pem_size = contents->length;
+
+    X509_EXTENSION_free(usage);
+    X509_EXTENSION_free(constraints);
+    BIO_free(memory);
+    X509_NAME_free(subject);
+    X509_free(certificate);
+    EVP_PKEY_free(private_key);
+    EVP_PKEY_CTX_free(key_context);
 }
 
 /** @brief Create private storage and management state around a fresh schema. */
@@ -98,6 +169,10 @@ static int setup_management(void **state)
                  "%s/server.pem", fixture->directory);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(fixture->certificate_path));
+    written = snprintf(fixture->client_ca_path, sizeof(fixture->client_ca_path),
+                       "%s/client-ca.pem", fixture->directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(fixture->client_ca_path));
     for (size_t index = 0U; index < sizeof(key); ++index) {
         key[index] = (uint8_t)(index + 1U);
     }
@@ -112,11 +187,11 @@ static int setup_management(void **state)
                                                     &mapping_config,
                                                     (uint64_t)now, &mapping),
                      0);
-    assert_int_equal(jg_management_create(fixture->database, fixture->key_path,
-                                          fixture->certificate_path,
-                                          fixture->directory, NULL,
-                                          &fixture->management),
-                     0);
+    assert_int_equal(
+        jg_management_create(fixture->database, fixture->key_path,
+                             fixture->certificate_path, fixture->client_ca_path,
+                             fixture->directory, NULL, &fixture->management),
+        0);
     *state = fixture;
     return 0;
 }
@@ -165,6 +240,7 @@ static int teardown_management(void **state)
     (void)unlink(fixture->database_path);
     (void)unlink(fixture->key_path);
     (void)unlink(fixture->certificate_path);
+    (void)unlink(fixture->client_ca_path);
     (void)rmdir(fixture->directory);
     free(fixture);
     return 0;
@@ -1605,6 +1681,150 @@ static void test_certificate_api(void **state)
     sodium_memzero(&token, sizeof(token));
 }
 
+/** @brief Verify private CA and client-certificate mapping administration. */
+static void test_mtls_api(void **state)
+{
+    static const char authorities_show[] =
+        "{\"request_id\":\"mtls-ca-show\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/mtls/authorities\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char mappings_show[] =
+        "{\"request_id\":\"mtls-map-show\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/mtls/mappings\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char authorities_remove[] =
+        "{\"request_id\":\"mtls-ca-remove\",\"method\":\"DELETE\","
+        "\"path\":\"/api/v1/mtls/authorities\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    struct management_fixture *fixture = *state;
+    struct jg_certificate_material client;
+    struct jg_audit_record audits[4U];
+    char request[16384U];
+    char *authority = NULL;
+    size_t authority_size = 0U;
+    char *encoded_authority = NULL;
+    char *encoded_client = NULL;
+    json_t *text = NULL;
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t audit_total = 0U;
+    size_t audit_count = 0U;
+    uint64_t mapping_id = 0U;
+    int written = 0;
+
+    response = process_local_request(fixture, authorities_show);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "configured")));
+    assert_int_equal(json_array_size(json_object_get(body, "authorities")), 0U);
+    json_decref(response);
+
+    create_management_test_authority(&authority, &authority_size);
+    text = json_stringn(authority, authority_size);
+    assert_non_null(text);
+    encoded_authority = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
+    json_decref(text);
+    assert_non_null(encoded_authority);
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"mtls-ca-install\",\"method\":\"PUT\","
+                 "\"path\":\"/api/v1/mtls/authorities\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{"
+                 "\"certificate_authorities\":%s}}",
+                 encoded_authority);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "configured")));
+    assert_true(json_is_true(json_object_get(body, "reload_required")));
+    items = json_object_get(body, "authorities");
+    assert_int_equal(json_array_size(items), 1U);
+    assert_string_equal(json_string_value(json_object_get(
+                            json_array_get(items, 0U), "subject")),
+                        "CN=JanusGate private CA");
+    json_decref(response);
+    assert_int_equal(access(fixture->client_ca_path, F_OK), 0);
+
+    assert_int_equal(jg_certificate_create_self_signed("remote-client", NULL,
+                                                       0U, 30U, &client),
+                     0);
+    text = json_stringn(client.certificate, client.certificate_size);
+    assert_non_null(text);
+    encoded_client = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
+    json_decref(text);
+    assert_non_null(encoded_client);
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"mtls-map-create\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/mtls/mappings\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{"
+                 "\"certificate\":%s,\"user_id\":null,"
+                 "\"role\":\"administrator\"}}",
+                 encoded_client);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    body = json_object_get(response, "body");
+    mapping_id = (uint64_t)json_integer_value(
+        json_object_get(json_object_get(body, "mapping"), "id"));
+    assert_true(mapping_id > 0U);
+    json_decref(response);
+
+    response = process_local_request(fixture, mappings_show);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "total")), 2);
+    assert_int_equal(json_array_size(json_object_get(body, "mappings")), 2U);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"mtls-map-revoke\",\"method\":\"DELETE\","
+        "\"path\":\"/api/v1/mtls/mappings/%llu\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}",
+        (unsigned long long)mapping_id);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_integer(
+        json_object_get(json_object_get(body, "mapping"), "revoked_at")));
+    json_decref(response);
+
+    response = process_local_request(fixture, authorities_remove);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "configured")));
+    assert_true(json_is_true(json_object_get(body, "reload_required")));
+    json_decref(response);
+    assert_int_equal(access(fixture->client_ca_path, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, audits,
+                                            sizeof(audits) / sizeof(audits[0U]),
+                                            &audit_count, &audit_total),
+                     0);
+    assert_int_equal(audit_count, 4U);
+    assert_int_equal(audit_total, 4U);
+    assert_string_equal(audits[0U].action, "mtls.authorities.remove");
+    assert_string_equal(audits[3U].action, "mtls.authorities.install");
+
+    jg_certificate_material_clear(&client);
+    free(encoded_client);
+    free(encoded_authority);
+    free(authority);
+}
+
 /** @brief Verify backup creation, pagination, and manifest inspection. */
 static void test_backup_api(void **state)
 {
@@ -3029,6 +3249,8 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_certificate_api,
                                         setup_certificate_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_mtls_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(
             test_backup_api, setup_certificate_management, teardown_management),

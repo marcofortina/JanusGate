@@ -90,6 +90,7 @@ struct jg_management {
     struct jg_auth_password_policy password_policy;
     struct token_rate_slot token_rates[MANAGEMENT_TOKEN_RATE_SLOT_COUNT];
     char certificate_path[PATH_MAX];
+    char client_ca_path[PATH_MAX];
     char backup_directory[PATH_MAX];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
     enum jg_system_action pending_system_action;
@@ -253,6 +254,7 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
                          const char *certificate_path,
+                         const char *client_ca_path,
                          const char *backup_directory,
                          struct jg_daemon_runtime *runtime,
                          struct jg_management **management)
@@ -267,7 +269,7 @@ int jg_management_create(struct jg_database *database,
     if (database == NULL || totp_key_path == NULL ||
         !key_path_valid(certificate_path) ||
         strlen(certificate_path) > PATH_MAX - sizeof(".pending-key") ||
-        !key_path_valid(backup_directory)) {
+        !key_path_valid(client_ca_path) || !key_path_valid(backup_directory)) {
         return -EINVAL;
     }
     created = calloc(1U, sizeof(*created));
@@ -278,6 +280,8 @@ int jg_management_create(struct jg_database *database,
     created->runtime = runtime;
     (void)memcpy(created->certificate_path, certificate_path,
                  strlen(certificate_path) + 1U);
+    (void)memcpy(created->client_ca_path, client_ca_path,
+                 strlen(client_ca_path) + 1U);
     (void)memcpy(created->backup_directory, backup_directory,
                  strlen(backup_directory) + 1U);
     jg_auth_password_policy_default(&created->password_policy);
@@ -981,6 +985,86 @@ static json_t *certificate_json(const struct jg_certificate_info *certificate)
                             json_boolean(certificate->self_signed)) != 0 ||
         json_object_set_new(body, "private_key_available",
                             json_boolean(certificate->private_key_matches)) !=
+            0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Convert trusted client-authority metadata to public JSON. */
+static json_t *certificate_authority_json(
+    const struct jg_certificate_info *authority)
+{
+    char fingerprint[sizeof(authority->fingerprint_sha256) * 2U + 1U];
+    json_t *body = json_object();
+
+    if (sodium_bin2hex(fingerprint, sizeof(fingerprint),
+                       authority->fingerprint_sha256,
+                       sizeof(authority->fingerprint_sha256)) == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "subject", json_string(authority->subject)) !=
+            0 ||
+        json_object_set_new(body, "issuer", json_string(authority->issuer)) !=
+            0 ||
+        json_object_set_new(body, "fingerprint_sha256",
+                            json_string(fingerprint)) != 0 ||
+        json_object_set_new(body, "not_before",
+                            json_integer((json_int_t)authority->not_before)) !=
+            0 ||
+        json_object_set_new(body, "not_after",
+                            json_integer((json_int_t)authority->not_after)) !=
+            0 ||
+        json_object_set_new(body, "self_signed",
+                            json_boolean(authority->self_signed)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
+/** @brief Convert one client-certificate mapping to public JSON fields. */
+static json_t *mtls_mapping_json(const struct jg_account_mtls_mapping *mapping)
+{
+    char fingerprint[sizeof(mapping->fingerprint_sha256) * 2U + 1U];
+    const char *role = role_name(mapping->role);
+    json_t *body = json_object();
+
+    if (sodium_bin2hex(fingerprint, sizeof(fingerprint),
+                       mapping->fingerprint_sha256,
+                       sizeof(mapping->fingerprint_sha256)) == NULL ||
+        body == NULL ||
+        json_object_set_new(
+            body, "id", json_integer((json_int_t)mapping->mapping_id)) != 0 ||
+        json_object_set_new(body, "fingerprint_sha256",
+                            json_string(fingerprint)) != 0 ||
+        json_object_set_new(body, "subject", json_string(mapping->subject)) !=
+            0 ||
+        json_object_set_new(body, "issuer", json_string(mapping->issuer)) !=
+            0 ||
+        json_object_set_new(body, "not_before",
+                            json_integer((json_int_t)mapping->not_before)) !=
+            0 ||
+        json_object_set_new(body, "not_after",
+                            json_integer((json_int_t)mapping->not_after)) !=
+            0 ||
+        json_object_set_new(body, "created_at",
+                            json_integer((json_int_t)mapping->created_at)) !=
+            0 ||
+        set_optional_timestamp(body, "revoked_at", mapping->revoked_at) != 0 ||
+        json_object_set_new(body, "revision",
+                            json_integer((json_int_t)mapping->revision)) != 0 ||
+        json_object_set_new(body, "user_id",
+                            mapping->user_id == 0U
+                                ? json_null()
+                                : json_integer((json_int_t)mapping->user_id)) !=
+            0 ||
+        json_object_set_new(body, "username",
+                            mapping->user_id == 0U
+                                ? json_null()
+                                : json_string(mapping->username)) != 0 ||
+        json_object_set_new(body, "role",
+                            role == NULL ? json_null() : json_string(role)) !=
             0) {
         json_decref(body);
         return NULL;
@@ -3434,6 +3518,128 @@ static int append_certificate_audit(
             .object_type = "certificate",
             .object_id = "server",
             .details = encoded,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Append one successful client-authority trust-store event. */
+static int append_mtls_authority_audit(struct jg_management *management,
+                                       const struct management_request *request,
+                                       const struct remote_address *remote,
+                                       const struct authenticated_actor *actor,
+                                       const char *action,
+                                       size_t authority_count,
+                                       uint64_t now)
+{
+    char source[INET6_ADDRSTRLEN];
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int result = 0;
+
+    if (inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "authority_count",
+                            json_integer((json_int_t)authority_count)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = action,
+            .object_type = "client_trust_store",
+            .object_id = "remote_api",
+            .details = encoded,
+            .success = true,
+            .request_id = request->request_id,
+        };
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    free(encoded);
+    json_decref(details);
+    return result;
+}
+
+/** @brief Append one successful client-certificate mapping event. */
+static int append_mtls_mapping_audit(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    bool has_previous_revision,
+    uint64_t previous_revision,
+    const struct jg_account_mtls_mapping *mapping,
+    uint64_t now)
+{
+    char object_id[32U];
+    char source[INET6_ADDRSTRLEN];
+    char fingerprint[65U];
+    const char *role = role_name(mapping->role);
+    json_t *details = json_object();
+    char *encoded = NULL;
+    struct jg_audit_event event;
+    int written = snprintf(object_id, sizeof(object_id), "%llu",
+                           (unsigned long long)mapping->mapping_id);
+    int result = 0;
+
+    if (written <= 0 || (size_t)written >= sizeof(object_id) ||
+        sodium_bin2hex(fingerprint, sizeof(fingerprint),
+                       mapping->fingerprint_sha256,
+                       sizeof(mapping->fingerprint_sha256)) == NULL ||
+        inet_ntop(remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET : AF_INET6,
+                  remote->address, source, sizeof(source)) == NULL ||
+        details == NULL ||
+        json_object_set_new(details, "fingerprint_sha256",
+                            json_string(fingerprint)) != 0 ||
+        json_object_set_new(details, "user_id",
+                            mapping->user_id == 0U
+                                ? json_null()
+                                : json_integer((json_int_t)mapping->user_id)) !=
+            0 ||
+        json_object_set_new(details, "role",
+                            role == NULL ? json_null() : json_string(role)) !=
+            0) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+        if (encoded == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0) {
+        event = (struct jg_audit_event){
+            .occurred_at = now,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
+            .actor_id = actor->actor_id,
+            .source = source,
+            .action = action,
+            .object_type = "client_certificate_mapping",
+            .object_id = object_id,
+            .details = encoded,
+            .has_previous_revision = has_previous_revision,
+            .previous_revision = previous_revision,
+            .has_new_revision = true,
+            .new_revision = mapping->revision,
             .success = true,
             .request_id = request->request_id,
         };
@@ -8476,6 +8682,506 @@ static int handle_certificate_install(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Encode the installed client-authority trust-store state. */
+static int respond_mtls_authorities(
+    const struct jg_certificate_info *authorities,
+    size_t authority_count,
+    bool configured,
+    bool reload_required,
+    int status,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    json_t *body = json_object();
+    json_t *items = json_array();
+    int result = 0;
+
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < authority_count; ++index) {
+        json_t *item = certificate_authority_json(&authorities[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "configured", json_boolean(configured)) !=
+             0 ||
+         json_object_set(body, "authorities", items) != 0 ||
+         json_object_set_new(body, "reload_required",
+                             json_boolean(reload_required)) != 0)) {
+        result = -ENOMEM;
+    }
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(status, body, NULL, output, output_size, written);
+}
+
+/** @brief Return the installed client-authority trust-store state. */
+static int handle_mtls_authorities_show(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_certificate_info *authorities = NULL;
+    size_t authority_count = 0U;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The client-authority request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    authorities = calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_certificate_trust_store_inspect_file(
+        management->client_ca_path, authorities, JG_CERTIFICATE_AUTHORITY_MAX,
+        &authority_count);
+    if (result == -ENOENT) {
+        result = respond_mtls_authorities(NULL, 0U, false, false, 200, output,
+                                          output_size, written);
+    } else if (result != 0) {
+        result = respond_error(
+            500, "client_authorities_unavailable",
+            "The client-certificate authorities could not be inspected.",
+            request->request_id, output, output_size, written);
+    } else {
+        result =
+            respond_mtls_authorities(authorities, authority_count, true, false,
+                                     200, output, output_size, written);
+    }
+    free(authorities);
+    return result;
+}
+
+/** @brief Validate and install a client-authority trust-store bundle. */
+static int handle_mtls_authorities_install(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    static const char *const fields[] = {
+        "certificate_authorities",
+    };
+    struct authenticated_actor actor;
+    struct jg_certificate_info *authorities = NULL;
+    const char *pem = NULL;
+    size_t pem_size = 0U;
+    size_t authority_count = 0U;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    pem = required_string(request->body, "certificate_authorities", 1U,
+                          JG_CERTIFICATE_PEM_MAX);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        pem == NULL) {
+        return respond_error(400, "invalid_body",
+                             "The client-authority bundle is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    pem_size = json_string_length(
+        json_object_get(request->body, "certificate_authorities"));
+    authorities = calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_certificate_trust_store_install(
+        management->client_ca_path, pem, pem_size, authorities,
+        JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    if (result == -EINVAL || result == -ENOSPC || result == -EACCES) {
+        free(authorities);
+        return respond_error(
+            400, "invalid_client_authorities",
+            "The bundle must contain only unique CA certificates.",
+            request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        free(authorities);
+        return respond_error(
+            500, "client_authorities_install_failed",
+            "The client-certificate authorities could not be installed.",
+            request->request_id, output, output_size, written);
+    }
+    result = append_mtls_authority_audit(management, request, remote, &actor,
+                                         "mtls.authorities.install",
+                                         authority_count, now);
+    if (result != 0) {
+        free(authorities);
+        return respond_error(
+            500, "audit_failure",
+            "The authorities were installed, but their audit record could "
+            "not be stored.",
+            request->request_id, output, output_size, written);
+    }
+    result = respond_mtls_authorities(authorities, authority_count, true, true,
+                                      200, output, output_size, written);
+    free(authorities);
+    return result;
+}
+
+/** @brief Remove the client-authority trust store and disable remote mTLS. */
+static int handle_mtls_authorities_remove(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    uint64_t now,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_certificate_info *authorities = NULL;
+    size_t authority_count = 0U;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The client-authority removal is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    authorities = calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_certificate_trust_store_inspect_file(
+        management->client_ca_path, authorities, JG_CERTIFICATE_AUTHORITY_MAX,
+        &authority_count);
+    if (result == -ENOENT) {
+        authority_count = 0U;
+        result = 0;
+    }
+    free(authorities);
+    if (result != 0) {
+        return respond_error(
+            500, "client_authorities_unavailable",
+            "The client-certificate authorities could not be inspected.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_certificate_trust_store_remove(management->client_ca_path);
+    if (result != 0) {
+        return respond_error(
+            500, "client_authorities_remove_failed",
+            "The client-certificate authorities could not be removed.",
+            request->request_id, output, output_size, written);
+    }
+    result = append_mtls_authority_audit(management, request, remote, &actor,
+                                         "mtls.authorities.remove",
+                                         authority_count, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The authorities were removed, but their audit record could not "
+            "be stored.",
+            request->request_id, output, output_size, written);
+    }
+    return respond_mtls_authorities(NULL, 0U, false, true, 200, output,
+                                    output_size, written);
+}
+
+/** @brief Return one authenticated stable page of certificate mappings. */
+static int handle_mtls_mappings_list(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_account_mtls_mapping *mappings = NULL;
+    json_t *body = NULL;
+    json_t *items = NULL;
+    uint64_t offset = 0U;
+    uint64_t total = 0U;
+    size_t limit = 0U;
+    size_t count = 0U;
+    int result = authenticate_actor(management, request, remote, false,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (json_object_size(request->body) != 0U ||
+        parse_page_query(request->query, "offset", JG_ACCOUNT_MTLS_PAGE_MAX,
+                         &offset, &limit) != 0) {
+        return respond_error(400, "invalid_query",
+                             "The mapping pagination parameters are not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    mappings = calloc(limit, sizeof(*mappings));
+    if (mappings == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_account_mtls_mapping_list(management->database, offset,
+                                          mappings, limit, &count, &total);
+    if (result != 0) {
+        free(mappings);
+        return respond_error(
+            500, "mtls_mappings_unavailable",
+            "The client-certificate mappings could not be read.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    items = json_array();
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    for (size_t index = 0U; result == 0 && index < count; ++index) {
+        json_t *item = mtls_mapping_json(&mappings[index]);
+
+        if (item == NULL || json_array_append_new(items, item) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "offset",
+                             json_integer((json_int_t)offset)) != 0 ||
+         json_object_set_new(body, "limit", json_integer((json_int_t)limit)) !=
+             0 ||
+         json_object_set_new(body, "count", json_integer((json_int_t)count)) !=
+             0 ||
+         json_object_set_new(body, "total", json_integer((json_int_t)total)) !=
+             0 ||
+         json_object_set(body, "mappings", items) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0) {
+        const uint64_t next = offset + (uint64_t)count;
+        json_t *next_value = count > 0U && next < total
+                                 ? json_integer((json_int_t)next)
+                                 : json_null();
+
+        if (json_object_set_new(body, "next_offset", next_value) != 0) {
+            result = -ENOMEM;
+        }
+    }
+    free(mappings);
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Create a user- or role-bound client-certificate mapping. */
+static int handle_mtls_mapping_create(struct jg_management *management,
+                                      const struct management_request *request,
+                                      const struct remote_address *remote,
+                                      uint64_t now,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written)
+{
+    static const char *const fields[] = {
+        "certificate",
+        "user_id",
+        "role",
+    };
+    struct authenticated_actor actor;
+    struct jg_certificate_info certificate;
+    struct jg_account_mtls_mapping_config config;
+    struct jg_account_mtls_mapping mapping;
+    json_t *user_value = json_object_get(request->body, "user_id");
+    json_t *role_value = json_object_get(request->body, "role");
+    const char *certificate_pem = NULL;
+    const char *role_text = NULL;
+    size_t certificate_size = 0U;
+    json_int_t user_id = 0;
+    json_t *body = NULL;
+    json_t *mapping_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    certificate_pem = required_string(request->body, "certificate", 1U,
+                                      JG_CERTIFICATE_PEM_MAX);
+    if (json_is_integer(user_value)) {
+        user_id = json_integer_value(user_value);
+    }
+    if (json_is_string(role_value)) {
+        role_text = json_string_value(role_value);
+    }
+    (void)memset(&config, 0, sizeof(config));
+    config.user_id = user_id > 0 ? (uint64_t)user_id : 0U;
+    config.role = parse_role(role_text);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        certificate_pem == NULL ||
+        !((config.user_id != 0U && json_is_null(role_value)) ||
+          (json_is_null(user_value) && config.role != JG_ACCESS_ROLE_NONE))) {
+        return respond_error(400, "invalid_body",
+                             "Map the certificate to exactly one user or role.",
+                             request->request_id, output, output_size, written);
+    }
+    certificate_size =
+        json_string_length(json_object_get(request->body, "certificate"));
+    result = jg_certificate_inspect(certificate_pem, certificate_size, NULL, 0U,
+                                    &certificate);
+    if (result != 0) {
+        return respond_error(400, "invalid_client_certificate",
+                             "The client certificate is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    (void)memcpy(config.fingerprint_sha256, certificate.fingerprint_sha256,
+                 sizeof(config.fingerprint_sha256));
+    config.subject = certificate.subject;
+    config.issuer = certificate.issuer;
+    config.not_before = certificate.not_before;
+    config.not_after = certificate.not_after;
+    result = jg_account_mtls_mapping_create(management->database, &config, now,
+                                            &mapping);
+    if (result == -ENOENT) {
+        return respond_error(404, "user_not_found",
+                             "The selected local user was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EEXIST) {
+        return respond_error(409, "mtls_mapping_exists",
+                             "The client certificate is already mapped.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EACCES) {
+        return respond_error(400, "client_certificate_expired",
+                             "The client certificate is not currently valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(
+            500, "mtls_mapping_create_failed",
+            "The client-certificate mapping could not be created.",
+            request->request_id, output, output_size, written);
+    }
+    result = append_mtls_mapping_audit(management, request, remote, &actor,
+                                       "mtls.mapping.create", false, 0U,
+                                       &mapping, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The mapping was created, but its audit record could not be "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    mapping_body = mtls_mapping_json(&mapping);
+    if (body == NULL || mapping_body == NULL ||
+        json_object_set(body, "mapping", mapping_body) != 0) {
+        json_decref(mapping_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(mapping_body);
+    return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Revoke one client-certificate mapping idempotently. */
+static int handle_mtls_mapping_revoke(struct jg_management *management,
+                                      const struct management_request *request,
+                                      const struct remote_address *remote,
+                                      uint64_t mapping_id,
+                                      uint64_t now,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_account_mtls_mapping previous;
+    struct jg_account_mtls_mapping mapping;
+    json_t *body = NULL;
+    json_t *mapping_body = NULL;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The mapping revocation is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_account_mtls_mapping_get(management->database, mapping_id,
+                                         &previous);
+    if (result == -ENOENT) {
+        return respond_error(404, "mtls_mapping_not_found",
+                             "The client-certificate mapping was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_account_mtls_mapping_revoke(management->database,
+                                                mapping_id, now);
+    }
+    if (result == 0) {
+        result = jg_account_mtls_mapping_get(management->database, mapping_id,
+                                             &mapping);
+    }
+    if (result != 0) {
+        return respond_error(
+            500, "mtls_mapping_revoke_failed",
+            "The client-certificate mapping could not be revoked.",
+            request->request_id, output, output_size, written);
+    }
+    result = append_mtls_mapping_audit(management, request, remote, &actor,
+                                       "mtls.mapping.revoke", true,
+                                       previous.revision, &mapping, now);
+    if (result != 0) {
+        return respond_error(
+            500, "audit_failure",
+            "The mapping was revoked, but its audit record could not be "
+            "stored.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    mapping_body = mtls_mapping_json(&mapping);
+    if (body == NULL || mapping_body == NULL ||
+        json_object_set(body, "mapping", mapping_body) != 0) {
+        json_decref(mapping_body);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(mapping_body);
+    return encode_response(200, body, NULL, output, output_size, written);
+}
+
 /** @brief Return one authenticated stable page of backup metadata. */
 static int handle_backups_list(struct jg_management *management,
                                const struct management_request *request,
@@ -9427,6 +10133,7 @@ static int dispatch_request(struct jg_management *management,
     uint64_t backup_id = 0U;
     uint64_t destination_rule_id = 0U;
     uint64_t domain_rule_id = 0U;
+    uint64_t mapping_id = 0U;
     uint64_t source_id = 0U;
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
@@ -9651,6 +10358,37 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/certificates/csr") == 0 && post) {
         return handle_certificate_csr(management, request, remote, now, output,
                                       output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/mtls/authorities") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_mtls_authorities_show(management, request, remote, now,
+                                            output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/mtls/authorities") == 0 &&
+        strcmp(request->method, "PUT") == 0) {
+        return handle_mtls_authorities_install(management, request, remote, now,
+                                               output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/mtls/authorities") == 0 &&
+        strcmp(request->method, "DELETE") == 0) {
+        return handle_mtls_authorities_remove(management, request, remote, now,
+                                              output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/mtls/mappings") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_mtls_mappings_list(management, request, remote, now,
+                                         output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/mtls/mappings") == 0 && post) {
+        return handle_mtls_mapping_create(management, request, remote, now,
+                                          output, output_size, written);
+    }
+    if (strcmp(request->method, "DELETE") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/mtls/mappings/", "",
+                                   &mapping_id)) {
+        return handle_mtls_mapping_revoke(management, request, remote,
+                                          mapping_id, now, output, output_size,
+                                          written);
     }
     if (strcmp(request->path, "/api/v1/backups") == 0 &&
         strcmp(request->method, "GET") == 0) {

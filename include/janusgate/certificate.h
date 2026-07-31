@@ -34,6 +34,10 @@
 /** Default combined server certificate and private-key PEM path. */
 #define JG_CERTIFICATE_DEFAULT_PATH "/etc/janusgate/certs/server.pem"
 
+/** Default trusted client-certificate authority bundle path. */
+#define JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH                                  \
+    "/etc/janusgate/certs/client-ca.pem"
+
 /** Public metadata extracted from one leaf certificate. */
 struct jg_certificate_info {
     /** RFC 2253 subject distinguished name. */
