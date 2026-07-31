@@ -15,6 +15,8 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
   destination-policy decision.
 - DoT and DoQ port controls can block standard port 853, but a service can use
   another port or transport.
+- UDP 443 is available for destination policy, but JanusGate does not parse
+  QUIC Initial packets and cannot enforce QUIC TLS SNI names.
 - Shared CDN and anycast addresses can serve unrelated applications. Broad IP
   blocks may cause collateral loss; prefer domain rules and narrow,
   attributable endpoint sets.
@@ -30,6 +32,9 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 - OpenBSD currently supports one fail-closed divert queue, no CPU fanout, no
   multicast-snooping control, and no explicit bridge MTU override. Its
   unprivileged management service listens on port 8443 by default.
+- Management addressing and routing are deployment-owned OS configuration;
+  JanusGate validates the separate interface role but does not assign Layer-3
+  addresses through its WebGUI or network API.
 - The management plane is not a replacement for host hardening, patch
   management, protected backups, access review, or physical security.
 - Policy lists can be incomplete, stale, overbroad, or legally unsuitable.

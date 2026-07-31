@@ -5,10 +5,11 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
 # JanusGate
 
-JanusGate is a transparent, bidirectional Linux and OpenBSD appliance that
-applies domain and destination policy to traffic crossing an inline Layer-2
-bridge. Classic DNS sent to arbitrary resolvers remains subject to policy
-while ordinary traffic stays in the kernel forwarding path.
+JanusGate is a transparent Linux and OpenBSD appliance built around a
+bidirectional inline Layer-2 bridge. Policy selection applies to
+client-to-upstream traffic entering the protected-side port. Classic DNS sent
+to arbitrary resolvers remains subject to policy; traffic outside the selected
+ports and destination sets stays in the kernel forwarding path.
 
 ```mermaid
 flowchart LR
@@ -22,7 +23,7 @@ flowchart LR
         workers[Policy workers]
         administration[HTTPS / CLI]
 
-        bridge -->|selected DNS| workers
+        bridge -->|selected ingress traffic| workers
     end
 
     protected -->|data-in| bridge
@@ -40,8 +41,9 @@ management interface is never attached to the data bridge.
 - Exact and subdomain rules, allow precedence, scopes, local lists, and bounded
   remote sources.
 - Drop, REFUSED, NXDOMAIN, and IPv4/IPv6 sinkhole actions for UDP DNS.
-- Bounded TCP reassembly, fragmentation handling, DoT/DoQ controls, known
-  endpoint sets, and visible TLS SNI policy without TLS interception.
+- Bounded TCP reassembly, fragmentation handling, standard-port DoT/DoQ
+  controls, known endpoint sets, and visible TLS SNI policy without TLS
+  interception or QUIC SNI parsing.
 - Transactional network changes with confirmation and rollback.
 - HTTPS administration, privileged local CLI, mandatory-mTLS remote CLI,
   roles, TOTP, tokens, CSRF protection, audit chain, metrics, backups, and

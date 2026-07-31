@@ -8,18 +8,25 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 Keep local console access, a recent configuration backup, the matching full
 backup passphrase, and a known-good image before making high-impact changes.
 
-## Management rollback
+## Network rollback and management recovery
 
-An applied management-network change remains provisional until confirmed.
-Reconnect through the proposed address and run:
+An applied JanusGate bridge or packet-selection change remains provisional
+until confirmed. Verify data forwarding while retaining the existing
+management connection, then run:
 
 ```sh
-janusgatectl --endpoint https://NEW-ADDRESS network confirm
+janusgatectl network confirm
 ```
 
-If it is unreachable, wait for automatic rollback or use the local console and
-`network rollback`. Do not attach the management interface to the data bridge
-as a workaround.
+If the change is not healthy, wait for automatic rollback or use the local
+console and `network rollback`. Do not attach the management interface to the
+data bridge as a workaround.
+
+Management addresses, routes, and the HTTPS listen address are OS-owned and
+are outside that transaction. Recover an inaccessible management address from
+the local console by restoring the deployment network configuration and
+matching service bind address; then verify that the certificate covers the
+restored identity.
 
 ## Service and configuration recovery
 

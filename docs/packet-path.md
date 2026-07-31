@@ -6,18 +6,24 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 # Packet path
 
 `janusgate-netd` creates the configured bridge, attaches only the two data
-interfaces, applies supported bridge settings, assigns the management address
-to the dedicated interface, and installs the native packet-selection policy.
+interfaces, applies supported bridge settings, validates the separate
+management-interface role, and installs the native packet-selection policy.
+The deployment operating system owns management addressing and routing.
 
 ## Kernel selection
 
-The bridge forwards ordinary Ethernet traffic without a user-space copy.
-Linux bridge and inet-family nftables chains select:
+The bridge forwards traffic outside the selection rules without a user-space
+copy. Linux bridge and inet-family nftables chains select client-to-upstream
+traffic entering the configured ingress interface:
 
-- UDP and TCP classic DNS on port 53, regardless of resolver address;
-- optional DoT on TCP 853 and DoQ on UDP 853;
+- IPv4 and IPv6 fragments for bounded policy-safe handling;
+- UDP and TCP on ports 53, 443, and 853;
 - configured encrypted-DNS endpoint address sets;
-- TLS flows selected for visible ClientHello SNI inspection.
+- configured destination address sets.
+
+TCP 443 can be evaluated through visible TLS ClientHello SNI. UDP 443 receives
+destination policy only: JanusGate does not parse QUIC Initial packets or QUIC
+TLS SNI. UDP 853 provides standard-port DoQ control without parsing DoQ.
 
 Selected packets enter one of the configured NFQUEUE numbers. Queue fan-out
 can distribute flows across workers while preserving per-flow ordering.
@@ -28,12 +34,18 @@ the kernel path. The daemon evaluates diverted packets against the same
 bounded policy and reinjects accepted packets. OpenBSD currently uses one
 queue in fail-closed mode.
 
+Layer-2 forwarding remains bidirectional. Native packet selectors normally
+send only the client-to-upstream direction to policy workers; response traffic
+continues through the bridge without generic user-space inspection.
+
 ## Evaluation
 
 Workers validate Ethernet, VLAN, IP, extension, fragmentation, transport, DNS,
-and TLS lengths before access. UDP DNS is evaluated immediately. TCP DNS uses
-bounded bidirectional reassembly that accepts segmentation and retransmission,
-handles bounded out-of-order data, and rejects contradictory overlap.
+and TLS lengths before access. UDP DNS is evaluated immediately. The bounded
+TCP stream tracker can model both directions when they are supplied, accepts
+segmentation and retransmission, handles bounded out-of-order data, and rejects
+contradictory overlap. Installed selectors normally supply only ingress
+client-to-upstream packets.
 
 Policy order is explicit: a matching allow exception wins over a block rule;
 more specific scopes are evaluated before global rules. Exact-domain rules do
@@ -64,5 +76,6 @@ operation only. Unselected bridge traffic stays independent of the daemon.
 Policy changes atomically replace the JanusGate-owned nftables table or PF
 anchor.
 
-The management interface is not attached to the data bridge, and the default
-HTTPS listener binds only its configured management address.
+The management interface is not attached to the data bridge. The operating
+system assigns its address and route; the HTTPS service must be configured to
+bind that same numeric address.

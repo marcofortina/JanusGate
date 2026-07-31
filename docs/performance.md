@@ -50,9 +50,12 @@ combined.
 The measurements cover policy construction and selected-packet processing in
 one process. They do not substitute for a hardware forwarding test: NIC,
 driver, bridge, nftables, queue scheduling, and interrupt behavior depend on
-the appliance. Before deployment, compare unselected bridge throughput against
-the same host bridge without JanusGate policy hooks and require at least 95%
-of that baseline at 1 Gbit/s.
+the appliance. Native rules select ingress TCP and UDP ports 53, 443, and 853,
+so common HTTPS and HTTP/3 traffic incurs queue-copy and scheduling overhead
+even when no rule blocks it. Before deployment, compare unselected bridge
+throughput against the same host bridge without JanusGate policy hooks and
+require at least 95% of that baseline at 1 Gbit/s, then measure the selected
+443 path separately under the expected load.
 
 The base-process target is less than 128 MiB RSS without large lists. The
 one-million-rule snapshot intentionally uses a separate, documented 512 MiB

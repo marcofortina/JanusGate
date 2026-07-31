@@ -312,7 +312,8 @@ paths:
       operationId: applyNetworkConfiguration
       summary: Stage a revision-checked network transaction
       description: |
-        Remote management changes are applied with a rollback checkpoint.
+        Bridge roles and packet-selection changes are applied with a rollback
+        checkpoint. Management Layer-3 configuration remains deployment-owned.
         Call `/network/confirm` before the returned deadline.
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
@@ -1394,6 +1395,7 @@ components:
           $ref: '#/components/schemas/InterfaceName'
         management:
           $ref: '#/components/schemas/InterfaceName'
+          description: OS-addressed interface kept outside the data bridge
         bridge_mtu:
           oneOf:
             - const: 0

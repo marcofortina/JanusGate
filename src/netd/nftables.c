@@ -242,7 +242,7 @@ int jg_netd_build_nft_rules(const struct jg_network_config *config,
         "    iifname @ingress_port meta l4proto tcp tcp dport 853 counter %s "
         "comment \"JanusGate encrypted DNS TCP\"\n"
         "    iifname @ingress_port meta l4proto udp udp dport 443 counter %s "
-        "comment \"JanusGate QUIC inspection\"\n"
+        "comment \"JanusGate UDP 443 destination enforcement\"\n"
         "    iifname @ingress_port meta l4proto tcp tcp dport 443 counter %s "
         "comment \"JanusGate TLS inspection\"\n"
         "    iifname @ingress_port counter comment \"JanusGate pass-through\"\n"

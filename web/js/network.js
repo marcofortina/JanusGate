@@ -175,7 +175,7 @@ async function finishTransaction(action) {
   if (!await confirmAction(
     `${verb} network configuration`,
     action === "confirm"
-      ? "Confirm that management connectivity and data forwarding are working."
+      ? "Confirm that the management API and data forwarding are working."
       : "Restore the last confirmed network configuration now.",
     verb,
   )) {

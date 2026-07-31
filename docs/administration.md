@@ -40,12 +40,16 @@ returns a conflict instead of silently overwriting newer state.
 
 ## Network
 
-The network page displays bridge roles, management addressing, queue layout,
-MTU, failure mode, and optional encrypted-DNS controls. Validate a proposed
-document first. Applying a management-address change starts a confirmation
-window; reconnect through the new address and confirm it, or let JanusGate
-restore the previous configuration. Keep local console access during this
-operation.
+The network page displays bridge roles, the separate management-interface
+role, queue layout, MTU, failure mode, and optional encrypted-DNS controls.
+Validate a proposed document first. Applying bridge or packet-selection
+changes starts a confirmation window; confirm the working path or let
+JanusGate restore the previous configuration.
+
+Management addressing, routes, and the HTTPS listen address are owned by the
+deployment operating system and are not changed by this page. Keep local
+console access and update those values together when moving the appliance to a
+different management network.
 
 ## Identities and access
 

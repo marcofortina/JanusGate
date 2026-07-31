@@ -6,10 +6,10 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 # Architecture
 
 JanusGate is an inline Layer-2 appliance. The data interfaces belong to one
-bridge; the management interface remains separate. Ordinary frames stay in
-the kernel forwarding path. Linux uses nftables and NFQUEUE for selected DNS
-and encrypted-DNS traffic. OpenBSD uses a PF anchor and divert sockets for the
-same policy boundary.
+bridge; the management interface remains separate. Frames outside the native
+selection rules stay in the kernel forwarding path. Linux uses nftables and
+NFQUEUE for ingress traffic selected by ports and destination sets. OpenBSD
+uses a PF anchor and divert sockets for its documented policy boundary.
 
 ```mermaid
 flowchart LR
@@ -55,7 +55,7 @@ flowchart LR
   as the unprivileged `janusgate` account. Linux retains only `CAP_NET_ADMIN`,
   which the kernel requires when submitting NFQUEUE verdicts.
 - `janusgate-netd` is the narrow privileged helper. It validates every request
-  before changing bridge, address, packet selection, or appliance power state.
+  before changing bridge roles, packet selection, or appliance power state.
 - `janusgate-web` terminates two isolated HTTPS boundaries as `janusgate-web`.
   The browser listener uses sessions without mTLS. The optional TCP 9443 API
   listener requires a trusted client certificate and token. Both validate HTTP
@@ -109,6 +109,12 @@ Both reference images use the same interface order:
 1. data ingress;
 2. data egress;
 3. management.
+
+Management Layer-3 configuration belongs to the deployment operating system,
+not the JanusGate network transaction. The OS address, HTTPS listen address,
+routes, and certificate identity must be kept consistent by the image or
+administrator. JanusGate validates that the selected management interface is
+distinct from the addressless data plane.
 
 See [Packet path](packet-path.md), [Threat model](threat-model.md), and
 [Firmware](firmware.md) for the operational details.

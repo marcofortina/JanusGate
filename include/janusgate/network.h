@@ -62,7 +62,7 @@ struct jg_network_config {
     char ingress[JG_INTERFACE_NAME_MAX + 1U];
     /** Second data interface attached to the bridge. */
     char egress[JG_INTERFACE_NAME_MAX + 1U];
-    /** Physically and logically separate management interface. */
+    /** Deployment-addressed interface kept separate from the data bridge. */
     char management[JG_INTERFACE_NAME_MAX + 1U];
     /** Bridge MTU in `[1280, 65535]`, or zero to use the port minimum. */
     uint32_t bridge_mtu;
