@@ -54,8 +54,8 @@ flowchart LR
   before changing bridge, address, packet selection, or appliance power state.
 - `janusgate-web` terminates management HTTPS as `janusgate-web`. It validates
   HTTP limits and forwards structured requests over the local control socket.
-- `janusgatectl` uses either that socket for the small local command set or the
-  HTTPS API for full administration.
+- `janusgatectl` provides full administration either as root through the local
+  control socket or remotely through the HTTPS API.
 - `janusgate-setup` validates and applies an explicit non-interactive
   installation document.
 
@@ -81,8 +81,9 @@ therefore leaves the last complete policy active.
 The local protocol uses length-bounded, versioned envelopes on Unix sockets.
 The control socket is owned by `janusgate:janusgate-control`; the web account
 has group access but no access to the database or private configuration.
-Messages reject unknown fields, invalid lengths, trailing data, and
-unauthorized operations.
+Root is the only peer authorized for token-free local administration; the web
+account must still present a valid session or API credential. Messages reject
+unknown fields, invalid lengths, trailing data, and unauthorized operations.
 
 ## Deployment
 

@@ -17,14 +17,12 @@ janusgatectl \- administer a JanusGate appliance
 .SH DESCRIPTION
 .B janusgatectl
 is the non-interactive administration client for JanusGate.
-It uses the local control socket for
-.B ping
-and
-.BR "policy reload" .
-All other commands use the versioned HTTPS management API and therefore
-require
+By default, it performs the complete command set through the local control
+socket, authenticated by privileged Unix peer credentials.
+Local administration must run as root.
+Specifying
 .B --endpoint
-and
+selects the versioned remote HTTPS management API and requires
 .BR --token-file .
 .PP
 Inputs are bounded and validated before transmission.
@@ -37,6 +35,8 @@ one-time secret.
 Use
 .I path
 as the local daemon control socket.
+This transport is the default and accepts administrative requests only from
+root.
 The default is
 .I /run/janusgate/control/control.sock
 on Linux and
@@ -49,9 +49,10 @@ Use the HTTPS management origin at
 The value must identify an HTTPS origin without a path, query, or fragment.
 .TP
 .BI --token-file " path"
-Read one API bearer token from a private regular file.
+Read one remote API bearer token from a private regular file.
 The file must be owned by the current user and must not be writable by group
-or other users.
+or other users. This option requires
+.BR --endpoint .
 .TP
 .BI --passphrase-file " path"
 Read a full-backup passphrase from a private regular file.
@@ -341,6 +342,10 @@ Persistent appliance configuration and certificate directory.
 Private backup archive directory.
 .SH EXAMPLES
 .nf
+sudo janusgatectl status
+
+sudo janusgatectl domain block example.org
+
 janusgatectl --endpoint https://192.168.77.1 \\
   --token-file /root/.config/janusgate/token status
 
@@ -354,6 +359,8 @@ janusgatectl --endpoint https://192.168.77.1 \\
 .fi
 .SH SECURITY
 Keep token, private-key, passphrase, and input files private.
+Local administration is equivalent to root appliance access and is accepted
+only from a root Unix-socket peer.
 Prefer
 .B --ca-file
 or the system trust store over disabling certificate verification; the client

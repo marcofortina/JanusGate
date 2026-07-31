@@ -5,16 +5,24 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
 # Command-line administration
 
-`janusgatectl` uses the local control socket for `ping` and `policy reload`.
-The complete command set uses the management HTTPS API:
+By default, `janusgatectl` performs the complete command set through the local
+Unix-domain control socket. Local administration is authorized by Unix peer
+credentials and must run as root:
+
+```sh
+sudo janusgatectl status
+```
+
+Specify `--endpoint` to use the remote HTTPS management API. Remote requests
+require an API token:
 
 ```sh
 janusgatectl --endpoint https://192.168.77.1 \
   --token-file /secure/janusgate.token status
 ```
 
-Use `--ca-file` for a private trust anchor or `--client-cert` together with
-`--client-key` for mTLS. Secret and passphrase files must be regular,
+`--token-file`, `--ca-file`, `--client-cert`, `--client-key`, and `--timeout`
+apply only to remote requests. Secret and passphrase files must be regular,
 caller-owned, private files. `--timeout` accepts 1–300 seconds. `--json`
 selects stable compact output; `--quiet`, `--verbose`, `--yes`, and
 `--include-private-key` control output and explicit high-impact operations.
