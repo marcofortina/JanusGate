@@ -205,11 +205,11 @@ static int create_workers(struct jg_daemon_runtime *runtime,
     return result;
 }
 
-/** @brief Start the validated persistent queue range last. */
-static int start_queues(struct jg_daemon_runtime *runtime,
-                        const struct jg_daemon_runtime_config *config,
-                        const struct jg_network_config *network,
-                        uint32_t ingress_index)
+/** @brief Open the validated persistent queue range without worker threads. */
+static int open_queues(struct jg_daemon_runtime *runtime,
+                       const struct jg_daemon_runtime_config *config,
+                       const struct jg_network_config *network,
+                       uint32_t ingress_index)
 {
     const struct jg_nfqueue_group_config queue_config = {
         .queue_first = network->queue_first,
@@ -230,8 +230,8 @@ static int start_queues(struct jg_daemon_runtime *runtime,
     }
     if (result == 0) {
         result =
-            jg_nfqueue_group_start(&queue_config, jg_dataplane_worker_process,
-                                   contexts, &runtime->queues);
+            jg_nfqueue_group_open(&queue_config, jg_dataplane_worker_process,
+                                  contexts, &runtime->queues);
     }
     return result;
 }
@@ -283,9 +283,9 @@ int jg_daemon_runtime_config_validate(
     return 0;
 }
 
-/** @brief Load state, prepare workers, apply networking, and start queues. */
-int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
-                            struct jg_daemon_runtime **runtime)
+/** @brief Load state, prepare workers, apply networking, and open queues. */
+int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
+                              struct jg_daemon_runtime **runtime)
 {
     struct jg_daemon_runtime *started = NULL;
     struct jg_policy_snapshot *snapshot = NULL;
@@ -369,7 +369,7 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
         }
     }
     if (result == 0) {
-        result = start_queues(started, config, &network, ingress_index);
+        result = open_queues(started, config, &network, ingress_index);
     }
     if (result == 0) {
         started->active_network = network;
@@ -382,6 +382,12 @@ int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
     }
     *runtime = started;
     return 0;
+}
+
+/** @brief Start every packet worker in one prepared runtime. */
+int jg_daemon_runtime_start(struct jg_daemon_runtime *runtime)
+{
+    return runtime == NULL ? -EINVAL : jg_nfqueue_group_start(runtime->queues);
 }
 
 /** @brief Request a non-blocking stop from every queue worker. */

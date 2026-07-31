@@ -40,6 +40,7 @@ struct group_worker {
 struct jg_nfqueue_group {
     struct jg_nfqueue_group_config config;
     struct group_worker workers[JG_NETWORK_QUEUE_COUNT_MAX];
+    bool started;
     bool joined;
     int stop_pipe[2U];
 };
@@ -200,13 +201,13 @@ int jg_nfqueue_group_config_validate(
     return result;
 }
 
-/** @brief Open a contiguous queue range and start one thread per queue. */
-int jg_nfqueue_group_start(const struct jg_nfqueue_group_config *config,
-                           jg_nfqueue_processor processor,
-                           void *const *contexts,
-                           struct jg_nfqueue_group **group)
+/** @brief Open a contiguous queue range without starting worker threads. */
+int jg_nfqueue_group_open(const struct jg_nfqueue_group_config *config,
+                          jg_nfqueue_processor processor,
+                          void *const *contexts,
+                          struct jg_nfqueue_group **group)
 {
-    struct jg_nfqueue_group *started = NULL;
+    struct jg_nfqueue_group *opened = NULL;
     size_t index = 0U;
     int result = 0;
 
@@ -221,14 +222,14 @@ int jg_nfqueue_group_start(const struct jg_nfqueue_group_config *config,
     if (result != 0) {
         return result;
     }
-    started = calloc(1U, sizeof(*started));
-    if (started == NULL) {
+    opened = calloc(1U, sizeof(*opened));
+    if (opened == NULL) {
         return -ENOMEM;
     }
-    started->config = *config;
-    started->stop_pipe[0U] = -1;
-    started->stop_pipe[1U] = -1;
-    if (pipe2(started->stop_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+    opened->config = *config;
+    opened->stop_pipe[0U] = -1;
+    opened->stop_pipe[1U] = -1;
+    if (pipe2(opened->stop_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
         result = -errno;
     }
     for (index = 0U; result == 0 && index < config->queue_count; ++index) {
@@ -241,24 +242,44 @@ int jg_nfqueue_group_start(const struct jg_nfqueue_group_config *config,
             .fail_open = config->fail_open,
         };
 
-        started->workers[index].group = started;
-        atomic_init(&started->workers[index].result, 0);
+        opened->workers[index].group = opened;
+        atomic_init(&opened->workers[index].result, 0);
         result =
             jg_nfqueue_worker_open(&worker_config, processor,
                                    contexts == NULL ? NULL : contexts[index],
-                                   &started->workers[index].queue);
-    }
-    for (index = 0U; result == 0 && index < config->queue_count; ++index) {
-        result = start_worker(&started->workers[index], config->pin_workers,
-                              config->first_cpu + (uint32_t)index);
+                                   &opened->workers[index].queue);
     }
     if (result != 0) {
-        (void)notify_stop(started);
-        (void)join_workers(started);
-        release_group(started);
+        release_group(opened);
         return result;
     }
-    *group = started;
+    *group = opened;
+    return 0;
+}
+
+/** @brief Start every thread in one prepared queue group. */
+int jg_nfqueue_group_start(struct jg_nfqueue_group *group)
+{
+    size_t index = 0U;
+    int result = 0;
+
+    if (group == NULL) {
+        return -EINVAL;
+    }
+    if (group->started || group->joined) {
+        return -EALREADY;
+    }
+    for (index = 0U; result == 0 && index < group->config.queue_count;
+         ++index) {
+        result = start_worker(&group->workers[index], group->config.pin_workers,
+                              group->config.first_cpu + (uint32_t)index);
+    }
+    if (result != 0) {
+        (void)notify_stop(group);
+        (void)join_workers(group);
+        return result;
+    }
+    group->started = true;
     return 0;
 }
 
@@ -271,7 +292,7 @@ int jg_nfqueue_group_request_stop(struct jg_nfqueue_group *group)
 /** @brief Join workers without initiating a new stop request. */
 int jg_nfqueue_group_wait(struct jg_nfqueue_group *group)
 {
-    if (group == NULL) {
+    if (group == NULL || !group->started) {
         return -EINVAL;
     }
     return group->joined ? 0 : join_workers(group);
@@ -282,7 +303,7 @@ int jg_nfqueue_group_join(struct jg_nfqueue_group *group)
 {
     int result = 0;
 
-    if (group == NULL) {
+    if (group == NULL || !group->started) {
         return -EINVAL;
     }
     if (group->joined) {
@@ -330,7 +351,7 @@ void jg_nfqueue_group_destroy(struct jg_nfqueue_group *group)
     if (group == NULL) {
         return;
     }
-    if (!group->joined) {
+    if (group->started && !group->joined) {
         (void)notify_stop(group);
         (void)join_workers(group);
     }

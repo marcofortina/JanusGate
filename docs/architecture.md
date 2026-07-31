@@ -51,7 +51,9 @@ flowchart LR
 
 - `janusgated` owns the policy database, immutable policy snapshots, packet
   workers, reassembly state, audit records, metrics, backups, and the local
-  control protocol. It runs as the unprivileged `janusgate` account.
+  control protocol. It opens native packet resources during startup, then runs
+  as the unprivileged `janusgate` account. Linux retains only `CAP_NET_ADMIN`,
+  which the kernel requires when submitting NFQUEUE verdicts.
 - `janusgate-netd` is the narrow privileged helper. It validates every request
   before changing bridge, address, packet selection, or appliance power state.
 - `janusgate-web` terminates two isolated HTTPS boundaries as `janusgate-web`.

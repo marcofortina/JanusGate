@@ -315,7 +315,6 @@ int jg_process_drop_privileges(const char *user_name)
 {
     static const cap_value_t runtime_capabilities[] = {
         CAP_NET_ADMIN,
-        CAP_NET_RAW,
     };
     const struct passwd *identity = NULL;
     uid_t user_id = 0U;

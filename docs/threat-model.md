@@ -33,6 +33,10 @@ storage, and the software supply chain.
 - A compromised `janusgate-web` process is contained by an unprivileged
   account, restricted files, local protocol validation, and the absence of
   direct network-administration capability.
+- The packet daemon opens native queues and raw output descriptors only during
+  privileged startup, then permanently drops its identity before starting
+  packet or management workers. Linux retains only `CAP_NET_ADMIN`, which is
+  required for NFQUEUE verdicts; `CAP_NET_RAW` is discarded.
 - On OpenBSD, `janusgated` and `janusgate-web` additionally use `pledge`.
   The narrow root network helper validates authenticated local requests but
   cannot use `pledge` because bridge and MTU ioctls are not exposed by a

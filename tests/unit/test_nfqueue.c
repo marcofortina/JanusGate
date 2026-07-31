@@ -73,7 +73,8 @@ static void test_open_arguments(void **state)
     assert_int_equal(jg_nfqueue_worker_open(&config, NULL, NULL, NULL),
                      -EINVAL);
     assert_int_equal(jg_nfqueue_worker_get_stats(NULL, NULL), -EINVAL);
-    assert_int_equal(jg_nfqueue_group_start(NULL, NULL, NULL, NULL), -EINVAL);
+    assert_int_equal(jg_nfqueue_group_open(NULL, NULL, NULL, NULL), -EINVAL);
+    assert_int_equal(jg_nfqueue_group_start(NULL), -EINVAL);
     assert_int_equal(jg_nfqueue_group_request_stop(NULL), -EINVAL);
     assert_int_equal(jg_nfqueue_group_wait(NULL), -EINVAL);
     assert_int_equal(jg_nfqueue_group_join(NULL), -EINVAL);

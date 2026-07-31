@@ -117,10 +117,11 @@ int jg_daemon_runtime_config_validate(
     const struct jg_daemon_runtime_config *config);
 
 /**
- * @brief Load persistent state and start the complete packet runtime.
+ * @brief Load persistent state and prepare the complete packet runtime.
  *
  * Network state is applied through the privileged helper only after all
- * userspace workers and raw outputs are ready. The NFQUEUE group starts last.
+ * userspace workers, raw outputs, and native packet queues are ready. Packet
+ * threads remain stopped so the caller can permanently discard privileges.
  *
  * @param[in] config Validated process-local runtime configuration.
  * @param[out] runtime Receives the owned running runtime.
@@ -129,13 +130,28 @@ int jg_daemon_runtime_config_validate(
  * @return A negative errno-style configuration, database, interface, helper,
  * allocation, raw-socket, or NFQUEUE error otherwise.
  *
- * @thread_safety Only one process may own the configured queue range.
+ * @thread_safety Only one process may prepare the configured queue range.
  *
  * @side_effects Opens persistent storage and privileged packet sockets,
- * applies owned kernel network state, and starts queue threads.
+ * and applies owned kernel network state.
  */
-int jg_daemon_runtime_start(const struct jg_daemon_runtime_config *config,
-                            struct jg_daemon_runtime **runtime);
+int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
+                              struct jg_daemon_runtime **runtime);
+
+/**
+ * @brief Start packet workers for one fully prepared runtime.
+ *
+ * @param[in,out] runtime Prepared packet runtime.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null runtime.
+ * @return A negative errno-style affinity or thread error otherwise.
+ *
+ * @thread_safety Exactly one control thread may start the runtime.
+ *
+ * @side_effects Starts every native packet-queue worker.
+ */
+int jg_daemon_runtime_start(struct jg_daemon_runtime *runtime);
 
 /**
  * @brief Request an orderly non-blocking packet-runtime stop.

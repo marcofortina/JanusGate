@@ -38,7 +38,7 @@ struct jg_nfqueue_group_config {
     bool pin_workers;
 };
 
-/** Opaque running or stopped group of queue workers. */
+/** Opaque prepared, running, or stopped group of queue workers. */
 struct jg_nfqueue_group;
 
 /**
@@ -59,7 +59,7 @@ int jg_nfqueue_group_config_validate(
     const struct jg_nfqueue_group_config *config);
 
 /**
- * @brief Open all queues and start one independent thread per queue.
+ * @brief Open all queues without starting packet-processing threads.
  *
  * The optional @p contexts array must contain one processor context per queue.
  * A null array passes a null context to every worker.
@@ -70,18 +70,34 @@ int jg_nfqueue_group_config_validate(
  * @param[out] group Receives the owned running group.
  *
  * @return 0 on success.
- * @return A negative errno-style validation, queue, allocation, affinity, or
- * thread error otherwise.
+ * @return A negative errno-style validation, queue, or allocation error
+ * otherwise.
  *
- * @thread_safety Start calls managing overlapping queue ranges must be
+ * @thread_safety Open calls managing overlapping queue ranges must be
  * externally serialized.
  *
- * @side_effects Opens every queue and starts worker threads.
+ * @side_effects Opens every privileged packet queue.
  */
-int jg_nfqueue_group_start(const struct jg_nfqueue_group_config *config,
-                           jg_nfqueue_processor processor,
-                           void *const *contexts,
-                           struct jg_nfqueue_group **group);
+int jg_nfqueue_group_open(const struct jg_nfqueue_group_config *config,
+                          jg_nfqueue_processor processor,
+                          void *const *contexts,
+                          struct jg_nfqueue_group **group);
+
+/**
+ * @brief Start one packet-processing thread for every prepared queue.
+ *
+ * @param[in,out] group Prepared queue group.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null group.
+ * @return -EALREADY after a previous start attempt.
+ * @return A negative errno-style affinity or thread error otherwise.
+ *
+ * @thread_safety Exactly one control thread may start a prepared group.
+ *
+ * @side_effects Starts every packet-processing thread.
+ */
+int jg_nfqueue_group_start(struct jg_nfqueue_group *group);
 
 /**
  * @brief Request an orderly non-blocking stop of every worker.
