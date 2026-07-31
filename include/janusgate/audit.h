@@ -57,7 +57,9 @@ enum jg_audit_actor_type {
     /** Authenticated local user. */
     JG_AUDIT_ACTOR_USER = 2,
     /** Authenticated API token. */
-    JG_AUDIT_ACTOR_TOKEN = 3
+    JG_AUDIT_ACTOR_TOKEN = 3,
+    /** Privileged administrator authenticated by the local Unix socket. */
+    JG_AUDIT_ACTOR_LOCAL = 4
 };
 
 /** Complete semantic content of one new audit event. */

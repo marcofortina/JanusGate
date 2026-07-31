@@ -150,6 +150,15 @@ static void test_append_and_verify(void **state)
     assert_true(records[0U].first);
     assert_memory_equal(records[0U].previous_hash, zero, sizeof(zero));
 
+    first = make_event("system.local", "{}");
+    first.actor_type = JG_AUDIT_ACTOR_LOCAL;
+    first.occurred_at = 1002U;
+    assert_int_equal(jg_database_audit_append(database, &first, NULL), 0);
+    assert_int_equal(
+        jg_database_audit_list(database, 0U, records, 1U, &count, &total), 0);
+    assert_int_equal(records[0U].actor_type, JG_AUDIT_ACTOR_LOCAL);
+    assert_false(records[0U].has_actor_id);
+
     jg_database_close(database);
     remove_test_database(directory, path);
 }

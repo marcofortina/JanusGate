@@ -93,7 +93,7 @@ static bool actor_valid(enum jg_audit_actor_type type,
                         bool has_identifier,
                         uint64_t identifier)
 {
-    if (type == JG_AUDIT_ACTOR_SYSTEM) {
+    if (type == JG_AUDIT_ACTOR_SYSTEM || type == JG_AUDIT_ACTOR_LOCAL) {
         return !has_identifier;
     }
     return (type == JG_AUDIT_ACTOR_USER || type == JG_AUDIT_ACTOR_TOKEN) &&
@@ -301,6 +301,8 @@ static const char *actor_name(enum jg_audit_actor_type type)
         return "user";
     case JG_AUDIT_ACTOR_TOKEN:
         return "token";
+    case JG_AUDIT_ACTOR_LOCAL:
+        return "local";
     default:
         return NULL;
     }
@@ -503,6 +505,11 @@ static bool parse_actor(const struct audit_text *text,
     if (text->size == sizeof("token") - 1U &&
         memcmp(text->data, "token", text->size) == 0) {
         *actor = JG_AUDIT_ACTOR_TOKEN;
+        return true;
+    }
+    if (text->size == sizeof("local") - 1U &&
+        memcmp(text->data, "local", text->size) == 0) {
+        *actor = JG_AUDIT_ACTOR_LOCAL;
         return true;
     }
     return false;

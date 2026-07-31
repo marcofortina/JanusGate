@@ -309,6 +309,14 @@ static void create_version_two_fixture(const char *path)
         "last_seen_at INTEGER NOT NULL,"
         "remote_address BLOB"
         ") STRICT;"
+        "CREATE TABLE audit_events ("
+        "id INTEGER PRIMARY KEY,occurred_at INTEGER NOT NULL,"
+        "actor_type TEXT NOT NULL,actor_id INTEGER,action TEXT NOT NULL,"
+        "object_type TEXT NOT NULL,object_id TEXT,details TEXT NOT NULL,"
+        "previous_hash BLOB,event_hash BLOB NOT NULL UNIQUE,"
+        "source TEXT NOT NULL DEFAULT 'local',previous_revision INTEGER,"
+        "new_revision INTEGER,success INTEGER NOT NULL DEFAULT 1,"
+        "request_id TEXT NOT NULL DEFAULT '') STRICT;"
         "INSERT INTO schema_migrations(version,applied_at) VALUES(1,10),(2,20);"
         "PRAGMA user_version=2;";
     sqlite3 *handle = NULL;

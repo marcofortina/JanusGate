@@ -625,6 +625,41 @@ static const char *const migration_10[] = {
     migration_10_logging,
 };
 
+/** Extend audit provenance with trusted local administrators. */
+static const char migration_11_audit[] =
+    "ALTER TABLE audit_events RENAME TO audit_events_v10;"
+    "CREATE TABLE audit_events ("
+    "id INTEGER PRIMARY KEY,"
+    "occurred_at INTEGER NOT NULL CHECK(occurred_at >= 0),"
+    "actor_type TEXT NOT NULL "
+    "CHECK(actor_type IN ('system','user','token','local')),"
+    "actor_id INTEGER,"
+    "action TEXT NOT NULL CHECK(length(action) BETWEEN 1 AND 128),"
+    "object_type TEXT NOT NULL CHECK(length(object_type) BETWEEN 1 AND 128),"
+    "object_id TEXT,"
+    "details TEXT NOT NULL,"
+    "previous_hash BLOB CHECK(previous_hash IS NULL OR "
+    "length(previous_hash)=32),"
+    "event_hash BLOB NOT NULL UNIQUE CHECK(length(event_hash)=32),"
+    "source TEXT NOT NULL DEFAULT 'local' "
+    "CHECK(length(source) BETWEEN 1 AND 255),"
+    "previous_revision INTEGER "
+    "CHECK(previous_revision IS NULL OR previous_revision > 0),"
+    "new_revision INTEGER CHECK(new_revision IS NULL OR new_revision > 0),"
+    "success INTEGER NOT NULL DEFAULT 1 CHECK(success IN (0,1)),"
+    "request_id TEXT NOT NULL DEFAULT '' CHECK(length(request_id) <= 128)"
+    ") STRICT;"
+    "INSERT INTO audit_events SELECT * FROM audit_events_v10;"
+    "DROP TABLE audit_events_v10;"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(11,unixepoch());"
+    "PRAGMA user_version=11;";
+
+/** Ordered statement groups composing schema version eleven. */
+static const char *const migration_11[] = {
+    migration_11_audit,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -637,6 +672,7 @@ static const struct database_migration migrations[] = {
     {8U, migration_8, sizeof(migration_8) / sizeof(migration_8[0])},
     {9U, migration_9, sizeof(migration_9) / sizeof(migration_9[0])},
     {10U, migration_10, sizeof(migration_10) / sizeof(migration_10[0])},
+    {11U, migration_11, sizeof(migration_11) / sizeof(migration_11[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
