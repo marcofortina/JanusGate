@@ -1184,6 +1184,19 @@ static int load_authentication_record(sqlite3 *handle,
     return result;
 }
 
+/** @brief Verify that credentials did not change during password hashing. */
+static bool authentication_record_matches(
+    const struct authentication_record *verified,
+    const struct authentication_record *current)
+{
+    return verified->user_id == current->user_id &&
+           verified->revision == current->revision &&
+           verified->session_epoch == current->session_epoch &&
+           verified->enabled == current->enabled &&
+           verified->force_password_change == current->force_password_change &&
+           strcmp(verified->password_hash, current->password_hash) == 0;
+}
+
 /** @brief Perform equivalent Argon2id work for an unknown username. */
 static int perform_unknown_user_work(
     const struct jg_auth_password_policy *password_policy)
@@ -1424,6 +1437,7 @@ int jg_account_authenticate(
     struct jg_account_identity *identity)
 {
     struct authentication_record record;
+    struct authentication_record current;
     char replacement_hash[JG_AUTH_PASSWORD_HASH_SIZE];
     uint32_t permissions = 0U;
     bool password_valid = false;
@@ -1437,21 +1451,18 @@ int jg_account_authenticate(
         return -EINVAL;
     }
     (void)memset(identity, 0, sizeof(*identity));
+    (void)memset(&record, 0, sizeof(record));
+    (void)memset(&current, 0, sizeof(current));
     (void)memset(replacement_hash, 0, sizeof(replacement_hash));
     if (database == NULL || !username_valid(username) || password == NULL ||
         password_size > JG_AUTH_PASSWORD_MAX || now == 0U ||
         now > (uint64_t)INT64_MAX - JG_ACCOUNT_LOCK_DELAY_MAX) {
         return password_size > JG_AUTH_PASSWORD_MAX ? -ERANGE : -EINVAL;
     }
-    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
-    transaction_open = result == 0;
-    if (result == 0) {
-        result =
-            load_authentication_record(database->handle, username, &record);
-        if (result == -ENOENT) {
-            result = perform_unknown_user_work(password_policy);
-            authentication_result = result == 0 ? -EACCES : 0;
-        }
+    result = load_authentication_record(database->handle, username, &record);
+    if (result == -ENOENT) {
+        result = perform_unknown_user_work(password_policy);
+        authentication_result = result == 0 ? -EACCES : 0;
     }
     if (result == 0 && authentication_result == 0 && !record.enabled) {
         result = jg_auth_password_verify(password_policy, password,
@@ -1459,32 +1470,51 @@ int jg_account_authenticate(
                                          &password_valid, &needs_rehash);
         authentication_result = result == 0 ? -EACCES : 0;
     }
-    if (result == 0 && authentication_result == 0 &&
-        record.locked_until > now) {
-        authentication_result = -EAGAIN;
-    }
     if (result == 0 && authentication_result == 0) {
         result = jg_auth_password_verify(password_policy, password,
                                          password_size, record.password_hash,
                                          &password_valid, &needs_rehash);
     }
-    if (result == 0 && authentication_result == 0 && !password_valid) {
-        result = record_login_failure(database->handle, &record, now);
-        authentication_result = result == 0 ? -EACCES : 0;
+    if (result == 0 && authentication_result == 0 && !password_valid &&
+        record.locked_until > now) {
+        authentication_result = -EAGAIN;
     }
     if (result == 0 && authentication_result == 0 && needs_rehash) {
         result = jg_auth_password_hash(password_policy, password, password_size,
                                        replacement_hash);
     }
     if (result == 0 && authentication_result == 0) {
-        result = record_login_success(database->handle, record.user_id, now,
+        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        transaction_open = result == 0;
+    }
+    if (result == 0 && authentication_result == 0) {
+        result =
+            load_authentication_record(database->handle, username, &current);
+        if (result == -ENOENT) {
+            result = 0;
+            authentication_result = -EAGAIN;
+        } else if (result == 0 &&
+                   !authentication_record_matches(&record, &current)) {
+            authentication_result = -EAGAIN;
+        }
+    }
+    if (result == 0 && authentication_result == 0 && !password_valid &&
+        current.locked_until > now) {
+        authentication_result = -EAGAIN;
+    }
+    if (result == 0 && authentication_result == 0 && !password_valid) {
+        result = record_login_failure(database->handle, &current, now);
+        authentication_result = result == 0 ? -EACCES : 0;
+    }
+    if (result == 0 && authentication_result == 0) {
+        result = record_login_success(database->handle, current.user_id, now,
                                       needs_rehash ? replacement_hash : NULL);
     }
     if (result == 0 && authentication_result == 0) {
-        result = load_identity_authorization(database->handle, record.user_id,
+        result = load_identity_authorization(database->handle, current.user_id,
                                              &permissions, &totp_enabled);
     }
-    if (result == 0) {
+    if (result == 0 && transaction_open) {
         result = execute_fixed(database->handle, "COMMIT;");
         if (result == 0) {
             transaction_open = false;
@@ -1494,17 +1524,18 @@ int jg_account_authenticate(
         (void)execute_fixed(database->handle, "ROLLBACK;");
     }
     if (result == 0 && authentication_result == 0) {
-        identity->user_id = record.user_id;
+        identity->user_id = current.user_id;
         (void)memcpy(identity->username, username, strlen(username) + 1U);
         identity->permissions = permissions;
-        identity->revision = record.revision;
-        identity->session_epoch = record.session_epoch;
-        identity->force_password_change = record.force_password_change;
+        identity->revision = current.revision;
+        identity->session_epoch = current.session_epoch;
+        identity->force_password_change = current.force_password_change;
         identity->totp_enabled = totp_enabled;
         identity->mfa_complete = !totp_enabled;
     }
     sodium_memzero(replacement_hash, sizeof(replacement_hash));
     sodium_memzero(&record, sizeof(record));
+    sodium_memzero(&current, sizeof(current));
     return result == 0 ? authentication_result : result;
 }
 

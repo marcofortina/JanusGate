@@ -6,13 +6,16 @@
 
 #include <setjmp.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <cmocka.h>
@@ -21,6 +24,31 @@
 #include "janusgate/account.h"
 
 int jg_test_account(void);
+
+/** State shared with one deliberately expensive authentication thread. */
+struct authentication_task {
+    struct jg_database *database;
+    const struct jg_auth_password_policy *password_policy;
+    const uint8_t *password;
+    size_t password_size;
+    atomic_bool started;
+    atomic_bool finished;
+    int result;
+};
+
+/** @brief Authenticate once while publishing the operation lifetime. */
+static void *run_authentication(void *context)
+{
+    struct authentication_task *task = context;
+    struct jg_account_identity identity;
+
+    atomic_store_explicit(&task->started, true, memory_order_release);
+    task->result = jg_account_authenticate(
+        task->database, "administrator", task->password, task->password_size,
+        task->password_policy, 200U, &identity);
+    atomic_store_explicit(&task->finished, true, memory_order_release);
+    return NULL;
+}
 
 /** @brief Create one private temporary account database path. */
 static void make_account_database_path(char *directory,
@@ -190,12 +218,12 @@ static void test_password_authentication(void **state)
                                              &password_policy, 110U, &identity),
                      -EACCES);
     assert_int_equal(jg_account_authenticate(database, "administrator",
-                                             password, sizeof(password) - 1U,
+                                             incorrect, sizeof(incorrect) - 1U,
                                              &password_policy, 110U, &identity),
                      -EAGAIN);
     assert_int_equal(jg_account_authenticate(database, "administrator",
                                              password, sizeof(password) - 1U,
-                                             &password_policy, 111U, &identity),
+                                             &password_policy, 110U, &identity),
                      0);
     assert_int_equal(identity.user_id, user_id);
     assert_string_equal(identity.username, "administrator");
@@ -222,9 +250,73 @@ static void test_password_authentication(void **state)
     assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
     assert_int_equal(sqlite3_column_int(statement, 0), 0);
     assert_int_equal(sqlite3_column_type(statement, 1), SQLITE_NULL);
-    assert_int_equal(sqlite3_column_int64(statement, 2), 111);
+    assert_int_equal(sqlite3_column_int64(statement, 2), 110);
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
+    remove_account_database(directory, path);
+}
+
+/** @brief Verify Argon2id work does not retain a SQLite writer lock. */
+static void test_authentication_lock_duration(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    const struct timespec hashing_head_start = {
+        .tv_sec = 0,
+        .tv_nsec = 20000000L,
+    };
+    char directory[64U];
+    char path[512U];
+    char token[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_auth_password_policy initial_policy;
+    struct jg_auth_password_policy current_policy;
+    struct jg_database *database = NULL;
+    struct authentication_task task;
+    pthread_t thread;
+    sqlite3 *writer = NULL;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_account_bootstrap_issue(database, 100U, 300U, token),
+                     0);
+    jg_auth_password_policy_default(&initial_policy);
+    initial_policy.operations = JG_AUTH_OPERATIONS_MIN;
+    initial_policy.memory = JG_AUTH_MEMORY_MIN;
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)token, strlen(token),
+                         "administrator", password, sizeof(password) - 1U,
+                         &initial_policy, 101U, &user_id),
+                     0);
+    assert_int_equal(
+        sqlite3_open_v2(path, &writer, SQLITE_OPEN_READWRITE, NULL), SQLITE_OK);
+    assert_int_equal(sqlite3_busy_timeout(writer, 0), SQLITE_OK);
+    jg_auth_password_policy_default(&current_policy);
+    current_policy.operations = 4U;
+    task = (struct authentication_task){
+        .database = database,
+        .password_policy = &current_policy,
+        .password = password,
+        .password_size = sizeof(password) - 1U,
+        .result = -EINPROGRESS,
+    };
+    atomic_init(&task.started, false);
+    atomic_init(&task.finished, false);
+    assert_int_equal(pthread_create(&thread, NULL, run_authentication, &task),
+                     0);
+    while (!atomic_load_explicit(&task.started, memory_order_acquire)) {
+    }
+    assert_int_equal(nanosleep(&hashing_head_start, NULL), 0);
+    assert_false(atomic_load_explicit(&task.finished, memory_order_acquire));
+    assert_int_equal(sqlite3_exec(writer, "BEGIN IMMEDIATE;", NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_exec(writer, "ROLLBACK;", NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(pthread_join(thread, NULL), 0);
+    assert_int_equal(task.result, 0);
+    assert_int_equal(sqlite3_close(writer), SQLITE_OK);
+    jg_database_close(database);
     remove_account_database(directory, path);
 }
 
@@ -795,6 +887,7 @@ int jg_test_account(void)
         cmocka_unit_test(test_initial_administrator),
         cmocka_unit_test(test_bootstrap_expiration),
         cmocka_unit_test(test_password_authentication),
+        cmocka_unit_test(test_authentication_lock_duration),
         cmocka_unit_test(test_web_sessions),
         cmocka_unit_test(test_api_tokens),
         cmocka_unit_test(test_mtls_mappings),

@@ -981,6 +981,66 @@ static void test_browser_authentication(void **state)
     json_decref(response);
 }
 
+/** @brief Verify browser login limits one source without global lockout. */
+static void test_browser_login_rate_limit(void **state)
+{
+    static const char password[] = "correct horse battery staple";
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[1024U];
+    json_t *response = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    int written = 0;
+
+    assert_true(now > 0);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator",
+                         (const uint8_t *)password, strlen(password),
+                         &password_policy, (uint64_t)now, &user_id),
+                     0);
+    for (size_t attempt = 0U; attempt < 11U; ++attempt) {
+        written =
+            snprintf(request, sizeof(request),
+                     "{\"request_id\":\"login-rate-%zu\",\"method\":\"POST\","
+                     "\"path\":\"/api/v1/auth/login\","
+                     "\"host\":\"192.168.77.1\","
+                     "\"origin\":\"https://192.168.77.1\","
+                     "\"remote_address\":\"192.0.2.20\",\"body\":{"
+                     "\"username\":\"administrator\",\"password\":\"%s\"}}",
+                     attempt, password);
+        assert_true(written > 0);
+        assert_true((size_t)written < sizeof(request));
+        response = process_request(fixture, request);
+        assert_int_equal(
+            json_integer_value(json_object_get(response, "status")),
+            attempt < 10U ? 200 : 429);
+        json_decref(response);
+    }
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"login-other-source\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/auth/login\","
+                 "\"host\":\"192.168.77.1\","
+                 "\"origin\":\"https://192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.21\",\"body\":{"
+                 "\"username\":\"administrator\",\"password\":\"%s\"}}",
+                 password);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    sodium_memzero(bootstrap, sizeof(bootstrap));
+}
+
 /** @brief Verify forced password change and authenticated session rotation. */
 static void test_password_change(void **state)
 {
@@ -3240,6 +3300,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_remote_api_authentication,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_browser_authentication,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_browser_login_rate_limit,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_password_change, setup_management,
                                         teardown_management),

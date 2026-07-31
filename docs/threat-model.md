@@ -24,8 +24,10 @@ storage, and the software supply chain.
   and rule-count limits and are activated only after complete validation.
 - Hostile web clients may attempt brute force, CSRF, fixation, path traversal,
   oversized bodies, malformed JSON, host-header abuse, role bypass, or command
-  injection. HTTPS limits, origin and CSRF validation, rate limits, strict
-  schemas, role checks, and non-shell execution address these cases.
+  injection. HTTPS limits, source and global login limits, correct-password
+  lockout bypass, origin and CSRF validation, strict schemas, role checks, and
+  non-shell execution address these cases. Argon2id work holds no SQLite
+  writer transaction.
 - Stolen operator credentials remain dangerous. Password hashing, optional
   TOTP, session expiration, and audit records protect browser access. Remote
   automation additionally requires a scoped token and a trusted, explicitly

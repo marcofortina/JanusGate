@@ -16,8 +16,11 @@ receives a secure, HTTP-only, same-site session cookie. State-changing
 requests also require the session CSRF value. Operators can change their
 password, provision or disable TOTP, inspect the current session, and sign out.
 
-Repeated invalid logins are rate-limited. Closing a browser does not replace
-an explicit sign-out on a shared workstation.
+Browser login attempts are bounded per IPv4 address or IPv6 /64 and across the
+appliance. Incorrect passwords receive an increasing retry delay, while a
+correct password can still clear that state so an attacker cannot lock out an
+administrator by username alone. Closing a browser does not replace an
+explicit sign-out on a shared workstation.
 
 ## Dashboard and policy
 

@@ -76,6 +76,8 @@ SQLite stores configuration, identities, roles, sessions, tokens, policy
 rules, source metadata, events, and the append-only audit chain. Schema
 migrations run transactionally. Secrets are hashed or encrypted before
 storage; private keys and full backups receive restrictive permissions.
+Argon2id password work completes before the short transaction that records an
+authentication result. Browser attempts are bounded by source and globally.
 
 Policy evaluation never queries SQLite per packet. `janusgated` builds a
 validated immutable snapshot, publishes it atomically to readers, and retires

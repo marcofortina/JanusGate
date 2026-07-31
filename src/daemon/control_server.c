@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include "janusgate/checked.h"
+#include "janusgate/logging.h"
 
 #include "control_protocol.h"
 #include "netd_client.h"
@@ -505,18 +506,16 @@ static int update_blocklists(struct jg_control_server *server,
     uint64_t wall_now = 0U;
     int result = clock_seconds(CLOCK_REALTIME, &wall_now);
 
+    *next_check =
+        monotonic_now > UINT64_MAX - JG_CONTROL_UPDATE_INTERVAL_SECONDS
+            ? UINT64_MAX
+            : monotonic_now + JG_CONTROL_UPDATE_INTERVAL_SECONDS;
     if (result == 0 && wall_now == 0U) {
         result = -EIO;
     }
     if (result == 0) {
         result = jg_daemon_runtime_update_blocklists(server->runtime, wall_now,
                                                      NULL);
-    }
-    if (result == 0) {
-        *next_check =
-            monotonic_now > UINT64_MAX - JG_CONTROL_UPDATE_INTERVAL_SECONDS
-                ? UINT64_MAX
-                : monotonic_now + JG_CONTROL_UPDATE_INTERVAL_SECONDS;
     }
     return result;
 }
@@ -538,8 +537,14 @@ static int serve_connections(struct jg_control_server *server)
 
         result = clock_seconds(CLOCK_MONOTONIC, &monotonic_now);
         if (result == 0 && monotonic_now >= next_update_check) {
-            result =
+            const int update_result =
                 update_blocklists(server, monotonic_now, &next_update_check);
+
+            if (update_result != 0) {
+                (void)jg_log_emit(
+                    JG_LOG_WARNING, "blocklist", "blocklist.schedule_failed",
+                    NULL, "Scheduled blocklist processing failed", NULL);
+            }
         }
         if (result != 0) {
             break;

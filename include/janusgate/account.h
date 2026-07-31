@@ -512,9 +512,11 @@ JG_PUBLIC int jg_account_user_disable_totp(struct jg_database *database,
  * @brief Authenticate one enabled local user with persistent rate limiting.
  *
  * An incorrect password increments the failure counter and applies an
- * exponentially increasing lock delay capped at
- * @ref JG_ACCOUNT_LOCK_DELAY_MAX. Successful authentication clears failure
- * state, records the login time, and upgrades an obsolete Argon2id hash.
+ * exponentially increasing retry delay capped at
+ * @ref JG_ACCOUNT_LOCK_DELAY_MAX. A correct password remains usable during
+ * that delay and clears the failure state, preventing targeted account
+ * lockout. Password verification and optional rehashing occur before the
+ * short persistent-state transaction.
  *
  * @param[in,out] database Open database.
  * @param[in] username Candidate local username.
@@ -528,7 +530,7 @@ JG_PUBLIC int jg_account_user_disable_totp(struct jg_database *database,
  * @return -EINVAL for a null or malformed input.
  * @return -ERANGE when the candidate exceeds the absolute password bound.
  * @return -EACCES for an unknown, disabled, or incorrectly authenticated user.
- * @return -EAGAIN while the account lock delay is active.
+ * @return -EAGAIN when an incorrect retry arrives during its delay.
  * @return A negative errno-style hashing or SQLite error otherwise.
  *
  * @thread_safety The caller must serialize access to @p database.

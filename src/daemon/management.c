@@ -63,6 +63,15 @@
 /** Maximum distinct API-token rate windows retained in memory. */
 #define MANAGEMENT_TOKEN_RATE_SLOT_COUNT 256U
 
+/** Maximum distinct browser-login source windows retained in memory. */
+#define MANAGEMENT_LOGIN_RATE_SLOT_COUNT 256U
+
+/** Accepted logins from one IPv4 address or IPv6 /64 per 60-second window. */
+#define MANAGEMENT_LOGIN_SOURCE_RATE 10U
+
+/** Accepted login attempts appliance-wide per 60-second window. */
+#define MANAGEMENT_LOGIN_GLOBAL_RATE 100U
+
 /** Maximum diagnostic archive bytes carried by one management response. */
 #define MANAGEMENT_DIAGNOSTIC_ARCHIVE_SIZE_MAX 45000U
 
@@ -83,12 +92,24 @@ struct token_rate_slot {
     uint32_t requests;
 };
 
+/** One bounded source-address login window. */
+struct login_rate_slot {
+    enum jg_policy_address_family family;
+    uint8_t source[16U];
+    uint64_t window_started_at;
+    uint64_t last_request;
+    uint32_t requests;
+};
+
 /** Complete borrowed and secret state for serialized request processing. */
 struct jg_management {
     struct jg_database *database;
     struct jg_daemon_runtime *runtime;
     struct jg_auth_password_policy password_policy;
     struct token_rate_slot token_rates[MANAGEMENT_TOKEN_RATE_SLOT_COUNT];
+    struct login_rate_slot login_rates[MANAGEMENT_LOGIN_RATE_SLOT_COUNT];
+    uint64_t login_global_window_started_at;
+    uint32_t login_global_requests;
     char certificate_path[PATH_MAX];
     char client_ca_path[PATH_MAX];
     char backup_directory[PATH_MAX];
@@ -4096,6 +4117,77 @@ static int complete_multifactor(
     return -ENOMSG;
 }
 
+/** @brief Build one exact IPv4 or bounded IPv6 login source key. */
+static int login_source_key(const struct remote_address *remote,
+                            uint8_t source[16U])
+{
+    (void)memset(source, 0, 16U);
+    if (remote->family == JG_POLICY_ADDRESS_IPV4) {
+        (void)memcpy(source, remote->address, 4U);
+        return 0;
+    }
+    if (remote->family == JG_POLICY_ADDRESS_IPV6) {
+        (void)memcpy(source, remote->address, 8U);
+        return 0;
+    }
+    return -EINVAL;
+}
+
+/** @brief Enforce bounded source and appliance-wide login windows. */
+static int login_rate_accept(struct jg_management *management,
+                             const struct remote_address *remote,
+                             uint64_t now)
+{
+    struct login_rate_slot *slot = NULL;
+    struct login_rate_slot *oldest = &management->login_rates[0U];
+    uint8_t source[16U];
+    int result = login_source_key(remote, source);
+
+    if (result != 0) {
+        return result;
+    }
+    for (size_t index = 0U; index < MANAGEMENT_LOGIN_RATE_SLOT_COUNT; ++index) {
+        struct login_rate_slot *candidate = &management->login_rates[index];
+
+        if ((candidate->family == remote->family &&
+             memcmp(candidate->source, source, sizeof(source)) == 0) ||
+            candidate->last_request == 0U) {
+            slot = candidate;
+            break;
+        }
+        if (candidate->last_request < oldest->last_request) {
+            oldest = candidate;
+        }
+    }
+    if (slot == NULL) {
+        slot = oldest;
+    }
+    if (slot->family != remote->family ||
+        memcmp(slot->source, source, sizeof(source)) != 0 ||
+        now < slot->window_started_at || now - slot->window_started_at >= 60U) {
+        *slot = (struct login_rate_slot){
+            .family = remote->family,
+            .window_started_at = now,
+        };
+        (void)memcpy(slot->source, source, sizeof(source));
+    }
+    slot->last_request = now;
+    if (slot->requests >= MANAGEMENT_LOGIN_SOURCE_RATE) {
+        return -EAGAIN;
+    }
+    if (now < management->login_global_window_started_at ||
+        now - management->login_global_window_started_at >= 60U) {
+        management->login_global_window_started_at = now;
+        management->login_global_requests = 0U;
+    }
+    if (management->login_global_requests >= MANAGEMENT_LOGIN_GLOBAL_RATE) {
+        return -EAGAIN;
+    }
+    ++slot->requests;
+    ++management->login_global_requests;
+    return 0;
+}
+
 /** @brief Authenticate a password and return one browser session. */
 static int handle_login(struct jg_management *management,
                         const struct management_request *request,
@@ -4118,6 +4210,20 @@ static int handle_login(struct jg_management *management,
                              "The authentication request is not valid.",
                              request->request_id, output, output_size, written);
     }
+    result = login_rate_accept(management, remote, now);
+    if (result == -EAGAIN) {
+        (void)jg_log_emit(JG_LOG_WARNING, "authentication",
+                          "authentication.rate_limited", request->request_id,
+                          "Browser login rate limit reached", NULL);
+        return respond_error(429, "authentication_limited",
+                             "Authentication is temporarily limited.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(400, "invalid_request",
+                             "The authentication request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
     result = jg_account_authenticate(
         management->database, username, (const uint8_t *)password,
         strlen(password), &management->password_policy, now,
@@ -4132,6 +4238,9 @@ static int handle_login(struct jg_management *management,
                              request->request_id, output, output_size, written);
     }
     if (result == -EAGAIN) {
+        (void)jg_log_emit(JG_LOG_WARNING, "authentication",
+                          "authentication.retry_limited", request->request_id,
+                          "Account password retry delay is active", NULL);
         return respond_error(429, "authentication_limited",
                              "Authentication is temporarily limited.",
                              request->request_id, output, output_size, written);
