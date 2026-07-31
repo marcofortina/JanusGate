@@ -9,8 +9,10 @@ info:
     Version 1 of the authenticated JanusGate appliance-management API.
     Requests and responses use JSON unless an operation explicitly documents
     another media type. State-changing browser requests require the CSRF value
-    returned at login in the `X-CSRF-Token` header. Bearer-token requests do
-    not use CSRF protection and are restricted by token scopes.
+    returned at login in the `X-CSRF-Token` header. The browser listener uses
+    password, optional TOTP, and session authentication without requesting a
+    client certificate. Bearer-token automation is served on the dedicated
+    TCP 9443 listener and requires mutual TLS in addition to token scopes.
   license:
     name: GNU Affero General Public License v3.0 or later
     identifier: AGPL-3.0-or-later
@@ -19,7 +21,9 @@ info:
     email: marco_fortina@hotmail.it
 servers:
   - url: https://janusgate.local/api/v1
-    description: Appliance management endpoint
+    description: Browser management endpoint
+  - url: https://janusgate.local:9443/api/v1
+    description: Mutual-TLS remote automation endpoint
 tags:
   - name: Authentication
   - name: Status
@@ -29,11 +33,13 @@ tags:
   - name: Events
   - name: Access
   - name: Certificates
+  - name: Remote access
   - name: Backups
   - name: Logging
   - name: System
 security:
   - bearerAuth: []
+    mutualTLS: []
   - sessionCookie: []
 paths:
   /auth/state:
@@ -871,6 +877,95 @@ paths:
           $ref: '#/components/responses/JsonSuccess'
         default:
           $ref: '#/components/responses/JsonError'
+  /mtls/authorities:
+    get:
+      tags: [Remote access]
+      operationId: getClientAuthorities
+      summary: Inspect the remote API client-authority trust store
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    put:
+      tags: [Remote access]
+      operationId: installClientAuthorities
+      summary: Validate and install the client-authority trust store
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientAuthoritiesInstall'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    delete:
+      tags: [Remote access]
+      operationId: removeClientAuthorities
+      summary: Remove client trust and disable the remote API on listener reload
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /mtls/mappings:
+    get:
+      tags: [Remote access]
+      operationId: listClientCertificateMappings
+      summary: List persistent client-certificate identity mappings
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Remote access]
+      operationId: createClientCertificateMapping
+      summary: Bind one client certificate to a local user or role
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientCertificateMappingCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /mtls/mappings/{mappingId}:
+    delete:
+      tags: [Remote access]
+      operationId: revokeClientCertificateMapping
+      summary: Revoke one client-certificate mapping
+      parameters:
+        - $ref: '#/components/parameters/MappingId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
   /backups:
     get:
       tags: [Backups]
@@ -994,6 +1089,8 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JanusGate API token
+    mutualTLS:
+      type: mutualTLS
     sessionCookie:
       type: apiKey
       in: cookie
@@ -1035,6 +1132,12 @@ components:
         $ref: '#/components/schemas/Identifier'
     UserId:
       name: userId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    MappingId:
+      name: mappingId
       in: path
       required: true
       schema:
@@ -1738,6 +1841,46 @@ components:
             type: string
             minLength: 1
             maxLength: 253
+    ClientAuthoritiesInstall:
+      type: object
+      additionalProperties: false
+      required: [certificate_authorities]
+      properties:
+        certificate_authorities:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: >-
+            PEM bundle containing only unique CA certificates. Private,
+            self-hosted, and public authorities are accepted equally.
+    ClientCertificateMappingCreate:
+      type: object
+      additionalProperties: false
+      required: [certificate, user_id, role]
+      properties:
+        certificate:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        user_id:
+          oneOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        role:
+          type: [string, 'null']
+          enum: [administrator, operator, auditor, null]
+      oneOf:
+        - properties:
+            user_id:
+              $ref: '#/components/schemas/Identifier'
+            role:
+              type: 'null'
+        - properties:
+            user_id:
+              type: 'null'
+            role:
+              type: string
+              enum: [administrator, operator, auditor]
     BackupCreate:
       type: object
       additionalProperties: false

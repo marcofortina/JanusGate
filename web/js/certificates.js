@@ -13,12 +13,17 @@ import {
   displayValue,
   downloadText,
   formatTimestamp,
+  showEmptyTable,
   showError,
+  tableCell,
   withBusyButton,
 } from "./ui.js";
 
 let initialized = false;
 let certificate = null;
+let authorities = [];
+let mappings = [];
+let users = [];
 let writable = false;
 
 /**
@@ -72,6 +77,111 @@ function renderCertificate() {
 }
 
 /**
+ * Create one compact destructive table action.
+ */
+function revokeButton(mapping) {
+  const button = document.createElement("button");
+
+  button.type = "button";
+  button.className = "table-action danger-button";
+  button.textContent = "Revoke";
+  button.addEventListener("click", () => {
+    void revokeMapping(mapping);
+  });
+  return button;
+}
+
+/**
+ * Render the trusted authority bundle and remote-listener state.
+ */
+function renderAuthorities() {
+  const body = byId("mtls-authority-list");
+  const state = byId("mtls-state");
+
+  if (authorities.length === 0) {
+    showEmptyTable(body, 4, "No client-certificate authorities are trusted.");
+    state.textContent =
+      "Remote API disabled. Install a client CA bundle to enable TCP 9443.";
+    state.dataset.state = "warning";
+    byId("mtls-ca-remove").disabled = true;
+    return;
+  }
+  body.replaceChildren(...authorities.map((authority) => {
+    const row = document.createElement("tr");
+
+    row.append(
+      tableCell(authority.subject),
+      tableCell(authority.issuer),
+      tableCell(formatTimestamp(authority.not_after)),
+      tableCell(authority.fingerprint_sha256, "monospace-value"),
+    );
+    return row;
+  }));
+  state.textContent =
+    `${authorities.length} client ` +
+    `${authorities.length === 1 ? "authority is" : "authorities are"} ` +
+    "trusted by the dedicated remote API listener on TCP 9443.";
+  state.dataset.state = "healthy";
+  byId("mtls-ca-remove").disabled = false;
+}
+
+/**
+ * Render persistent client-certificate mappings and their revocation state.
+ */
+function renderMappings() {
+  const body = byId("mtls-mapping-list");
+
+  if (mappings.length === 0) {
+    showEmptyTable(body, 6, "No client certificates are mapped.");
+    return;
+  }
+  body.replaceChildren(...mappings.map((mapping) => {
+    const row = document.createElement("tr");
+    const actions = document.createElement("td");
+    const expired = mapping.not_after * 1000 < Date.now();
+    const revoked = mapping.revoked_at !== null;
+    const target = mapping.user_id === null
+      ? `Role: ${mapping.role}`
+      : `User: ${mapping.username} (#${mapping.user_id})`;
+
+    actions.className = "table-actions";
+    if (revoked) {
+      actions.textContent = "Revoked";
+    } else {
+      actions.append(revokeButton(mapping));
+    }
+    row.append(
+      tableCell(mapping.id),
+      tableCell(
+        `${mapping.subject} · ${mapping.fingerprint_sha256}`,
+        "monospace-value",
+      ),
+      tableCell(target),
+      tableCell(formatTimestamp(mapping.not_after)),
+      tableCell(revoked ? "Revoked" : expired ? "Expired" : "Active"),
+      actions,
+    );
+    return row;
+  }));
+}
+
+/**
+ * Populate the user mapping selector from the current local accounts.
+ */
+function renderMappingUsers() {
+  const selector = byId("mtls-user");
+
+  selector.replaceChildren(...users.map((user) => {
+    const option = document.createElement("option");
+
+    option.value = String(user.id);
+    option.textContent = `${user.username} · ${user.role}`;
+    return option;
+  }));
+  byId("mtls-mapping-submit").disabled = users.length === 0;
+}
+
+/**
  * Read one optional uploaded PEM file as bounded text.
  */
 async function uploadedText(input) {
@@ -102,6 +212,21 @@ async function importPemFiles() {
     }
     if (privateKeyText.length > 0) {
       form.elements.private_key.value = privateKeyText;
+    }
+  } catch (error) {
+    showError(byId("certificates-error"), error.message);
+  }
+}
+
+/**
+ * Copy one selected public PEM file into its review field.
+ */
+async function importPublicPem(input, form, field) {
+  try {
+    const text = await uploadedText(input);
+
+    if (text.length > 0) {
+      form.elements[field].value = text;
     }
   } catch (error) {
     showError(byId("certificates-error"), error.message);
@@ -188,8 +313,8 @@ async function installCertificate(event) {
       renderCertificate();
       announce(
         result.reload_required
-          ? "The certificate was installed. Reload the JanusGate service " +
-            "from the System page to activate it."
+          ? "The certificate was installed. HTTPS listeners are reloading " +
+            "automatically."
           : "The certificate was installed.",
         result.reload_required ? "warning" : "success",
       );
@@ -197,6 +322,148 @@ async function installCertificate(event) {
       showError(byId("certificates-error"), errorMessage(error));
     }
   });
+}
+
+/**
+ * Validate and atomically install the remote client CA bundle.
+ */
+async function installAuthorities(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+
+  showError(byId("certificates-error"), "");
+  if (!await confirmAction(
+    "Install client authorities",
+    "Replace the complete remote API client trust store? The HTTPS listeners " +
+      "will reload automatically.",
+    "Install authorities",
+  )) {
+    return;
+  }
+  await withBusyButton(byId("mtls-ca-submit"), async () => {
+    try {
+      const result = await api("/api/v1/mtls/authorities", {
+        method: "PUT",
+        body: {
+          certificate_authorities:
+            String(form.elements.certificate_authorities.value),
+        },
+      });
+
+      authorities = result.authorities;
+      form.reset();
+      renderAuthorities();
+      announce(
+        "The client CA bundle was installed. HTTPS listeners are reloading " +
+        "to activate the remote API.",
+        "warning",
+      );
+    } catch (error) {
+      showError(byId("certificates-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Remove the client trust store and disable the remote listener on restart.
+ */
+async function removeAuthorities() {
+  if (!await confirmAction(
+    "Disable remote API",
+    "Remove every trusted client authority? Existing mappings remain, but " +
+      "TCP 9443 will be disabled when the HTTPS listeners reload.",
+    "Remove authorities",
+  )) {
+    return;
+  }
+  await withBusyButton(byId("mtls-ca-remove"), async () => {
+    try {
+      const result = await api("/api/v1/mtls/authorities", {
+        method: "DELETE",
+        body: {},
+      });
+
+      authorities = result.authorities;
+      renderAuthorities();
+      announce(
+        "Client trust was removed. HTTPS listeners are reloading to disable " +
+        "the remote API.",
+        "warning",
+      );
+    } catch (error) {
+      showError(byId("certificates-error"), errorMessage(error));
+    }
+  });
+  renderAuthorities();
+}
+
+/**
+ * Create one user- or role-bound client-certificate mapping.
+ */
+async function createMapping(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const userTarget = form.elements.target_kind.value === "user";
+
+  showError(byId("certificates-error"), "");
+  await withBusyButton(byId("mtls-mapping-submit"), async () => {
+    try {
+      await api("/api/v1/mtls/mappings", {
+        method: "POST",
+        body: {
+          certificate: String(form.elements.certificate.value),
+          user_id: userTarget ? Number(form.elements.user_id.value) : null,
+          role: userTarget ? null : String(form.elements.role.value),
+        },
+      });
+      const result = await api("/api/v1/mtls/mappings?limit=100");
+
+      mappings = result.mappings;
+      form.reset();
+      updateMappingTarget();
+      renderMappings();
+      announce("The client certificate mapping was created.");
+    } catch (error) {
+      showError(byId("certificates-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Revoke one client-certificate mapping immediately.
+ */
+async function revokeMapping(mapping) {
+  if (!await confirmAction(
+    "Revoke client certificate",
+    `Revoke mapping ${mapping.id} for ${mapping.subject}?`,
+    "Revoke mapping",
+  )) {
+    return;
+  }
+  try {
+    const result = await api(`/api/v1/mtls/mappings/${mapping.id}`, {
+      method: "DELETE",
+      body: {},
+    });
+
+    mappings = mappings.map((current) =>
+      current.id === result.mapping.id ? result.mapping : current);
+    renderMappings();
+    announce("The client certificate mapping was revoked.");
+  } catch (error) {
+    showError(byId("certificates-error"), errorMessage(error));
+  }
+}
+
+/**
+ * Show exactly one mapping target selector.
+ */
+function updateMappingTarget() {
+  const userTarget = byId("mtls-target-kind").value === "user";
+
+  byId("mtls-user-field").hidden = !userTarget;
+  byId("mtls-role-field").hidden = userTarget;
+  byId("mtls-mapping-submit").disabled = userTarget && users.length === 0;
 }
 
 /**
@@ -209,6 +476,9 @@ export async function load(user) {
   showError(byId("certificates-error"), "");
   if (!writable) {
     certificate = null;
+    authorities = [];
+    mappings = [];
+    users = [];
     byId("certificate-subject").textContent = "Restricted";
     byId("certificate-issuer").textContent = "Restricted";
     byId("certificate-validity").textContent = "Restricted";
@@ -226,16 +496,33 @@ export async function load(user) {
     return;
   }
   try {
-    const result = await api("/api/v1/certificates");
+    let certificateResult = null;
 
-    certificate = result.certificate;
-    renderCertificate();
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      certificate = null;
-      renderCertificate();
-      return;
+    try {
+      certificateResult = await api("/api/v1/certificates");
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) {
+        throw error;
+      }
     }
+    const [authorityResult, mappingResult, userResult] = await Promise.all([
+      api("/api/v1/mtls/authorities"),
+      api("/api/v1/mtls/mappings?limit=100"),
+      api("/api/v1/users?limit=100"),
+    ]);
+
+    certificate = certificateResult === null
+      ? null
+      : certificateResult.certificate;
+    authorities = authorityResult.authorities;
+    mappings = mappingResult.mappings;
+    users = userResult.users;
+    renderCertificate();
+    renderAuthorities();
+    renderMappings();
+    renderMappingUsers();
+    updateMappingTarget();
+  } catch (error) {
     showError(byId("certificates-error"), errorMessage(error));
   }
 }
@@ -260,6 +547,26 @@ export function initialize() {
   byId("private-key-file").addEventListener("change", () => {
     void importPemFiles();
   });
+  byId("mtls-ca-form").addEventListener("submit", installAuthorities);
+  byId("mtls-ca-remove").addEventListener("click", () => {
+    void removeAuthorities();
+  });
+  byId("mtls-ca-file").addEventListener("change", () => {
+    void importPublicPem(
+      byId("mtls-ca-file"),
+      byId("mtls-ca-form"),
+      "certificate_authorities",
+    );
+  });
+  byId("mtls-mapping-form").addEventListener("submit", createMapping);
+  byId("mtls-client-file").addEventListener("change", () => {
+    void importPublicPem(
+      byId("mtls-client-file"),
+      byId("mtls-mapping-form"),
+      "certificate",
+    );
+  });
+  byId("mtls-target-kind").addEventListener("change", updateMappingTarget);
   byId("csr-download").addEventListener("click", () => {
     downloadText(
       "janusgate-request.csr",

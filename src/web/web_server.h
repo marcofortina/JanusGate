@@ -89,4 +89,7 @@ int jg_web_server_start(const struct jg_web_config *config,
 /** @brief Stop and release one management service. */
 void jg_web_server_destroy(struct jg_web_server *server);
 
+/** @brief Consume one listener reload requested by a completed API change. */
+bool jg_web_server_take_reload(struct jg_web_server *server);
+
 #endif

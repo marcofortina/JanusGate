@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <civetweb.h>
@@ -98,12 +99,56 @@ static int block_shutdown_signals(sigset_t *signals)
 {
     int result = 0;
 
-    if (sigemptyset(signals) != 0 || sigaddset(signals, SIGINT) != 0 ||
-        sigaddset(signals, SIGTERM) != 0) {
+    if (sigemptyset(signals) != 0 || sigaddset(signals, SIGHUP) != 0 ||
+        sigaddset(signals, SIGINT) != 0 || sigaddset(signals, SIGTERM) != 0) {
         return -errno;
     }
     result = sigprocmask(SIG_BLOCK, signals, NULL);
     return result == 0 ? 0 : -errno;
+}
+
+/** @brief Wait at most one second for a blocked service signal. */
+static int wait_for_service_signal(const sigset_t *signals, int *number)
+{
+    struct timespec timeout = {
+        .tv_sec = 1,
+        .tv_nsec = 0,
+    };
+
+#if defined(__OpenBSD__)
+    sigset_t pending;
+    int wait_result = 0;
+    int hangup = 0;
+    int interrupt = 0;
+    int terminate = 0;
+
+    while (nanosleep(&timeout, &timeout) != 0) {
+        if (errno != EINTR) {
+            return -errno;
+        }
+    }
+    if (sigpending(&pending) != 0) {
+        return -errno;
+    }
+    hangup = sigismember(&pending, SIGHUP);
+    interrupt = sigismember(&pending, SIGINT);
+    terminate = sigismember(&pending, SIGTERM);
+    if (hangup < 0 || interrupt < 0 || terminate < 0) {
+        return -errno;
+    }
+    *number = 0;
+    if (hangup == 0 && interrupt == 0 && terminate == 0) {
+        return 0;
+    }
+    wait_result = sigwait(signals, number);
+    return wait_result == 0 ? 0 : -wait_result;
+#else
+    *number = sigtimedwait(signals, NULL, &timeout);
+    if (*number >= 0 || errno == EAGAIN || errno == EINTR) {
+        return 0;
+    }
+    return -errno;
+#endif
 }
 
 /** @brief Run the unprivileged HTTPS management service. */
@@ -115,7 +160,6 @@ int main(int argc, char **argv)
     sigset_t signals;
     unsigned initialized = 0U;
     int signal_number = 0;
-    int wait_result = 0;
     int result = 0;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -162,12 +206,23 @@ int main(int argc, char **argv)
     if (result == 0) {
         (void)jg_log_emit(JG_LOG_INFO, "web", "web.started", NULL,
                           "HTTPS management service started", NULL);
-        wait_result = sigwait(&signals, &signal_number);
-        if (wait_result != 0) {
-            result = -wait_result;
+    }
+    while (result == 0) {
+        result = wait_for_service_signal(&signals, &signal_number);
+        if (signal_number == SIGINT || signal_number == SIGTERM) {
+            break;
+        }
+        if (result == 0 &&
+            (signal_number == SIGHUP || jg_web_server_take_reload(server))) {
+            jg_web_server_destroy(server);
+            server = NULL;
+            result = jg_web_server_start(&config, &server);
+            if (result == 0) {
+                (void)jg_log_emit(JG_LOG_INFO, "web", "web.reloaded", NULL,
+                                  "HTTPS listeners reloaded", NULL);
+            }
         }
     }
-    (void)signal_number;
     jg_web_server_destroy(server);
     if (initialized != 0U) {
         (void)mg_exit_library();

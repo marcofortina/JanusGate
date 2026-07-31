@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -102,6 +103,7 @@ struct jg_web_server {
     char *client_ca_path;
     char *web_root;
     char *control_socket_path;
+    atomic_bool reload_requested;
 };
 
 /** @brief Initialize secure first-boot web defaults. */
@@ -509,6 +511,16 @@ static int client_certificate_fingerprint(const struct mg_request_info *request,
     return 0;
 }
 
+/** @brief Return whether one successful request changes listener TLS state. */
+static bool listener_reload_required(const struct mg_request_info *request)
+{
+    return (strcmp(request->local_uri, "/api/v1/certificates/install") == 0 &&
+            strcmp(request->request_method, "POST") == 0) ||
+           (strcmp(request->local_uri, "/api/v1/mtls/authorities") == 0 &&
+            (strcmp(request->request_method, "PUT") == 0 ||
+             strcmp(request->request_method, "DELETE") == 0));
+}
+
 /** @brief Process and send one validated management API response. */
 static int send_gateway_response(struct mg_connection *connection,
                                  const struct web_listener_context *listener,
@@ -552,6 +564,11 @@ static int send_gateway_response(struct mg_connection *connection,
         mg_write(connection, response.body, response.body_size) !=
             (int)response.body_size) {
         result = -EPIPE;
+    }
+    if (result == 0 && status >= 200 && status < 300 &&
+        listener_reload_required(request)) {
+        atomic_store_explicit(&listener->server->reload_requested, true,
+                              memory_order_release);
     }
     jg_web_gateway_response_clear(&response);
     if (result != 0 && result != -EPIPE) {
@@ -804,6 +821,8 @@ int jg_web_server_start(const struct jg_web_config *config,
         started = calloc(1U, sizeof(*started));
         if (started == NULL) {
             result = -ENOMEM;
+        } else {
+            atomic_init(&started->reload_requested, false);
         }
     }
     if (result == 0) {
@@ -853,4 +872,12 @@ void jg_web_server_destroy(struct jg_web_server *server)
     free(server->client_ca_path);
     free(server->listen_address);
     free(server);
+}
+
+/** @brief Consume one pending listener reload request atomically. */
+bool jg_web_server_take_reload(struct jg_web_server *server)
+{
+    return server != NULL &&
+           atomic_exchange_explicit(&server->reload_requested, false,
+                                    memory_order_acq_rel);
 }

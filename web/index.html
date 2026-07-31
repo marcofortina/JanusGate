@@ -1546,6 +1546,144 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                   </form>
                 </section>
               </div>
+              <section class="panel" aria-labelledby="remote-api-title">
+                <div class="section-heading">
+                  <div>
+                    <h3 id="remote-api-title">Remote API mutual TLS</h3>
+                    <p>
+                      Trust private, self-hosted, or public client authorities
+                      and bind individual client certificates to an account or
+                      role. The browser interface never requests a client
+                      certificate.
+                    </p>
+                  </div>
+                </div>
+                <div class="health-banner" id="mtls-state"
+                     aria-live="polite">
+                  Checking remote API trust…
+                </div>
+                <div class="split-grid">
+                  <section>
+                    <div class="section-heading">
+                      <div>
+                        <h4>Trusted client authorities</h4>
+                        <p>
+                          A root CA or root and intermediate bundle enables the
+                          dedicated API listener on TCP 9443. Changes made on
+                          this page reload the HTTPS listeners automatically.
+                        </p>
+                      </div>
+                    </div>
+                    <div class="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th scope="col">Subject</th>
+                            <th scope="col">Issuer</th>
+                            <th scope="col">Expires</th>
+                            <th scope="col">SHA-256 fingerprint</th>
+                          </tr>
+                        </thead>
+                        <tbody id="mtls-authority-list"></tbody>
+                      </table>
+                    </div>
+                    <form id="mtls-ca-form">
+                      <div class="form-grid">
+                        <label>
+                          CA bundle file
+                          <input id="mtls-ca-file" type="file"
+                                 accept=".pem,.crt,.cer,application/x-pem-file">
+                        </label>
+                        <label>
+                          CA bundle PEM
+                          <textarea name="certificate_authorities" rows="8"
+                                    maxlength="65536" required></textarea>
+                          <span class="field-hint">
+                            Root and optional intermediate certificates only.
+                            Never upload a private key.
+                          </span>
+                        </label>
+                      </div>
+                      <div class="button-row form-actions">
+                        <button class="primary-action" id="mtls-ca-submit"
+                                data-busy-label="Installing…" type="submit">
+                          Validate and install bundle
+                        </button>
+                        <button class="danger-button" id="mtls-ca-remove"
+                                data-busy-label="Removing…" type="button">
+                          Remove trust and disable API
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+                  <section>
+                    <div class="section-heading">
+                      <div>
+                        <h4>Client identity mappings</h4>
+                        <p>
+                          A remote request needs both a current mapping and an
+                          API token owned by the mapped user or role.
+                        </p>
+                      </div>
+                    </div>
+                    <form id="mtls-mapping-form">
+                      <div class="form-grid">
+                        <label>
+                          Client certificate file
+                          <input id="mtls-client-file" type="file"
+                                 accept=".pem,.crt,.cer,application/x-pem-file">
+                        </label>
+                        <label>
+                          Client certificate PEM
+                          <textarea name="certificate" rows="8"
+                                    maxlength="65536" required></textarea>
+                        </label>
+                        <label>
+                          Map certificate to
+                          <select id="mtls-target-kind" name="target_kind">
+                            <option value="user">Specific user</option>
+                            <option value="role">Current role members</option>
+                          </select>
+                        </label>
+                        <label id="mtls-user-field">
+                          Local user
+                          <select id="mtls-user" name="user_id"></select>
+                        </label>
+                        <label id="mtls-role-field" hidden>
+                          Role
+                          <select name="role">
+                            <option value="administrator">Administrator</option>
+                            <option value="operator">Operator</option>
+                            <option value="auditor">Auditor</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div class="button-row form-actions">
+                        <button class="primary-action"
+                                id="mtls-mapping-submit"
+                                data-busy-label="Creating…" type="submit">
+                          Create mapping
+                        </button>
+                      </div>
+                    </form>
+                    <div class="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th scope="col">ID</th>
+                            <th scope="col">Certificate</th>
+                            <th scope="col">Target</th>
+                            <th scope="col">Expires</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody id="mtls-mapping-list"></tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </section>
             </div>
           </section>
           <section class="page" id="page-backups" data-page
