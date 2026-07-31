@@ -82,6 +82,7 @@ static enum jg_ipc_error operation_error(int result)
 /** @brief Validate and dispatch one decoded daemon request. */
 int jg_control_process_request(struct jg_daemon_runtime *runtime,
                                const struct jg_ipc_message *request,
+                               bool local_administrator,
                                struct jg_ipc_message *response,
                                uint8_t *response_body,
                                size_t response_capacity,
@@ -93,7 +94,8 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
     if (request == NULL || response == NULL || response_body == NULL ||
         response_size == NULL || request->request_id == 0U ||
         request->operation < JG_IPC_PING ||
-        request->operation > JG_IPC_MANAGEMENT_REQUEST ||
+        (request->operation > JG_IPC_MANAGEMENT_REQUEST &&
+         request->operation != JG_IPC_LOCAL_MANAGEMENT_REQUEST) ||
         request->body_size > JG_IPC_MAX_BODY_SIZE ||
         (request->body_size != 0U && request->body == NULL)) {
         return -EINVAL;
@@ -141,15 +143,21 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
                 response->body_size = *response_size;
             }
         }
-    } else if (request->operation == JG_IPC_MANAGEMENT_REQUEST) {
-        if (request->body_size == 0U) {
+    } else if (request->operation == JG_IPC_MANAGEMENT_REQUEST ||
+               request->operation == JG_IPC_LOCAL_MANAGEMENT_REQUEST) {
+        const bool local_request =
+            request->operation == JG_IPC_LOCAL_MANAGEMENT_REQUEST;
+
+        if (local_request && !local_administrator) {
+            response->error = JG_IPC_ERROR_UNAUTHORIZED;
+        } else if (request->body_size == 0U) {
             response->error = JG_IPC_ERROR_MALFORMED;
         } else if (runtime == NULL) {
             response->error = JG_IPC_ERROR_SYSTEM;
         } else {
             result = jg_daemon_runtime_process_management(
-                runtime, request->body, request->body_size, response_body,
-                response_capacity, response_size);
+                runtime, request->body, request->body_size, local_request,
+                response_body, response_capacity, response_size);
             if (result == -ENOSPC) {
                 return result;
             }
@@ -166,10 +174,13 @@ int jg_control_process_request(struct jg_daemon_runtime *runtime,
 }
 
 /** @brief Verify one control peer through local socket credentials. */
-static int authenticate_peer(int socket_fd, uid_t allowed_uid)
+static int authenticate_peer(int socket_fd,
+                             uid_t allowed_uid,
+                             uid_t *authenticated_uid)
 {
-#if defined(__OpenBSD__)
     uid_t peer_uid = 0U;
+
+#if defined(__OpenBSD__)
     gid_t peer_gid = 0U;
 
     if (getpeereid(socket_fd, &peer_uid, &peer_gid) != 0) {
@@ -179,7 +190,6 @@ static int authenticate_peer(int socket_fd, uid_t allowed_uid)
 #else
     struct ucred credentials;
     socklen_t credentials_size = (socklen_t)sizeof(credentials);
-    uid_t peer_uid = 0U;
 
     if (getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &credentials,
                    &credentials_size) != 0) {
@@ -190,7 +200,11 @@ static int authenticate_peer(int socket_fd, uid_t allowed_uid)
     }
     peer_uid = credentials.uid;
 #endif
-    return peer_uid == 0U || peer_uid == allowed_uid ? 0 : -EACCES;
+    if (peer_uid != 0U && peer_uid != allowed_uid) {
+        return -EACCES;
+    }
+    *authenticated_uid = peer_uid;
+    return 0;
 }
 
 /** @brief Close the descriptor accepted by the bounded control buffer. */
@@ -273,6 +287,7 @@ int jg_control_handle_connection(int socket_fd,
     struct jg_ipc_message response;
     size_t request_size = 0U;
     size_t response_size = 0U;
+    uid_t peer_uid = 0U;
     ssize_t sent = 0;
     int result = 0;
 
@@ -283,7 +298,7 @@ int jg_control_handle_connection(int socket_fd,
     if (buffers == NULL) {
         return -ENOMEM;
     }
-    result = authenticate_peer(socket_fd, allowed_uid);
+    result = authenticate_peer(socket_fd, allowed_uid, &peer_uid);
     if (result == 0) {
         result = receive_request(socket_fd, buffers->request,
                                  sizeof(buffers->request), &request_size);
@@ -294,9 +309,10 @@ int jg_control_handle_connection(int socket_fd,
     if (result == 0) {
         size_t response_body_size = 0U;
 
-        result = jg_control_process_request(
-            runtime, &request, &response, buffers->response_body,
-            sizeof(buffers->response_body), &response_body_size);
+        result = jg_control_process_request(runtime, &request, peer_uid == 0U,
+                                            &response, buffers->response_body,
+                                            sizeof(buffers->response_body),
+                                            &response_body_size);
         if (result == 0) {
             result = jg_ipc_encode(&response, buffers->response,
                                    sizeof(buffers->response), &response_size);

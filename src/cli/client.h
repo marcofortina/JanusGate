@@ -56,10 +56,9 @@ struct jg_cli_response {
 };
 
 /**
- * @brief Perform one authenticated management request over local IPC.
+ * @brief Perform one privileged management request over local IPC.
  *
  * @param[in] socket_path Absolute daemon control-socket path.
- * @param[in] token Exact opaque API token.
  * @param[in] method Supported uppercase HTTP method.
  * @param[in] path Absolute path under `/api/v1/`.
  * @param[in] query Optional query without a leading question mark.
@@ -72,11 +71,10 @@ struct jg_cli_response {
  *
  * @thread_safety Calls use independent local connections.
  *
- * @side_effects Opens one Unix-domain connection and consumes one token
- * request from the server-side rate limit.
+ * @side_effects Opens one Unix-domain connection authenticated by its peer
+ * credentials.
  */
 int jg_cli_local_request(const char *socket_path,
-                         const char *token,
                          const char *method,
                          const char *path,
                          const char *query,

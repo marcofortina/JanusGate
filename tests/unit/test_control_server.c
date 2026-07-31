@@ -52,34 +52,48 @@ static void test_dispatch(void **state)
     size_t response_size = 0U;
 
     (void)state;
-    assert_int_equal(
-        jg_control_process_request(NULL, &request, &response, response_body,
-                                   sizeof(response_body), &response_size),
-        0);
+    assert_int_equal(jg_control_process_request(
+                         NULL, &request, false, &response, response_body,
+                         sizeof(response_body), &response_size),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_NONE);
     assert_int_equal(response_size, 0U);
 
     request.body = &unexpected;
     request.body_size = 1U;
-    assert_int_equal(
-        jg_control_process_request(NULL, &request, &response, response_body,
-                                   sizeof(response_body), &response_size),
-        0);
+    assert_int_equal(jg_control_process_request(
+                         NULL, &request, false, &response, response_body,
+                         sizeof(response_body), &response_size),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_MALFORMED);
     request.body = NULL;
     request.body_size = 0U;
     request.operation = JG_IPC_POLICY_RELOAD;
-    assert_int_equal(
-        jg_control_process_request(NULL, &request, &response, response_body,
-                                   sizeof(response_body), &response_size),
-        0);
+    assert_int_equal(jg_control_process_request(
+                         NULL, &request, false, &response, response_body,
+                         sizeof(response_body), &response_size),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_SYSTEM);
     request.operation = JG_IPC_NETWORK_STATE;
-    assert_int_equal(
-        jg_control_process_request(NULL, &request, &response, response_body,
-                                   sizeof(response_body), &response_size),
-        0);
+    assert_int_equal(jg_control_process_request(
+                         NULL, &request, false, &response, response_body,
+                         sizeof(response_body), &response_size),
+                     0);
     assert_int_equal(response.error, JG_IPC_ERROR_UNSUPPORTED);
+
+    request.operation = JG_IPC_LOCAL_MANAGEMENT_REQUEST;
+    request.body = &unexpected;
+    request.body_size = 1U;
+    assert_int_equal(jg_control_process_request(
+                         NULL, &request, false, &response, response_body,
+                         sizeof(response_body), &response_size),
+                     0);
+    assert_int_equal(response.error, JG_IPC_ERROR_UNAUTHORIZED);
+    assert_int_equal(jg_control_process_request(
+                         NULL, &request, true, &response, response_body,
+                         sizeof(response_body), &response_size),
+                     0);
+    assert_int_equal(response.error, JG_IPC_ERROR_SYSTEM);
 }
 
 /** @brief Verify an authenticated bounded control-socket exchange. */

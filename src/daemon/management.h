@@ -10,6 +10,7 @@
 #ifndef JANUSGATE_DAEMON_MANAGEMENT_H
 #define JANUSGATE_DAEMON_MANAGEMENT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -87,6 +88,8 @@ int jg_management_create(struct jg_database *database,
  * @param[in,out] management Management state.
  * @param[in] request_data Exact request JSON bytes.
  * @param[in] request_size Request byte count.
+ * @param[in] local_administrator Whether the caller was authenticated as the
+ * privileged local Unix-socket administrator.
  * @param[out] response Destination for the response JSON.
  * @param[in] response_size Available response bytes.
  * @param[out] written Receives the exact response byte count.
@@ -101,6 +104,7 @@ int jg_management_create(struct jg_database *database,
 int jg_management_process(struct jg_management *management,
                           const uint8_t *request_data,
                           size_t request_size,
+                          bool local_administrator,
                           uint8_t *response,
                           size_t response_size,
                           size_t *written);

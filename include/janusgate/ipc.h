@@ -91,7 +91,9 @@ enum jg_ipc_operation {
     /** Reboot the appliance after an authenticated management request. */
     JG_IPC_SYSTEM_REBOOT = 11,
     /** Power off the appliance after an authenticated management request. */
-    JG_IPC_SYSTEM_POWEROFF = 12
+    JG_IPC_SYSTEM_POWEROFF = 12,
+    /** Process one management request from a privileged local administrator. */
+    JG_IPC_LOCAL_MANAGEMENT_REQUEST = 13
 };
 
 /**

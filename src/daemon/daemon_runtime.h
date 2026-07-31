@@ -308,6 +308,8 @@ int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
  * @param[in,out] runtime Running packet runtime.
  * @param[in] request Exact bounded JSON request bytes.
  * @param[in] request_size Request byte count.
+ * @param[in] local_administrator Whether the caller is the authenticated
+ * privileged local Unix-socket administrator.
  * @param[out] response Destination for JSON response bytes.
  * @param[in] response_size Available response bytes.
  * @param[out] written Receives the exact response byte count.
@@ -322,6 +324,7 @@ int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
 int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
                                          const uint8_t *request,
                                          size_t request_size,
+                                         bool local_administrator,
                                          uint8_t *response,
                                          size_t response_size,
                                          size_t *written);

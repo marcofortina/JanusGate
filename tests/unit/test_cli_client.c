@@ -107,25 +107,20 @@ static void test_remote_config_validation(void **state)
 /** @brief Verify local request arguments fail before transport access. */
 static void test_request_validation(void **state)
 {
-    static const char token[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     struct jg_cli_response response = {0};
     json_t *body = json_object();
 
     (void)state;
     assert_non_null(body);
-    assert_int_equal(jg_cli_local_request("relative.sock", token, "GET",
+    assert_int_equal(jg_cli_local_request("relative.sock", "GET",
                                           "/api/v1/status", NULL, body,
                                           &response),
                      -EINVAL);
-    assert_int_equal(jg_cli_local_request("/tmp/control.sock", "short", "GET",
+    assert_int_equal(jg_cli_local_request("/tmp/control.sock", "TRACE",
                                           "/api/v1/status", NULL, body,
                                           &response),
                      -EINVAL);
-    assert_int_equal(jg_cli_local_request("/tmp/control.sock", token, "TRACE",
-                                          "/api/v1/status", NULL, body,
-                                          &response),
-                     -EINVAL);
-    assert_int_equal(jg_cli_local_request("/tmp/control.sock", token, "GET",
+    assert_int_equal(jg_cli_local_request("/tmp/control.sock", "GET",
                                           "/api/v1/status?q", NULL, body,
                                           &response),
                      -EINVAL);

@@ -10,6 +10,7 @@
 #ifndef JANUSGATE_DAEMON_CONTROL_SERVER_H
 #define JANUSGATE_DAEMON_CONTROL_SERVER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -29,6 +30,7 @@ struct jg_control_server;
  *
  * @param[in,out] runtime Packet runtime, or null for ping-only dispatch.
  * @param[in] request Decoded request message.
+ * @param[in] local_administrator Whether peer credentials identify root.
  * @param[out] response Receives the correlated protocol response.
  * @param[out] response_body Storage for a typed response body.
  * @param[in] response_capacity Available response body bytes.
@@ -42,6 +44,7 @@ struct jg_control_server;
  */
 int jg_control_process_request(struct jg_daemon_runtime *runtime,
                                const struct jg_ipc_message *request,
+                               bool local_administrator,
                                struct jg_ipc_message *response,
                                uint8_t *response_body,
                                size_t response_capacity,

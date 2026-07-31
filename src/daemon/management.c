@@ -108,6 +108,7 @@ struct management_request {
     const char *csrf;
     const char *bearer;
     json_t *body;
+    bool local_administrator;
 };
 
 /** Parsed network-order remote management address. */
@@ -122,12 +123,42 @@ struct session_result {
     bool clear_session;
 };
 
-/** Authenticated session or token actor used for backend authorization. */
+/** Authentication mechanism assigned to one authorized management actor. */
+enum authenticated_actor_kind {
+    AUTHENTICATED_ACTOR_USER = 1,
+    AUTHENTICATED_ACTOR_TOKEN = 2,
+    AUTHENTICATED_ACTOR_LOCAL = 3
+};
+
+/** Authenticated actor used for backend authorization and audit provenance. */
 struct authenticated_actor {
     struct jg_account_identity identity;
     uint64_t actor_id;
-    bool token;
+    enum authenticated_actor_kind kind;
 };
+
+/** @brief Return the persistent audit kind for one authenticated actor. */
+static enum jg_audit_actor_type actor_audit_type(
+    const struct authenticated_actor *actor)
+{
+    switch (actor->kind) {
+    case AUTHENTICATED_ACTOR_USER:
+        return JG_AUDIT_ACTOR_USER;
+    case AUTHENTICATED_ACTOR_TOKEN:
+        return JG_AUDIT_ACTOR_TOKEN;
+    case AUTHENTICATED_ACTOR_LOCAL:
+        return JG_AUDIT_ACTOR_LOCAL;
+    default:
+        return JG_AUDIT_ACTOR_SYSTEM;
+    }
+}
+
+/** @brief Return whether one actor has a persistent database identifier. */
+static bool actor_has_identifier(const struct authenticated_actor *actor)
+{
+    return actor->kind == AUTHENTICATED_ACTOR_USER ||
+           actor->kind == AUTHENTICATED_ACTOR_TOKEN;
+}
 
 /** @brief Return a bounded string length or one past the maximum. */
 static size_t bounded_length(const char *text, size_t maximum)
@@ -1202,6 +1233,8 @@ static const char *audit_actor_name(enum jg_audit_actor_type actor)
         return "user";
     case JG_AUDIT_ACTOR_TOKEN:
         return "token";
+    case JG_AUDIT_ACTOR_LOCAL:
+        return "local";
     default:
         return NULL;
     }
@@ -2738,9 +2771,8 @@ static int append_network_audit(struct jg_management *management,
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source_address,
             .action = action,
@@ -2801,9 +2833,8 @@ static int append_configuration_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source_address,
             .action = "configuration.reload",
@@ -2879,9 +2910,8 @@ static int append_domain_rule_audit(struct jg_management *management,
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source_address,
             .action = action,
@@ -2946,9 +2976,8 @@ static int append_destination_rule_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source_address,
             .action = action,
@@ -3013,9 +3042,8 @@ static int append_blocklist_source_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source_address,
             .action = action,
@@ -3114,10 +3142,9 @@ static int append_blocklist_update_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type = system_actor ? JG_AUDIT_ACTOR_SYSTEM
-                                       : (actor->token ? JG_AUDIT_ACTOR_TOKEN
-                                                       : JG_AUDIT_ACTOR_USER),
-            .has_actor_id = !system_actor,
+            .actor_type =
+                system_actor ? JG_AUDIT_ACTOR_SYSTEM : actor_audit_type(actor),
+            .has_actor_id = !system_actor && actor_has_identifier(actor),
             .actor_id = system_actor ? 0U : actor->actor_id,
             .source = source_address,
             .action = action,
@@ -3227,9 +3254,8 @@ static int append_user_audit(struct jg_management *management,
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source,
             .action = action,
@@ -3292,9 +3318,8 @@ static int append_token_audit(struct jg_management *management,
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source,
             .action = action,
@@ -3366,9 +3391,8 @@ static int append_certificate_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source,
             .action = action,
@@ -3439,9 +3463,8 @@ static int append_backup_audit(struct jg_management *management,
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source,
             .action = action,
@@ -3495,9 +3518,8 @@ static int append_diagnostic_audit(struct jg_management *management,
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source,
             .action = "diagnostics.create",
@@ -3525,8 +3547,8 @@ static int append_system_audit(struct jg_management *management,
     char source[INET6_ADDRSTRLEN];
     const struct jg_audit_event event = {
         .occurred_at = now,
-        .actor_type = actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-        .has_actor_id = true,
+        .actor_type = actor_audit_type(actor),
+        .has_actor_id = actor_has_identifier(actor),
         .actor_id = actor->actor_id,
         .source = source,
         .action = action,
@@ -4093,7 +4115,7 @@ static int handle_password_change(struct jg_management *management,
     actor = (struct authenticated_actor){
         .identity = session_identity,
         .actor_id = session_identity.user_id,
-        .token = false,
+        .kind = AUTHENTICATED_ACTOR_USER,
     };
     result = append_user_audit(management, request, remote, &actor,
                                "user.password_change", true,
@@ -4178,6 +4200,15 @@ static int authenticate_actor(struct jg_management *management,
     int result = 0;
 
     (void)memset(actor, 0, sizeof(*actor));
+    if (request->local_administrator) {
+        if (has_session || has_bearer) {
+            return -EACCES;
+        }
+        actor->identity.permissions = JG_ACCESS_PERMISSION_ALL;
+        actor->identity.mfa_complete = true;
+        actor->kind = AUTHENTICATED_ACTOR_LOCAL;
+        return 0;
+    }
     if (has_session == has_bearer) {
         return -EACCES;
     }
@@ -4193,12 +4224,13 @@ static int authenticate_actor(struct jg_management *management,
             result = token_rate_accept(management, token_id,
                                        requests_per_minute, now);
         }
-        actor->token = true;
+        actor->kind = AUTHENTICATED_ACTOR_TOKEN;
         actor->actor_id = token_id;
     } else {
         result = authenticate_session(management, request, remote, state_change,
                                       now, &actor->identity);
         actor->actor_id = actor->identity.user_id;
+        actor->kind = AUTHENTICATED_ACTOR_USER;
     }
     if (result == 0 && actor->identity.force_password_change) {
         result = -EPERM;
@@ -5087,9 +5119,8 @@ static int append_logging_audit(
     if (result == 0) {
         event = (struct jg_audit_event){
             .occurred_at = now,
-            .actor_type =
-                actor->token ? JG_AUDIT_ACTOR_TOKEN : JG_AUDIT_ACTOR_USER,
-            .has_actor_id = true,
+            .actor_type = actor_audit_type(actor),
+            .has_actor_id = actor_has_identifier(actor),
             .actor_id = actor->actor_id,
             .source = source,
             .action = "logging.update",
@@ -9354,7 +9385,8 @@ static int dispatch_request(struct jg_management *management,
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
 
-    if (state_change && (request->bearer[0U] == '\0' || authentication_path) &&
+    if (!request->local_administrator && state_change &&
+        (request->bearer[0U] == '\0' || authentication_path) &&
         !origin_valid(request->origin, request->host)) {
         return respond_error(403, "invalid_origin",
                              "The request origin is not permitted.",
@@ -9708,6 +9740,7 @@ static void trace_management_completion(
 int jg_management_process(struct jg_management *management,
                           const uint8_t *request_data,
                           size_t request_size,
+                          bool local_administrator,
                           uint8_t *response,
                           size_t response_size,
                           size_t *written)
@@ -9729,6 +9762,7 @@ int jg_management_process(struct jg_management *management,
                              "The management request is not valid.", "",
                              response, response_size, written);
     }
+    request.local_administrator = local_administrator;
     result = parse_remote_address(request.remote_address, &remote);
     if (result != 0) {
         result = respond_error(

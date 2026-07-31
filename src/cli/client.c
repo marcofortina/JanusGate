@@ -49,7 +49,8 @@ static bool method_valid(const char *method)
 {
     return method != NULL &&
            (strcmp(method, "GET") == 0 || strcmp(method, "POST") == 0 ||
-            strcmp(method, "PATCH") == 0 || strcmp(method, "DELETE") == 0);
+            strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0 ||
+            strcmp(method, "DELETE") == 0);
 }
 
 /** @brief Validate a bounded API path without a query or fragment. */
@@ -360,15 +361,14 @@ int jg_cli_http_response_decode(long status,
     return result;
 }
 
-/** @brief Serialize one local authenticated management request. */
-static int build_envelope(const char *token,
-                          const char *method,
-                          const char *path,
-                          const char *query,
-                          json_t *body,
-                          struct jg_cli_response *response,
-                          char **encoded,
-                          size_t *encoded_size)
+/** @brief Serialize one privileged local management request. */
+static int build_local_envelope(const char *method,
+                                const char *path,
+                                const char *query,
+                                json_t *body,
+                                struct jg_cli_response *response,
+                                char **encoded,
+                                size_t *encoded_size)
 {
     uint8_t digest[JG_AUTH_SECRET_DIGEST_SIZE];
     json_t *envelope = NULL;
@@ -394,7 +394,7 @@ static int build_envelope(const char *token,
                                 json_string("127.0.0.1")) != 0 ||
             json_object_set_new(envelope, "session", json_string("")) != 0 ||
             json_object_set_new(envelope, "csrf", json_string("")) != 0 ||
-            json_object_set_new(envelope, "bearer", json_string(token)) != 0 ||
+            json_object_set_new(envelope, "bearer", json_string("")) != 0 ||
             json_object_set(envelope, "body", body) != 0) {
             result = -ENOMEM;
         }
@@ -418,9 +418,8 @@ static int build_envelope(const char *token,
     return result;
 }
 
-/** @brief Perform one authenticated management request over local IPC. */
+/** @brief Perform one privileged management request over local IPC. */
 int jg_cli_local_request(const char *socket_path,
-                         const char *token,
                          const char *method,
                          const char *path,
                          const char *query,
@@ -433,8 +432,7 @@ int jg_cli_local_request(const char *socket_path,
     size_t daemon_response_size = 0U;
     int result = 0;
 
-    if (socket_path == NULL || socket_path[0U] != '/' || token == NULL ||
-        strlen(token) != JG_AUTH_SECRET_TEXT_SIZE - 1U ||
+    if (socket_path == NULL || socket_path[0U] != '/' ||
         !method_valid(method) || !path_valid(path) || !query_valid(query) ||
         !json_is_object(body) || response == NULL || response->body != NULL) {
         return -EINVAL;
@@ -443,13 +441,13 @@ int jg_cli_local_request(const char *socket_path,
     if (daemon_response == NULL) {
         return -ENOMEM;
     }
-    result = build_envelope(token, method, path, query, body, response,
-                            &envelope, &envelope_size);
+    result = build_local_envelope(method, path, query, body, response,
+                                  &envelope, &envelope_size);
     if (result == 0) {
-        result = jg_ipc_client_call(socket_path, JG_IPC_MANAGEMENT_REQUEST,
-                                    (const uint8_t *)envelope, envelope_size,
-                                    daemon_response, JG_IPC_MAX_BODY_SIZE,
-                                    &daemon_response_size);
+        result = jg_ipc_client_call(
+            socket_path, JG_IPC_LOCAL_MANAGEMENT_REQUEST,
+            (const uint8_t *)envelope, envelope_size, daemon_response,
+            JG_IPC_MAX_BODY_SIZE, &daemon_response_size);
     }
     if (envelope != NULL) {
         sodium_memzero(envelope, envelope_size);

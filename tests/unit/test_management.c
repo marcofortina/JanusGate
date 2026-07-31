@@ -161,7 +161,7 @@ static json_t *process_request(struct management_fixture *fixture,
 
     assert_int_equal(jg_management_process(fixture->management,
                                            (const uint8_t *)request,
-                                           strlen(request), response,
+                                           strlen(request), false, response,
                                            sizeof(response), &response_size),
                      0);
     parsed = json_loadb((const char *)response, response_size,
@@ -169,6 +169,71 @@ static json_t *process_request(struct management_fixture *fixture,
     assert_non_null(parsed);
     assert_true(json_is_object(parsed));
     return parsed;
+}
+
+/** @brief Process one envelope as the trusted local Unix-socket actor. */
+static json_t *process_local_request(struct management_fixture *fixture,
+                                     const char *request)
+{
+    uint8_t response[JG_IPC_MAX_BODY_SIZE];
+    json_error_t error;
+    json_t *parsed = NULL;
+    size_t response_size = 0U;
+
+    assert_int_equal(jg_management_process(fixture->management,
+                                           (const uint8_t *)request,
+                                           strlen(request), true, response,
+                                           sizeof(response), &response_size),
+                     0);
+    parsed = json_loadb((const char *)response, response_size,
+                        JSON_REJECT_DUPLICATES, &error);
+    assert_non_null(parsed);
+    assert_true(json_is_object(parsed));
+    return parsed;
+}
+
+/** @brief Verify token-free local authorization and audit provenance. */
+static void test_local_administration(void **state)
+{
+    static const char show_request[] =
+        "{\"request_id\":\"local-show\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/logging\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char update_request[] =
+        "{\"request_id\":\"local-update\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/logging\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{"
+        "\"revision\":1,\"global_level\":\"debug\","
+        "\"destinations\":[\"syslog\"],\"rate_limit_per_second\":100,"
+        "\"trace_capacity\":4,\"diagnostic_duration_seconds\":120,"
+        "\"include_identifiers\":false,\"overrides\":[]}}";
+    struct management_fixture *fixture = *state;
+    struct jg_audit_record audit;
+    struct jg_logging_config logging;
+    json_t *response = NULL;
+    size_t count = 0U;
+    uint64_t total = 0U;
+
+    jg_logging_config_default(&logging);
+    logging.destinations = JG_LOG_DESTINATION_SYSLOG;
+    assert_int_equal(jg_logging_initialize("local-management-test", &logging),
+                     0);
+    response = process_local_request(fixture, show_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    response = process_local_request(fixture, update_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, &audit, 1U,
+                                            &count, &total),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(audit.actor_type, JG_AUDIT_ACTOR_LOCAL);
+    assert_false(audit.has_actor_id);
+    assert_string_equal(audit.action, "logging.update");
+    jg_logging_shutdown();
 }
 
 /** @brief Verify bootstrap, login session validation, CSRF, and logout. */
@@ -2795,6 +2860,8 @@ static void test_logging_api(void **state)
 int jg_test_management(void)
 {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test_setup_teardown(test_local_administration,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_browser_authentication,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_password_change, setup_management,

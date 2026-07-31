@@ -646,6 +646,7 @@ int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
 int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
                                          const uint8_t *request,
                                          size_t request_size,
+                                         bool local_administrator,
                                          uint8_t *response,
                                          size_t response_size,
                                          size_t *written)
@@ -654,7 +655,8 @@ int jg_daemon_runtime_process_management(struct jg_daemon_runtime *runtime,
         return -EINVAL;
     }
     return jg_management_process(runtime->management, request, request_size,
-                                 response, response_size, written);
+                                 local_administrator, response, response_size,
+                                 written);
 }
 
 /** @brief Run due blocklist updates through serialized management state. */

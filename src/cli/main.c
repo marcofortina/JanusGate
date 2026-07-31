@@ -331,6 +331,7 @@ static int parse_options(int argc,
     }
     if (result == 0 &&
         ((options->socket_set && options->endpoint != NULL) ||
+         (options->token_file != NULL && options->endpoint == NULL) ||
          (options->quiet && options->verbose) ||
          ((options->client_certificate != NULL || options->client_key != NULL ||
            options->ca_file != NULL) &&
@@ -725,8 +726,8 @@ static int request_api(const struct cli_options *options,
                       query == NULL ? "" : query);
     }
     if (options->endpoint == NULL) {
-        result = jg_cli_local_request(options->socket_path, token, method, path,
-                                      query, body, response);
+        result = jg_cli_local_request(options->socket_path, method, path, query,
+                                      body, response);
     } else {
         jg_cli_remote_config_default(&remote);
         remote.endpoint = options->endpoint;
@@ -751,6 +752,10 @@ static int load_token(const struct cli_options *options,
 {
     int result = 0;
 
+    token[0U] = '\0';
+    if (options->endpoint == NULL) {
+        return CLI_EXIT_SUCCESS;
+    }
     if (options->token_file == NULL) {
         (void)fprintf(stderr, "janusgatectl: --token-file is required\n");
         return CLI_EXIT_USAGE;

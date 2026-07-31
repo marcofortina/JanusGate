@@ -92,9 +92,9 @@ static void test_operations(void **state)
         -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_stats(NULL, &stats), -EINVAL);
     assert_int_equal(jg_daemon_runtime_get_stats(runtime, NULL), -EINVAL);
-    assert_int_equal(
-        jg_daemon_runtime_process_management(NULL, NULL, 0U, NULL, 0U, NULL),
-        -EINVAL);
+    assert_int_equal(jg_daemon_runtime_process_management(NULL, NULL, 0U, false,
+                                                          NULL, 0U, NULL),
+                     -EINVAL);
     assert_int_equal(jg_daemon_runtime_update_blocklists(NULL, 1U, NULL),
                      -EINVAL);
     assert_int_equal(

@@ -35,7 +35,8 @@ static bool kind_valid(enum jg_ipc_kind kind)
 /** @brief Determine whether an operation is allowlisted. */
 static bool operation_valid(enum jg_ipc_operation operation)
 {
-    return operation >= JG_IPC_PING && operation <= JG_IPC_SYSTEM_POWEROFF;
+    return operation >= JG_IPC_PING &&
+           operation <= JG_IPC_LOCAL_MANAGEMENT_REQUEST;
 }
 
 /** @brief Determine whether a response error has a stable wire value. */
