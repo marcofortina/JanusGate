@@ -317,6 +317,11 @@ static void create_version_two_fixture(const char *path)
         "source TEXT NOT NULL DEFAULT 'local',previous_revision INTEGER,"
         "new_revision INTEGER,success INTEGER NOT NULL DEFAULT 1,"
         "request_id TEXT NOT NULL DEFAULT '') STRICT;"
+        "CREATE TABLE mtls_mappings ("
+        "id INTEGER PRIMARY KEY,fingerprint_sha256 BLOB NOT NULL UNIQUE,"
+        "user_id INTEGER REFERENCES users(id),role_id INTEGER,"
+        "enabled INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL) "
+        "STRICT;"
         "INSERT INTO schema_migrations(version,applied_at) VALUES(1,10),(2,20);"
         "PRAGMA user_version=2;";
     sqlite3 *handle = NULL;
@@ -1303,6 +1308,19 @@ static void test_network_configuration_migration(void **state)
         "FROM network_configuration WHERE id=1;"
         "DROP TABLE logging_configuration;"
         "DROP TABLE network_configuration;"
+        "ALTER TABLE mtls_mappings RENAME TO mtls_mappings_v12;"
+        "CREATE TABLE mtls_mappings ("
+        "id INTEGER PRIMARY KEY,fingerprint_sha256 BLOB NOT NULL UNIQUE "
+        "CHECK(length(fingerprint_sha256)=32),"
+        "user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,"
+        "role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,"
+        "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),"
+        "created_at INTEGER NOT NULL CHECK(created_at >= 0),"
+        "CHECK((user_id IS NULL) <> (role_id IS NULL))) STRICT;"
+        "INSERT INTO mtls_mappings(id,fingerprint_sha256,user_id,role_id,"
+        "enabled,created_at) SELECT id,fingerprint_sha256,user_id,role_id,"
+        "enabled,created_at FROM mtls_mappings_v12;"
+        "DROP TABLE mtls_mappings_v12;"
         "DELETE FROM schema_migrations WHERE version>=9;"
         "PRAGMA user_version=8;";
     char directory[64U];

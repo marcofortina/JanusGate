@@ -26,6 +26,7 @@
 
 #include "janusgate/access.h"
 #include "janusgate/auth.h"
+#include "janusgate/certificate.h"
 #include "janusgate/database.h"
 #include "janusgate/version.h"
 
@@ -67,6 +68,9 @@
 
 /** Largest API-token page returned by one management query. */
 #define JG_ACCOUNT_TOKEN_PAGE_MAX 100U
+
+/** Largest client-certificate mapping page returned by one query. */
+#define JG_ACCOUNT_MTLS_PAGE_MAX 100U
 
 /** Smallest accepted API-token request limit per minute. */
 #define JG_ACCOUNT_TOKEN_RATE_MIN 1U
@@ -214,6 +218,56 @@ struct jg_account_token_record {
     /** Administrative display name. */
     char name[JG_ACCOUNT_TOKEN_NAME_MAX + 1U];
     /** Current owning username. */
+    char username[JG_ACCOUNT_USERNAME_MAX + 1U];
+};
+
+/**
+ * @brief Validated client-certificate mapping configuration.
+ */
+struct jg_account_mtls_mapping_config {
+    /** SHA-256 fingerprint of the mapped leaf certificate. */
+    uint8_t fingerprint_sha256[32U];
+    /** RFC 2253 certificate subject. */
+    const char *subject;
+    /** RFC 2253 certificate issuer. */
+    const char *issuer;
+    /** Inclusive certificate validity start as Unix seconds. */
+    uint64_t not_before;
+    /** Inclusive certificate validity end as Unix seconds. */
+    uint64_t not_after;
+    /** Mapped user identifier, or zero for a role mapping. */
+    uint64_t user_id;
+    /** Mapped fixed role, or NONE for a user mapping. */
+    enum jg_access_role role;
+};
+
+/**
+ * @brief Persistent client-certificate mapping metadata.
+ */
+struct jg_account_mtls_mapping {
+    /** Stable positive mapping identifier. */
+    uint64_t mapping_id;
+    /** Mapped user identifier, or zero for a role mapping. */
+    uint64_t user_id;
+    /** Mapped fixed role, or NONE for a user mapping. */
+    enum jg_access_role role;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Mapping creation time as Unix seconds. */
+    uint64_t created_at;
+    /** Inclusive certificate validity start as Unix seconds. */
+    uint64_t not_before;
+    /** Inclusive certificate validity end as Unix seconds. */
+    uint64_t not_after;
+    /** Revocation time, or zero while authorized. */
+    uint64_t revoked_at;
+    /** SHA-256 fingerprint of the mapped leaf certificate. */
+    uint8_t fingerprint_sha256[32U];
+    /** RFC 2253 certificate subject. */
+    char subject[JG_CERTIFICATE_NAME_MAX + 1U];
+    /** RFC 2253 certificate issuer. */
+    char issuer[JG_CERTIFICATE_NAME_MAX + 1U];
+    /** Current mapped username, empty for a role mapping. */
     char username[JG_ACCOUNT_USERNAME_MAX + 1U];
 };
 
@@ -738,6 +792,124 @@ JG_PUBLIC int jg_account_token_validate(
 JG_PUBLIC int jg_account_token_revoke(struct jg_database *database,
                                       uint64_t token_id,
                                       uint64_t now);
+
+/**
+ * @brief Create one immutable client-certificate identity mapping.
+ *
+ * Exactly one local user or fixed role must be selected. The certificate must
+ * be currently valid, and a fingerprint can be mapped only once.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] config Validated certificate and target metadata.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] mapping Receives the persistent mapping.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed metadata or an invalid target.
+ * @return -ENOENT when the selected user does not exist.
+ * @return -EEXIST when the fingerprint is already mapped.
+ * @return -EACCES when the certificate is not currently valid.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Inserts one persistent certificate mapping.
+ */
+JG_PUBLIC int jg_account_mtls_mapping_create(
+    struct jg_database *database,
+    const struct jg_account_mtls_mapping_config *config,
+    uint64_t now,
+    struct jg_account_mtls_mapping *mapping);
+
+/**
+ * @brief List client-certificate mappings in stable identifier order.
+ *
+ * @param[in] database Open database.
+ * @param[in] offset Zero-based page offset.
+ * @param[out] mappings Receives up to @p capacity mappings.
+ * @param[in] capacity Requested page size from one through
+ * JG_ACCOUNT_MTLS_PAGE_MAX.
+ * @param[out] count Receives the number of returned mappings.
+ * @param[out] total Receives the total number of persistent mappings.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or pagination.
+ * @return -EILSEQ for invalid persistent metadata.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_mtls_mapping_list(
+    struct jg_database *database,
+    uint64_t offset,
+    struct jg_account_mtls_mapping *mappings,
+    size_t capacity,
+    size_t *count,
+    uint64_t *total);
+
+/**
+ * @brief Read one client-certificate mapping by identifier.
+ *
+ * @param[in] database Open database.
+ * @param[in] mapping_id Persistent nonzero mapping identifier.
+ * @param[out] mapping Receives the mapping metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return -ENOENT when the mapping does not exist.
+ * @return -EILSEQ for invalid persistent metadata.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_mtls_mapping_get(
+    struct jg_database *database,
+    uint64_t mapping_id,
+    struct jg_account_mtls_mapping *mapping);
+
+/**
+ * @brief Revoke one client-certificate mapping idempotently.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] mapping_id Persistent nonzero mapping identifier.
+ * @param[in] now Current Unix timestamp in seconds.
+ *
+ * @return 0 when the mapping was already revoked or is revoked now.
+ * @return -EINVAL for malformed arguments.
+ * @return -ENOENT when the mapping does not exist.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Sets the revocation timestamp and increments the revision.
+ */
+JG_PUBLIC int jg_account_mtls_mapping_revoke(struct jg_database *database,
+                                             uint64_t mapping_id,
+                                             uint64_t now);
+
+/**
+ * @brief Authorize a token owner through a current certificate mapping.
+ *
+ * A user mapping must name the token owner. A role mapping must name one of
+ * the owner's current roles. Revoked and expired mappings never authorize.
+ *
+ * @param[in] database Open database.
+ * @param[in] fingerprint_sha256 Exact client-certificate fingerprint.
+ * @param[in] user_id Authenticated API-token owner.
+ * @param[in] now Current Unix timestamp in seconds.
+ *
+ * @return 0 when the mapping authorizes the token owner.
+ * @return -EINVAL for malformed arguments.
+ * @return -EACCES when no current mapping authorizes the owner.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_mtls_mapping_authorize(
+    struct jg_database *database,
+    const uint8_t fingerprint_sha256[32U],
+    uint64_t user_id,
+    uint64_t now);
 
 /**
  * @brief Begin TOTP enrollment for one enabled user.

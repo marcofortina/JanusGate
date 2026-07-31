@@ -411,6 +411,107 @@ static void test_api_tokens(void **state)
     remove_account_database(directory, path);
 }
 
+/** @brief Verify user and role client-certificate mappings and revocation. */
+static void test_mtls_mappings(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    char directory[64U];
+    char path[512U];
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    struct jg_account_mtls_mapping_config config = {
+        .subject = "CN=home-lab-client",
+        .issuer = "CN=home-lab-ca",
+        .not_before = 100U,
+        .not_after = 1000U,
+    };
+    struct jg_account_mtls_mapping mappings[4U];
+    struct jg_account_mtls_mapping created;
+    struct jg_account_mtls_mapping loaded;
+    struct jg_auth_password_policy password_policy;
+    struct jg_database *database = NULL;
+    uint8_t unknown_fingerprint[32U] = {0};
+    size_t count = 0U;
+    uint64_t total = 0U;
+    uint64_t user_id = 0U;
+
+    (void)state;
+    make_account_database_path(directory, sizeof(directory), path,
+                               sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_account_bootstrap_issue(database, 100U, 300U, bootstrap), 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, 101U,
+                         &user_id),
+                     0);
+
+    config.user_id = user_id;
+    config.fingerprint_sha256[0U] = 1U;
+    assert_int_equal(
+        jg_account_mtls_mapping_create(database, &config, 110U, &created), 0);
+    assert_true(created.mapping_id > 0U);
+    assert_int_equal(created.user_id, user_id);
+    assert_int_equal(created.role, JG_ACCESS_ROLE_NONE);
+    assert_string_equal(created.username, "administrator");
+    assert_int_equal(
+        jg_account_mtls_mapping_create(database, &config, 110U, &loaded),
+        -EEXIST);
+
+    config.user_id = 0U;
+    config.role = JG_ACCESS_ROLE_ADMINISTRATOR;
+    config.fingerprint_sha256[0U] = 2U;
+    assert_int_equal(
+        jg_account_mtls_mapping_create(database, &config, 111U, &loaded), 0);
+    assert_int_equal(loaded.role, JG_ACCESS_ROLE_ADMINISTRATOR);
+    assert_int_equal(loaded.user_id, 0U);
+    assert_int_equal(jg_account_mtls_mapping_list(database, 0U, mappings, 4U,
+                                                  &count, &total),
+                     0);
+    assert_int_equal(count, 2U);
+    assert_int_equal(total, 2U);
+    assert_int_equal(
+        jg_account_mtls_mapping_authorize(
+            database, mappings[0U].fingerprint_sha256, user_id, 120U),
+        0);
+    assert_int_equal(
+        jg_account_mtls_mapping_authorize(
+            database, mappings[1U].fingerprint_sha256, user_id, 120U),
+        0);
+    assert_int_equal(jg_account_mtls_mapping_authorize(
+                         database, unknown_fingerprint, user_id, 120U),
+                     -EACCES);
+
+    assert_int_equal(
+        jg_account_mtls_mapping_revoke(database, created.mapping_id, 121U), 0);
+    assert_int_equal(
+        jg_account_mtls_mapping_revoke(database, created.mapping_id, 122U), 0);
+    assert_int_equal(
+        jg_account_mtls_mapping_get(database, created.mapping_id, &loaded), 0);
+    assert_int_equal(loaded.revoked_at, 121U);
+    assert_int_equal(loaded.revision, 2U);
+    assert_int_equal(jg_account_mtls_mapping_authorize(
+                         database, created.fingerprint_sha256, user_id, 123U),
+                     -EACCES);
+
+    config.role = JG_ACCESS_ROLE_NONE;
+    config.user_id = user_id + 100U;
+    config.fingerprint_sha256[0U] = 3U;
+    assert_int_equal(
+        jg_account_mtls_mapping_create(database, &config, 124U, &loaded),
+        -ENOENT);
+    config.user_id = user_id;
+    config.not_after = 123U;
+    assert_int_equal(
+        jg_account_mtls_mapping_create(database, &config, 124U, &loaded),
+        -EACCES);
+
+    jg_database_close(database);
+    remove_account_database(directory, path);
+}
+
 /** @brief Verify transactional local-user administration and revocation. */
 static void test_user_administration(void **state)
 {
@@ -696,6 +797,7 @@ int jg_test_account(void)
         cmocka_unit_test(test_password_authentication),
         cmocka_unit_test(test_web_sessions),
         cmocka_unit_test(test_api_tokens),
+        cmocka_unit_test(test_mtls_mappings),
         cmocka_unit_test(test_user_administration),
         cmocka_unit_test(test_multifactor_authentication),
     };

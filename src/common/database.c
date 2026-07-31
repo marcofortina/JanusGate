@@ -660,6 +660,30 @@ static const char *const migration_11[] = {
     migration_11_audit,
 };
 
+/** Persist inspectable and revocable client-certificate mappings. */
+static const char migration_12_mtls[] =
+    "ALTER TABLE mtls_mappings ADD COLUMN subject TEXT NOT NULL DEFAULT '' "
+    "CHECK(length(subject) <= 1023);"
+    "ALTER TABLE mtls_mappings ADD COLUMN issuer TEXT NOT NULL DEFAULT '' "
+    "CHECK(length(issuer) <= 1023);"
+    "ALTER TABLE mtls_mappings ADD COLUMN not_before INTEGER NOT NULL DEFAULT "
+    "0 "
+    "CHECK(not_before >= 0);"
+    "ALTER TABLE mtls_mappings ADD COLUMN not_after INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(not_after >= not_before);"
+    "ALTER TABLE mtls_mappings ADD COLUMN revoked_at INTEGER "
+    "CHECK(revoked_at IS NULL OR revoked_at >= created_at);"
+    "ALTER TABLE mtls_mappings ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 "
+    "CHECK(revision > 0);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(12,unixepoch());"
+    "PRAGMA user_version=12;";
+
+/** Ordered statement groups composing schema version twelve. */
+static const char *const migration_12[] = {
+    migration_12_mtls,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -673,6 +697,7 @@ static const struct database_migration migrations[] = {
     {9U, migration_9, sizeof(migration_9) / sizeof(migration_9[0])},
     {10U, migration_10, sizeof(migration_10) / sizeof(migration_10[0])},
     {11U, migration_11, sizeof(migration_11) / sizeof(migration_11[0])},
+    {12U, migration_12, sizeof(migration_12) / sizeof(migration_12[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
