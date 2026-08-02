@@ -455,10 +455,53 @@ static void test_initial_migration(void **state)
     assert_true(column_exists(inspection, "network_configuration", "revision"));
     assert_true(table_exists(inspection, "logging_configuration"));
     assert_true(column_exists(inspection, "logging_configuration", "revision"));
+    assert_true(table_exists(inspection, "management_operations"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
     assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify the singleton durable management-operation lifecycle. */
+static void test_management_operation(void **state)
+{
+    static const uint8_t payload[] = {0x01U, 0x02U, 0x03U};
+    char directory[64U];
+    char path[512U];
+    struct jg_database *database = NULL;
+    struct jg_database_operation operation;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_operation_load(database, &operation), -ENOENT);
+    assert_int_equal(
+        jg_database_operation_prepare(database, "certificate_install", payload,
+                                      sizeof(payload), 123U),
+        0);
+    assert_int_equal(jg_database_operation_prepare(
+                         database, "another_operation", NULL, 0U, 124U),
+                     -EBUSY);
+    assert_int_equal(jg_database_operation_load(database, &operation), 0);
+    assert_string_equal(operation.kind, "certificate_install");
+    assert_int_equal(operation.created_at, 123U);
+    assert_int_equal(operation.payload_size, sizeof(payload));
+    assert_memory_equal(operation.payload, payload, sizeof(payload));
+    assert_false(operation.ready);
+    assert_int_equal(jg_database_operation_mark_ready(database), 0);
+    assert_int_equal(jg_database_operation_mark_ready(database), -ENOENT);
+    assert_int_equal(jg_database_operation_load(database, &operation), 0);
+    assert_true(operation.ready);
+    assert_int_equal(jg_database_operation_clear(database), 0);
+    assert_int_equal(jg_database_operation_clear(database), -ENOENT);
+    assert_int_equal(
+        jg_database_operation_prepare(database, "Invalid", NULL, 0U, 1U),
+        -EINVAL);
+    assert_int_equal(
+        jg_database_operation_prepare(database, "operation", NULL, 1U, 1U),
+        -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
 }
@@ -494,7 +537,9 @@ static void test_database_export(void **state)
         "'{}');"
         "INSERT INTO backup_metadata(id,created_at,kind,path,checksum,"
         "schema_version,size_bytes) VALUES(1,10,'configuration','/backup',"
-        "zeroblob(32),1,100);";
+        "zeroblob(32),1,100);"
+        "INSERT INTO management_operations(id,kind,state,payload,created_at)"
+        " VALUES(1,'test_operation','ready',x'0102',10);";
     static const char *const private_tables[] = {
         "users",
         "user_roles",
@@ -507,6 +552,7 @@ static void test_database_export(void **state)
         "audit_events",
         "operational_events",
         "backup_metadata",
+        "management_operations",
     };
     char directory[64U];
     char path[512U];
@@ -600,6 +646,7 @@ static void test_database_export(void **state)
                       "gateway");
     assert_text_value(snapshot, "SELECT password_hash FROM users WHERE id=1;",
                       "current-hash");
+    assert_int_equal(row_count(snapshot, "management_operations"), 1);
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
     snapshot = NULL;
     jg_database_export_clear(data, data_size);
@@ -1306,6 +1353,7 @@ static void test_network_configuration_migration(void **state)
         "INSERT INTO system_settings(key,value,updated_at) "
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
+        "DROP TABLE management_operations;"
         "DROP TABLE logging_configuration;"
         "DROP TABLE network_configuration;"
         "ALTER TABLE mtls_mappings RENAME TO mtls_mappings_v12;"
@@ -1833,6 +1881,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_initial_migration),
         cmocka_unit_test(test_database_export),
         cmocka_unit_test(test_backup_metadata),
+        cmocka_unit_test(test_management_operation),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_version_two_migration),

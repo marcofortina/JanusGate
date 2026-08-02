@@ -45,7 +45,8 @@ static const char scrub_sensitive_data[] = "DELETE FROM web_sessions;"
                                            "DELETE FROM bootstrap_credentials;"
                                            "DELETE FROM audit_events;"
                                            "DELETE FROM operational_events;"
-                                           "DELETE FROM backup_metadata;";
+                                           "DELETE FROM backup_metadata;"
+                                           "DELETE FROM management_operations;";
 
 /** Sensitive tables preserved across a configuration restore. */
 static const char preserve_sensitive_data[] =
@@ -60,6 +61,7 @@ static const char preserve_sensitive_data[] =
     "DELETE FROM main.audit_events;"
     "DELETE FROM main.operational_events;"
     "DELETE FROM main.backup_metadata;"
+    "DELETE FROM main.management_operations;"
     "INSERT INTO main.users SELECT * FROM retained.users;"
     "INSERT INTO main.user_roles SELECT * FROM retained.user_roles;"
     "INSERT INTO main.api_tokens SELECT * FROM retained.api_tokens;"
@@ -72,17 +74,22 @@ static const char preserve_sensitive_data[] =
     "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
     "INSERT INTO main.operational_events "
     "SELECT * FROM retained.operational_events;"
-    "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;";
+    "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;"
+    "INSERT INTO main.management_operations "
+    "SELECT * FROM retained.management_operations;";
 
 /** Append-only operational history retained across every restore mode. */
 static const char preserve_restore_history_data[] =
     "DELETE FROM main.audit_events;"
     "DELETE FROM main.operational_events;"
     "DELETE FROM main.backup_metadata;"
+    "DELETE FROM main.management_operations;"
     "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
     "INSERT INTO main.operational_events "
     "SELECT * FROM retained.operational_events;"
-    "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;";
+    "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;"
+    "INSERT INTO main.management_operations "
+    "SELECT * FROM retained.management_operations;";
 
 /** Foundation tables for schema version one. */
 static const char migration_1_foundation[] =
@@ -666,6 +673,24 @@ static const char *const migration_12[] = {
     migration_12_mtls,
 };
 
+/** Persist one crash-recoverable cross-resource management operation. */
+static const char migration_13_operations[] =
+    "CREATE TABLE management_operations ("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "kind TEXT NOT NULL CHECK(length(kind) BETWEEN 1 AND 64),"
+    "state TEXT NOT NULL CHECK(state='preparing' OR state='ready'),"
+    "payload BLOB NOT NULL CHECK(length(payload)<=4096),"
+    "created_at INTEGER NOT NULL CHECK(created_at>=0)"
+    ") STRICT;"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(13,unixepoch());"
+    "PRAGMA user_version=13;";
+
+/** Ordered statement groups composing schema version thirteen. */
+static const char *const migration_13[] = {
+    migration_13_operations,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -680,6 +705,7 @@ static const struct database_migration migrations[] = {
     {10U, migration_10, sizeof(migration_10) / sizeof(migration_10[0])},
     {11U, migration_11, sizeof(migration_11) / sizeof(migration_11[0])},
     {12U, migration_12, sizeof(migration_12) / sizeof(migration_12[0])},
+    {13U, migration_13, sizeof(migration_13) / sizeof(migration_13[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1627,6 +1653,206 @@ static int copy_optional_text(sqlite3_stmt *statement,
     (void)memcpy(destination, text, (size_t)byte_count);
     destination[byte_count] = '\0';
     return 0;
+}
+
+/** @brief Validate one stable lowercase management-operation kind. */
+static bool operation_kind_valid(const char *kind)
+{
+    size_t length = 0U;
+
+    if (kind == NULL) {
+        return false;
+    }
+    while (length <= JG_DATABASE_OPERATION_KIND_MAX && kind[length] != '\0') {
+        const unsigned char character = (unsigned char)kind[length];
+
+        if (!((character >= (unsigned char)'a' &&
+               character <= (unsigned char)'z') ||
+              (character >= (unsigned char)'0' &&
+               character <= (unsigned char)'9') ||
+              character == (unsigned char)'_')) {
+            return false;
+        }
+        ++length;
+    }
+    return length != 0U && length <= JG_DATABASE_OPERATION_KIND_MAX;
+}
+
+/** @brief Reserve the singleton durable management-operation slot. */
+int jg_database_operation_prepare(struct jg_database *database,
+                                  const char *kind,
+                                  const uint8_t *payload,
+                                  size_t payload_size,
+                                  uint64_t created_at)
+{
+    static const char insert[] =
+        "INSERT INTO management_operations(id,kind,state,payload,created_at)"
+        " VALUES(1,?1,'preparing',?2,?3)"
+        " ON CONFLICT(id) DO NOTHING;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || !operation_kind_valid(kind) ||
+        (payload == NULL && payload_size != 0U) ||
+        payload_size > JG_DATABASE_OPERATION_PAYLOAD_MAX ||
+        created_at > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, insert, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 1, kind, -1, SQLITE_TRANSIENT);
+        if (status == SQLITE_OK) {
+            status =
+                payload_size == 0U
+                    ? sqlite3_bind_zeroblob(statement, 2, 0)
+                    : sqlite3_bind_blob(statement, 2, payload,
+                                        (int)payload_size, SQLITE_TRANSIENT);
+        }
+        if (status == SQLITE_OK) {
+            status =
+                sqlite3_bind_int64(statement, 3, (sqlite3_int64)created_at);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EBUSY;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
+/** @brief Mark the pending operation safe to recover before external work. */
+int jg_database_operation_mark_ready(struct jg_database *database)
+{
+    static const char update[] =
+        "UPDATE management_operations SET state='ready'"
+        " WHERE id=1 AND state='preparing';";
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    result = execute_sql(database->handle, update);
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -ENOENT;
+    }
+    return result;
+}
+
+/** @brief Load the singleton durable management operation. */
+int jg_database_operation_load(struct jg_database *database,
+                               struct jg_database_operation *operation)
+{
+    static const char query[] =
+        "SELECT kind,state,payload,created_at FROM management_operations"
+        " WHERE id=1;";
+    struct jg_database_operation loaded;
+    sqlite3_stmt *statement = NULL;
+    const char *kind = NULL;
+    const char *state = NULL;
+    const void *payload = NULL;
+    size_t kind_size = 0U;
+    size_t state_size = 0U;
+    int payload_size = 0;
+    sqlite3_int64 created_at = 0;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || operation == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(&loaded, 0, sizeof(loaded));
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_DONE) {
+            result = -ENOENT;
+        } else if (status != SQLITE_ROW) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = required_text(statement, 0, &kind, &kind_size);
+    }
+    if (result == 0) {
+        result = required_text(statement, 1, &state, &state_size);
+    }
+    if (result == 0 && (kind_size > JG_DATABASE_OPERATION_KIND_MAX ||
+                        !operation_kind_valid(kind) ||
+                        !((state_size == sizeof("ready") - 1U &&
+                           memcmp(state, "ready", state_size) == 0) ||
+                          (state_size == sizeof("preparing") - 1U &&
+                           memcmp(state, "preparing", state_size) == 0)))) {
+        result = -EILSEQ;
+    }
+    if (result == 0 && sqlite3_column_type(statement, 2) != SQLITE_BLOB) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        payload = sqlite3_column_blob(statement, 2);
+        payload_size = sqlite3_column_bytes(statement, 2);
+        created_at = sqlite3_column_int64(statement, 3);
+        if (payload_size < 0 ||
+            (size_t)payload_size > JG_DATABASE_OPERATION_PAYLOAD_MAX ||
+            (payload == NULL && payload_size != 0) ||
+            sqlite3_column_type(statement, 3) != SQLITE_INTEGER ||
+            created_at < 0) {
+            result = -EILSEQ;
+        }
+    }
+    if (result == 0) {
+        (void)memcpy(loaded.kind, kind, kind_size);
+        loaded.kind[kind_size] = '\0';
+        if (payload_size != 0) {
+            (void)memcpy(loaded.payload, payload, (size_t)payload_size);
+        }
+        loaded.payload_size = (size_t)payload_size;
+        loaded.created_at = (uint64_t)created_at;
+        loaded.ready = state_size == sizeof("ready") - 1U;
+    }
+    if (result == 0 && sqlite3_step(statement) != SQLITE_DONE) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *operation = loaded;
+    }
+    return result;
+}
+
+/** @brief Remove the singleton durable management operation. */
+int jg_database_operation_clear(struct jg_database *database)
+{
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    result = execute_sql(database->handle,
+                         "DELETE FROM management_operations WHERE id=1;");
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -ENOENT;
+    }
+    return result;
 }
 
 /** @brief Return one lowercase hexadecimal digit. */

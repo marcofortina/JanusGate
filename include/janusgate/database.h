@@ -34,7 +34,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 12U
+#define JG_DATABASE_SCHEMA_VERSION 13U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -56,6 +56,12 @@
 
 /** Maximum backup metadata records returned by one page. */
 #define JG_DATABASE_BACKUP_PAGE_MAX 100U
+
+/** Maximum durable management-operation kind bytes excluding the terminator. */
+#define JG_DATABASE_OPERATION_KIND_MAX 64U
+
+/** Maximum opaque durable management-operation payload bytes. */
+#define JG_DATABASE_OPERATION_PAYLOAD_MAX 4096U
 
 /**
  * @brief Persistent health classification for one blocklist source.
@@ -106,6 +112,20 @@ struct jg_database_backup {
     uint32_t schema_version;
     /** Complete archive bytes. */
     size_t size_bytes;
+};
+
+/** One durable cross-resource management operation awaiting completion. */
+struct jg_database_operation {
+    /** Stable operation kind interpreted by the management service. */
+    char kind[JG_DATABASE_OPERATION_KIND_MAX + 1U];
+    /** Opaque versioned recovery payload. */
+    uint8_t payload[JG_DATABASE_OPERATION_PAYLOAD_MAX];
+    /** Exact recovery payload bytes. */
+    size_t payload_size;
+    /** Creation time as Unix seconds. */
+    uint64_t created_at;
+    /** Whether durable recovery snapshots permit external mutation. */
+    bool ready;
 };
 /**
  * @brief Self-contained persistent network-configuration record.
@@ -365,6 +385,79 @@ JG_PUBLIC void jg_database_close(struct jg_database *database);
  */
 JG_PUBLIC int jg_database_schema_version(struct jg_database *database,
                                          uint32_t *version);
+
+/**
+ * @brief Reserve the singleton durable cross-resource operation slot.
+ *
+ * The operation begins in the preparing state. The caller must durably create
+ * every referenced recovery snapshot before marking it ready and changing an
+ * external resource.
+ *
+ * @param[in] database Open database.
+ * @param[in] kind Nonempty lowercase operation kind.
+ * @param[in] payload Optional opaque recovery payload.
+ * @param[in] payload_size Exact payload bytes.
+ * @param[in] created_at Creation time as Unix seconds.
+ *
+ * @return 0 on success.
+ * @return -EBUSY when another cross-resource operation is pending.
+ * @return -EINVAL for invalid arguments.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database. Distinct
+ * connections are serialized by SQLite and the singleton slot.
+ */
+JG_PUBLIC int jg_database_operation_prepare(struct jg_database *database,
+                                            const char *kind,
+                                            const uint8_t *payload,
+                                            size_t payload_size,
+                                            uint64_t created_at);
+
+/**
+ * @brief Mark the pending operation ready for external mutation.
+ *
+ * @param[in] database Open database.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when no preparing operation exists.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_operation_mark_ready(struct jg_database *database);
+
+/**
+ * @brief Load the pending durable cross-resource operation.
+ *
+ * @param[in] database Open database.
+ * @param[out] operation Receives the self-contained operation.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when no operation is pending.
+ * @return -EILSEQ for invalid persistent data.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_operation_load(
+    struct jg_database *database,
+    struct jg_database_operation *operation);
+
+/**
+ * @brief Remove the pending operation after completion or recovery.
+ *
+ * This function participates in an existing database transaction, allowing
+ * the final audit record and operation removal to share one commit.
+ *
+ * @param[in] database Open database.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when no operation is pending.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_operation_clear(struct jg_database *database);
 
 /**
  * @brief Run SQLite's full integrity check.
