@@ -1950,6 +1950,81 @@ int jg_account_session_validate(struct jg_database *database,
     return result == 0 ? authentication_result : result;
 }
 
+/** @brief Reauthorize one deferred session without retaining its plaintext. */
+int jg_account_session_reauthorize(
+    struct jg_database *database,
+    const uint8_t session_digest[JG_AUTH_SECRET_DIGEST_SIZE],
+    uint64_t now,
+    uint64_t inactivity_timeout,
+    enum jg_policy_address_family remote_family,
+    const uint8_t *remote_address,
+    struct jg_account_identity *identity)
+{
+    struct session_record record;
+    uint32_t permissions = 0U;
+    bool totp_enabled = false;
+    bool transaction_open = false;
+    int authorization_result = 0;
+    int result = 0;
+
+    if (identity == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(identity, 0, sizeof(*identity));
+    (void)memset(&record, 0, sizeof(record));
+    if (database == NULL || session_digest == NULL || now == 0U ||
+        now > (uint64_t)INT64_MAX ||
+        !remote_address_valid(remote_family, remote_address)) {
+        return -EINVAL;
+    }
+    if (inactivity_timeout < JG_ACCOUNT_SESSION_INACTIVITY_MIN ||
+        inactivity_timeout > JG_ACCOUNT_SESSION_INACTIVITY_MAX) {
+        return -ERANGE;
+    }
+    result = jg_database_transaction_begin_read(database);
+    transaction_open = result == 0;
+    if (result == 0) {
+        result = load_session(database->handle, session_digest, &record);
+        if (result == -ENOENT) {
+            result = 0;
+            authorization_result = -EACCES;
+        }
+    }
+    if (result == 0 && authorization_result == 0 &&
+        (!record.enabled || record.session_epoch != record.user_session_epoch ||
+         record.expires_at <= now || record.last_seen_at > now ||
+         now - record.last_seen_at > inactivity_timeout ||
+         !session_address_matches(&record, remote_family, remote_address))) {
+        authorization_result = -EACCES;
+    }
+    if (result == 0 && authorization_result == 0) {
+        result = load_identity_authorization(database->handle, record.user_id,
+                                             &permissions, &totp_enabled);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(database);
+        if (result == 0) {
+            transaction_open = false;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)jg_database_transaction_rollback(database);
+    }
+    if (result == 0 && authorization_result == 0) {
+        identity->user_id = record.user_id;
+        (void)memcpy(identity->username, record.username,
+                     strlen(record.username) + 1U);
+        identity->permissions = permissions;
+        identity->revision = record.revision;
+        identity->session_epoch = record.user_session_epoch;
+        identity->force_password_change = record.force_password_change;
+        identity->totp_enabled = totp_enabled;
+        identity->mfa_complete = true;
+    }
+    sodium_memzero(&record, sizeof(record));
+    return result == 0 ? authorization_result : result;
+}
+
 /** @brief Delete one session by opaque identifier digest. */
 int jg_account_session_revoke(struct jg_database *database,
                               const uint8_t *session,
@@ -2608,9 +2683,10 @@ struct api_token_record {
     bool force_password_change;
 };
 
-/** @brief Load one API token and current owning user by token digest. */
+/** @brief Load one API token and current owner by digest or identifier. */
 static int load_api_token(sqlite3 *handle,
                           const uint8_t digest[JG_AUTH_SECRET_DIGEST_SIZE],
+                          uint64_t token_id,
                           struct api_token_record *record)
 {
     static const char query[] =
@@ -2619,21 +2695,34 @@ static int load_api_token(sqlite3 *handle,
         "t.requests_per_minute,u.username,u.enabled,u.force_password_change,"
         "u.revision,u.session_epoch"
         " FROM api_tokens t JOIN users u ON u.id=t.user_id"
-        " WHERE t.token_hash=?1;";
+        " WHERE t.token_hash=?1 OR t.id=?2;";
     sqlite3_stmt *statement = NULL;
     const char *scopes = NULL;
     const void *source_address = NULL;
     const char *username = NULL;
     int source_size = 0;
     int username_size = 0;
-    int status = sqlite3_prepare_v3(
-        handle, query, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
+    int status = SQLITE_OK;
+    int result;
 
     (void)memset(record, 0, sizeof(*record));
+    if ((digest == NULL) == (token_id == 0U)) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(handle, query, -1, SQLITE_PREPARE_PERSISTENT,
+                                &statement, NULL);
+    result = jg_database_sqlite_result(status);
     if (result == 0) {
-        status = sqlite3_bind_blob(
-            statement, 1, digest, JG_AUTH_SECRET_DIGEST_SIZE, SQLITE_TRANSIENT);
+        status = digest == NULL ? sqlite3_bind_null(statement, 1)
+                                : sqlite3_bind_blob(statement, 1, digest,
+                                                    JG_AUTH_SECRET_DIGEST_SIZE,
+                                                    SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = token_id == 0U ? sqlite3_bind_null(statement, 2)
+                                : sqlite3_bind_int64(statement, 2,
+                                                     (sqlite3_int64)token_id);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
@@ -2830,7 +2919,7 @@ int jg_account_token_validate(struct jg_database *database,
         transaction_open = result == 0;
     }
     if (result == 0) {
-        result = load_api_token(database->handle, digest, &record);
+        result = load_api_token(database->handle, digest, 0U, &record);
         if (result == -ENOENT || result == -EACCES) {
             result = 0;
             authentication_result = -EACCES;
@@ -2883,6 +2972,79 @@ int jg_account_token_validate(struct jg_database *database,
     sodium_memzero(digest, sizeof(digest));
     sodium_memzero(&record, sizeof(record));
     return result == 0 ? authentication_result : result;
+}
+
+/** @brief Reauthorize one deferred API token without retaining its secret. */
+int jg_account_token_reauthorize(struct jg_database *database,
+                                 uint64_t token_id,
+                                 uint64_t now,
+                                 enum jg_policy_address_family remote_family,
+                                 const uint8_t *remote_address,
+                                 struct jg_account_identity *identity)
+{
+    struct api_token_record record;
+    uint32_t role_permissions = 0U;
+    bool ignored_totp = false;
+    bool transaction_open = false;
+    int authorization_result = 0;
+    int result = 0;
+
+    if (identity == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(identity, 0, sizeof(*identity));
+    (void)memset(&record, 0, sizeof(record));
+    if (database == NULL || token_id == 0U || token_id > (uint64_t)INT64_MAX ||
+        now == 0U || now > (uint64_t)INT64_MAX ||
+        !remote_address_valid(remote_family, remote_address) ||
+        remote_family == JG_POLICY_ADDRESS_NONE) {
+        return -EINVAL;
+    }
+    result = jg_database_transaction_begin_read(database);
+    transaction_open = result == 0;
+    if (result == 0) {
+        result = load_api_token(database->handle, NULL, token_id, &record);
+        if (result == -ENOENT || result == -EACCES) {
+            result = 0;
+            authorization_result = -EACCES;
+        }
+    }
+    if (result == 0 && authorization_result == 0 &&
+        (!record.enabled || record.force_password_change ||
+         (record.has_expiry && record.expires_at <= now) ||
+         !source_network_matches(&record, remote_family, remote_address))) {
+        authorization_result = -EACCES;
+    }
+    if (result == 0 && authorization_result == 0) {
+        result = load_identity_authorization(database->handle, record.user_id,
+                                             &role_permissions, &ignored_totp);
+    }
+    if (result == 0 && authorization_result == 0) {
+        role_permissions &= record.scoped_permissions;
+        if (role_permissions == 0U) {
+            authorization_result = -EACCES;
+        }
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(database);
+        if (result == 0) {
+            transaction_open = false;
+        }
+    }
+    if (result != 0 && transaction_open) {
+        (void)jg_database_transaction_rollback(database);
+    }
+    if (result == 0 && authorization_result == 0) {
+        identity->user_id = record.user_id;
+        (void)memcpy(identity->username, record.username,
+                     strlen(record.username) + 1U);
+        identity->permissions = role_permissions;
+        identity->revision = record.revision;
+        identity->session_epoch = record.session_epoch;
+        identity->mfa_complete = true;
+    }
+    sodium_memzero(&record, sizeof(record));
+    return result == 0 ? authorization_result : result;
 }
 
 /** @brief Persist one idempotent API-token revocation. */

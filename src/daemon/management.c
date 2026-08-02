@@ -225,9 +225,16 @@ struct management_job_submission {
     enum management_job_kind kind;
 };
 
+/** Reauthorization material retained without plaintext credentials. */
+struct management_job_authorization {
+    uint8_t session_digest[JG_AUTH_SECRET_DIGEST_SIZE];
+    uint8_t certificate_fingerprint[32U];
+};
+
 /** One fixed-slot slow operation and its bounded final response. */
 struct management_job {
     struct authenticated_actor actor;
+    struct management_job_authorization authorization;
     struct remote_address remote;
     uint8_t response[JG_IPC_MAX_BODY_SIZE];
     size_t response_size;
@@ -7334,6 +7341,29 @@ static int generate_job_identifier(const struct management_jobs *jobs,
     return -EAGAIN;
 }
 
+/** @brief Prepare deferred authorization without retaining a credential. */
+static int prepare_job_authorization(
+    const struct management_request *request,
+    const struct authenticated_actor *actor,
+    struct management_job_authorization *authorization)
+{
+    (void)memset(authorization, 0, sizeof(*authorization));
+    if (actor->kind == AUTHENTICATED_ACTOR_LOCAL) {
+        return 0;
+    }
+    if (actor->kind == AUTHENTICATED_ACTOR_USER) {
+        return jg_auth_secret_digest((const uint8_t *)request->session,
+                                     strlen(request->session),
+                                     authorization->session_digest);
+    }
+    if (actor->kind == AUTHENTICATED_ACTOR_TOKEN) {
+        return parse_certificate_fingerprint(
+            request->client_certificate,
+            authorization->certificate_fingerprint);
+    }
+    return -EINVAL;
+}
+
 /** @brief Queue one prepared authenticated slow operation. */
 static int submit_management_job(struct jg_management *management,
                                  const struct management_request *request,
@@ -7345,12 +7375,17 @@ static int submit_management_job(struct jg_management *management,
 {
     struct management_jobs *jobs = management->jobs;
     struct management_job *job = NULL;
+    struct management_job_authorization authorization;
     uint64_t identifier = 0U;
     int status = 0;
-    int result = 0;
+    int result = prepare_job_authorization(request, actor, &authorization);
 
+    if (result != 0) {
+        return result;
+    }
     status = pthread_mutex_lock(&jobs->mutex);
     if (status != 0) {
+        sodium_memzero(&authorization, sizeof(authorization));
         return -status;
     }
     job = select_job_slot(jobs, now);
@@ -7369,6 +7404,7 @@ static int submit_management_job(struct jg_management *management,
             prepared->parameters.blocklist_import.content_size = 0U;
         }
         job->actor = *actor;
+        job->authorization = authorization;
         job->remote = *remote;
         job->id = identifier;
         job->sequence = jobs->next_sequence++;
@@ -7389,6 +7425,7 @@ static int submit_management_job(struct jg_management *management,
     if (result == 0 && status != 0) {
         result = -status;
     }
+    sodium_memzero(&authorization, sizeof(authorization));
     return result;
 }
 
@@ -7707,6 +7744,48 @@ static bool job_is_visible_to_actor(const struct management_job *job,
            actor->actor_id == job->actor.actor_id;
 }
 
+/** @brief Recheck a queued job against current persistent authorization. */
+static int reauthorize_management_job(struct jg_management *management,
+                                      struct management_job *job,
+                                      uint64_t now)
+{
+    struct jg_account_identity identity;
+    int result = 0;
+
+    if (job->system_job || job->actor.kind == AUTHENTICATED_ACTOR_LOCAL) {
+        return 0;
+    }
+    if (job->actor.kind == AUTHENTICATED_ACTOR_USER) {
+        result = jg_account_session_reauthorize(
+            management->database, job->authorization.session_digest, now,
+            MANAGEMENT_SESSION_INACTIVITY, job->remote.family,
+            job->remote.address, &identity);
+    } else if (job->actor.kind == AUTHENTICATED_ACTOR_TOKEN) {
+        result = jg_account_token_reauthorize(
+            management->database, job->actor.actor_id, now, job->remote.family,
+            job->remote.address, &identity);
+        if (result == 0) {
+            result = jg_account_mtls_mapping_authorize(
+                management->database,
+                job->authorization.certificate_fingerprint, identity.user_id,
+                now);
+        }
+    } else {
+        result = -EACCES;
+    }
+    if (result == 0 &&
+        (identity.user_id != job->actor.identity.user_id ||
+         identity.force_password_change ||
+         !jg_access_grants(identity.permissions, job->required_permission))) {
+        result = -EPERM;
+    }
+    if (result == 0) {
+        job->actor.identity = identity;
+    }
+    sodium_memzero(&identity, sizeof(identity));
+    return result;
+}
+
 /** @brief Execute queued slow operations on an independent DB connection. */
 static void *run_management_jobs(void *context)
 {
@@ -7721,6 +7800,7 @@ static void *run_management_jobs(void *context)
         uint64_t started_at = 0U;
         uint64_t completed_at = 0U;
         size_t response_size = 0U;
+        int authorization_result = 0;
         int operation_result = 0;
         int status = pthread_mutex_lock(&jobs->mutex);
 
@@ -7740,18 +7820,51 @@ static void *run_management_jobs(void *context)
             (void)pthread_mutex_unlock(&jobs->mutex);
             break;
         }
-        (void)current_time(&started_at);
-        queued->state = MANAGEMENT_JOB_RUNNING;
-        queued->started_at = started_at;
         work = *queued;
+        (void)current_time(&started_at);
+        (void)pthread_mutex_unlock(&jobs->mutex);
+
+        authorization_result =
+            reauthorize_management_job(&worker, &work, started_at);
+        status = pthread_mutex_lock(&jobs->mutex);
+        if (status != 0) {
+            break;
+        }
+        queued = find_job(jobs, work.id);
+        if (queued == NULL) {
+            (void)pthread_mutex_unlock(&jobs->mutex);
+            management_job_parameters_clear(work.kind, &work.parameters);
+            sodium_memzero(&work, sizeof(work));
+            continue;
+        }
+        if (authorization_result == 0) {
+            queued->actor = work.actor;
+            queued->state = MANAGEMENT_JOB_RUNNING;
+            queued->started_at = started_at;
+            work.started_at = started_at;
+        }
         if (queued->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
             queued->parameters.blocklist_import.content = NULL;
             queued->parameters.blocklist_import.content_size = 0U;
         }
         sodium_memzero(&queued->parameters, sizeof(queued->parameters));
+        sodium_memzero(&queued->authorization, sizeof(queued->authorization));
         (void)pthread_mutex_unlock(&jobs->mutex);
+        sodium_memzero(&work.authorization, sizeof(work.authorization));
 
-        if (work.kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
+        if (authorization_result != 0) {
+            const bool denied = authorization_result == -EACCES ||
+                                authorization_result == -EPERM;
+
+            operation_result = respond_error(
+                denied ? 403 : 500,
+                denied ? "job_authorization_expired"
+                       : "job_authorization_failed",
+                denied ? "Authorization changed before the job could start."
+                       : "The job authorization could not be rechecked.",
+                work.request_id, work.response, sizeof(work.response),
+                &response_size);
+        } else if (work.kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
             operation_result = execute_source_refresh_job(
                 &worker, &work, work.response, sizeof(work.response),
                 &response_size);

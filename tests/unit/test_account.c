@@ -329,6 +329,7 @@ static void test_web_sessions(void **state)
     char directory[64U];
     char path[512U];
     char token[JG_AUTH_SECRET_TEXT_SIZE];
+    uint8_t session_digest[JG_AUTH_SECRET_DIGEST_SIZE];
     struct jg_account_session_tokens session;
     struct jg_auth_password_policy password_policy;
     struct jg_account_identity identity;
@@ -359,10 +360,20 @@ static void test_web_sessions(void **state)
                      0);
     assert_int_equal(strlen(session.session), JG_AUTH_SECRET_TEXT_SIZE - 1U);
     assert_int_equal(strlen(session.csrf), JG_AUTH_SECRET_TEXT_SIZE - 1U);
+    assert_int_equal(jg_auth_secret_digest((const uint8_t *)session.session,
+                                           strlen(session.session),
+                                           session_digest),
+                     0);
     assert_int_equal(jg_account_session_validate(
                          database, (const uint8_t *)session.session,
                          strlen(session.session), (const uint8_t *)session.csrf,
                          strlen(session.csrf), true, 111U,
+                         JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     0);
+    assert_int_equal(validated.user_id, identity.user_id);
+    assert_int_equal(jg_account_session_reauthorize(
+                         database, session_digest, 111U,
                          JG_ACCOUNT_SESSION_INACTIVITY_MIN,
                          JG_POLICY_ADDRESS_IPV4, remote, &validated),
                      0);
@@ -395,6 +406,11 @@ static void test_web_sessions(void **state)
                                     113U, JG_ACCOUNT_SESSION_INACTIVITY_MIN,
                                     JG_POLICY_ADDRESS_IPV4, remote, &validated),
         -EACCES);
+    assert_int_equal(jg_account_session_reauthorize(
+                         database, session_digest, 113U,
+                         JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     -EACCES);
     assert_int_equal(jg_account_session_revoke(database,
                                                (const uint8_t *)session.session,
                                                strlen(session.session)),
@@ -463,6 +479,11 @@ static void test_api_tokens(void **state)
     assert_int_equal(authenticated_token_id, token.token_id);
     assert_int_equal(requests_per_minute, 120U);
     assert_int_equal(identity.permissions, config.permissions);
+    assert_int_equal(jg_account_token_reauthorize(database, token.token_id,
+                                                  111U, JG_POLICY_ADDRESS_IPV4,
+                                                  remote, &identity),
+                     0);
+    assert_int_equal(identity.permissions, config.permissions);
     assert_int_equal(
         jg_account_token_list(database, 0U, records, 2U, &count, &total), 0);
     assert_int_equal(count, 1U);
@@ -485,6 +506,10 @@ static void test_api_tokens(void **state)
                          other_remote, &identity, &authenticated_token_id,
                          &requests_per_minute),
                      -EACCES);
+    assert_int_equal(jg_account_token_reauthorize(database, token.token_id,
+                                                  112U, JG_POLICY_ADDRESS_IPV4,
+                                                  other_remote, &identity),
+                     -EACCES);
     assert_int_equal(jg_account_token_revoke(database, token.token_id, 113U),
                      0);
     assert_int_equal(jg_account_token_revoke(database, token.token_id, 114U),
@@ -498,6 +523,10 @@ static void test_api_tokens(void **state)
                          strlen(token.secret), 115U, JG_POLICY_ADDRESS_IPV4,
                          remote, &identity, &authenticated_token_id,
                          &requests_per_minute),
+                     -EACCES);
+    assert_int_equal(jg_account_token_reauthorize(database, token.token_id,
+                                                  115U, JG_POLICY_ADDRESS_IPV4,
+                                                  remote, &identity),
                      -EACCES);
     jg_database_close(database);
     remove_account_database(directory, path);

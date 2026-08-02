@@ -623,6 +623,40 @@ JG_PUBLIC int jg_account_session_validate(
     struct jg_account_identity *identity);
 
 /**
+ * @brief Reauthorize a previously authenticated session by its safe digest.
+ *
+ * This read-only check is intended for deferred operations. It verifies that
+ * the exact session still exists and applies current user, expiry, inactivity,
+ * address-binding, revocation-epoch, and role state without retaining the
+ * plaintext session value.
+ *
+ * @param[in] database Open database.
+ * @param[in] session_digest Digest produced by @ref jg_auth_secret_digest.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[in] inactivity_timeout Accepted idle seconds.
+ * @param[in] remote_family Original IPv4, IPv6, or unavailable family.
+ * @param[in] remote_address Original network-order address when available.
+ * @param[out] identity Receives the current authorized identity.
+ *
+ * @return 0 for a currently authorized session.
+ * @return -EINVAL for a null or inconsistent input.
+ * @return -ERANGE for an invalid inactivity timeout.
+ * @return -EACCES for an unknown, expired, revoked, or address-mismatched
+ * session.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_session_reauthorize(
+    struct jg_database *database,
+    const uint8_t session_digest[JG_AUTH_SECRET_DIGEST_SIZE],
+    uint64_t now,
+    uint64_t inactivity_timeout,
+    enum jg_policy_address_family remote_family,
+    const uint8_t *remote_address,
+    struct jg_account_identity *identity);
+
+/**
  * @brief Revoke one opaque web session idempotently.
  *
  * @param[in,out] database Open database.
@@ -774,6 +808,36 @@ JG_PUBLIC int jg_account_token_validate(
     struct jg_account_identity *identity,
     uint64_t *token_id,
     uint32_t *requests_per_minute);
+
+/**
+ * @brief Reauthorize a previously authenticated API token by identifier.
+ *
+ * This read-only check is intended for deferred operations. It applies the
+ * token's current revocation, expiry, source-network, owner, role, and scope
+ * state without retaining the plaintext token value.
+ *
+ * @param[in] database Open database.
+ * @param[in] token_id Previously authenticated token identifier.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[in] remote_family Original IPv4 or IPv6 source family.
+ * @param[in] remote_address Original network-order source address.
+ * @param[out] identity Receives the current authorized owning identity.
+ *
+ * @return 0 for a currently authorized token.
+ * @return -EINVAL for a null or inconsistent input.
+ * @return -EACCES for a missing, expired, revoked, disabled, or
+ * source-mismatched token.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_account_token_reauthorize(
+    struct jg_database *database,
+    uint64_t token_id,
+    uint64_t now,
+    enum jg_policy_address_family remote_family,
+    const uint8_t *remote_address,
+    struct jg_account_identity *identity);
 
 /**
  * @brief Revoke one API token idempotently.
