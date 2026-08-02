@@ -20,6 +20,9 @@
 /** Default first-boot management address. */
 #define JG_WEB_DEFAULT_ADDRESS "192.168.77.1"
 
+/** Default authorized HTTP host name. */
+#define JG_WEB_DEFAULT_SERVER_NAME "janusgate.local"
+
 /** Default HTTPS management port. */
 #if defined(__OpenBSD__)
 #define JG_WEB_DEFAULT_PORT 8443U
@@ -47,6 +50,8 @@
 struct jg_web_config {
     /** Numeric IPv4 or IPv6 management address. */
     const char *listen_address;
+    /** Normalized DNS name accepted in the HTTP Host header. */
+    const char *server_name;
     /** HTTPS TCP port. */
     uint16_t port;
     /** Dedicated mTLS remote API port. */
@@ -81,6 +86,11 @@ int jg_web_build_listener(const struct jg_web_config *config,
                           uint16_t port,
                           char *output,
                           size_t output_size);
+
+/** @brief Match one HTTP Host value against the explicit address allowlist. */
+bool jg_web_host_valid(const struct jg_web_config *config,
+                       uint16_t port,
+                       const char *host);
 
 /** @brief Start one TLS-only management service. */
 int jg_web_server_start(const struct jg_web_config *config,

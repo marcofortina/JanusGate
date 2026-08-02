@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -28,6 +29,7 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
+#include "janusgate/domain.h"
 #include "web_gateway.h"
 
 /** Largest static administration asset accepted by the server. */
@@ -99,6 +101,7 @@ struct jg_web_server {
     struct web_listener_context api_listener;
     struct jg_web_config config;
     char *listen_address;
+    char *server_name;
     char *certificate_path;
     char *client_ca_path;
     char *web_root;
@@ -112,6 +115,7 @@ void jg_web_config_default(struct jg_web_config *config)
     if (config != NULL) {
         *config = (struct jg_web_config){
             .listen_address = JG_WEB_DEFAULT_ADDRESS,
+            .server_name = JG_WEB_DEFAULT_SERVER_NAME,
             .port = JG_WEB_DEFAULT_PORT,
             .api_port = JG_WEB_DEFAULT_API_PORT,
             .certificate_path = JG_WEB_DEFAULT_CERTIFICATE,
@@ -173,8 +177,8 @@ static int address_family(const char *address)
 int jg_web_config_validate(const struct jg_web_config *config)
 {
     if (config == NULL || address_family(config->listen_address) == AF_UNSPEC ||
-        config->port == 0U || config->api_port == 0U ||
-        config->port == config->api_port ||
+        !jg_domain_is_normalized(config->server_name) || config->port == 0U ||
+        config->api_port == 0U || config->port == config->api_port ||
         !absolute_path_valid(config->certificate_path) ||
         !absolute_path_valid(config->client_ca_path) ||
         !absolute_path_valid(config->web_root) ||
@@ -277,17 +281,16 @@ static const char *request_header(const struct mg_connection *connection,
     return mg_get_header(connection, name);
 }
 
-/** @brief Validate the request Host against the configured listener address. */
-static bool host_valid(const struct mg_connection *connection,
-                       const struct jg_web_config *config,
-                       uint16_t port)
+/** @brief Validate one Host against the configured address and DNS name. */
+bool jg_web_host_valid(const struct jg_web_config *config,
+                       uint16_t port,
+                       const char *host)
 {
-    const char *host = request_header(connection, "Host");
-    char expected[INET6_ADDRSTRLEN + 16U];
+    char expected[JG_DOMAIN_NAME_MAX + 16U];
     char expected_without_port[INET6_ADDRSTRLEN + 4U];
     int written = 0;
 
-    if (host == NULL) {
+    if (config == NULL || port == 0U || host == NULL) {
         return false;
     }
     if (address_family(config->listen_address) == AF_INET6) {
@@ -301,9 +304,16 @@ static bool host_valid(const struct mg_connection *connection,
         (void)snprintf(expected_without_port, sizeof(expected_without_port),
                        "%s", config->listen_address);
     }
+    if (written > 0 && (size_t)written < sizeof(expected) &&
+        (strcasecmp(host, expected) == 0 ||
+         strcasecmp(host, expected_without_port) == 0)) {
+        return true;
+    }
+    written = snprintf(expected, sizeof(expected), "%s:%u", config->server_name,
+                       (unsigned int)port);
     return written > 0 && (size_t)written < sizeof(expected) &&
-           (strcmp(host, expected) == 0 ||
-            strcmp(host, expected_without_port) == 0);
+           (strcasecmp(host, expected) == 0 ||
+            strcasecmp(host, config->server_name) == 0);
 }
 
 /** @brief Write a complete bounded HTTP response header. */
@@ -596,7 +606,8 @@ static int handle_request(struct mg_connection *connection, void *context)
 
     if (server == NULL || request == NULL || request->local_uri == NULL ||
         request->request_method == NULL || request->is_ssl != 1 ||
-        !host_valid(connection, &server->config, listener->port)) {
+        !jg_web_host_valid(&server->config, listener->port,
+                           request_header(connection, "Host"))) {
         (void)send_json(connection, 400, "Bad Request",
                         "{\"error\":{\"code\":\"invalid_request\","
                         "\"message\":\"The request is not valid.\"}}\n",
@@ -671,6 +682,9 @@ static int own_config(struct jg_web_server *server,
         duplicate_string(config->listen_address, &server->listen_address);
 
     if (result == 0) {
+        result = duplicate_string(config->server_name, &server->server_name);
+    }
+    if (result == 0) {
         result = duplicate_string(config->certificate_path,
                                   &server->certificate_path);
     }
@@ -688,6 +702,7 @@ static int own_config(struct jg_web_server *server,
     if (result == 0) {
         server->config = *config;
         server->config.listen_address = server->listen_address;
+        server->config.server_name = server->server_name;
         server->config.certificate_path = server->certificate_path;
         server->config.client_ca_path = server->client_ca_path;
         server->config.web_root = server->web_root;
@@ -871,6 +886,7 @@ void jg_web_server_destroy(struct jg_web_server *server)
     free(server->control_socket_path);
     free(server->certificate_path);
     free(server->client_ca_path);
+    free(server->server_name);
     free(server->listen_address);
     free(server);
 }

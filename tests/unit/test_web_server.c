@@ -26,6 +26,7 @@ static void test_web_config_validation(void **state)
     jg_web_config_default(&config);
     assert_int_equal(jg_web_config_validate(&config), 0);
     assert_int_equal(config.api_port, JG_WEB_DEFAULT_API_PORT);
+    assert_string_equal(config.server_name, JG_WEB_DEFAULT_SERVER_NAME);
     assert_string_equal(config.client_ca_path,
                         JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH);
     config.listen_address = "0.0.0.0";
@@ -45,8 +46,35 @@ static void test_web_config_validation(void **state)
     config.client_ca_path = "relative";
     assert_int_equal(jg_web_config_validate(&config), -EINVAL);
     config.client_ca_path = JG_CERTIFICATE_CLIENT_CA_DEFAULT_PATH;
+    config.server_name = "JanusGate.local";
+    assert_int_equal(jg_web_config_validate(&config), -EINVAL);
+    config.server_name = JG_WEB_DEFAULT_SERVER_NAME;
     config.worker_count = 1U;
     assert_int_equal(jg_web_config_validate(&config), -ERANGE);
+}
+
+/** @brief Verify the explicit HTTP Host allowlist for both TLS listeners. */
+static void test_web_host_validation(void **state)
+{
+    struct jg_web_config config;
+
+    (void)state;
+    jg_web_config_default(&config);
+    assert_true(jg_web_host_valid(&config, config.port, "janusgate.local"));
+    assert_true(jg_web_host_valid(&config, config.port, "JANUSGATE.LOCAL"));
+#if defined(__OpenBSD__)
+    assert_true(
+        jg_web_host_valid(&config, config.port, "janusgate.local:8443"));
+#else
+    assert_true(jg_web_host_valid(&config, config.port, "janusgate.local:443"));
+#endif
+    assert_true(
+        jg_web_host_valid(&config, config.api_port, "janusgate.local:9443"));
+    assert_true(jg_web_host_valid(&config, config.port, "192.168.77.1"));
+    assert_false(jg_web_host_valid(&config, config.port, "example.org"));
+    assert_false(
+        jg_web_host_valid(&config, config.api_port, "janusgate.local:443"));
+    assert_false(jg_web_host_valid(&config, config.port, NULL));
 }
 
 /** @brief Verify exact IPv4 and IPv6 TLS listener expressions. */
@@ -129,6 +157,7 @@ int jg_test_web_server(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_web_config_validation),
         cmocka_unit_test(test_web_listener),
+        cmocka_unit_test(test_web_host_validation),
         cmocka_unit_test(test_gateway_response_formats),
     };
 

@@ -28,8 +28,9 @@ static void print_usage(FILE *output)
 {
     (void)fprintf(
         output,
-        "usage: janusgate-web [--listen-address ADDRESS] [--port PORT]\n"
-        "                     [--api-port PORT] [--certificate PATH]\n"
+        "usage: janusgate-web [--listen-address ADDRESS] [--server-name NAME]\n"
+        "                     [--port PORT] [--api-port PORT]\n"
+        "                     [--certificate PATH]\n"
         "                     [--client-ca PATH] [--web-root PATH]\n"
         "                     [--socket PATH] [--hsts]\n"
         "       janusgate-web --version\n");
@@ -65,6 +66,9 @@ static int parse_options(int argc, char **argv, struct jg_web_config *config)
             result = -EINVAL;
         } else if (strcmp(argv[argument], "--listen-address") == 0) {
             config->listen_address = argv[argument + 1];
+            argument += 2;
+        } else if (strcmp(argv[argument], "--server-name") == 0) {
+            config->server_name = argv[argument + 1];
             argument += 2;
         } else if (strcmp(argv[argument], "--port") == 0) {
             result = parse_port(argv[argument + 1], &config->port);

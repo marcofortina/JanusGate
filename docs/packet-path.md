@@ -9,6 +9,8 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 interfaces, applies supported bridge settings, validates the separate
 management-interface role, and installs the native packet-selection policy.
 The deployment operating system owns management addressing and routing.
+HTTPS accepts the numeric listen address and the explicit `--server-name`
+value (`janusgate.local` by default) as HTTP Host values.
 
 ## Kernel selection
 

@@ -31,6 +31,13 @@ The default is
 .BR 192.168.77.1 .
 Wildcard and multicast addresses are rejected.
 .TP
+.BI --server-name " name"
+Accept the normalized DNS
+.I name
+in the HTTP Host header in addition to the numeric listen address.
+The default is
+.BR janusgate.local .
+.TP
 .BI --port " port"
 Serve the browser interface on the nonzero TCP
 .IR port .
