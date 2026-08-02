@@ -441,6 +441,57 @@ int jg_certificate_inspect(const char *certificate,
     return result;
 }
 
+/** @brief Check current validity and TLS-server purpose for one leaf. */
+static int validate_server_leaf(X509 *certificate)
+{
+    const int not_before =
+        X509_cmp_current_time(X509_get0_notBefore(certificate));
+    const int not_after =
+        X509_cmp_current_time(X509_get0_notAfter(certificate));
+
+    if (not_before == 0 || not_after == 0) {
+        return -EINVAL;
+    }
+    if (not_before > 0 || not_after < 0 || X509_check_ca(certificate) != 0 ||
+        X509_check_purpose(certificate, X509_PURPOSE_SSL_SERVER, 0) != 1) {
+        return -EACCES;
+    }
+    return 0;
+}
+
+/** @brief Validate one current TLS server identity in memory. */
+int jg_certificate_server_validate(const char *certificate,
+                                   size_t certificate_size,
+                                   const char *private_key,
+                                   size_t private_key_size,
+                                   struct jg_certificate_info *info)
+{
+    const char *key_marker =
+        find_private_key_bytes(certificate, certificate_size);
+    const size_t public_size = key_marker == NULL
+                                   ? certificate_size
+                                   : (size_t)(key_marker - certificate);
+    X509 *parsed_certificate = NULL;
+    int result = 0;
+
+    if (private_key == NULL || private_key_size == 0U || info == NULL) {
+        return -EINVAL;
+    }
+    result = jg_certificate_inspect(certificate, certificate_size, private_key,
+                                    private_key_size, info);
+    if (result == 0) {
+        parsed_certificate = read_certificate(certificate, public_size);
+        result = parsed_certificate == NULL
+                     ? -EINVAL
+                     : validate_server_leaf(parsed_certificate);
+    }
+    X509_free(parsed_certificate);
+    if (result != 0) {
+        (void)memset(info, 0, sizeof(*info));
+    }
+    return result;
+}
+
 /** @brief Inspect a CA-only PEM bundle in its encoded order. */
 int jg_certificate_trust_store_inspect(const char *pem,
                                        size_t pem_size,
@@ -740,6 +791,39 @@ int jg_certificate_inspect_file(const char *path,
     result = read_secure_file(path, &data, &data_size);
     if (result == 0) {
         result = inspect_identity(data, data_size, info);
+    }
+    if (data != NULL) {
+        sodium_memzero(data, data_size);
+        free(data);
+    }
+    return result;
+}
+
+/** @brief Validate one securely installed TLS server identity. */
+int jg_certificate_server_validate_file(const char *path,
+                                        struct jg_certificate_info *info)
+{
+    uint8_t *data = NULL;
+    uint8_t *private_key = NULL;
+    size_t data_size = 0U;
+    size_t certificate_size = 0U;
+    int result = 0;
+
+    if (info == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(info, 0, sizeof(*info));
+    result = read_secure_file(path, &data, &data_size);
+    if (result == 0) {
+        private_key = find_private_key(data);
+        if (private_key == NULL) {
+            result = -EINVAL;
+        } else {
+            certificate_size = (size_t)(private_key - data);
+            result = jg_certificate_server_validate(
+                (const char *)data, certificate_size, (const char *)private_key,
+                data_size - certificate_size, info);
+        }
     }
     if (data != NULL) {
         sodium_memzero(data, data_size);
@@ -1139,8 +1223,8 @@ int jg_certificate_install(const char *path,
         certificate_size > JG_CERTIFICATE_PEM_MAX - private_key_size) {
         return -EINVAL;
     }
-    result = jg_certificate_inspect(certificate, certificate_size, private_key,
-                                    private_key_size, info);
+    result = jg_certificate_server_validate(
+        certificate, certificate_size, private_key, private_key_size, info);
     if (result == 0) {
         result = atomic_write(path, certificate, certificate_size, private_key,
                               private_key_size, false);

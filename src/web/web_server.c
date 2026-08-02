@@ -257,7 +257,7 @@ static int validate_certificate(const char *path)
         result = -errno;
     }
     if (result == 0) {
-        result = jg_certificate_inspect_file(path, &certificate);
+        result = jg_certificate_server_validate_file(path, &certificate);
     }
     return result;
 }

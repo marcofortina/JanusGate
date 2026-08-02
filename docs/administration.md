@@ -80,7 +80,9 @@ the currently installed trust store. HTTPS listeners reload automatically
 after certificate or trust changes made through the WebGUI. Installation
 validates and atomically
 replaces files, but a listener activation failure does not roll those files
-back automatically; retain console access and a known-good pair.
+back automatically. The HTTPS service preflights the complete TLS state and
+retries one clean listener generation after an activation failure; retain
+console access and a known-good pair for failures outside that boundary.
 
 Browser login remains protected by password and optional TOTP and never
 requests a client certificate. The separate TCP 9443 automation listener

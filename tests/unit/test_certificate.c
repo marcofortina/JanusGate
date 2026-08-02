@@ -103,7 +103,9 @@ static void create_test_leaf(EVP_PKEY *authority_key,
                              X509 *authority,
                              const char *extended_usage,
                              char **pem,
-                             size_t *pem_size)
+                             size_t *pem_size,
+                             char **key_pem,
+                             size_t *key_pem_size)
 {
     char constraints_text[] = "critical,CA:FALSE";
     char usage_text[] = "critical,digitalSignature";
@@ -116,16 +118,25 @@ static void create_test_leaf(EVP_PKEY *authority_key,
     X509_EXTENSION *usage = NULL;
     X509_EXTENSION *extended = NULL;
     BIO *memory = BIO_new(BIO_s_mem());
+    BIO *key_memory = NULL;
     BUF_MEM *contents = NULL;
+    BUF_MEM *key_contents = NULL;
 
     *pem = NULL;
     *pem_size = 0U;
+    assert_true((key_pem == NULL) == (key_pem_size == NULL));
+    if (key_pem != NULL) {
+        *key_pem = NULL;
+        *key_pem_size = 0U;
+        key_memory = BIO_new(BIO_s_mem());
+    }
     assert_non_null(authority_key);
     assert_non_null(authority);
     assert_non_null(key_context);
     assert_non_null(certificate);
     assert_non_null(subject);
     assert_non_null(memory);
+    assert_true(key_pem == NULL || key_memory != NULL);
     assert_true(snprintf(extended_usage_text, sizeof(extended_usage_text), "%s",
                          extended_usage) > 0);
     assert_int_equal(EVP_PKEY_keygen_init(key_context), 1);
@@ -167,15 +178,76 @@ static void create_test_leaf(EVP_PKEY *authority_key,
     (void)memcpy(*pem, contents->data, contents->length);
     (*pem)[contents->length] = '\0';
     *pem_size = contents->length;
+    if (key_pem != NULL) {
+        assert_int_equal(PEM_write_bio_PrivateKey(key_memory, private_key, NULL,
+                                                  NULL, 0, NULL, NULL),
+                         1);
+        BIO_get_mem_ptr(key_memory, &key_contents);
+        assert_non_null(key_contents);
+        assert_true(key_contents->length > 0U);
+        *key_pem = malloc(key_contents->length + 1U);
+        assert_non_null(*key_pem);
+        (void)memcpy(*key_pem, key_contents->data, key_contents->length);
+        (*key_pem)[key_contents->length] = '\0';
+        *key_pem_size = key_contents->length;
+    }
 
     X509_EXTENSION_free(extended);
     X509_EXTENSION_free(usage);
     X509_EXTENSION_free(constraints);
+    BIO_free(key_memory);
     BIO_free(memory);
     X509_NAME_free(subject);
     X509_free(certificate);
     EVP_PKEY_free(private_key);
     EVP_PKEY_CTX_free(key_context);
+}
+
+/** @brief Re-sign generated self-signed material with selected validity. */
+static void rewrite_test_validity(struct jg_certificate_material *material,
+                                  long not_before,
+                                  long not_after)
+{
+    BIO *certificate_memory =
+        BIO_new_mem_buf(material->certificate, (int)material->certificate_size);
+    BIO *key_memory =
+        BIO_new_mem_buf(material->private_key, (int)material->private_key_size);
+    BIO *output = BIO_new(BIO_s_mem());
+    X509 *certificate = NULL;
+    EVP_PKEY *private_key = NULL;
+    BUF_MEM *contents = NULL;
+    char *rewritten = NULL;
+
+    assert_non_null(certificate_memory);
+    assert_non_null(key_memory);
+    assert_non_null(output);
+    certificate = PEM_read_bio_X509(certificate_memory, NULL, NULL, NULL);
+    private_key = PEM_read_bio_PrivateKey(key_memory, NULL, NULL, NULL);
+    assert_non_null(certificate);
+    assert_non_null(private_key);
+    assert_non_null(
+        X509_gmtime_adj(X509_getm_notBefore(certificate), not_before));
+    assert_non_null(
+        X509_gmtime_adj(X509_getm_notAfter(certificate), not_after));
+    assert_true(X509_sign(certificate, private_key, EVP_sha256()) > 0);
+    assert_int_equal(PEM_write_bio_X509(output, certificate), 1);
+    BIO_get_mem_ptr(output, &contents);
+    assert_non_null(contents);
+    assert_true(contents->length > 0U);
+    rewritten = malloc(contents->length + 1U);
+    assert_non_null(rewritten);
+    (void)memcpy(rewritten, contents->data, contents->length);
+    rewritten[contents->length] = '\0';
+    sodium_memzero(material->certificate, material->certificate_size);
+    free(material->certificate);
+    material->certificate = rewritten;
+    material->certificate_size = contents->length;
+
+    EVP_PKEY_free(private_key);
+    X509_free(certificate);
+    BIO_free(output);
+    BIO_free(key_memory);
+    BIO_free(certificate_memory);
 }
 
 /** @brief Verify self-signed generation, metadata, and key matching. */
@@ -312,6 +384,92 @@ static void test_certificate_validation(void **state)
     jg_certificate_material_clear(&material);
 }
 
+/** @brief Verify current validity and TLS-server purpose enforcement. */
+static void test_server_certificate_validation(void **state)
+{
+    struct jg_certificate_material material;
+    struct jg_certificate_info info;
+    EVP_PKEY *authority_key = NULL;
+    X509 *authority_certificate = NULL;
+    char *authority = NULL;
+    char *client_certificate = NULL;
+    char *client_key = NULL;
+    char *server_certificate = NULL;
+    char *server_key = NULL;
+    size_t authority_size = 0U;
+    size_t client_certificate_size = 0U;
+    size_t client_key_size = 0U;
+    size_t server_certificate_size = 0U;
+    size_t server_key_size = 0U;
+
+    (void)state;
+    assert_int_equal(jg_certificate_create_self_signed("janusgate.local", NULL,
+                                                       0U, 30U, &material),
+                     0);
+    assert_int_equal(jg_certificate_server_validate(
+                         material.certificate, material.certificate_size,
+                         material.private_key, material.private_key_size,
+                         &info),
+                     0);
+    jg_certificate_material_clear(&material);
+
+    assert_int_equal(jg_certificate_create_self_signed("future.example", NULL,
+                                                       0U, 30U, &material),
+                     0);
+    rewrite_test_validity(&material, 3600L, 86400L);
+    assert_int_equal(jg_certificate_server_validate(
+                         material.certificate, material.certificate_size,
+                         material.private_key, material.private_key_size,
+                         &info),
+                     -EACCES);
+    jg_certificate_material_clear(&material);
+
+    assert_int_equal(jg_certificate_create_self_signed("expired.example", NULL,
+                                                       0U, 30U, &material),
+                     0);
+    rewrite_test_validity(&material, -86400L, -3600L);
+    assert_int_equal(jg_certificate_server_validate(
+                         material.certificate, material.certificate_size,
+                         material.private_key, material.private_key_size,
+                         &info),
+                     -EACCES);
+    jg_certificate_material_clear(&material);
+
+    create_test_authority(&authority, &authority_size, &authority_key,
+                          &authority_certificate);
+    create_test_leaf(authority_key, authority_certificate, "clientAuth",
+                     &client_certificate, &client_certificate_size, &client_key,
+                     &client_key_size);
+    create_test_leaf(authority_key, authority_certificate, "serverAuth",
+                     &server_certificate, &server_certificate_size, &server_key,
+                     &server_key_size);
+    assert_int_equal(jg_certificate_server_validate(
+                         client_certificate, client_certificate_size,
+                         client_key, client_key_size, &info),
+                     -EACCES);
+    assert_int_equal(jg_certificate_server_validate(
+                         server_certificate, server_certificate_size,
+                         server_key, server_key_size, &info),
+                     0);
+    assert_int_equal(jg_certificate_server_validate(server_certificate,
+                                                    server_certificate_size,
+                                                    NULL, 0U, &info),
+                     -EINVAL);
+
+    sodium_memzero(server_key, server_key_size);
+    free(server_key);
+    sodium_memzero(server_certificate, server_certificate_size);
+    free(server_certificate);
+    sodium_memzero(client_key, client_key_size);
+    free(client_key);
+    sodium_memzero(client_certificate, client_certificate_size);
+    free(client_certificate);
+    X509_free(authority_certificate);
+    EVP_PKEY_free(authority_key);
+    sodium_memzero(authority, authority_size);
+    free(authority);
+}
+
 /** @brief Verify atomic private installation and secure file inspection. */
 static void test_certificate_installation(void **state)
 {
@@ -326,6 +484,7 @@ static void test_certificate_installation(void **state)
     char *loaded_key = NULL;
     size_t loaded_key_size = 0U;
     struct stat metadata;
+    struct jg_certificate_material future;
     struct jg_certificate_material material;
     struct jg_certificate_info installed;
     struct jg_certificate_info inspected;
@@ -359,9 +518,24 @@ static void test_certificate_installation(void **state)
     assert_int_equal(stat(path, &metadata), 0);
     assert_int_equal(metadata.st_mode & 0777U, S_IRUSR | S_IWUSR);
     assert_int_equal(jg_certificate_inspect_file(path, &inspected), 0);
+    assert_int_equal(jg_certificate_server_validate_file(path, &inspected), 0);
     assert_memory_equal(inspected.fingerprint_sha256,
                         installed.fingerprint_sha256,
                         sizeof(installed.fingerprint_sha256));
+    assert_int_equal(jg_certificate_create_self_signed("future.example", NULL,
+                                                       0U, 30U, &future),
+                     0);
+    rewrite_test_validity(&future, 3600L, 86400L);
+    assert_int_equal(
+        jg_certificate_install(path, future.certificate,
+                               future.certificate_size, future.private_key,
+                               future.private_key_size, &inspected),
+        -EACCES);
+    assert_int_equal(jg_certificate_server_validate_file(path, &inspected), 0);
+    assert_memory_equal(inspected.fingerprint_sha256,
+                        installed.fingerprint_sha256,
+                        sizeof(installed.fingerprint_sha256));
+    jg_certificate_material_clear(&future);
     assert_int_equal(jg_certificate_identity_copy(path, copy), 0);
     assert_int_equal(jg_certificate_inspect_file(copy, &inspected), 0);
     assert_memory_equal(inspected.fingerprint_sha256,
@@ -510,9 +684,9 @@ static void test_client_trust_store(void **state)
                          copy, authorities, 2U, &authority_count),
                      0);
     create_test_leaf(authority_key, authority_certificate, "clientAuth",
-                     &client, &client_size);
+                     &client, &client_size, NULL, NULL);
     create_test_leaf(authority_key, authority_certificate, "serverAuth",
-                     &server_client, &server_client_size);
+                     &server_client, &server_client_size, NULL, NULL);
     assert_int_equal(jg_certificate_client_validate(client, client_size, path,
                                                     &authorities[0U]),
                      0);
@@ -568,6 +742,7 @@ int jg_test_certificate(void)
         cmocka_unit_test(test_self_signed_certificate),
         cmocka_unit_test(test_certificate_request),
         cmocka_unit_test(test_certificate_validation),
+        cmocka_unit_test(test_server_certificate_validation),
         cmocka_unit_test(test_certificate_installation),
         cmocka_unit_test(test_client_trust_store),
     };

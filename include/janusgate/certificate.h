@@ -100,6 +100,33 @@ JG_PUBLIC int jg_certificate_inspect(const char *certificate,
                                      struct jg_certificate_info *info);
 
 /**
+ * @brief Validate a current TLS server certificate and matching private key.
+ *
+ * The leaf must not be a CA, must be currently valid, and must satisfy the
+ * OpenSSL TLS-server purpose including any extended-key-usage restriction.
+ * Certificate chains remain accepted for delivery to clients.
+ *
+ * @param[in] certificate Certificate or chain PEM beginning with the leaf.
+ * @param[in] certificate_size Exact certificate bytes.
+ * @param[in] private_key Matching unencrypted private-key PEM.
+ * @param[in] private_key_size Exact private-key bytes.
+ * @param[out] info Receives validated public metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EACCES when the key does not match or the leaf is not currently
+ * suitable for TLS server authentication.
+ * @return A negative errno-style allocation or conversion error otherwise.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_certificate_server_validate(const char *certificate,
+                                             size_t certificate_size,
+                                             const char *private_key,
+                                             size_t private_key_size,
+                                             struct jg_certificate_info *info);
+
+/**
  * @brief Inspect one PEM trust store containing only CA certificates.
  *
  * Public, private, and self-hosted authorities are handled identically. Every
@@ -237,6 +264,24 @@ JG_PUBLIC int jg_certificate_trust_store_remove(const char *path);
  */
 JG_PUBLIC int jg_certificate_inspect_file(const char *path,
                                           struct jg_certificate_info *info);
+
+/**
+ * @brief Validate one securely installed TLS server identity.
+ *
+ * @param[in] path Absolute combined certificate and private-key PEM path.
+ * @param[out] info Receives validated public metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments or PEM.
+ * @return -EACCES for unsafe permissions or a leaf unsuitable for current TLS
+ * server authentication.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_certificate_server_validate_file(
+    const char *path,
+    struct jg_certificate_info *info);
 
 /**
  * @brief Export an installed identity with or without its private key.
