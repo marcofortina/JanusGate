@@ -2109,7 +2109,13 @@ static void test_backup_api(void **state)
         .permissions = JG_ACCESS_BACKUPS_WRITE,
         .requests_per_minute = 100U,
     };
+    const struct jg_account_token_config other_token_config = {
+        .name = "other backup administrator",
+        .permissions = JG_ACCESS_BACKUPS_WRITE,
+        .requests_per_minute = 100U,
+    };
     struct jg_account_api_token token;
+    struct jg_account_api_token other_token;
     struct jg_audit_verification verification;
     struct jg_database_backup records[4U];
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
@@ -2120,6 +2126,7 @@ static void test_backup_api(void **state)
     json_t *manifest = NULL;
     const time_t now = time(NULL);
     uint64_t full_backup_id = 0U;
+    uint64_t job_id = 0U;
     uint64_t user_id = 0U;
     size_t count = 0U;
     bool has_more = false;
@@ -2140,6 +2147,10 @@ static void test_backup_api(void **state)
                                             &token_config, (uint64_t)now,
                                             &token),
                      0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &other_token_config, (uint64_t)now,
+                                            &other_token),
+                     0);
 
     written =
         snprintf(request, sizeof(request),
@@ -2152,6 +2163,36 @@ static void test_backup_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    job_id = (uint64_t)json_integer_value(json_object_get(
+        json_object_get(json_object_get(response, "body"), "job"), "id"));
+    assert_true(job_id > 0U);
+    assert_true(job_id <= UINT64_C(9007199254740991));
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"backup-job-foreign\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/jobs/%llu\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{}}",
+                 (unsigned long long)job_id, other_token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    body = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(body, "status")), 404);
+    json_decref(body);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"backup-job-local\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/jobs/%llu\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{}}",
+                 (unsigned long long)job_id);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    body = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(body, "status")), 200);
+    json_decref(body);
+
     response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      201);
@@ -2255,6 +2296,7 @@ static void test_backup_api(void **state)
         assert_int_equal(
             jg_backup_remove(fixture->directory, records[index].filename), 0);
     }
+    sodium_memzero(&other_token, sizeof(other_token));
     sodium_memzero(&token, sizeof(token));
 }
 

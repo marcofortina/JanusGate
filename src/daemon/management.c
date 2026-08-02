@@ -92,6 +92,9 @@
 /** Maximum completed-job retention before its slot may be reused. */
 #define MANAGEMENT_JOB_RETENTION_SECONDS 3600U
 
+/** Largest job identifier represented exactly by every supported client. */
+#define MANAGEMENT_JOB_IDENTIFIER_MAX UINT64_C(9007199254740991)
+
 /** Opaque bounded slow-operation queue owned by management state. */
 struct management_jobs;
 
@@ -229,6 +232,7 @@ struct management_job {
     uint8_t response[JG_IPC_MAX_BODY_SIZE];
     size_t response_size;
     uint64_t id;
+    uint64_t sequence;
     uint64_t submitted_at;
     uint64_t started_at;
     uint64_t completed_at;
@@ -249,7 +253,7 @@ struct management_jobs {
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t thread;
-    uint64_t next_id;
+    uint64_t next_sequence;
     bool mutex_initialized;
     bool condition_initialized;
     bool thread_started;
@@ -520,7 +524,7 @@ static int management_jobs_create(struct jg_management *management,
         return -ENOMEM;
     }
     created->management = management;
-    created->next_id = 1U;
+    created->next_sequence = 1U;
     result = jg_database_open_peer(management->database, &created->database);
     if (result == 0) {
         status = pthread_mutex_init(&created->mutex, NULL);
@@ -7300,6 +7304,36 @@ static struct management_job *select_job_slot(struct management_jobs *jobs,
     return oldest;
 }
 
+/** @brief Generate one nonzero client-safe job identifier without collision.
+ */
+static int generate_job_identifier(const struct management_jobs *jobs,
+                                   uint64_t *identifier)
+{
+    for (size_t attempt = 0U; attempt < MANAGEMENT_JOB_CAPACITY * 2U;
+         ++attempt) {
+        uint64_t candidate = 0U;
+        bool collision = false;
+
+        randombytes_buf(&candidate, sizeof(candidate));
+        candidate &= MANAGEMENT_JOB_IDENTIFIER_MAX;
+        if (candidate == 0U) {
+            continue;
+        }
+        for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+            if (jobs->slots[index].occupied &&
+                jobs->slots[index].id == candidate) {
+                collision = true;
+                break;
+            }
+        }
+        if (!collision) {
+            *identifier = candidate;
+            return 0;
+        }
+    }
+    return -EAGAIN;
+}
+
 /** @brief Queue one prepared authenticated slow operation. */
 static int submit_management_job(struct jg_management *management,
                                  const struct management_request *request,
@@ -7311,6 +7345,7 @@ static int submit_management_job(struct jg_management *management,
 {
     struct management_jobs *jobs = management->jobs;
     struct management_job *job = NULL;
+    uint64_t identifier = 0U;
     int status = 0;
     int result = 0;
 
@@ -7319,8 +7354,10 @@ static int submit_management_job(struct jg_management *management,
         return -status;
     }
     job = select_job_slot(jobs, now);
-    if (job == NULL || jobs->next_id == 0U) {
+    if (job == NULL || jobs->next_sequence == 0U) {
         result = job == NULL ? -EBUSY : -EOVERFLOW;
+    } else if (generate_job_identifier(jobs, &identifier) != 0) {
+        result = -EAGAIN;
     } else {
         management_job_parameters_clear(job->kind, &job->parameters);
         sodium_memzero(job, sizeof(*job));
@@ -7333,7 +7370,8 @@ static int submit_management_job(struct jg_management *management,
         }
         job->actor = *actor;
         job->remote = *remote;
-        job->id = jobs->next_id++;
+        job->id = identifier;
+        job->sequence = jobs->next_sequence++;
         job->submitted_at = now;
         job->state = MANAGEMENT_JOB_QUEUED;
         job->occupied = true;
@@ -7639,7 +7677,7 @@ static struct management_job *next_queued_job(struct management_jobs *jobs)
         struct management_job *job = &jobs->slots[index];
 
         if (job->occupied && job->state == MANAGEMENT_JOB_QUEUED &&
-            (next == NULL || job->id < next->id)) {
+            (next == NULL || job->sequence < next->sequence)) {
             next = job;
         }
     }
@@ -7656,6 +7694,17 @@ static struct management_job *find_job(struct management_jobs *jobs,
         }
     }
     return NULL;
+}
+
+/** @brief Return whether one actor may inspect a retained user job. */
+static bool job_is_visible_to_actor(const struct management_job *job,
+                                    const struct authenticated_actor *actor)
+{
+    if (actor->kind == AUTHENTICATED_ACTOR_LOCAL) {
+        return true;
+    }
+    return actor->kind == job->actor.kind && actor->actor_id != 0U &&
+           actor->actor_id == job->actor.actor_id;
 }
 
 /** @brief Execute queued slow operations on an independent DB connection. */
@@ -7764,6 +7813,7 @@ static int submit_scheduled_source_job(struct jg_management *management,
 {
     struct management_jobs *jobs = management->jobs;
     struct management_job *job = NULL;
+    uint64_t identifier = 0U;
     int status = pthread_mutex_lock(&jobs->mutex);
     int result = 0;
 
@@ -7779,11 +7829,14 @@ static int submit_scheduled_source_job(struct jg_management *management,
     }
     if (job == NULL) {
         job = select_job_slot(jobs, now);
-        if (job == NULL || jobs->next_id == 0U) {
+        if (job == NULL || jobs->next_sequence == 0U) {
             result = job == NULL ? -EBUSY : -EOVERFLOW;
+        } else if (generate_job_identifier(jobs, &identifier) != 0) {
+            result = -EAGAIN;
         } else {
             sodium_memzero(job, sizeof(*job));
-            job->id = jobs->next_id++;
+            job->id = identifier;
+            job->sequence = jobs->next_sequence++;
             job->submitted_at = now;
             job->kind = MANAGEMENT_JOB_SCHEDULED_SOURCES;
             job->state = MANAGEMENT_JOB_QUEUED;
@@ -7892,7 +7945,8 @@ static int handle_job_get(struct jg_management *management,
         const struct management_job *stored =
             find_job(management->jobs, job_id);
 
-        if (stored == NULL || stored->system_job) {
+        if (stored == NULL || stored->system_job ||
+            !job_is_visible_to_actor(stored, &actor)) {
             result = -ENOENT;
         } else {
             snapshot = *stored;

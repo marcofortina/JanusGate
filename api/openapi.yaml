@@ -641,7 +641,7 @@ paths:
     get:
       tags: [Jobs]
       operationId: getJob
-      summary: Inspect one retained asynchronous operation
+      summary: Inspect one retained asynchronous operation owned by the caller
       parameters:
         - $ref: '#/components/parameters/JobId'
       responses:
@@ -1149,7 +1149,7 @@ components:
       in: path
       required: true
       schema:
-        $ref: '#/components/schemas/Identifier'
+        $ref: '#/components/schemas/JobIdentifier'
     UserId:
       name: userId
       in: path
@@ -1233,6 +1233,10 @@ components:
       type: integer
       minimum: 1
       maximum: 9223372036854775807
+    JobIdentifier:
+      type: integer
+      minimum: 1
+      maximum: 9007199254740991
     JsonObject:
       type: object
       additionalProperties: true
@@ -1250,7 +1254,7 @@ components:
           required: [id, state]
           properties:
             id:
-              $ref: '#/components/schemas/Identifier'
+              $ref: '#/components/schemas/JobIdentifier'
             state:
               const: queued
     JobStatus:
@@ -1265,7 +1269,7 @@ components:
             [id, kind, state, submitted_at, started_at, completed_at, response]
           properties:
             id:
-              $ref: '#/components/schemas/Identifier'
+              $ref: '#/components/schemas/JobIdentifier'
             kind:
               enum:
                 - source_refresh
