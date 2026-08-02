@@ -26,6 +26,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <sodium.h>
+#include <sqlite3.h>
 
 #include "janusgate/account.h"
 #include "janusgate/audit.h"
@@ -347,6 +348,49 @@ static void test_local_administration(void **state)
     assert_false(audit.has_actor_id);
     assert_string_equal(audit.action, "logging.update");
     jg_logging_shutdown();
+}
+
+/** @brief Verify an audit write failure rolls back its user mutation. */
+static void test_atomic_user_audit(void **state)
+{
+    static const char create_request[] =
+        "{\"request_id\":\"atomic-user\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/users\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{"
+        "\"username\":\"rollback-test\","
+        "\"password\":\"correct horse battery staple\","
+        "\"role\":\"auditor\",\"force_password_change\":false}}";
+    static const char reject_audit[] =
+        "CREATE TRIGGER reject_audit BEFORE INSERT ON audit_events "
+        "BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;";
+    struct management_fixture *fixture = *state;
+    struct jg_account_user user;
+    sqlite3 *injection = NULL;
+    json_t *response = NULL;
+    json_t *error = NULL;
+    size_t count = 0U;
+    uint64_t total = 0U;
+
+    assert_int_equal(sqlite3_open_v2(fixture->database_path, &injection,
+                                     SQLITE_OPEN_READWRITE, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_exec(injection, reject_audit, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(injection), SQLITE_OK);
+
+    response = process_local_request(fixture, create_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     500);
+    error = json_object_get(json_object_get(response, "body"), "error");
+    assert_string_equal(json_string_value(json_object_get(error, "code")),
+                        "audit_failure");
+    json_decref(response);
+
+    assert_int_equal(
+        jg_account_user_list(fixture->database, 0U, &user, 1U, &count, &total),
+        0);
+    assert_int_equal(count, 0U);
+    assert_int_equal(total, 0U);
 }
 
 /** @brief Verify remote tokens require one current mapped mTLS identity. */
@@ -3330,6 +3374,8 @@ int jg_test_management(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_local_administration,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_atomic_user_audit,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_remote_api_authentication,
                                         setup_management, teardown_management),

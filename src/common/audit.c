@@ -233,26 +233,6 @@ static int compute_event_hash(const uint8_t previous[JG_AUDIT_HASH_SIZE],
                : -EIO;
 }
 
-/** @brief Execute one trusted SQL statement without result rows. */
-static int execute_statement(sqlite3 *handle, const char *sql)
-{
-    sqlite3_stmt *statement = NULL;
-    int status = sqlite3_prepare_v3(handle, sql, -1, 0U, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
-
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    return result;
-}
-
 /** @brief Read the latest persistent event digest under a transaction. */
 static int read_latest_hash(sqlite3 *handle,
                             uint8_t previous[JG_AUDIT_HASH_SIZE],
@@ -457,7 +437,7 @@ int jg_database_audit_append(struct jg_database *database,
     }
     result = event_material(event, &material);
     if (result == 0) {
-        result = execute_statement(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction = result == 0;
     }
     if (result == 0) {
@@ -471,13 +451,13 @@ int jg_database_audit_append(struct jg_database *database,
                               has_previous, digest, &event_id);
     }
     if (result == 0) {
-        result = execute_statement(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction = false;
         }
     }
     if (transaction) {
-        (void)execute_statement(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0 && append_result != NULL) {
         append_result->event_id = event_id;
@@ -709,7 +689,7 @@ int jg_database_audit_list(struct jg_database *database,
         return -EINVAL;
     }
     (void)memset(records, 0, capacity * sizeof(*records));
-    result = execute_statement(database->handle, "BEGIN;");
+    result = jg_database_transaction_begin_read(database);
     transaction_open = result == 0;
     if (result == 0) {
         status = sqlite3_prepare_v3(database->handle, count_query, -1, 0U,
@@ -766,14 +746,14 @@ int jg_database_audit_list(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_statement(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
             *count = loaded;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_statement(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
         (void)memset(records, 0, capacity * sizeof(*records));
         *count = 0U;
         *total = 0U;

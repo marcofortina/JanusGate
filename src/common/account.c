@@ -30,13 +30,6 @@ struct authentication_record {
     bool force_password_change;
 };
 
-/** @brief Execute one fixed transaction-control statement. */
-static int execute_fixed(sqlite3 *handle, const char *sql)
-{
-    return jg_database_sqlite_result(
-        sqlite3_exec(handle, sql, NULL, NULL, NULL));
-}
-
 /** @brief Validate one conservative ASCII local username. */
 static bool username_valid(const char *username)
 {
@@ -157,7 +150,7 @@ int jg_account_bootstrap_issue(struct jg_database *database,
         return -EOVERFLOW;
     }
     expires_at = now + lifetime;
-    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     if (result == 0) {
         transaction_open = true;
         result = users_exist(database->handle, &exists);
@@ -172,13 +165,13 @@ int jg_account_bootstrap_issue(struct jg_database *database,
         result = store_bootstrap(database->handle, digest, now, expires_at);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     sodium_memzero(digest, sizeof(digest));
     if (result != 0) {
@@ -375,7 +368,7 @@ int jg_account_create_initial_administrator(
         result = jg_auth_secret_digest(token, token_size, digest);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -395,13 +388,13 @@ int jg_account_create_initial_administrator(
         result = consume_bootstrap(database->handle, now);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
         *user_id = 0U;
     }
     sodium_memzero(digest, sizeof(digest));
@@ -654,7 +647,7 @@ int jg_account_user_list(struct jg_database *database,
         return -EINVAL;
     }
     (void)memset(users, 0, capacity * sizeof(*users));
-    result = execute_fixed(database->handle, "BEGIN;");
+    result = jg_database_transaction_begin_read(database);
     transaction_open = result == 0;
     if (result == 0) {
         status =
@@ -713,14 +706,14 @@ int jg_account_user_list(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
             *count = loaded;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
         (void)memset(users, 0, capacity * sizeof(*users));
         *count = 0U;
         *total = 0U;
@@ -766,7 +759,7 @@ int jg_account_user_create(
     result = jg_auth_password_hash(password_policy, password, password_size,
                                    password_hash);
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -847,13 +840,13 @@ int jg_account_user_create(
         result = load_user(database->handle, user_id, user);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result != 0) {
         (void)memset(user, 0, sizeof(*user));
@@ -892,7 +885,7 @@ int jg_account_user_update(struct jg_database *database,
         now > (uint64_t)INT64_MAX || user == NULL) {
         return -EINVAL;
     }
-    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     transaction_open = result == 0;
     if (result == 0) {
         result = load_user(database->handle, user_id, &current);
@@ -984,13 +977,13 @@ int jg_account_user_update(struct jg_database *database,
         result = load_user(database->handle, user_id, user);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result != 0) {
         (void)memset(user, 0, sizeof(*user));
@@ -1033,7 +1026,7 @@ int jg_account_user_reset_password(
     result = jg_auth_password_hash(password_policy, password, password_size,
                                    password_hash);
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -1093,13 +1086,13 @@ int jg_account_user_reset_password(
         result = load_user(database->handle, user_id, user);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result != 0) {
         (void)memset(user, 0, sizeof(*user));
@@ -1484,7 +1477,7 @@ int jg_account_authenticate(
                                        replacement_hash);
     }
     if (result == 0 && authentication_result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0 && authentication_result == 0) {
@@ -1515,13 +1508,13 @@ int jg_account_authenticate(
                                              &permissions, &totp_enabled);
     }
     if (result == 0 && transaction_open) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0 && authentication_result == 0) {
         identity->user_id = current.user_id;
@@ -1904,7 +1897,7 @@ int jg_account_session_validate(struct jg_database *database,
         result = jg_auth_secret_digest(csrf, csrf_size, csrf_digest);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -1932,13 +1925,13 @@ int jg_account_session_validate(struct jg_database *database,
         result = touch_session(database->handle, session_digest, now);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0 && authentication_result == 0) {
         identity->user_id = record.user_id;
@@ -2016,7 +2009,7 @@ int jg_account_sessions_revoke_all(struct jg_database *database,
     if (database == NULL || user_id == 0U || user_id > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
-    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     transaction_open = result == 0;
     if (result == 0) {
         status =
@@ -2063,13 +2056,13 @@ int jg_account_sessions_revoke_all(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -2315,7 +2308,7 @@ int jg_account_token_issue(struct jg_database *database,
     }
     result = token_config_validate(config, now);
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -2339,13 +2332,13 @@ int jg_account_token_issue(struct jg_database *database,
                                   scopes, now, &token->token_id);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     sodium_memzero(digest, sizeof(digest));
     if (result != 0) {
@@ -2521,7 +2514,7 @@ int jg_account_token_list(struct jg_database *database,
         return -EINVAL;
     }
     (void)memset(tokens, 0, capacity * sizeof(*tokens));
-    result = execute_fixed(database->handle, "BEGIN;");
+    result = jg_database_transaction_begin_read(database);
     transaction_open = result == 0;
     if (result == 0) {
         status =
@@ -2580,14 +2573,14 @@ int jg_account_token_list(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
             *count = loaded;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
         (void)memset(tokens, 0, capacity * sizeof(*tokens));
         *count = 0U;
         *total = 0U;
@@ -2833,7 +2826,7 @@ int jg_account_token_validate(struct jg_database *database,
     }
     result = jg_auth_secret_digest(token, token_size, digest);
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -2866,13 +2859,13 @@ int jg_account_token_validate(struct jg_database *database,
         result = touch_api_token(database->handle, record.token_id, now);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0 && authentication_result == 0) {
         identity->user_id = record.user_id;
@@ -3284,7 +3277,7 @@ int jg_account_mtls_mapping_list(struct jg_database *database,
         return -EINVAL;
     }
     (void)memset(mappings, 0, capacity * sizeof(*mappings));
-    result = execute_fixed(database->handle, "BEGIN;");
+    result = jg_database_transaction_begin_read(database);
     transaction_open = result == 0;
     if (result == 0) {
         status =
@@ -3343,11 +3336,11 @@ int jg_account_mtls_mapping_list(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         transaction_open = result != 0;
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
         (void)memset(mappings, 0, capacity * sizeof(*mappings));
         *total = 0U;
     } else {
@@ -3630,7 +3623,7 @@ int jg_account_totp_provision(struct jg_database *database,
         result = jg_auth_totp_encrypt(key, secret, nonce, ciphertext);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -3656,13 +3649,13 @@ int jg_account_totp_provision(struct jg_database *database,
         result = delete_recovery_codes(database->handle, user_id);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     sodium_memzero(&existing, sizeof(existing));
     sodium_memzero(nonce, sizeof(nonce));
@@ -3854,7 +3847,7 @@ int jg_account_totp_confirm(struct jg_database *database,
         now > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
-    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     transaction_open = result == 0;
     if (result == 0) {
         result = load_totp_record(database->handle, user_id, &record);
@@ -3885,13 +3878,13 @@ int jg_account_totp_confirm(struct jg_database *database,
         result = advance_user_epoch(database->handle, user_id);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     sodium_memzero(digests, sizeof(digests));
     sodium_memzero(secret, sizeof(secret));
@@ -4114,7 +4107,7 @@ int jg_account_recovery_authenticate(
     }
     result = jg_auth_secret_digest(recovery_code, recovery_code_size, digest);
     if (result == 0) {
-        result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -4130,13 +4123,13 @@ int jg_account_recovery_authenticate(
                                        digest, now);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         current.mfa_complete = true;
@@ -4168,7 +4161,7 @@ static int disable_totp(struct jg_database *database,
         expected_revision > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
-    result = execute_fixed(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     transaction_open = result == 0;
     if (result == 0) {
         result = load_user(database->handle, user_id, &current);
@@ -4210,13 +4203,13 @@ static int disable_totp(struct jg_database *database,
         result = load_user(database->handle, user_id, user);
     }
     if (result == 0) {
-        result = execute_fixed(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
         if (result == 0) {
             transaction_open = false;
         }
     }
     if (result != 0 && transaction_open) {
-        (void)execute_fixed(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result != 0 && user != NULL) {
         (void)memset(user, 0, sizeof(*user));

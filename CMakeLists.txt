@@ -195,7 +195,8 @@ add_library(
   src/daemon/tcp_stream.c)
 target_include_directories(
   janusgate-daemon-core
-  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>")
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/daemon>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
 target_link_libraries(
   janusgate-daemon-core
   PUBLIC JanusGate::common janusgate-control-protocol Threads::Threads

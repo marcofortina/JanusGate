@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -737,6 +738,69 @@ static int execute_sql(sqlite3 *handle, const char *sql)
     return result;
 }
 
+/** @brief Enter a transaction scope with the requested outermost mode. */
+static int transaction_begin(struct jg_database *database, const char *sql)
+{
+    int result = 0;
+
+    if (database == NULL || database->transaction_depth == UINT_MAX) {
+        return database == NULL ? -EINVAL : -EOVERFLOW;
+    }
+    if (database->transaction_depth == 0U) {
+        result = execute_sql(database->handle, sql);
+    }
+    if (result == 0) {
+        ++database->transaction_depth;
+    }
+    return result;
+}
+
+/** @brief Enter a write transaction scope, nesting within an existing scope. */
+int jg_database_transaction_begin(struct jg_database *database)
+{
+    return transaction_begin(database, "BEGIN IMMEDIATE;");
+}
+
+/** @brief Enter a read transaction scope, nesting within an existing scope. */
+int jg_database_transaction_begin_read(struct jg_database *database)
+{
+    return transaction_begin(database, "BEGIN;");
+}
+
+/** @brief Commit one transaction scope and persist the outermost scope. */
+int jg_database_transaction_commit(struct jg_database *database)
+{
+    int result = 0;
+
+    if (database == NULL || database->transaction_depth == 0U) {
+        return -EINVAL;
+    }
+    if (database->transaction_depth == 1U) {
+        result = execute_sql(database->handle, "COMMIT;");
+    }
+    if (result == 0) {
+        --database->transaction_depth;
+    }
+    return result;
+}
+
+/** @brief Roll back every active transaction scope. */
+int jg_database_transaction_rollback(struct jg_database *database)
+{
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    if (database->transaction_depth > 0U) {
+        result = execute_sql(database->handle, "ROLLBACK;");
+        if (result == 0) {
+            database->transaction_depth = 0U;
+        }
+    }
+    return result;
+}
+
 /** @brief Validate the immediate parent directory of a database path. */
 static int validate_parent(const char *path)
 {
@@ -1008,7 +1072,7 @@ static int migrate_database(struct jg_database *database,
         if (migrations[index].version <= current_version) {
             continue;
         }
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
         for (size_t sql_index = 0U;
              result == 0 && sql_index < migrations[index].sql_count;
              ++sql_index) {
@@ -1016,9 +1080,9 @@ static int migrate_database(struct jg_database *database,
                 execute_sql(database->handle, migrations[index].sql[sql_index]);
         }
         if (result == 0) {
-            result = execute_sql(database->handle, "COMMIT;");
+            result = jg_database_transaction_commit(database);
         } else {
-            (void)execute_sql(database->handle, "ROLLBACK;");
+            (void)jg_database_transaction_rollback(database);
         }
         if (result == 0) {
             current_version = migrations[index].version;
@@ -2305,7 +2369,7 @@ int jg_database_replace_domain_rules(struct jg_database *database,
     }
     result = validate_domain_rules(rules, rule_count);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         result = execute_sql(database->handle, "DELETE FROM domain_rules;");
@@ -2331,9 +2395,9 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -2455,7 +2519,7 @@ int jg_database_replace_destination_rules(
     }
     result = validate_destination_rules(rules, rule_count);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         result =
@@ -2482,9 +2546,9 @@ int jg_database_replace_destination_rules(
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -3555,7 +3619,7 @@ int jg_database_create_blocklist_source(
     (void)memset(created, 0, sizeof(*created));
     result = validate_blocklist_source_config(config);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         status =
@@ -3596,9 +3660,9 @@ int jg_database_create_blocklist_source(
         result = read_blocklist_source(database, (uint64_t)identifier, &source);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         *created = source;
@@ -3637,7 +3701,7 @@ int jg_database_update_blocklist_source(
     (void)memset(updated, 0, sizeof(*updated));
     result = validate_blocklist_source_config(config);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         status =
@@ -3679,9 +3743,9 @@ int jg_database_update_blocklist_source(
         result = read_blocklist_source(database, source_id, &source);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         *updated = source;
@@ -3707,7 +3771,7 @@ int jg_database_delete_blocklist_source(struct jg_database *database,
         expected_revision > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
-    result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, remove, -1,
@@ -3737,9 +3801,9 @@ int jg_database_delete_blocklist_source(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -3963,7 +4027,7 @@ int jg_database_activate_blocklist(
     result = validate_blocklist_activation(source_id, expected_revision,
                                            blocklist, state, report, &info);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         result = read_revision(database->handle, revision_query, source_id,
@@ -4020,9 +4084,9 @@ int jg_database_activate_blocklist(
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -4166,7 +4230,7 @@ int jg_database_record_blocklist_attempt(
     result = validate_blocklist_attempt(source_id, expected_revision, state,
                                         successful, error);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         result = read_blocklist_source(database, source_id, &source);
@@ -4182,9 +4246,9 @@ int jg_database_record_blocklist_attempt(
                                          successful, error);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -4311,7 +4375,7 @@ int jg_database_create_domain_rule(struct jg_database *database,
     (void)memset(created, 0, sizeof(*created));
     result = validate_domain_rule(rule, true);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         status =
@@ -4346,9 +4410,9 @@ int jg_database_create_domain_rule(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         *created = record;
@@ -4383,7 +4447,7 @@ int jg_database_update_domain_rule(struct jg_database *database,
     (void)memset(updated, 0, sizeof(*updated));
     result = validate_domain_rule(rule, false);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         status =
@@ -4420,9 +4484,9 @@ int jg_database_update_domain_rule(struct jg_database *database,
         result = read_domain_record(database, rule->id, &record);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         *updated = record;
@@ -4447,7 +4511,7 @@ int jg_database_delete_domain_rule(struct jg_database *database,
         expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
-    result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, remove, -1,
@@ -4477,9 +4541,9 @@ int jg_database_delete_domain_rule(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -4612,7 +4676,7 @@ int jg_database_create_destination_rule(
     (void)memset(created, 0, sizeof(*created));
     result = validate_destination_rule(rule, true);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         status =
@@ -4647,9 +4711,9 @@ int jg_database_create_destination_rule(
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         *created = record;
@@ -4686,7 +4750,7 @@ int jg_database_update_destination_rule(
     (void)memset(updated, 0, sizeof(*updated));
     result = validate_destination_rule(rule, false);
     if (result == 0) {
-        result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+        result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
         status =
@@ -4723,9 +4787,9 @@ int jg_database_update_destination_rule(
         result = read_destination_record(database, rule->id, &record);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         *updated = record;
@@ -4750,7 +4814,7 @@ int jg_database_delete_destination_rule(struct jg_database *database,
         expected_revision == 0U || expected_revision > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
-    result = execute_sql(database->handle, "BEGIN IMMEDIATE;");
+    result = jg_database_transaction_begin(database);
     if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, remove, -1,
@@ -4780,9 +4844,9 @@ int jg_database_delete_destination_rule(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     return result;
 }
@@ -5136,7 +5200,7 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
     if (database == NULL || generation == 0U) {
         return -EINVAL;
     }
-    result = execute_sql(database->handle, "BEGIN;");
+    result = jg_database_transaction_begin_read(database);
     if (result == 0) {
         result = read_policy_size(database->handle, &rule_count, &strings_size);
     }
@@ -5199,9 +5263,9 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
             encrypted_strings_size);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_transaction_commit(database);
     } else {
-        (void)execute_sql(database->handle, "ROLLBACK;");
+        (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
         result = jg_policy_snapshot_build_complete(

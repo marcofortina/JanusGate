@@ -29,6 +29,7 @@
 
 #include "blocklist_update.h"
 #include "daemon_runtime.h"
+#include "database_internal.h"
 #include "diagnostic_bundle.h"
 #include "janusgate/access.h"
 #include "janusgate/account.h"
@@ -159,6 +160,41 @@ struct authenticated_actor {
     uint64_t actor_id;
     enum authenticated_actor_kind kind;
 };
+
+/** @brief Begin one persistent mutation that must share its audit commit. */
+static int audited_mutation_begin(struct jg_management *management)
+{
+    return jg_database_transaction_begin(management->database);
+}
+
+/** @brief Abandon an audit scope when its persistent mutation fails. */
+static int audited_mutation_check(struct jg_management *management,
+                                  int operation_result)
+{
+    if (operation_result != 0) {
+        (void)jg_database_transaction_rollback(management->database);
+    }
+    return operation_result;
+}
+
+/** @brief Commit a mutation with its audit event or restore prior state. */
+static int audited_mutation_finish(struct jg_management *management,
+                                   int operation_result,
+                                   bool reload_policy)
+{
+    int result = operation_result;
+
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+    }
+    if (result != 0) {
+        (void)jg_database_transaction_rollback(management->database);
+        if (reload_policy && management->runtime != NULL) {
+            (void)jg_daemon_runtime_reload_policy(management->runtime);
+        }
+    }
+    return result;
+}
 
 /** @brief Return the persistent audit kind for one authenticated actor. */
 static enum jg_audit_actor_type actor_audit_type(
@@ -4443,10 +4479,15 @@ static int handle_password_change(struct jg_management *management,
                              "The account changed; sign in and try again.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_account_user_reset_password(
-        management->database, session_identity.user_id,
-        session_identity.revision, (const uint8_t *)new_password,
-        strlen(new_password), &management->password_policy, false, now, &user);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_user_reset_password(
+            management->database, session_identity.user_id,
+            session_identity.revision, (const uint8_t *)new_password,
+            strlen(new_password), &management->password_policy, false, now,
+            &user);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ESTALE) {
         return respond_error(409, "session_changed",
                              "The account changed; sign in and try again.",
@@ -4470,6 +4511,7 @@ static int handle_password_change(struct jg_management *management,
     result = append_user_audit(management, request, remote, &actor,
                                "user.password_change", true,
                                session_identity.revision, &user, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -6549,8 +6591,12 @@ static int handle_blocklist_source_create(
                              "The blocklist-source request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_database_create_blocklist_source(management->database, &config,
-                                                 &created);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_database_create_blocklist_source(management->database,
+                                                     &config, &created);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -EEXIST) {
         return respond_error(409, "source_name_exists",
                              "The blocklist-source name is already in use.",
@@ -6570,6 +6616,7 @@ static int handle_blocklist_source_create(
     result = append_blocklist_source_audit(
         management, request, remote, &actor, "blocklist.source.create", false,
         0U, true, &created, published, generation, now);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -6611,8 +6658,12 @@ static int handle_blocklist_source_update(
                              "The blocklist-source update is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_database_update_blocklist_source(
-        management->database, source_id, &config, revision, &updated);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_database_update_blocklist_source(
+            management->database, source_id, &config, revision, &updated);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "source_not_found",
                              "The blocklist source was not found.",
@@ -6642,6 +6693,7 @@ static int handle_blocklist_source_update(
     result = append_blocklist_source_audit(
         management, request, remote, &actor, "blocklist.source.update", true,
         revision, true, &updated, published, generation, now);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -6687,9 +6739,13 @@ static int handle_blocklist_source_delete(
     }
     result = load_blocklist_source(management, source_id, &removed);
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_database_delete_blocklist_source(management->database,
                                                      source_id, revision);
     }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "source_not_found",
                              "The blocklist source was not found.",
@@ -6709,6 +6765,7 @@ static int handle_blocklist_source_delete(
     result = append_blocklist_source_audit(
         management, request, remote, &actor, "blocklist.source.delete", true,
         revision, false, &removed, published, generation, now);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7295,8 +7352,12 @@ static int handle_domain_rule_create(struct jg_management *management,
                              "The active policy is temporarily unavailable.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_database_create_domain_rule(management->database, &rule,
-                                            enabled, &created);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_database_create_domain_rule(management->database, &rule,
+                                                enabled, &created);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -EINVAL || result == -ERANGE || result == -ENOSPC) {
         return respond_error(400, "invalid_domain_rule",
                              "The domain-rule properties are not valid.",
@@ -7310,6 +7371,7 @@ static int handle_domain_rule_create(struct jg_management *management,
     result = publish_domain_rule_change(management, request, remote, &actor,
                                         "policy.domain.create", false, 0U, true,
                                         &created, now, &published, &generation);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7380,9 +7442,13 @@ static int handle_domain_rule_update(struct jg_management *management,
             request->request_id, output, output_size, written);
     }
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_database_update_domain_rule(management->database, &rule,
                                                 enabled, revision, &updated);
     }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "domain_not_found",
                              "The domain rule was not found.",
@@ -7406,6 +7472,7 @@ static int handle_domain_rule_update(struct jg_management *management,
     result = publish_domain_rule_change(
         management, request, remote, &actor, "policy.domain.update", true,
         revision, true, &updated, now, &published, &generation);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7461,9 +7528,13 @@ static int handle_domain_rule_delete(struct jg_management *management,
             request->request_id, output, output_size, written);
     }
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_database_delete_domain_rule(management->database, rule_id,
                                                 revision);
     }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "domain_not_found",
                              "The domain rule was not found.",
@@ -7482,6 +7553,7 @@ static int handle_domain_rule_delete(struct jg_management *management,
     result = publish_domain_rule_change(
         management, request, remote, &actor, "policy.domain.delete", true,
         revision, false, &removed, now, &published, &generation);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7610,8 +7682,12 @@ static int handle_destination_rule_create(
                              "The active policy is temporarily unavailable.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_database_create_destination_rule(management->database, &rule,
-                                                 enabled, &created);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_database_create_destination_rule(management->database,
+                                                     &rule, enabled, &created);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -EINVAL || result == -ERANGE || result == -ENOSPC) {
         return respond_error(400, "invalid_destination_rule",
                              "The destination-rule properties are not valid.",
@@ -7625,6 +7701,7 @@ static int handle_destination_rule_create(
     result = publish_destination_rule_change(
         management, request, remote, &actor, "policy.destination.create", false,
         0U, true, &created, now, &published, &generation);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7682,9 +7759,13 @@ static int handle_destination_rule_update(
             request->request_id, output, output_size, written);
     }
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_database_update_destination_rule(
             management->database, &rule, enabled, revision, &updated);
     }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "destination_not_found",
                              "The destination rule was not found.",
@@ -7709,6 +7790,7 @@ static int handle_destination_rule_update(
     result = publish_destination_rule_change(
         management, request, remote, &actor, "policy.destination.update", true,
         revision, true, &updated, now, &published, &generation);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7766,9 +7848,13 @@ static int handle_destination_rule_delete(
             request->request_id, output, output_size, written);
     }
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_database_delete_destination_rule(management->database,
                                                      rule_id, revision);
     }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "destination_not_found",
                              "The destination rule was not found.",
@@ -7788,6 +7874,7 @@ static int handle_destination_rule_delete(
     result = publish_destination_rule_change(
         management, request, remote, &actor, "policy.destination.delete", true,
         revision, false, &removed, now, &published, &generation);
+    result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -7943,10 +8030,14 @@ static int handle_user_create(struct jg_management *management,
                              "The local-user request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_account_user_create(management->database, username,
-                                    (const uint8_t *)password, strlen(password),
-                                    &management->password_policy, role,
-                                    force_password_change, now, &user);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_user_create(
+            management->database, username, (const uint8_t *)password,
+            strlen(password), &management->password_policy, role,
+            force_password_change, now, &user);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -EEXIST) {
         return respond_error(409, "username_exists",
                              "The local username is already in use.",
@@ -7964,6 +8055,7 @@ static int handle_user_create(struct jg_management *management,
     }
     result = append_user_audit(management, request, remote, &actor,
                                "user.create", false, 0U, &user, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -8027,8 +8119,12 @@ static int handle_user_update(struct jg_management *management,
                              "The local-user update is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_account_user_update(management->database, user_id, revision,
-                                    &update, now, &user);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_user_update(management->database, user_id, revision,
+                                        &update, now, &user);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "user_not_found",
                              "The local user was not found.",
@@ -8051,6 +8147,7 @@ static int handle_user_update(struct jg_management *management,
     }
     result = append_user_audit(management, request, remote, &actor,
                                "user.update", true, revision, &user, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -8111,10 +8208,14 @@ static int handle_user_password_reset(struct jg_management *management,
                              "The password-reset request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_account_user_reset_password(
-        management->database, user_id, revision, (const uint8_t *)password,
-        strlen(password), &management->password_policy, force_password_change,
-        now, &user);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_user_reset_password(
+            management->database, user_id, revision, (const uint8_t *)password,
+            strlen(password), &management->password_policy,
+            force_password_change, now, &user);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "user_not_found",
                              "The local user was not found.",
@@ -8138,6 +8239,7 @@ static int handle_user_password_reset(struct jg_management *management,
     result =
         append_user_audit(management, request, remote, &actor,
                           "user.password_reset", true, revision, &user, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -8190,8 +8292,12 @@ static int handle_user_totp_disable(struct jg_management *management,
                              "The TOTP-reset request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_account_user_disable_totp(management->database, user_id,
-                                          revision, &user);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_user_disable_totp(management->database, user_id,
+                                              revision, &user);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "totp_not_found",
                              "The user has no active TOTP credential.",
@@ -8209,6 +8315,7 @@ static int handle_user_totp_disable(struct jg_management *management,
     }
     result = append_user_audit(management, request, remote, &actor,
                                "user.totp_disable", true, revision, &user, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -8367,8 +8474,12 @@ static int handle_token_issue(struct jg_management *management,
     }
     config.name = name;
     config.requests_per_minute = (uint32_t)rate;
-    result = jg_account_token_issue(management->database, user_id, &config, now,
-                                    &issued);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_token_issue(management->database, user_id, &config,
+                                        now, &issued);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "user_not_found",
                              "The token owner was not found.",
@@ -8396,6 +8507,7 @@ static int handle_token_issue(struct jg_management *management,
         result = append_token_audit(management, request, remote, &actor,
                                     "token.create", false, 0U, &token, now);
     }
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         sodium_memzero(&issued, sizeof(issued));
         return respond_error(
@@ -8454,11 +8566,16 @@ static int handle_token_revoke(struct jg_management *management,
                              request->request_id, output, output_size, written);
     }
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_account_token_revoke(management->database, token_id, now);
     }
+    result = audited_mutation_check(management, result);
     if (result == 0) {
         result = jg_account_token_get(management->database, token_id, &token);
     }
+    result = audited_mutation_check(management, result);
     if (result != 0) {
         return respond_error(500, "token_revoke_failed",
                              "The API token could not be revoked.",
@@ -8467,6 +8584,7 @@ static int handle_token_revoke(struct jg_management *management,
     result =
         append_token_audit(management, request, remote, &actor, "token.revoke",
                            true, previous.revision, &token, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -9176,8 +9294,12 @@ static int handle_mtls_mapping_create(struct jg_management *management,
     config.issuer = certificate.issuer;
     config.not_before = certificate.not_before;
     config.not_after = certificate.not_after;
-    result = jg_account_mtls_mapping_create(management->database, &config, now,
-                                            &mapping);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_account_mtls_mapping_create(management->database, &config,
+                                                now, &mapping);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -ENOENT) {
         return respond_error(404, "user_not_found",
                              "The selected local user was not found.",
@@ -9202,6 +9324,7 @@ static int handle_mtls_mapping_create(struct jg_management *management,
     result = append_mtls_mapping_audit(management, request, remote, &actor,
                                        "mtls.mapping.create", false, 0U,
                                        &mapping, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
@@ -9256,13 +9379,18 @@ static int handle_mtls_mapping_revoke(struct jg_management *management,
                              request->request_id, output, output_size, written);
     }
     if (result == 0) {
+        result = audited_mutation_begin(management);
+    }
+    if (result == 0) {
         result = jg_account_mtls_mapping_revoke(management->database,
                                                 mapping_id, now);
     }
+    result = audited_mutation_check(management, result);
     if (result == 0) {
         result = jg_account_mtls_mapping_get(management->database, mapping_id,
                                              &mapping);
     }
+    result = audited_mutation_check(management, result);
     if (result != 0) {
         return respond_error(
             500, "mtls_mapping_revoke_failed",
@@ -9272,6 +9400,7 @@ static int handle_mtls_mapping_revoke(struct jg_management *management,
     result = append_mtls_mapping_audit(management, request, remote, &actor,
                                        "mtls.mapping.revoke", true,
                                        previous.revision, &mapping, now);
+    result = audited_mutation_finish(management, result, false);
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
