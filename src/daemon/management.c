@@ -89,6 +89,12 @@
 /** Maximum retained queued, running, or completed slow operations. */
 #define MANAGEMENT_JOB_CAPACITY 8U
 
+/** Maximum retained user jobs, leaving one slot for scheduled work. */
+#define MANAGEMENT_JOB_USER_CAPACITY (MANAGEMENT_JOB_CAPACITY - 1U)
+
+/** Maximum unconsumed jobs retained for one authenticated actor. */
+#define MANAGEMENT_JOB_ACTOR_CAPACITY 2U
+
 /** Maximum completed-job retention before its slot may be reused. */
 #define MANAGEMENT_JOB_RETENTION_SECONDS 3600U
 
@@ -239,6 +245,7 @@ struct management_job {
     uint8_t response[JG_IPC_MAX_BODY_SIZE];
     size_t response_size;
     uint64_t id;
+    uint64_t resource_id;
     uint64_t sequence;
     uint64_t submitted_at;
     uint64_t started_at;
@@ -250,6 +257,7 @@ struct management_job {
     char request_id[MANAGEMENT_REQUEST_ID_MAX + 1U];
     bool occupied;
     bool system_job;
+    bool observed;
 };
 
 /** Complete synchronized queue and independent worker database connection. */
@@ -284,6 +292,15 @@ static int respond_job_accepted(uint64_t job_id,
                                 uint8_t *output,
                                 size_t output_size,
                                 size_t *written);
+
+/** @brief Return one consistent slow-operation submission error. */
+static int respond_job_submission_error(
+    int result,
+    const struct management_request *request,
+    const char *failure_message,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written);
 
 /** @brief Execute one authenticated local blocklist import job. */
 static int execute_blocklist_import_job(struct jg_management *management,
@@ -6576,15 +6593,10 @@ static int handle_diagnostics_create(struct jg_management *management,
     }
     result = submit_management_job(management, request, remote, &actor,
                                    &prepared, now, &job_id);
-    if (result == -EBUSY) {
-        return respond_error(503, "job_queue_full",
-                             "The slow-operation queue is currently full.",
-                             request->request_id, output, output_size, written);
-    }
     if (result != 0) {
-        return respond_error(500, "job_queue_failed",
-                             "The diagnostic archive could not be queued.",
-                             request->request_id, output, output_size, written);
+        return respond_job_submission_error(
+            result, request, "The diagnostic archive could not be queued.",
+            output, output_size, written);
     }
     return respond_job_accepted(job_id, output, output_size, written);
 }
@@ -7287,28 +7299,90 @@ static int execute_source_refresh_job(struct jg_management *management,
         written);
 }
 
-/** @brief Select one free or oldest completed bounded job slot. */
+/** @brief Return whether one completed job slot may be safely reused. */
+static bool job_slot_reusable(const struct management_job *job, uint64_t now)
+{
+    return !job->occupied ||
+           (job->state == MANAGEMENT_JOB_COMPLETED &&
+            (job->observed ||
+             (job->completed_at <= now &&
+              now - job->completed_at >= MANAGEMENT_JOB_RETENTION_SECONDS)));
+}
+
+/** @brief Select one free, observed, or expired completed job slot. */
 static struct management_job *select_job_slot(struct management_jobs *jobs,
                                               uint64_t now)
 {
-    struct management_job *oldest = NULL;
-
     for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
         struct management_job *job = &jobs->slots[index];
 
-        if (!job->occupied ||
-            (job->state == MANAGEMENT_JOB_COMPLETED &&
-             job->completed_at <= (now > MANAGEMENT_JOB_RETENTION_SECONDS
-                                       ? now - MANAGEMENT_JOB_RETENTION_SECONDS
-                                       : 0U))) {
+        if (job_slot_reusable(job, now)) {
             return job;
         }
-        if (job->state == MANAGEMENT_JOB_COMPLETED &&
-            (oldest == NULL || job->completed_at < oldest->completed_at)) {
-            oldest = job;
+    }
+    return NULL;
+}
+
+/** @brief Return whether two authenticated actors own the same job scope. */
+static bool job_actors_equal(const struct authenticated_actor *left,
+                             const struct authenticated_actor *right)
+{
+    return left->kind == right->kind && left->actor_id == right->actor_id;
+}
+
+/** @brief Enforce per-actor and reserved-system queue capacity. */
+static int check_job_capacity(const struct management_jobs *jobs,
+                              const struct authenticated_actor *actor,
+                              uint64_t now)
+{
+    size_t actor_jobs = 0U;
+    size_t user_jobs = 0U;
+
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        const struct management_job *job = &jobs->slots[index];
+
+        if (job_slot_reusable(job, now) || job->system_job) {
+            continue;
+        }
+        ++user_jobs;
+        if (job_actors_equal(&job->actor, actor)) {
+            ++actor_jobs;
         }
     }
-    return oldest;
+    if (actor_jobs >= MANAGEMENT_JOB_ACTOR_CAPACITY) {
+        return -EAGAIN;
+    }
+    return user_jobs >= MANAGEMENT_JOB_USER_CAPACITY ? -EBUSY : 0;
+}
+
+/** @brief Coalesce refreshes and serialize restore operations. */
+static int check_job_conflict(const struct management_jobs *jobs,
+                              const struct authenticated_actor *actor,
+                              const struct management_job_submission *prepared,
+                              uint64_t *job_id)
+{
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        const struct management_job *job = &jobs->slots[index];
+
+        if (!job->occupied || job->state == MANAGEMENT_JOB_COMPLETED) {
+            continue;
+        }
+        if (prepared->kind == MANAGEMENT_JOB_SOURCE_REFRESH &&
+            job->kind == MANAGEMENT_JOB_SOURCE_REFRESH &&
+            job->resource_id == prepared->parameters.source.id) {
+            if (job->state == MANAGEMENT_JOB_QUEUED &&
+                job_actors_equal(&job->actor, actor)) {
+                *job_id = job->id;
+                return 1;
+            }
+            return -EALREADY;
+        }
+        if (prepared->kind == MANAGEMENT_JOB_BACKUP_RESTORE &&
+            job->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
+            return -EALREADY;
+        }
+    }
+    return 0;
 }
 
 /** @brief Generate one nonzero client-safe job identifier without collision.
@@ -7338,7 +7412,7 @@ static int generate_job_identifier(const struct management_jobs *jobs,
             return 0;
         }
     }
-    return -EAGAIN;
+    return -EIO;
 }
 
 /** @brief Prepare deferred authorization without retaining a credential. */
@@ -7377,6 +7451,7 @@ static int submit_management_job(struct jg_management *management,
     struct management_job *job = NULL;
     struct management_job_authorization authorization;
     uint64_t identifier = 0U;
+    bool coalesced = false;
     int status = 0;
     int result = prepare_job_authorization(request, actor, &authorization);
 
@@ -7388,12 +7463,23 @@ static int submit_management_job(struct jg_management *management,
         sodium_memzero(&authorization, sizeof(authorization));
         return -status;
     }
-    job = select_job_slot(jobs, now);
-    if (job == NULL || jobs->next_sequence == 0U) {
-        result = job == NULL ? -EBUSY : -EOVERFLOW;
-    } else if (generate_job_identifier(jobs, &identifier) != 0) {
-        result = -EAGAIN;
-    } else {
+    result = check_job_conflict(jobs, actor, prepared, job_id);
+    if (result == 1) {
+        result = 0;
+        coalesced = true;
+    }
+    if (result == 0 && !coalesced) {
+        result = check_job_capacity(jobs, actor, now);
+    }
+    if (result == 0 && !coalesced) {
+        job = select_job_slot(jobs, now);
+        if (job == NULL || jobs->next_sequence == 0U) {
+            result = job == NULL ? -EBUSY : -EOVERFLOW;
+        } else {
+            result = generate_job_identifier(jobs, &identifier);
+        }
+    }
+    if (result == 0 && !coalesced) {
         management_job_parameters_clear(job->kind, &job->parameters);
         sodium_memzero(job, sizeof(*job));
         job->parameters = prepared->parameters;
@@ -7407,6 +7493,9 @@ static int submit_management_job(struct jg_management *management,
         job->authorization = authorization;
         job->remote = *remote;
         job->id = identifier;
+        if (prepared->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
+            job->resource_id = prepared->parameters.source.id;
+        }
         job->sequence = jobs->next_sequence++;
         job->submitted_at = now;
         job->state = MANAGEMENT_JOB_QUEUED;
@@ -7450,6 +7539,35 @@ static int respond_job_accepted(uint64_t job_id,
     return encode_response(202, body, NULL, output, output_size, written);
 }
 
+/** @brief Return one consistent slow-operation submission error. */
+static int respond_job_submission_error(
+    int result,
+    const struct management_request *request,
+    const char *failure_message,
+    uint8_t *output,
+    size_t output_size,
+    size_t *written)
+{
+    if (result == -EBUSY) {
+        return respond_error(503, "job_queue_full",
+                             "The slow-operation queue is currently full.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(
+            429, "job_quota_exceeded",
+            "Complete or inspect an existing job before submitting another.",
+            request->request_id, output, output_size, written);
+    }
+    if (result == -EALREADY) {
+        return respond_error(409, "job_conflict",
+                             "A conflicting slow operation is already active.",
+                             request->request_id, output, output_size, written);
+    }
+    return respond_error(500, "job_queue_failed", failure_message,
+                         request->request_id, output, output_size, written);
+}
+
 /** @brief Refresh one remote blocklist source through an authorized request. */
 static int handle_blocklist_source_refresh(
     struct jg_management *management,
@@ -7488,15 +7606,10 @@ static int handle_blocklist_source_refresh(
     prepared.parameters.source.revision = revision;
     result = submit_management_job(management, request, remote, &actor,
                                    &prepared, now, &job_id);
-    if (result == -EBUSY) {
-        return respond_error(503, "job_queue_full",
-                             "The slow-operation queue is currently full.",
-                             request->request_id, output, output_size, written);
-    }
     if (result != 0) {
-        return respond_error(500, "job_queue_failed",
-                             "The source refresh could not be queued.",
-                             request->request_id, output, output_size, written);
+        return respond_job_submission_error(
+            result, request, "The source refresh could not be queued.", output,
+            output_size, written);
     }
     return respond_job_accepted(job_id, output, output_size, written);
 }
@@ -7615,15 +7728,10 @@ static int handle_blocklist_import(struct jg_management *management,
     result = submit_management_job(management, request, remote, &actor,
                                    &prepared, now, &job_id);
     management_job_parameters_clear(prepared.kind, &prepared.parameters);
-    if (result == -EBUSY) {
-        return respond_error(503, "job_queue_full",
-                             "The slow-operation queue is currently full.",
-                             request->request_id, output, output_size, written);
-    }
     if (result != 0) {
-        return respond_error(500, "job_queue_failed",
-                             "The local blocklist import could not be queued.",
-                             request->request_id, output, output_size, written);
+        return respond_job_submission_error(
+            result, request, "The local blocklist import could not be queued.",
+            output, output_size, written);
     }
     return respond_job_accepted(job_id, output, output_size, written);
 }
@@ -7740,8 +7848,7 @@ static bool job_is_visible_to_actor(const struct management_job *job,
     if (actor->kind == AUTHENTICATED_ACTOR_LOCAL) {
         return true;
     }
-    return actor->kind == job->actor.kind && actor->actor_id != 0U &&
-           actor->actor_id == job->actor.actor_id;
+    return actor->actor_id != 0U && job_actors_equal(actor, &job->actor);
 }
 
 /** @brief Recheck a queued job against current persistent authorization. */
@@ -8127,12 +8234,28 @@ static int handle_job_get(struct jg_management *management,
     }
     json_decref(response);
     json_decref(job);
-    sodium_memzero(&snapshot, sizeof(snapshot));
     if (result != 0) {
+        sodium_memzero(&snapshot, sizeof(snapshot));
         json_decref(body);
         return result;
     }
-    return encode_response(200, body, NULL, output, output_size, written);
+    result = encode_response(200, body, NULL, output, output_size, written);
+    if (result == 0 && snapshot.state == MANAGEMENT_JOB_COMPLETED) {
+        status = pthread_mutex_lock(&management->jobs->mutex);
+        if (status == 0) {
+            struct management_job *stored = find_job(management->jobs, job_id);
+
+            if (stored != NULL && stored->state == MANAGEMENT_JOB_COMPLETED) {
+                stored->observed = true;
+            }
+            status = pthread_mutex_unlock(&management->jobs->mutex);
+        }
+        if (status != 0) {
+            result = -status;
+        }
+    }
+    sodium_memzero(&snapshot, sizeof(snapshot));
+    return result;
 }
 
 /** @brief Return one authenticated stable page of domain rules. */
@@ -10666,15 +10789,10 @@ static int handle_backup_create(struct jg_management *management,
     result = submit_management_job(management, request, remote, &actor,
                                    &prepared, now, &job_id);
     management_job_parameters_clear(prepared.kind, &prepared.parameters);
-    if (result == -EBUSY) {
-        return respond_error(503, "job_queue_full",
-                             "The slow-operation queue is currently full.",
-                             request->request_id, output, output_size, written);
-    }
     if (result != 0) {
-        return respond_error(500, "job_queue_failed",
-                             "The backup creation could not be queued.",
-                             request->request_id, output, output_size, written);
+        return respond_job_submission_error(
+            result, request, "The backup creation could not be queued.", output,
+            output_size, written);
     }
     return respond_job_accepted(job_id, output, output_size, written);
 }
@@ -10992,15 +11110,10 @@ static int handle_backup_restore(struct jg_management *management,
     result = submit_management_job(management, request, remote, &actor,
                                    &prepared, now, &job_id);
     management_job_parameters_clear(prepared.kind, &prepared.parameters);
-    if (result == -EBUSY) {
-        return respond_error(503, "job_queue_full",
-                             "The slow-operation queue is currently full.",
-                             request->request_id, output, output_size, written);
-    }
     if (result != 0) {
-        return respond_error(500, "job_queue_failed",
-                             "The backup restore could not be queued.",
-                             request->request_id, output, output_size, written);
+        return respond_job_submission_error(
+            result, request, "The backup restore could not be queued.", output,
+            output_size, written);
     }
     return respond_job_accepted(job_id, output, output_size, written);
 }

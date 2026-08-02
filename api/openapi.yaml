@@ -1195,7 +1195,10 @@ components:
           schema:
             $ref: '#/components/schemas/JobReference'
     JobStatus:
-      description: Retained asynchronous operation status
+      description: |
+        Asynchronous operation status owned by the caller. A completed result
+        remains available until it is successfully read or for at most one
+        hour when the caller does not collect it.
       content:
         application/json:
           schema:

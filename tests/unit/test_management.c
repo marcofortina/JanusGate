@@ -2300,6 +2300,138 @@ static void test_backup_api(void **state)
     sodium_memzero(&token, sizeof(token));
 }
 
+/** @brief Verify retained results, per-actor quota, and slot release. */
+static void test_job_lifecycle(void **state)
+{
+    static const uint8_t password[] = "correct horse battery staple";
+    const struct jg_account_token_config token_config = {
+        .name = "job lifecycle administrator",
+        .permissions = JG_ACCESS_BACKUPS_WRITE,
+        .requests_per_minute = 100U,
+    };
+    struct management_fixture *fixture = *state;
+    struct jg_auth_password_policy password_policy;
+    struct jg_account_api_token token;
+    struct jg_database_backup backups[4U];
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char request[2048U];
+    json_t *accepted_first = NULL;
+    json_t *accepted_second = NULL;
+    json_t *accepted_third = NULL;
+    json_t *response = NULL;
+    const time_t now = time(NULL);
+    uint64_t user_id = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+    int written = 0;
+
+    assert_true(now > 0);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database,
+                                                (uint64_t)now, 600U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, (uint64_t)now,
+                         &user_id),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, (uint64_t)now,
+                                            &token),
+                     0);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"job-lifecycle-first\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/backups\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{\"kind\":\"configuration\","
+                 "\"include_private_key\":false,\"passphrase\":null}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    accepted_first = process_request(fixture, request);
+    assert_int_equal(
+        json_integer_value(json_object_get(accepted_first, "status")), 202);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"job-lifecycle-second\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/backups\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{\"kind\":\"configuration\","
+                 "\"include_private_key\":false,\"passphrase\":null}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    accepted_second = process_request(fixture, request);
+    assert_int_equal(
+        json_integer_value(json_object_get(accepted_second, "status")), 202);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"job-lifecycle-limited\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"kind\":\"configuration\","
+        "\"include_private_key\":false,\"passphrase\":null}}",
+        token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     429);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "job_quota_exceeded");
+    json_decref(response);
+
+    response = complete_accepted_job(fixture, accepted_first, token.secret);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"job-lifecycle-third\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/backups\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                 "\"body\":{\"kind\":\"configuration\","
+                 "\"include_private_key\":false,\"passphrase\":null}}",
+                 token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    accepted_third = process_request(fixture, request);
+    assert_int_equal(
+        json_integer_value(json_object_get(accepted_third, "status")), 202);
+
+    response = complete_accepted_job(fixture, accepted_second, token.secret);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    json_decref(response);
+    response = complete_accepted_job(fixture, accepted_third, token.secret);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    json_decref(response);
+
+    assert_int_equal(
+        jg_database_list_backups(fixture->database, 0U,
+                                 sizeof(backups) / sizeof(backups[0U]), backups,
+                                 &count, &has_more),
+        0);
+    assert_false(has_more);
+    assert_int_equal(count, 3U);
+    for (size_t index = 0U; index < count; ++index) {
+        assert_int_equal(
+            jg_backup_remove(fixture->directory, backups[index].filename), 0);
+    }
+    sodium_memzero(&token, sizeof(token));
+    sodium_memzero(bootstrap, sizeof(bootstrap));
+}
+
 /** @brief Verify backup dry runs, confirmation, checkpoints, and restore. */
 static void test_backup_restore_api(void **state)
 {
@@ -3613,6 +3745,9 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(
             test_backup_api, setup_certificate_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_job_lifecycle,
+                                        setup_certificate_management,
+                                        teardown_management),
         cmocka_unit_test_setup_teardown(test_backup_restore_api,
                                         setup_certificate_management,
                                         teardown_management),
