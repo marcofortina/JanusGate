@@ -5,7 +5,7 @@
 
 "use strict";
 
-import { api, errorMessage } from "./api.js";
+import { api, errorMessage, waitForJob } from "./api.js";
 import {
   announce,
   byId,
@@ -321,10 +321,11 @@ async function toggleSource(source) {
  */
 async function refreshSource(source) {
   try {
-    const result = await api(`/api/v1/sources/${source.id}/refresh`, {
+    const accepted = await api(`/api/v1/sources/${source.id}/refresh`, {
       method: "POST",
       body: { revision: source.revision },
     });
+    const result = await waitForJob(accepted);
     renderJson(byId("blocklist-result"), result);
     announce(
       result.attempt.outcome === "updated"

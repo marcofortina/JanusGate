@@ -213,6 +213,28 @@ int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime);
 int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime);
 
 /**
+ * @brief Reload policy through a caller-selected database connection.
+ *
+ * This variant lets a management worker publish a transactionally consistent
+ * snapshot before committing its mutation and audit record. Policy publication
+ * is serialized with every other runtime reload.
+ *
+ * @param[in,out] runtime Running packet runtime.
+ * @param[in,out] database Connection providing the policy snapshot.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EOVERFLOW when the generation counter is exhausted.
+ * @return A negative errno-style synchronization, database, allocation,
+ * validation, or replacement error otherwise.
+ *
+ * @thread_safety Calls are internally serialized.
+ */
+int jg_daemon_runtime_reload_policy_from_database(
+    struct jg_daemon_runtime *runtime,
+    struct jg_database *database);
+
+/**
  * @brief Validate complete persistent configuration without publishing it.
  *
  * The network configuration is checked against the live system through the

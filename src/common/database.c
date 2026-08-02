@@ -1484,6 +1484,9 @@ int jg_database_open(const char *path,
         }
     }
     if (result == 0) {
+        opened->busy_timeout_ms = busy_timeout_ms;
+    }
+    if (result == 0) {
         const int status =
             sqlite3_open_v2(path, &opened->handle,
                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX |
@@ -1542,6 +1545,16 @@ int jg_database_open(const char *path,
     }
     *database = opened;
     return 0;
+}
+
+/** @brief Open an independent connection to the same database file. */
+int jg_database_open_peer(const struct jg_database *database,
+                          struct jg_database **peer)
+{
+    if (database == NULL || peer == NULL) {
+        return -EINVAL;
+    }
+    return jg_database_open(database->path, database->busy_timeout_ms, peer);
 }
 
 /** @brief Close an owned database connection and release its path. */

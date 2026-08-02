@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "database_internal.h"
+
 /** @brief Load one exact source without exposing database paging to callers. */
 static int load_source(struct jg_database *database,
                        uint64_t source_id,
@@ -123,12 +125,14 @@ const char *jg_blocklist_import_error(int result)
     }
 }
 
-/** @brief Fetch one source and persist its complete resulting state. */
-int jg_blocklist_update(struct jg_database *database,
-                        uint64_t source_id,
-                        uint64_t expected_revision,
-                        uint64_t now,
-                        struct jg_blocklist_update_result *result)
+/** @brief Fetch one source and optionally complete its state transaction. */
+static int update_source(struct jg_database *database,
+                         uint64_t source_id,
+                         uint64_t expected_revision,
+                         uint64_t now,
+                         jg_blocklist_update_completion completion,
+                         void *context,
+                         struct jg_blocklist_update_result *result)
 {
     struct jg_blocklist_remote_config config;
     struct jg_blocklist_remote_state state;
@@ -156,16 +160,17 @@ int jg_blocklist_update(struct jg_database *database,
     result->attempted = true;
     result->attempt_result = jg_blocklist_remote_update(
         &config, &state, now, &result->status, &blocklist, &result->report);
-    if (result->attempt_result == 0 &&
+    persist_result = jg_database_transaction_begin(database);
+    if (persist_result == 0 && result->attempt_result == 0 &&
         result->status == JG_BLOCKLIST_REMOTE_UPDATED) {
         persist_result = jg_database_activate_blocklist(
             database, source_id, expected_revision, blocklist, &state,
             &result->report.import);
         result->activated = persist_result == 0;
-    } else if (result->attempt_result == 0) {
+    } else if (persist_result == 0 && result->attempt_result == 0) {
         persist_result = jg_database_record_blocklist_attempt(
             database, source_id, expected_revision, &state, true, NULL);
-    } else {
+    } else if (persist_result == 0) {
         persist_result = jg_database_record_blocklist_attempt(
             database, source_id, expected_revision, &state, false,
             jg_blocklist_update_error(result->attempt_result));
@@ -174,7 +179,42 @@ int jg_blocklist_update(struct jg_database *database,
     if (persist_result == 0) {
         persist_result = load_source(database, source_id, &result->source);
     }
+    if (persist_result == 0 && completion != NULL) {
+        persist_result = completion(context, result);
+    }
+    if (persist_result == 0) {
+        persist_result = jg_database_transaction_commit(database);
+    } else {
+        (void)jg_database_transaction_rollback(database);
+    }
     return persist_result;
+}
+
+/** @brief Fetch one source and persist its complete resulting state. */
+int jg_blocklist_update(struct jg_database *database,
+                        uint64_t source_id,
+                        uint64_t expected_revision,
+                        uint64_t now,
+                        struct jg_blocklist_update_result *result)
+{
+    return update_source(database, source_id, expected_revision, now, NULL,
+                         NULL, result);
+}
+
+/** @brief Fetch one source and commit caller completion work with its state. */
+int jg_blocklist_update_complete(struct jg_database *database,
+                                 uint64_t source_id,
+                                 uint64_t expected_revision,
+                                 uint64_t now,
+                                 jg_blocklist_update_completion completion,
+                                 void *context,
+                                 struct jg_blocklist_update_result *result)
+{
+    if (completion == NULL) {
+        return -EINVAL;
+    }
+    return update_source(database, source_id, expected_revision, now,
+                         completion, context, result);
 }
 
 /** @brief Parse one local source and persist its complete resulting state. */

@@ -113,17 +113,18 @@ int jg_management_process(struct jg_management *management,
                           size_t *written);
 
 /**
- * @brief Refresh every enabled remote blocklist source currently due.
+ * @brief Queue a scan of every enabled remote blocklist source currently due.
  *
- * Expected remote failures are persisted and audited without failing the
- * scheduler. Persistence, audit, and runtime publication failures are
- * returned to the caller.
+ * At most one scheduled scan is queued or running. Remote transfers and their
+ * database work execute on the bounded management worker so the control
+ * server remains available.
  *
  * @param[in,out] management Management state.
  * @param[in] now Current Unix time in seconds.
- * @param[out] attempts Receives the number of HTTPS attempts; null discards it.
+ * @param[out] attempts Receives zero because execution is asynchronous; null
+ * discards it.
  *
- * @return 0 when all due sources were processed.
+ * @return 0 when a scan was queued or one is already pending.
  * @return -EINVAL for invalid arguments.
  * @return A negative errno-style database, audit, allocation, or publication
  * error otherwise.
@@ -131,8 +132,8 @@ int jg_management_process(struct jg_management *management,
  * @thread_safety Calls must be serialized with
  * `jg_management_process()`.
  *
- * @side_effects Performs bounded HTTPS requests, updates persistent source
- * health, appends audit events, and may publish new policy generations.
+ * @side_effects Schedules bounded HTTPS requests that update persistent source
+ * health, append audit events, and may publish new policy generations.
  */
 int jg_management_update_due_blocklists(struct jg_management *management,
                                         uint64_t now,

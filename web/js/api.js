@@ -140,6 +140,72 @@ export async function api(path, options = {}) {
 }
 
 /**
+ * Wait for one accepted asynchronous operation and return its result body.
+ */
+export async function waitForJob(reference) {
+  const identifier = reference && reference.job ? reference.job.id : 0;
+
+  if (!Number.isSafeInteger(identifier) || identifier <= 0) {
+    throw new ApiError(
+      500,
+      "invalid_job",
+      "The appliance returned an invalid job.",
+    );
+  }
+  for (let attempt = 0; attempt < 3600; attempt += 1) {
+    const result = await api(`/api/v1/jobs/${identifier}`);
+    const job = result.job;
+
+    if (!job || typeof job.state !== "string") {
+      throw new ApiError(
+        500,
+        "invalid_job",
+        "The appliance returned an invalid job.",
+      );
+    }
+    if (job.state === "completed") {
+      const response = job.response;
+      const status = response && response.status;
+      const body = response && response.body;
+
+      if (!Number.isInteger(status) || !body || typeof body !== "object") {
+        throw new ApiError(
+          500,
+          "invalid_job",
+          "The appliance returned an invalid job result.",
+        );
+      }
+      if (status < 200 || status >= 300) {
+        const detail = body.error || {};
+
+        throw new ApiError(
+          status,
+          typeof detail.code === "string" ? detail.code : "job_failed",
+          typeof detail.message === "string"
+            ? detail.message
+            : "The asynchronous operation failed.",
+          typeof detail.request_id === "string" ? detail.request_id : "",
+        );
+      }
+      return body;
+    }
+    if (job.state !== "queued" && job.state !== "running") {
+      throw new ApiError(
+        500,
+        "invalid_job",
+        "The appliance returned an invalid job state.",
+      );
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+  throw new ApiError(
+    504,
+    "job_timeout",
+    "The asynchronous operation did not finish in time.",
+  );
+}
+
+/**
  * Exchange one same-origin text API request.
  */
 export async function apiText(path, options = {}) {

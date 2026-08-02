@@ -61,6 +61,10 @@ output and explicit high-impact operations.
 - `source add FILE`, `source update ID FILE`, `source refresh ID`,
   `source enable ID`, and `source disable ID` manage remote list sources.
 
+`source refresh` submits a bounded asynchronous job and waits for its retained
+result. The daemon continues serving short management requests during the
+download.
+
 ## Identities, certificates, and recovery data
 
 - `user add FILE`, `user update ID FILE`, `user disable ID`,

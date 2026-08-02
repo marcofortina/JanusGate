@@ -10,6 +10,8 @@
 #ifndef JANUSGATE_DATABASE_INTERNAL_H
 #define JANUSGATE_DATABASE_INTERNAL_H
 
+#include <stdint.h>
+
 #include <sqlite3.h>
 
 /** Private database connection and path ownership. */
@@ -20,6 +22,8 @@ struct jg_database {
     char *path;
     /** Number of cooperating transaction scopes on this connection. */
     unsigned int transaction_depth;
+    /** Configured busy timeout reused by private peer connections. */
+    uint32_t busy_timeout_ms;
 };
 
 /** @brief Translate a SQLite result to the common errno-style contract. */
@@ -36,5 +40,9 @@ int jg_database_transaction_commit(struct jg_database *database);
 
 /** @brief Roll back every active transaction scope. */
 int jg_database_transaction_rollback(struct jg_database *database);
+
+/** @brief Open an independent connection to the same database file. */
+int jg_database_open_peer(const struct jg_database *database,
+                          struct jg_database **peer);
 
 #endif

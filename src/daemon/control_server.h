@@ -25,8 +25,9 @@ struct jg_control_server;
  * @brief Validate and dispatch one decoded daemon-control request.
  *
  * The caller supplies response-body storage so the returned message owns no
- * dynamic memory. Requests are handled sequentially by the control server,
- * which serializes policy reload writers.
+ * dynamic memory. Short requests are handled sequentially by the control
+ * server, which serializes policy reload writers; bounded slow operations are
+ * delegated to the management job queue.
  *
  * @param[in,out] runtime Packet runtime, or null for ping-only dispatch.
  * @param[in] request Decoded request message.

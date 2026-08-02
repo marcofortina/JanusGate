@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -1031,6 +1032,112 @@ static int post_api_object(const struct cli_options *options,
     return result;
 }
 
+/** @brief Report one failed response retained by an asynchronous job. */
+static int report_job_failure(int status, json_t *body)
+{
+    json_t *detail = json_object_get(body, "error");
+    const char *code = json_string_value(json_object_get(detail, "code"));
+    const char *message = json_string_value(json_object_get(detail, "message"));
+    const char *request_id =
+        json_string_value(json_object_get(detail, "request_id"));
+
+    (void)fprintf(stderr, "janusgatectl: %s",
+                  message == NULL ? "asynchronous operation failed" : message);
+    if (code != NULL) {
+        (void)fprintf(stderr, " (%s)", code);
+    }
+    if (request_id != NULL) {
+        (void)fprintf(stderr, " [request %s]", request_id);
+    }
+    (void)fputc('\n', stderr);
+    if (status == 401 || status == 403) {
+        return CLI_EXIT_AUTH;
+    }
+    if (status == 409) {
+        return CLI_EXIT_CONFLICT;
+    }
+    return status >= 500 ? CLI_EXIT_UNAVAILABLE : CLI_EXIT_FAILURE;
+}
+
+/** @brief Poll one accepted job and return its successful result body. */
+static int wait_for_api_job(const struct cli_options *options,
+                            const char *token,
+                            json_t *accepted,
+                            json_t **result_body)
+{
+    const struct timespec interval = {
+        .tv_sec = 5,
+    };
+    json_t *job = json_object_get(accepted, "job");
+    json_t *identifier = json_object_get(job, "id");
+    char path[sizeof("/api/v1/jobs/18446744073709551615")];
+
+    *result_body = NULL;
+    if (!json_is_integer(identifier) || json_integer_value(identifier) <= 0) {
+        return CLI_EXIT_FAILURE;
+    }
+    (void)snprintf(path, sizeof(path), "/api/v1/jobs/%llu",
+                   (unsigned long long)json_integer_value(identifier));
+    for (size_t attempt = 0U; attempt < 720U; ++attempt) {
+        json_t *status_body = NULL;
+        json_t *status_job = NULL;
+        json_t *response = NULL;
+        json_t *status_value = NULL;
+        json_t *body = NULL;
+        const char *state = NULL;
+        int result = fetch_api_object(options, token, path, NULL, &status_body);
+
+        if (result != CLI_EXIT_SUCCESS) {
+            json_decref(status_body);
+            return result;
+        }
+        status_job = json_object_get(status_body, "job");
+        state = json_string_value(json_object_get(status_job, "state"));
+        if (state == NULL) {
+            json_decref(status_body);
+            return CLI_EXIT_FAILURE;
+        }
+        if (strcmp(state, "completed") == 0) {
+            response = json_object_get(status_job, "response");
+            status_value = json_object_get(response, "status");
+            body = json_object_get(response, "body");
+            if (!json_is_integer(status_value) || !json_is_object(body) ||
+                json_integer_value(status_value) < 100 ||
+                json_integer_value(status_value) > 599) {
+                json_decref(status_body);
+                return CLI_EXIT_FAILURE;
+            }
+            if (json_integer_value(status_value) < 200 ||
+                json_integer_value(status_value) >= 300) {
+                result = report_job_failure(
+                    (int)json_integer_value(status_value), body);
+            } else {
+                *result_body = json_deep_copy(body);
+                result =
+                    *result_body == NULL ? CLI_EXIT_FAILURE : CLI_EXIT_SUCCESS;
+            }
+            json_decref(status_body);
+            return result;
+        }
+        if (strcmp(state, "queued") != 0 && strcmp(state, "running") != 0) {
+            json_decref(status_body);
+            return CLI_EXIT_FAILURE;
+        }
+        json_decref(status_body);
+        {
+            struct timespec remaining = interval;
+
+            while (nanosleep(&remaining, &remaining) != 0) {
+                if (errno != EINTR) {
+                    return CLI_EXIT_FAILURE;
+                }
+            }
+        }
+    }
+    (void)fprintf(stderr, "janusgatectl: asynchronous operation timed out\n");
+    return CLI_EXIT_UNAVAILABLE;
+}
+
 /** @brief Present one locally assembled JSON result. */
 static int present_object(const struct cli_options *options, json_t *object)
 {
@@ -1671,10 +1778,22 @@ static int run_source_operation(const struct cli_options *options,
         (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu",
                        (unsigned long long)identifier);
     }
-    if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(
-            options, token, operation,
-            strcmp(operation, "refresh") == 0 ? "POST" : "PATCH", path, body);
+    if (result == CLI_EXIT_SUCCESS && strcmp(operation, "refresh") == 0) {
+        json_t *accepted = NULL;
+        json_t *completed = NULL;
+
+        result = post_api_object(options, token, path, body, &accepted);
+        if (result == CLI_EXIT_SUCCESS) {
+            result = wait_for_api_job(options, token, accepted, &completed);
+        }
+        if (result == CLI_EXIT_SUCCESS) {
+            result = present_object(options, completed);
+        }
+        json_decref(completed);
+        json_decref(accepted);
+    } else if (result == CLI_EXIT_SUCCESS) {
+        result =
+            send_api_request(options, token, operation, "PATCH", path, body);
     }
     json_decref(body);
     json_decref(source);

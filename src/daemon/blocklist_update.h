@@ -35,6 +35,11 @@ struct jg_blocklist_update_result {
     bool activated;
 };
 
+/** Completion invoked inside the source-state transaction. */
+typedef int (*jg_blocklist_update_completion)(
+    void *context,
+    const struct jg_blocklist_update_result *result);
+
 /**
  * @brief Refresh and persist one exact remote blocklist source.
  *
@@ -64,6 +69,34 @@ int jg_blocklist_update(struct jg_database *database,
                         uint64_t expected_revision,
                         uint64_t now,
                         struct jg_blocklist_update_result *result);
+
+/**
+ * @brief Refresh one source and commit its state with caller completion work.
+ *
+ * Network transfer and parsing finish before the transaction begins. The
+ * completion normally publishes and audits the resulting state; its failure
+ * rolls back the persistent update.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] source_id Persistent positive source identifier.
+ * @param[in] expected_revision Source revision selected by the caller.
+ * @param[in] now Current Unix time in seconds.
+ * @param[in] completion Required completion callback.
+ * @param[in,out] context Opaque callback state.
+ * @param[out] result Receives the complete attempt outcome.
+ *
+ * @return 0 when the state and completion work were committed together.
+ * @return A negative errno-style validation, persistence, or callback error.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+int jg_blocklist_update_complete(struct jg_database *database,
+                                 uint64_t source_id,
+                                 uint64_t expected_revision,
+                                 uint64_t now,
+                                 jg_blocklist_update_completion completion,
+                                 void *context,
+                                 struct jg_blocklist_update_result *result);
 
 /**
  * @brief Import and persist one exact local blocklist source.

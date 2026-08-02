@@ -25,6 +25,7 @@
 #include <netinet/in.h>
 
 #include <jansson.h>
+#include <pthread.h>
 #include <sodium.h>
 
 #include "blocklist_update.h"
@@ -85,6 +86,15 @@
 /** Complete timestamped diagnostic archive filename bytes. */
 #define MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE 48U
 
+/** Maximum retained queued, running, or completed slow operations. */
+#define MANAGEMENT_JOB_CAPACITY 8U
+
+/** Maximum completed-job retention before its slot may be reused. */
+#define MANAGEMENT_JOB_RETENTION_SECONDS 3600U
+
+/** Opaque bounded slow-operation queue owned by management state. */
+struct management_jobs;
+
 /** One bounded fixed-window token request counter. */
 struct token_rate_slot {
     uint64_t token_id;
@@ -116,6 +126,7 @@ struct jg_management {
     char backup_directory[PATH_MAX];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
     enum jg_system_action pending_system_action;
+    struct management_jobs *jobs;
 };
 
 /** Validated borrowed view of one internal JSON request envelope. */
@@ -160,6 +171,57 @@ struct authenticated_actor {
     uint64_t actor_id;
     enum authenticated_actor_kind kind;
 };
+
+/** Slow operation kinds executed by the single bounded worker. */
+enum management_job_kind {
+    MANAGEMENT_JOB_SOURCE_REFRESH = 1,
+    MANAGEMENT_JOB_SCHEDULED_SOURCES = 2
+};
+
+/** Stable lifecycle states exposed through the management API. */
+enum management_job_state {
+    MANAGEMENT_JOB_QUEUED = 1,
+    MANAGEMENT_JOB_RUNNING = 2,
+    MANAGEMENT_JOB_COMPLETED = 3
+};
+
+/** One fixed-slot slow operation and its bounded final response. */
+struct management_job {
+    struct authenticated_actor actor;
+    struct remote_address remote;
+    uint8_t response[JG_IPC_MAX_BODY_SIZE];
+    size_t response_size;
+    uint64_t id;
+    uint64_t submitted_at;
+    uint64_t started_at;
+    uint64_t completed_at;
+    uint64_t source_id;
+    uint64_t source_revision;
+    uint32_t required_permission;
+    enum management_job_kind kind;
+    enum management_job_state state;
+    char request_id[MANAGEMENT_REQUEST_ID_MAX + 1U];
+    bool occupied;
+    bool system_job;
+};
+
+/** Complete synchronized queue and independent worker database connection. */
+struct management_jobs {
+    struct jg_management *management;
+    struct jg_database *database;
+    struct management_job slots[MANAGEMENT_JOB_CAPACITY];
+    pthread_mutex_t mutex;
+    pthread_cond_t ready;
+    pthread_t thread;
+    uint64_t next_id;
+    bool mutex_initialized;
+    bool condition_initialized;
+    bool thread_started;
+    bool stopping;
+};
+
+/** @brief Run queued slow operations until management shutdown. */
+static void *run_management_jobs(void *context);
 
 /** @brief Begin one persistent mutation that must share its audit commit. */
 static int audited_mutation_begin(struct jg_management *management)
@@ -307,6 +369,77 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
     return result;
 }
 
+/** @brief Stop and release one slow-operation queue. */
+static void management_jobs_destroy(struct management_jobs *jobs)
+{
+    if (jobs == NULL) {
+        return;
+    }
+    if (jobs->mutex_initialized) {
+        (void)pthread_mutex_lock(&jobs->mutex);
+        jobs->stopping = true;
+        if (jobs->condition_initialized) {
+            (void)pthread_cond_broadcast(&jobs->ready);
+        }
+        (void)pthread_mutex_unlock(&jobs->mutex);
+    }
+    if (jobs->thread_started) {
+        (void)pthread_join(jobs->thread, NULL);
+    }
+    jg_database_close(jobs->database);
+    if (jobs->condition_initialized) {
+        (void)pthread_cond_destroy(&jobs->ready);
+    }
+    if (jobs->mutex_initialized) {
+        (void)pthread_mutex_destroy(&jobs->mutex);
+    }
+    sodium_memzero(jobs->slots, sizeof(jobs->slots));
+    free(jobs);
+}
+
+/** @brief Create one fixed-capacity slow-operation worker. */
+static int management_jobs_create(struct jg_management *management,
+                                  struct management_jobs **jobs)
+{
+    struct management_jobs *created = NULL;
+    int status = 0;
+    int result = 0;
+
+    if (management == NULL || jobs == NULL) {
+        return -EINVAL;
+    }
+    *jobs = NULL;
+    created = calloc(1U, sizeof(*created));
+    if (created == NULL) {
+        return -ENOMEM;
+    }
+    created->management = management;
+    created->next_id = 1U;
+    result = jg_database_open_peer(management->database, &created->database);
+    if (result == 0) {
+        status = pthread_mutex_init(&created->mutex, NULL);
+        result = status == 0 ? 0 : -status;
+        created->mutex_initialized = result == 0;
+    }
+    if (result == 0) {
+        status = pthread_cond_init(&created->ready, NULL);
+        result = status == 0 ? 0 : -status;
+        created->condition_initialized = result == 0;
+    }
+    if (result == 0) {
+        status = pthread_create(&created->thread, NULL, run_management_jobs,
+                                created);
+        result = status == 0 ? 0 : -status;
+        created->thread_started = result == 0;
+    }
+    if (result != 0) {
+        management_jobs_destroy(created);
+        return result;
+    }
+    *jobs = created;
+    return 0;
+}
+
 /** @brief Create management state and load the appliance-local TOTP key. */
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
@@ -343,6 +476,9 @@ int jg_management_create(struct jg_database *database,
                  strlen(backup_directory) + 1U);
     jg_auth_password_policy_default(&created->password_policy);
     result = load_totp_key(totp_key_path, created->totp_key);
+    if (result == 0) {
+        result = management_jobs_create(created, &created->jobs);
+    }
     if (result != 0) {
         jg_management_destroy(created);
         return result;
@@ -2277,9 +2413,11 @@ static int parse_blocklist_source_request(
                            &max_download) ||
         !required_unsigned(body, "max_decompressed_bytes", (uint64_t)SIZE_MAX,
                            &max_decompressed) ||
-        !required_unsigned(body, "connect_timeout_ms", UINT32_MAX,
+        !required_unsigned(body, "connect_timeout_ms",
+                           JG_BLOCKLIST_CONNECT_TIMEOUT_MAX,
                            &connect_timeout) ||
-        !required_unsigned(body, "transfer_timeout_ms", UINT32_MAX,
+        !required_unsigned(body, "transfer_timeout_ms",
+                           JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX,
                            &transfer_timeout) ||
         !required_unsigned(body, "redirect_limit", UINT32_MAX,
                            &redirect_limit) ||
@@ -4637,7 +4775,7 @@ static int authenticate_actor(struct jg_management *management,
     if (result == 0 && actor->identity.force_password_change) {
         result = -EPERM;
     }
-    if (result == 0 &&
+    if (result == 0 && required_permissions != 0U &&
         !jg_access_grants(actor->identity.permissions, required_permissions)) {
         result = -EPERM;
     }
@@ -6528,7 +6666,8 @@ static void publish_blocklist_source_change(struct jg_management *management,
     if (management->runtime == NULL) {
         return;
     }
-    *published = jg_daemon_runtime_reload_policy(management->runtime) == 0;
+    *published = jg_daemon_runtime_reload_policy_from_database(
+                     management->runtime, management->database) == 0;
     if (jg_daemon_runtime_get_policy_generation(management->runtime,
                                                 generation) != 0) {
         *generation = 0U;
@@ -6858,6 +6997,202 @@ static int respond_blocklist_update(
                            body, NULL, output, output_size, written);
 }
 
+/** Completion context for one manual remote-source refresh job. */
+struct source_refresh_completion {
+    struct jg_management *management;
+    const struct management_request *request;
+    const struct remote_address *remote;
+    const struct authenticated_actor *actor;
+    const char *action;
+    uint64_t now;
+    uint64_t generation;
+    int operation_result;
+    bool published;
+    bool append_event;
+    bool called;
+};
+
+/** @brief Publish and audit one refreshed source inside its transaction. */
+static int complete_source_refresh(
+    void *context,
+    const struct jg_blocklist_update_result *update)
+{
+    struct source_refresh_completion *completion = context;
+    int result = 0;
+
+    completion->called = true;
+    if (update->activated) {
+        publish_blocklist_source_change(completion->management,
+                                        &completion->published,
+                                        &completion->generation);
+    }
+    completion->operation_result =
+        completion->append_event && update->activated && !completion->published
+            ? -EIO
+            : 0;
+    result = append_blocklist_update_audit(
+        completion->management, completion->request, completion->remote,
+        completion->actor, completion->action, update,
+        completion->operation_result, completion->published,
+        completion->generation, completion->now);
+
+    if (result == 0 && completion->append_event) {
+        result = append_blocklist_update_event(completion->management, update,
+                                               completion->operation_result,
+                                               completion->now);
+    }
+    return result;
+}
+
+/** @brief Execute one authenticated remote-source refresh job. */
+static int execute_source_refresh_job(struct jg_management *management,
+                                      const struct management_job *job,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written)
+{
+    const struct management_request request = {
+        .request_id = job->request_id,
+    };
+    struct source_refresh_completion completion = {
+        .management = management,
+        .request = &request,
+        .remote = &job->remote,
+        .actor = &job->actor,
+        .action = "blocklist.source.refresh",
+        .now = job->started_at,
+    };
+    struct jg_blocklist_update_result update;
+    int result = jg_blocklist_update_complete(
+        management->database, job->source_id, job->source_revision,
+        job->started_at, complete_source_refresh, &completion, &update);
+
+    if (result != 0 && update.activated && management->runtime != NULL) {
+        (void)jg_daemon_runtime_reload_policy(management->runtime);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "source_not_found",
+                             "The blocklist source was not found.",
+                             request.request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The source has changed; reload and retry.",
+                             request.request_id, output, output_size, written);
+    }
+    if (result == -EINVAL) {
+        return respond_error(409, "local_source",
+                             "Local sources cannot be refreshed remotely.",
+                             request.request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(
+            500, "source_update_failed",
+            "The source update or its audit record could not be committed.",
+            request.request_id, output, output_size, written);
+    }
+    return respond_blocklist_update(
+        &request, &update, "blocklist_update_failed",
+        jg_blocklist_update_error(update.attempt_result), 502,
+        completion.published, completion.generation, output, output_size,
+        written);
+}
+
+/** @brief Select one free or oldest completed bounded job slot. */
+static struct management_job *select_job_slot(struct management_jobs *jobs,
+                                              uint64_t now)
+{
+    struct management_job *oldest = NULL;
+
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        struct management_job *job = &jobs->slots[index];
+
+        if (!job->occupied ||
+            (job->state == MANAGEMENT_JOB_COMPLETED &&
+             job->completed_at <= (now > MANAGEMENT_JOB_RETENTION_SECONDS
+                                       ? now - MANAGEMENT_JOB_RETENTION_SECONDS
+                                       : 0U))) {
+            return job;
+        }
+        if (job->state == MANAGEMENT_JOB_COMPLETED &&
+            (oldest == NULL || job->completed_at < oldest->completed_at)) {
+            oldest = job;
+        }
+    }
+    return oldest;
+}
+
+/** @brief Queue one authenticated source refresh without blocking control. */
+static int submit_source_refresh_job(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     const struct authenticated_actor *actor,
+                                     uint64_t source_id,
+                                     uint64_t source_revision,
+                                     uint64_t now,
+                                     uint64_t *job_id)
+{
+    struct management_jobs *jobs = management->jobs;
+    struct management_job *job = NULL;
+    int status = 0;
+    int result = 0;
+
+    status = pthread_mutex_lock(&jobs->mutex);
+    if (status != 0) {
+        return -status;
+    }
+    job = select_job_slot(jobs, now);
+    if (job == NULL || jobs->next_id == 0U) {
+        result = job == NULL ? -EBUSY : -EOVERFLOW;
+    } else {
+        sodium_memzero(job, sizeof(*job));
+        job->actor = *actor;
+        job->remote = *remote;
+        job->id = jobs->next_id++;
+        job->submitted_at = now;
+        job->source_id = source_id;
+        job->source_revision = source_revision;
+        job->required_permission = JG_ACCESS_POLICY_WRITE;
+        job->kind = MANAGEMENT_JOB_SOURCE_REFRESH;
+        job->state = MANAGEMENT_JOB_QUEUED;
+        job->occupied = true;
+        (void)snprintf(job->request_id, sizeof(job->request_id), "%s",
+                       request->request_id);
+        *job_id = job->id;
+        status = pthread_cond_signal(&jobs->ready);
+        if (status != 0) {
+            sodium_memzero(job, sizeof(*job));
+            result = -status;
+        }
+    }
+    status = pthread_mutex_unlock(&jobs->mutex);
+    if (result == 0 && status != 0) {
+        result = -status;
+    }
+    return result;
+}
+
+/** @brief Return one accepted slow-operation reference. */
+static int respond_job_accepted(uint64_t job_id,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written)
+{
+    json_t *body = json_object();
+    json_t *job = json_object();
+
+    if (body == NULL || job == NULL ||
+        json_object_set_new(job, "id", json_integer((json_int_t)job_id)) != 0 ||
+        json_object_set_new(job, "state", json_string("queued")) != 0 ||
+        json_object_set(body, "job", job) != 0) {
+        json_decref(job);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(job);
+    return encode_response(202, body, NULL, output, output_size, written);
+}
+
 /** @brief Refresh one remote blocklist source through an authorized request. */
 static int handle_blocklist_source_refresh(
     struct jg_management *management,
@@ -6871,10 +7206,8 @@ static int handle_blocklist_source_refresh(
 {
     static const char *const fields[] = {"revision"};
     struct authenticated_actor actor;
-    struct jg_blocklist_update_result update;
     uint64_t revision = 0U;
-    uint64_t generation = 0U;
-    bool published = false;
+    uint64_t job_id = 0U;
     int result = authenticate_actor(management, request, remote, true,
                                     JG_ACCESS_POLICY_WRITE, now, &actor);
 
@@ -6890,48 +7223,19 @@ static int handle_blocklist_source_refresh(
                              "The blocklist refresh request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_blocklist_update(management->database, source_id, revision, now,
-                                 &update);
-    if (result == 0 && update.activated) {
-        publish_blocklist_source_change(management, &published, &generation);
-    }
-    if (update.source.id != 0U) {
-        const int audit_result = append_blocklist_update_audit(
-            management, request, remote, &actor, "blocklist.source.refresh",
-            &update, result, published, generation, now);
-
-        if (audit_result != 0) {
-            return respond_error(
-                500, "audit_failure",
-                "The update completed, but its audit record was not stored.",
-                request->request_id, output, output_size, written);
-        }
-    }
-    if (result == -ENOENT) {
-        return respond_error(404, "source_not_found",
-                             "The blocklist source was not found.",
-                             request->request_id, output, output_size, written);
-    }
-    if (result == -EAGAIN) {
-        return respond_error(409, "revision_conflict",
-                             "The source has changed; reload and retry.",
-                             request->request_id, output, output_size, written);
-    }
-    if (result == -EINVAL) {
-        return respond_error(409, "local_source",
-                             "Local sources cannot be refreshed remotely.",
+    result = submit_source_refresh_job(management, request, remote, &actor,
+                                       source_id, revision, now, &job_id);
+    if (result == -EBUSY) {
+        return respond_error(503, "job_queue_full",
+                             "The slow-operation queue is currently full.",
                              request->request_id, output, output_size, written);
     }
     if (result != 0) {
-        return respond_error(
-            500, "source_update_state_failed",
-            "The blocklist update state could not be persisted.",
-            request->request_id, output, output_size, written);
+        return respond_error(500, "job_queue_failed",
+                             "The source refresh could not be queued.",
+                             request->request_id, output, output_size, written);
     }
-    return respond_blocklist_update(
-        request, &update, "blocklist_update_failed",
-        jg_blocklist_update_error(update.attempt_result), 502, published,
-        generation, output, output_size, written);
+    return respond_job_accepted(job_id, output, output_size, written);
 }
 
 /** @brief Import one uploaded blocklist into an authorized local source. */
@@ -7022,9 +7326,9 @@ static int handle_blocklist_import(struct jg_management *management,
 }
 
 /** @brief Process and audit every enabled remote source currently due. */
-int jg_management_update_due_blocklists(struct jg_management *management,
-                                        uint64_t now,
-                                        size_t *attempts)
+static int update_due_blocklists_now(struct jg_management *management,
+                                     uint64_t now,
+                                     size_t *attempts)
 {
     struct jg_database_blocklist_source *sources = NULL;
     uint64_t after_id = 0U;
@@ -7050,31 +7354,36 @@ int jg_management_update_due_blocklists(struct jg_management *management,
             sources, &count, &has_more);
         for (size_t index = 0U; result == 0 && index < count; ++index) {
             struct jg_blocklist_update_result update;
-            uint64_t generation = 0U;
-            bool published = false;
+            struct source_refresh_completion completion = {
+                .management = management,
+                .action = "blocklist.source.refresh",
+                .now = now,
+                .append_event = true,
+            };
 
             after_id = sources[index].id;
             if (!sources[index].enabled || sources[index].url[0U] == '\0' ||
                 sources[index].next_attempt_at > now) {
                 continue;
             }
-            result =
-                jg_blocklist_update(management->database, sources[index].id,
-                                    sources[index].revision, now, &update);
+            result = jg_blocklist_update_complete(
+                management->database, sources[index].id,
+                sources[index].revision, now, complete_source_refresh,
+                &completion, &update);
             if (update.attempted) {
                 ++attempt_count;
             }
-            if (result == 0 && update.activated) {
-                publish_blocklist_source_change(management, &published,
-                                                &generation);
-                if (!published) {
-                    result = -EIO;
-                }
+            if (result != 0 && update.activated &&
+                management->runtime != NULL) {
+                (void)jg_daemon_runtime_reload_policy(management->runtime);
             }
-            if (update.source.id != 0U) {
+            if (result == 0 && completion.operation_result != 0) {
+                result = completion.operation_result;
+            }
+            if (result != 0 && update.source.id != 0U && !completion.called) {
                 const int audit_result = append_blocklist_update_audit(
                     management, NULL, NULL, NULL, "blocklist.source.refresh",
-                    &update, result, published, generation, now);
+                    &update, result, false, 0U, now);
                 const int event_result = append_blocklist_update_event(
                     management, &update, result, now);
 
@@ -7091,6 +7400,314 @@ int jg_management_update_due_blocklists(struct jg_management *management,
         *attempts = attempt_count;
     }
     return result;
+}
+
+/** @brief Return the oldest queued job while holding the queue mutex. */
+static struct management_job *next_queued_job(struct management_jobs *jobs)
+{
+    struct management_job *next = NULL;
+
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        struct management_job *job = &jobs->slots[index];
+
+        if (job->occupied && job->state == MANAGEMENT_JOB_QUEUED &&
+            (next == NULL || job->id < next->id)) {
+            next = job;
+        }
+    }
+    return next;
+}
+
+/** @brief Find one retained job by identifier while holding the queue mutex. */
+static struct management_job *find_job(struct management_jobs *jobs,
+                                       uint64_t job_id)
+{
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        if (jobs->slots[index].occupied && jobs->slots[index].id == job_id) {
+            return &jobs->slots[index];
+        }
+    }
+    return NULL;
+}
+
+/** @brief Execute queued slow operations on an independent DB connection. */
+static void *run_management_jobs(void *context)
+{
+    struct management_jobs *jobs = context;
+    struct jg_management worker = *jobs->management;
+
+    worker.database = jobs->database;
+    worker.jobs = NULL;
+    for (;;) {
+        struct management_job work;
+        struct management_job *queued = NULL;
+        uint64_t started_at = 0U;
+        uint64_t completed_at = 0U;
+        size_t response_size = 0U;
+        int operation_result = 0;
+        int status = pthread_mutex_lock(&jobs->mutex);
+
+        if (status != 0) {
+            return NULL;
+        }
+        queued = next_queued_job(jobs);
+        while (!jobs->stopping && queued == NULL) {
+            status = pthread_cond_wait(&jobs->ready, &jobs->mutex);
+            if (status != 0) {
+                jobs->stopping = true;
+                break;
+            }
+            queued = next_queued_job(jobs);
+        }
+        if (jobs->stopping) {
+            (void)pthread_mutex_unlock(&jobs->mutex);
+            break;
+        }
+        (void)current_time(&started_at);
+        queued->state = MANAGEMENT_JOB_RUNNING;
+        queued->started_at = started_at;
+        work = *queued;
+        (void)pthread_mutex_unlock(&jobs->mutex);
+
+        if (work.kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
+            operation_result = execute_source_refresh_job(
+                &worker, &work, work.response, sizeof(work.response),
+                &response_size);
+        } else if (work.kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
+            operation_result =
+                update_due_blocklists_now(&worker, work.submitted_at, NULL);
+        } else {
+            operation_result = -EINVAL;
+        }
+        if (!work.system_job && operation_result != 0 && response_size == 0U) {
+            (void)respond_error(500, "job_failed",
+                                "The asynchronous operation failed.",
+                                work.request_id, work.response,
+                                sizeof(work.response), &response_size);
+        }
+        (void)current_time(&completed_at);
+
+        if (pthread_mutex_lock(&jobs->mutex) != 0) {
+            break;
+        }
+        queued = find_job(jobs, work.id);
+        if (queued != NULL && queued->system_job) {
+            sodium_memzero(queued, sizeof(*queued));
+        } else if (queued != NULL) {
+            queued->response_size = response_size;
+            queued->completed_at = completed_at;
+            queued->state = MANAGEMENT_JOB_COMPLETED;
+            if (response_size > 0U) {
+                (void)memcpy(queued->response, work.response, response_size);
+            }
+        }
+        (void)pthread_mutex_unlock(&jobs->mutex);
+        sodium_memzero(&work, sizeof(work));
+    }
+    sodium_memzero(&worker, sizeof(worker));
+    return NULL;
+}
+
+/** @brief Queue one coalesced scheduled-source scan. */
+static int submit_scheduled_source_job(struct jg_management *management,
+                                       uint64_t now)
+{
+    struct management_jobs *jobs = management->jobs;
+    struct management_job *job = NULL;
+    int status = pthread_mutex_lock(&jobs->mutex);
+    int result = 0;
+
+    if (status != 0) {
+        return -status;
+    }
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        if (jobs->slots[index].occupied &&
+            jobs->slots[index].kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
+            job = &jobs->slots[index];
+            break;
+        }
+    }
+    if (job == NULL) {
+        job = select_job_slot(jobs, now);
+        if (job == NULL || jobs->next_id == 0U) {
+            result = job == NULL ? -EBUSY : -EOVERFLOW;
+        } else {
+            sodium_memzero(job, sizeof(*job));
+            job->id = jobs->next_id++;
+            job->submitted_at = now;
+            job->kind = MANAGEMENT_JOB_SCHEDULED_SOURCES;
+            job->state = MANAGEMENT_JOB_QUEUED;
+            job->occupied = true;
+            job->system_job = true;
+            status = pthread_cond_signal(&jobs->ready);
+            if (status != 0) {
+                sodium_memzero(job, sizeof(*job));
+                result = -status;
+            }
+        }
+    }
+    status = pthread_mutex_unlock(&jobs->mutex);
+    if (result == 0 && status != 0) {
+        result = -status;
+    }
+    return result;
+}
+
+/** @brief Queue due source processing without blocking the control server. */
+int jg_management_update_due_blocklists(struct jg_management *management,
+                                        uint64_t now,
+                                        size_t *attempts)
+{
+    if (management == NULL || now == 0U) {
+        return -EINVAL;
+    }
+    if (attempts != NULL) {
+        *attempts = 0U;
+    }
+    return submit_scheduled_source_job(management, now);
+}
+
+/** @brief Return the stable API spelling for one job state. */
+static const char *management_job_state_name(enum management_job_state state)
+{
+    switch (state) {
+    case MANAGEMENT_JOB_QUEUED:
+        return "queued";
+    case MANAGEMENT_JOB_RUNNING:
+        return "running";
+    case MANAGEMENT_JOB_COMPLETED:
+        return "completed";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Return the stable API spelling for one job kind. */
+static const char *management_job_kind_name(enum management_job_kind kind)
+{
+    switch (kind) {
+    case MANAGEMENT_JOB_SOURCE_REFRESH:
+        return "source_refresh";
+    case MANAGEMENT_JOB_SCHEDULED_SOURCES:
+        return "scheduled_sources";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Return one authorized retained slow-operation state. */
+static int handle_job_get(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t job_id,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written)
+{
+    struct authenticated_actor actor;
+    struct management_job snapshot;
+    json_error_t error;
+    json_t *body = NULL;
+    json_t *job = NULL;
+    json_t *response = NULL;
+    const char *kind = NULL;
+    const char *state = NULL;
+    int status = 0;
+    int result =
+        authenticate_actor(management, request, remote, false, 0U, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "Job inspection accepts no query or body.",
+                             request->request_id, output, output_size, written);
+    }
+    status = pthread_mutex_lock(&management->jobs->mutex);
+    if (status != 0) {
+        return -status;
+    }
+    {
+        const struct management_job *stored =
+            find_job(management->jobs, job_id);
+
+        if (stored == NULL || stored->system_job) {
+            result = -ENOENT;
+        } else {
+            snapshot = *stored;
+        }
+    }
+    status = pthread_mutex_unlock(&management->jobs->mutex);
+    if (result == 0 && status != 0) {
+        result = -status;
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "job_not_found",
+                             "The requested job is no longer available.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return result;
+    }
+    if (!jg_access_grants(actor.identity.permissions,
+                          snapshot.required_permission)) {
+        sodium_memzero(&snapshot, sizeof(snapshot));
+        return respond_actor_error(-EPERM, request, output, output_size,
+                                   written);
+    }
+    state = management_job_state_name(snapshot.state);
+    kind = management_job_kind_name(snapshot.kind);
+    if (state == NULL || kind == NULL) {
+        sodium_memzero(&snapshot, sizeof(snapshot));
+        return -EILSEQ;
+    }
+    if (snapshot.state == MANAGEMENT_JOB_COMPLETED &&
+        snapshot.response_size > 0U) {
+        response =
+            json_loadb((const char *)snapshot.response, snapshot.response_size,
+                       JSON_REJECT_DUPLICATES, &error);
+        if (!json_is_object(response)) {
+            json_decref(response);
+            sodium_memzero(&snapshot, sizeof(snapshot));
+            return -EILSEQ;
+        }
+    } else {
+        response = json_null();
+    }
+    body = json_object();
+    job = json_object();
+    if (body == NULL || job == NULL ||
+        json_object_set_new(job, "id", json_integer((json_int_t)job_id)) != 0 ||
+        json_object_set_new(job, "kind", json_string(kind)) != 0 ||
+        json_object_set_new(job, "state", json_string(state)) != 0 ||
+        json_object_set_new(job, "submitted_at",
+                            json_integer((json_int_t)snapshot.submitted_at)) !=
+            0 ||
+        json_object_set_new(
+            job, "started_at",
+            snapshot.started_at == 0U
+                ? json_null()
+                : json_integer((json_int_t)snapshot.started_at)) != 0 ||
+        json_object_set_new(
+            job, "completed_at",
+            snapshot.completed_at == 0U
+                ? json_null()
+                : json_integer((json_int_t)snapshot.completed_at)) != 0 ||
+        json_object_set(job, "response", response) != 0 ||
+        json_object_set(body, "job", job) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(response);
+    json_decref(job);
+    sodium_memzero(&snapshot, sizeof(snapshot));
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(200, body, NULL, output, output_size, written);
 }
 
 /** @brief Return one authenticated stable page of domain rules. */
@@ -10415,6 +11032,7 @@ static bool management_path_known(const char *path)
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/domains/", "",
                                       &identifier) ||
+           collection_path_identifier(path, "/api/v1/jobs/", "", &identifier) ||
            collection_path_identifier(path, "/api/v1/mtls/mappings/", "",
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/policies/destinations/",
@@ -10449,6 +11067,7 @@ static int dispatch_request(struct jg_management *management,
     uint64_t backup_id = 0U;
     uint64_t destination_rule_id = 0U;
     uint64_t domain_rule_id = 0U;
+    uint64_t job_id = 0U;
     uint64_t mapping_id = 0U;
     uint64_t source_id = 0U;
     uint64_t token_id = 0U;
@@ -10576,6 +11195,12 @@ static int dispatch_request(struct jg_management *management,
         return handle_blocklist_source_delete(management, request, remote,
                                               source_id, now, output,
                                               output_size, written);
+    }
+    if (strcmp(request->method, "GET") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/jobs/", "",
+                                   &job_id)) {
+        return handle_job_get(management, request, remote, job_id, now, output,
+                              output_size, written);
     }
     if (strcmp(request->path, "/api/v1/domains") == 0 &&
         strcmp(request->method, "GET") == 0) {
@@ -10910,6 +11535,8 @@ void jg_management_destroy(struct jg_management *management)
     if (management == NULL) {
         return;
     }
+    management_jobs_destroy(management->jobs);
+    management->jobs = NULL;
     sodium_memzero(management, sizeof(*management));
     free(management);
 }

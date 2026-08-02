@@ -37,6 +37,9 @@ counters, recent events, and active configuration. Policy pages provide:
 
 Every write carries the revision last read by the browser. A concurrent change
 returns a conflict instead of silently overwriting newer state.
+Remote downloads run on a fixed-capacity management queue. The WebGUI follows
+the retained job until completion while short status and policy requests remain
+available.
 
 ## Network
 

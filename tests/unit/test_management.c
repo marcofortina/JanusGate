@@ -306,6 +306,78 @@ static json_t *process_local_request(struct management_fixture *fixture,
     return parsed;
 }
 
+/** @brief Wait for one accepted API job and return its final envelope. */
+static json_t *wait_for_job(struct management_fixture *fixture,
+                            uint64_t job_id,
+                            const char *bearer)
+{
+    const struct timespec interval = {
+        .tv_nsec = 10000000L,
+    };
+    char request[1024U];
+
+    for (size_t attempt = 0U; attempt < 500U; ++attempt) {
+        json_t *response = NULL;
+        json_t *job = NULL;
+        json_t *completed = NULL;
+        int written =
+            snprintf(request, sizeof(request),
+                     "{\"request_id\":\"job-poll-%zu\",\"method\":\"GET\","
+                     "\"path\":\"/api/v1/jobs/%llu\",\"host\":\"192.168.77.1\","
+                     "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                     "\"body\":{}}",
+                     attempt, (unsigned long long)job_id, bearer);
+
+        assert_true(written > 0);
+        assert_true((size_t)written < sizeof(request));
+        response = process_request(fixture, request);
+        assert_int_equal(
+            json_integer_value(json_object_get(response, "status")), 200);
+        job = json_object_get(json_object_get(response, "body"), "job");
+        assert_true(json_is_object(job));
+        if (strcmp(json_string_value(json_object_get(job, "state")),
+                   "completed") == 0) {
+            completed = json_object_get(job, "response");
+            assert_true(json_is_object(completed));
+            json_incref(completed);
+            json_decref(response);
+            return completed;
+        }
+        json_decref(response);
+        assert_int_equal(nanosleep(&interval, NULL), 0);
+    }
+    fail_msg("management job did not complete within five seconds");
+    return NULL;
+}
+
+/** @brief Wait until the scheduled worker records one source attempt. */
+static void wait_for_source_attempt(struct management_fixture *fixture,
+                                    uint64_t source_id,
+                                    uint64_t attempted_at,
+                                    struct jg_database_blocklist_source *source)
+{
+    const struct timespec interval = {
+        .tv_nsec = 10000000L,
+    };
+
+    for (size_t attempt = 0U; attempt < 500U; ++attempt) {
+        size_t count = 0U;
+        bool has_more = false;
+
+        assert_int_equal(jg_database_list_blocklist_sources(
+                             fixture->database, source_id - 1U, 1U, source,
+                             &count, &has_more),
+                         0);
+        assert_int_equal(count, 1U);
+        assert_int_equal(source->id, source_id);
+        if (source->last_attempt_at == attempted_at) {
+            return;
+        }
+        assert_int_equal(nanosleep(&interval, NULL), 0);
+    }
+    fail_msg("scheduled source update did not complete within five seconds");
+}
+
 /** @brief Verify token-free local authorization and audit provenance. */
 static void test_local_administration(void **state)
 {
@@ -2752,6 +2824,19 @@ static void test_source_api(void **state)
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    value = json_object_get(json_object_get(response, "body"), "job");
+    assert_string_equal(json_string_value(json_object_get(value, "state")),
+                        "queued");
+    {
+        const uint64_t job_id =
+            (uint64_t)json_integer_value(json_object_get(value, "id"));
+
+        assert_true(job_id > 0U);
+        json_decref(response);
+        response = wait_for_job(fixture, job_id, api_token.secret);
+    }
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      502);
     body = json_object_get(response, "body");
     assert_string_equal(json_string_value(json_object_get(
@@ -2913,13 +2998,8 @@ static void test_scheduled_source_update(void **state)
     assert_int_equal(jg_management_update_due_blocklists(fixture->management,
                                                          100U, &attempts),
                      0);
-    assert_int_equal(attempts, 1U);
-    assert_int_equal(jg_database_list_blocklist_sources(fixture->database, 0U,
-                                                        1U, &updated, &count,
-                                                        &has_more),
-                     0);
-    assert_int_equal(count, 1U);
-    assert_false(has_more);
+    assert_int_equal(attempts, 0U);
+    wait_for_source_attempt(fixture, source.id, 100U, &updated);
     assert_int_equal(updated.health, JG_DATABASE_BLOCKLIST_FAILED);
     assert_int_equal(updated.last_attempt_at, 100U);
     assert_int_equal(updated.consecutive_failures, 1U);

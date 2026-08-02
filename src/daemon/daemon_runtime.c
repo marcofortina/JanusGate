@@ -5,6 +5,7 @@
 #include "daemon_runtime.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -32,10 +33,12 @@ struct jg_daemon_runtime {
     struct jg_dataplane_worker *workers[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_packet_output *outputs[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_nfqueue_group *queues;
+    pthread_mutex_t policy_mutex;
     struct jg_network_config active_network;
     struct jg_dns_response_config active_dns_response;
     atomic_uint_fast64_t policy_generation;
     size_t worker_count;
+    bool policy_mutex_initialized;
 };
 
 /** Complete validated candidate retained until publication or destruction. */
@@ -312,6 +315,12 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
     }
     if (result == 0) {
         atomic_init(&started->policy_generation, 1U);
+        const int status = pthread_mutex_init(&started->policy_mutex, NULL);
+
+        result = status == 0 ? 0 : -status;
+        started->policy_mutex_initialized = result == 0;
+    }
+    if (result == 0) {
         result = jg_database_open(config->database_path,
                                   config->database_busy_timeout_ms,
                                   &started->database);
@@ -409,28 +418,48 @@ int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime)
     return runtime == NULL ? -EINVAL : jg_nfqueue_group_join(runtime->queues);
 }
 
-/** @brief Load and publish the next persistent policy generation. */
-int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime)
+/** @brief Publish policy read through one caller-selected DB connection. */
+int jg_daemon_runtime_reload_policy_from_database(
+    struct jg_daemon_runtime *runtime,
+    struct jg_database *database)
 {
     uint64_t generation = 0U;
+    int status = 0;
     int result = 0;
 
-    if (runtime == NULL) {
+    if (runtime == NULL || database == NULL) {
         return -EINVAL;
+    }
+    status = pthread_mutex_lock(&runtime->policy_mutex);
+    if (status != 0) {
+        return -status;
     }
     generation =
         atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
     if (generation == UINT64_MAX) {
-        return -EOVERFLOW;
+        result = -EOVERFLOW;
+    } else {
+        ++generation;
+        result = jg_policy_store_reload_from_database(runtime->policies,
+                                                      database, generation);
+        if (result == 0) {
+            atomic_store_explicit(&runtime->policy_generation, generation,
+                                  memory_order_release);
+        }
     }
-    ++generation;
-    result = jg_policy_store_reload_from_database(
-        runtime->policies, runtime->database, generation);
-    if (result == 0) {
-        atomic_store_explicit(&runtime->policy_generation, generation,
-                              memory_order_release);
+    status = pthread_mutex_unlock(&runtime->policy_mutex);
+    if (result == 0 && status != 0) {
+        result = -status;
     }
     return result;
+}
+
+/** @brief Load and publish the next committed policy generation. */
+int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime)
+{
+    return runtime == NULL ? -EINVAL
+                           : jg_daemon_runtime_reload_policy_from_database(
+                                 runtime, runtime->database);
 }
 
 /** @brief Build and validate one complete persistent runtime candidate. */
@@ -536,6 +565,7 @@ int jg_daemon_runtime_reload_configuration(
     struct runtime_configuration_candidate candidate;
     bool dns_applied = false;
     bool dns_changed = false;
+    int mutex_status = 0;
     int rollback_result = 0;
     int result = 0;
 
@@ -543,7 +573,13 @@ int jg_daemon_runtime_reload_configuration(
         return -EINVAL;
     }
     (void)memset(status, 0, sizeof(*status));
-    result = prepare_configuration(runtime, &candidate);
+    mutex_status = pthread_mutex_lock(&runtime->policy_mutex);
+    result = mutex_status == 0 ? 0 : -mutex_status;
+    if (result == 0) {
+        result = prepare_configuration(runtime, &candidate);
+    } else {
+        (void)memset(&candidate, 0, sizeof(candidate));
+    }
     if (result == 0) {
         dns_changed = !dns_response_configurations_equal(
             &runtime->active_dns_response, &candidate.dns_response);
@@ -586,6 +622,12 @@ int jg_daemon_runtime_reload_configuration(
         configuration_status(runtime, &candidate, status);
     }
     jg_policy_snapshot_destroy(candidate.policy);
+    if (mutex_status == 0) {
+        mutex_status = pthread_mutex_unlock(&runtime->policy_mutex);
+        if (result == 0 && mutex_status != 0) {
+            result = -mutex_status;
+        }
+    }
     return result;
 }
 
@@ -697,13 +739,16 @@ void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
     if (runtime == NULL) {
         return;
     }
+    jg_management_destroy(runtime->management);
     jg_nfqueue_group_destroy(runtime->queues);
     for (index = 0U; index < runtime->worker_count; ++index) {
         jg_packet_output_close(runtime->outputs[index]);
         jg_dataplane_worker_destroy(runtime->workers[index]);
     }
     jg_policy_store_destroy(runtime->policies);
-    jg_management_destroy(runtime->management);
+    if (runtime->policy_mutex_initialized) {
+        (void)pthread_mutex_destroy(&runtime->policy_mutex);
+    }
     jg_database_close(runtime->database);
     free(runtime);
 }
