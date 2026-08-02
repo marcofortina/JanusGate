@@ -691,6 +691,30 @@ static const char *const migration_13[] = {
     migration_13_operations,
 };
 
+/** Persist policy publication health across runtime restarts. */
+static const char migration_14_policy_sync[] =
+    "CREATE TABLE policy_sync_state ("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "desired_revision INTEGER NOT NULL CHECK(desired_revision>0),"
+    "applied_revision INTEGER NOT NULL CHECK(applied_revision>0),"
+    "last_attempt_at INTEGER NOT NULL CHECK(last_attempt_at>=0),"
+    "last_error TEXT CHECK(last_error IS NULL OR "
+    "length(last_error) BETWEEN 1 AND 128),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=0),"
+    "CHECK(applied_revision<=desired_revision)"
+    ") STRICT;"
+    "INSERT INTO policy_sync_state(id,desired_revision,applied_revision,"
+    "last_attempt_at,last_error,updated_at)"
+    " VALUES(1,1,1,0,NULL,unixepoch());"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(14,unixepoch());"
+    "PRAGMA user_version=14;";
+
+/** Ordered statement groups composing schema version fourteen. */
+static const char *const migration_14[] = {
+    migration_14_policy_sync,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -706,6 +730,7 @@ static const struct database_migration migrations[] = {
     {11U, migration_11, sizeof(migration_11) / sizeof(migration_11[0])},
     {12U, migration_12, sizeof(migration_12) / sizeof(migration_12[0])},
     {13U, migration_13, sizeof(migration_13) / sizeof(migration_13[0])},
+    {14U, migration_14, sizeof(migration_14) / sizeof(migration_14[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1998,6 +2023,187 @@ int jg_database_operation_clear(struct jg_database *database)
                          "DELETE FROM management_operations WHERE id=1;");
     if (result == 0 && sqlite3_changes(database->handle) != 1) {
         result = -ENOENT;
+    }
+    return result;
+}
+
+/** @brief Load persistent policy publication state. */
+int jg_database_policy_sync_load(struct jg_database *database,
+                                 struct jg_database_policy_sync *state)
+{
+    static const char query[] =
+        "SELECT desired_revision,applied_revision,last_attempt_at,last_error"
+        " FROM policy_sync_state WHERE id=1;";
+    struct jg_database_policy_sync loaded;
+    sqlite3_stmt *statement = NULL;
+    const char *error = NULL;
+    size_t error_size = 0U;
+    sqlite3_int64 desired_revision = 0;
+    sqlite3_int64 applied_revision = 0;
+    sqlite3_int64 last_attempt_at = 0;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || state == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(&loaded, 0, sizeof(loaded));
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_ROW    ? 0
+                 : status == SQLITE_DONE ? -EILSEQ
+                                         : jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        desired_revision = sqlite3_column_int64(statement, 0);
+        applied_revision = sqlite3_column_int64(statement, 1);
+        last_attempt_at = sqlite3_column_int64(statement, 2);
+        if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+            sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+            sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
+            desired_revision <= 0 || applied_revision <= 0 ||
+            applied_revision > desired_revision || last_attempt_at < 0) {
+            result = -EILSEQ;
+        }
+    }
+    if (result == 0 && sqlite3_column_type(statement, 3) != SQLITE_NULL) {
+        result = required_text(statement, 3, &error, &error_size);
+        if (result == 0 && (error_size == 0U ||
+                            error_size > JG_DATABASE_POLICY_SYNC_ERROR_MAX)) {
+            result = -EILSEQ;
+        }
+    }
+    if (result == 0) {
+        loaded.desired_revision = (uint64_t)desired_revision;
+        loaded.applied_revision = (uint64_t)applied_revision;
+        loaded.last_attempt_at = (uint64_t)last_attempt_at;
+        if (error != NULL) {
+            (void)memcpy(loaded.last_error, error, error_size);
+            loaded.last_error[error_size] = '\0';
+        }
+    }
+    if (result == 0 && sqlite3_step(statement) != SQLITE_DONE) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        *state = loaded;
+    }
+    return result;
+}
+
+/** @brief Advance the desired policy revision after a persistent mutation. */
+int jg_database_policy_sync_advance(struct jg_database *database,
+                                    uint64_t now,
+                                    struct jg_database_policy_sync *state)
+{
+    static const char update[] =
+        "UPDATE policy_sync_state SET desired_revision=desired_revision+1,"
+        "last_error=NULL,updated_at=?1 WHERE id=1"
+        " AND desired_revision<9223372036854775807;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || state == NULL || now > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, update, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)now);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EOVERFLOW;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = jg_database_policy_sync_load(database, state);
+    }
+    return result;
+}
+
+/** @brief Record the result of publishing one desired policy revision. */
+int jg_database_policy_sync_record(struct jg_database *database,
+                                   uint64_t desired_revision,
+                                   bool applied,
+                                   const char *error,
+                                   uint64_t now,
+                                   struct jg_database_policy_sync *state)
+{
+    static const char update[] =
+        "UPDATE policy_sync_state SET applied_revision="
+        "CASE WHEN ?2=1 THEN ?1 ELSE applied_revision END,"
+        "last_attempt_at=?3,last_error=?4,updated_at=?3"
+        " WHERE id=1 AND desired_revision=?1;";
+    const size_t error_size =
+        error == NULL ? 0U
+                      : strnlen(error, JG_DATABASE_POLICY_SYNC_ERROR_MAX + 1U);
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || state == NULL || desired_revision == 0U ||
+        desired_revision > (uint64_t)INT64_MAX || now > (uint64_t)INT64_MAX ||
+        (applied && error != NULL) ||
+        (!applied && (error == NULL || error_size == 0U ||
+                      error_size > JG_DATABASE_POLICY_SYNC_ERROR_MAX))) {
+        return -EINVAL;
+    }
+    status = sqlite3_prepare_v3(database->handle, update, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status =
+            sqlite3_bind_int64(statement, 1, (sqlite3_int64)desired_revision);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int(statement, 2, applied ? 1 : 0);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 3, (sqlite3_int64)now);
+        }
+        if (status == SQLITE_OK) {
+            status = applied
+                         ? sqlite3_bind_null(statement, 4)
+                         : sqlite3_bind_text(statement, 4, error,
+                                             (int)error_size, SQLITE_TRANSIENT);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EAGAIN;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        result = jg_database_policy_sync_load(database, state);
     }
     return result;
 }

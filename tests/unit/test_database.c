@@ -462,6 +462,7 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "logging_configuration"));
     assert_true(column_exists(inspection, "logging_configuration", "revision"));
     assert_true(table_exists(inspection, "management_operations"));
+    assert_true(table_exists(inspection, "policy_sync_state"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -507,6 +508,59 @@ static void test_management_operation(void **state)
         -EINVAL);
     assert_int_equal(
         jg_database_operation_prepare(database, "operation", NULL, 1U, 1U),
+        -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify persistent desired and applied policy revisions. */
+static void test_policy_sync_state(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_database_policy_sync sync;
+    struct jg_database *database = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_policy_sync_load(database, &sync), 0);
+    assert_int_equal(sync.desired_revision, 1U);
+    assert_int_equal(sync.applied_revision, 1U);
+    assert_string_equal(sync.last_error, "");
+
+    assert_int_equal(jg_database_policy_sync_advance(database, 100U, &sync), 0);
+    assert_int_equal(sync.desired_revision, 2U);
+    assert_int_equal(sync.applied_revision, 1U);
+    assert_int_equal(
+        jg_database_policy_sync_record(database, sync.desired_revision, false,
+                                       "runtime_reload_failed", 101U, &sync),
+        0);
+    assert_int_equal(sync.last_attempt_at, 101U);
+    assert_string_equal(sync.last_error, "runtime_reload_failed");
+    assert_int_equal(
+        jg_database_policy_sync_record(database, 1U, true, NULL, 102U, &sync),
+        -EAGAIN);
+    assert_int_equal(
+        jg_database_policy_sync_record(database, 2U, true, NULL, 103U, &sync),
+        0);
+    assert_int_equal(sync.desired_revision, sync.applied_revision);
+    assert_int_equal(sync.last_attempt_at, 103U);
+    assert_string_equal(sync.last_error, "");
+
+    assert_int_equal(jg_database_transaction_begin(database), 0);
+    assert_int_equal(jg_database_policy_sync_advance(database, 104U, &sync), 0);
+    assert_int_equal(sync.desired_revision, 3U);
+    assert_int_equal(jg_database_transaction_rollback(database), 0);
+    assert_int_equal(jg_database_policy_sync_load(database, &sync), 0);
+    assert_int_equal(sync.desired_revision, 2U);
+    assert_int_equal(sync.applied_revision, 2U);
+
+    assert_int_equal(jg_database_policy_sync_load(NULL, &sync), -EINVAL);
+    assert_int_equal(jg_database_policy_sync_advance(database, 0U, NULL),
+                     -EINVAL);
+    assert_int_equal(
+        jg_database_policy_sync_record(database, 2U, false, NULL, 104U, &sync),
         -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
@@ -1426,6 +1480,7 @@ static void test_network_configuration_migration(void **state)
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
         "DROP TABLE management_operations;"
+        "DROP TABLE policy_sync_state;"
         "DROP TABLE logging_configuration;"
         "DROP TABLE network_configuration;"
         "ALTER TABLE mtls_mappings RENAME TO mtls_mappings_v12;"
@@ -1954,6 +2009,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_database_export),
         cmocka_unit_test(test_backup_metadata),
         cmocka_unit_test(test_management_operation),
+        cmocka_unit_test(test_policy_sync_state),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_version_two_migration),

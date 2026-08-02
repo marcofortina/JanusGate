@@ -34,7 +34,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 13U
+#define JG_DATABASE_SCHEMA_VERSION 14U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -62,6 +62,9 @@
 
 /** Maximum opaque durable management-operation payload bytes. */
 #define JG_DATABASE_OPERATION_PAYLOAD_MAX 4096U
+
+/** Maximum persistent policy-publication error bytes. */
+#define JG_DATABASE_POLICY_SYNC_ERROR_MAX 128U
 
 /**
  * @brief Persistent health classification for one blocklist source.
@@ -127,6 +130,19 @@ struct jg_database_operation {
     /** Whether durable recovery snapshots permit external mutation. */
     bool ready;
 };
+
+/** Persistent relationship between policy storage and runtime publication. */
+struct jg_database_policy_sync {
+    /** Revision containing the newest committed persistent policy. */
+    uint64_t desired_revision;
+    /** Newest desired revision successfully published to the runtime. */
+    uint64_t applied_revision;
+    /** Time of the newest publication attempt as Unix seconds, or zero. */
+    uint64_t last_attempt_at;
+    /** Stable failure code for the newest attempt, or empty on success. */
+    char last_error[JG_DATABASE_POLICY_SYNC_ERROR_MAX + 1U];
+};
+
 /**
  * @brief Self-contained persistent network-configuration record.
  */
@@ -458,6 +474,71 @@ JG_PUBLIC int jg_database_operation_load(
  * @thread_safety The caller must serialize access to @p database.
  */
 JG_PUBLIC int jg_database_operation_clear(struct jg_database *database);
+
+/**
+ * @brief Load persistent policy publication state.
+ *
+ * @param[in] database Open database.
+ * @param[out] state Receives the self-contained publication state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_policy_sync_load(
+    struct jg_database *database,
+    struct jg_database_policy_sync *state);
+
+/**
+ * @brief Advance the desired policy revision after a persistent mutation.
+ *
+ * This function participates in an existing transaction so the policy change
+ * and pending publication state share one commit.
+ *
+ * @param[in] database Open database.
+ * @param[in] now Current Unix time in seconds.
+ * @param[out] state Receives the advanced publication state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_policy_sync_advance(
+    struct jg_database *database,
+    uint64_t now,
+    struct jg_database_policy_sync *state);
+
+/**
+ * @brief Record the result of publishing one desired policy revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] desired_revision Revision supplied to the publication attempt.
+ * @param[in] applied Whether the runtime accepted that revision.
+ * @param[in] error Stable failure code when @p applied is false; otherwise
+ * null.
+ * @param[in] now Attempt time as Unix seconds.
+ * @param[out] state Receives the updated publication state.
+ *
+ * @return 0 on success.
+ * @return -EAGAIN when the desired revision changed concurrently.
+ * @return -EINVAL for invalid arguments.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_policy_sync_record(
+    struct jg_database *database,
+    uint64_t desired_revision,
+    bool applied,
+    const char *error,
+    uint64_t now,
+    struct jg_database_policy_sync *state);
 
 /**
  * @brief Run SQLite's full integrity check.
