@@ -5,7 +5,7 @@
 
 "use strict";
 
-import { ApiError, api, errorMessage } from "./api.js";
+import { ApiError, api, errorMessage, waitForJob } from "./api.js";
 import {
   announce,
   byId,
@@ -255,13 +255,14 @@ async function createCsr(event) {
   }
   await withBusyButton(byId("csr-submit"), async () => {
     try {
-      const result = await api("/api/v1/certificates/csr", {
+      const accepted = await api("/api/v1/certificates/csr", {
         method: "POST",
         body: {
           common_name: String(form.elements.common_name.value).trim(),
           alternative_names: alternativeNames,
         },
       });
+      const result = await waitForJob(accepted);
 
       byId("csr-result").textContent = result.request;
       byId("csr-result-panel").hidden = false;

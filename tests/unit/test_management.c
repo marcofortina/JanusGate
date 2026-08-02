@@ -1823,7 +1823,7 @@ static void test_certificate_api(void **state)
     struct jg_account_token_config token_config = {
         .name = "certificate administrator",
         .permissions = JG_ACCESS_SECURITY_WRITE,
-        .requests_per_minute = 60U,
+        .requests_per_minute = JG_ACCOUNT_TOKEN_RATE_MAX,
     };
     struct jg_account_api_token token;
     struct jg_certificate_material material;
@@ -1890,6 +1890,7 @@ static void test_certificate_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      201);
     body = json_object_get(response, "body");

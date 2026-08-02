@@ -2388,6 +2388,7 @@ static int run_certificate_csr(const struct cli_options *options,
                                const char *file)
 {
     json_t *body = NULL;
+    json_t *completed = NULL;
     int read_result = 0;
     int result = CLI_EXIT_SUCCESS;
 
@@ -2399,8 +2400,12 @@ static int run_certificate_csr(const struct cli_options *options,
                    ? CLI_EXIT_USAGE
                    : CLI_EXIT_FAILURE;
     }
-    result = send_api_request(options, token, "certificate csr", "POST",
-                              "/api/v1/certificates/csr", body);
+    result = post_api_job(options, token, "/api/v1/certificates/csr", body,
+                          &completed);
+    if (result == CLI_EXIT_SUCCESS) {
+        result = present_object(options, completed);
+    }
+    json_decref(completed);
     json_decref(body);
     return result;
 }

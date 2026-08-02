@@ -887,8 +887,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CertificateRequest'
       responses:
-        '201':
-          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JobAccepted'
         default:
           $ref: '#/components/responses/JsonError'
   /mtls/authorities:
@@ -1280,6 +1280,7 @@ components:
                 - backup_create
                 - backup_restore
                 - diagnostics_create
+                - certificate_csr
             state:
               enum: [queued, running, completed]
             submitted_at:

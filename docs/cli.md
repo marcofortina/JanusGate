@@ -83,9 +83,9 @@ management requests.
   backup.
 - `diagnostics create` creates a bounded diagnostic archive.
 
-Backup creation and restore, and diagnostic archive creation, use the same
-bounded job queue; the CLI waits for completion before presenting or saving the
-result.
+CSR generation, backup creation and restore, and diagnostic archive creation
+use the same bounded job queue; the CLI waits for completion before presenting
+or saving the result.
 
 ## Runtime operations
 

@@ -86,6 +86,9 @@
 /** Complete timestamped diagnostic archive filename bytes. */
 #define MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE 48U
 
+/** Maximum DNS or textual IP name accepted in a certificate request. */
+#define MANAGEMENT_CERTIFICATE_NAME_MAX 253U
+
 /** Maximum retained queued, running, or completed slow operations. */
 #define MANAGEMENT_JOB_CAPACITY 8U
 
@@ -188,7 +191,8 @@ enum management_job_kind {
     MANAGEMENT_JOB_BLOCKLIST_IMPORT = 3,
     MANAGEMENT_JOB_BACKUP_CREATE = 4,
     MANAGEMENT_JOB_BACKUP_RESTORE = 5,
-    MANAGEMENT_JOB_DIAGNOSTICS_CREATE = 6
+    MANAGEMENT_JOB_DIAGNOSTICS_CREATE = 6,
+    MANAGEMENT_JOB_CERTIFICATE_CSR = 7
 };
 
 /** Stable lifecycle states exposed through the management API. */
@@ -222,6 +226,12 @@ union management_job_parameters {
         uint64_t backup_id;
         bool dry_run;
     } backup_restore;
+    struct {
+        char common_name[MANAGEMENT_CERTIFICATE_NAME_MAX + 1U];
+        char alternative_names[JG_CERTIFICATE_SAN_MAX]
+                              [MANAGEMENT_CERTIFICATE_NAME_MAX + 1U];
+        size_t alternative_name_count;
+    } certificate_csr;
 };
 
 /** Compact slow-operation input prepared by the control thread. */
@@ -265,6 +275,7 @@ struct management_jobs {
     struct jg_management *management;
     struct jg_database *database;
     struct management_job slots[MANAGEMENT_JOB_CAPACITY];
+    struct management_job worker_job;
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t thread;
@@ -338,6 +349,13 @@ static int execute_diagnostics_create_job(struct jg_management *management,
                                           uint8_t *output,
                                           size_t output_size,
                                           size_t *written);
+
+/** @brief Execute one authenticated certificate-request generation job. */
+static int execute_certificate_csr_job(struct jg_management *management,
+                                       const struct management_job *job,
+                                       uint8_t *output,
+                                       size_t output_size,
+                                       size_t *written);
 
 /** @brief Begin one persistent mutation that must share its audit commit. */
 static int audited_mutation_begin(struct jg_management *management)
@@ -528,6 +546,7 @@ static void management_jobs_destroy(struct management_jobs *jobs)
                                         &jobs->slots[index].parameters);
     }
     sodium_memzero(jobs->slots, sizeof(jobs->slots));
+    sodium_memzero(&jobs->worker_job, sizeof(jobs->worker_job));
     free(jobs);
 }
 
@@ -7359,12 +7378,21 @@ static int check_job_capacity(const struct management_jobs *jobs,
 static int check_job_conflict(const struct management_jobs *jobs,
                               const struct authenticated_actor *actor,
                               const struct management_job_submission *prepared,
+                              uint64_t now,
                               uint64_t *job_id)
 {
     for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
         const struct management_job *job = &jobs->slots[index];
 
-        if (!job->occupied || job->state == MANAGEMENT_JOB_COMPLETED) {
+        if (!job->occupied) {
+            continue;
+        }
+        if (prepared->kind == MANAGEMENT_JOB_CERTIFICATE_CSR &&
+            job->kind == MANAGEMENT_JOB_CERTIFICATE_CSR &&
+            !job_slot_reusable(job, now)) {
+            return -EALREADY;
+        }
+        if (job->state == MANAGEMENT_JOB_COMPLETED) {
             continue;
         }
         if (prepared->kind == MANAGEMENT_JOB_SOURCE_REFRESH &&
@@ -7463,7 +7491,7 @@ static int submit_management_job(struct jg_management *management,
         sodium_memzero(&authorization, sizeof(authorization));
         return -status;
     }
-    result = check_job_conflict(jobs, actor, prepared, job_id);
+    result = check_job_conflict(jobs, actor, prepared, now, job_id);
     if (result == 1) {
         result = 0;
         coalesced = true;
@@ -7898,11 +7926,11 @@ static void *run_management_jobs(void *context)
 {
     struct management_jobs *jobs = context;
     struct jg_management worker = *jobs->management;
+    struct management_job *work = &jobs->worker_job;
 
     worker.database = jobs->database;
     worker.jobs = NULL;
     for (;;) {
-        struct management_job work;
         struct management_job *queued = NULL;
         uint64_t started_at = 0U;
         uint64_t completed_at = 0U;
@@ -7927,28 +7955,28 @@ static void *run_management_jobs(void *context)
             (void)pthread_mutex_unlock(&jobs->mutex);
             break;
         }
-        work = *queued;
+        *work = *queued;
         (void)current_time(&started_at);
         (void)pthread_mutex_unlock(&jobs->mutex);
 
         authorization_result =
-            reauthorize_management_job(&worker, &work, started_at);
+            reauthorize_management_job(&worker, work, started_at);
         status = pthread_mutex_lock(&jobs->mutex);
         if (status != 0) {
             break;
         }
-        queued = find_job(jobs, work.id);
+        queued = find_job(jobs, work->id);
         if (queued == NULL) {
             (void)pthread_mutex_unlock(&jobs->mutex);
-            management_job_parameters_clear(work.kind, &work.parameters);
-            sodium_memzero(&work, sizeof(work));
+            management_job_parameters_clear(work->kind, &work->parameters);
+            sodium_memzero(work, sizeof(*work));
             continue;
         }
         if (authorization_result == 0) {
-            queued->actor = work.actor;
+            queued->actor = work->actor;
             queued->state = MANAGEMENT_JOB_RUNNING;
             queued->started_at = started_at;
-            work.started_at = started_at;
+            work->started_at = started_at;
         }
         if (queued->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
             queued->parameters.blocklist_import.content = NULL;
@@ -7957,7 +7985,7 @@ static void *run_management_jobs(void *context)
         sodium_memzero(&queued->parameters, sizeof(queued->parameters));
         sodium_memzero(&queued->authorization, sizeof(queued->authorization));
         (void)pthread_mutex_unlock(&jobs->mutex);
-        sodium_memzero(&work.authorization, sizeof(work.authorization));
+        sodium_memzero(&work->authorization, sizeof(work->authorization));
 
         if (authorization_result != 0) {
             const bool denied = authorization_result == -EACCES ||
@@ -7969,47 +7997,51 @@ static void *run_management_jobs(void *context)
                        : "job_authorization_failed",
                 denied ? "Authorization changed before the job could start."
                        : "The job authorization could not be rechecked.",
-                work.request_id, work.response, sizeof(work.response),
+                work->request_id, work->response, sizeof(work->response),
                 &response_size);
-        } else if (work.kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
+        } else if (work->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
             operation_result = execute_source_refresh_job(
-                &worker, &work, work.response, sizeof(work.response),
+                &worker, work, work->response, sizeof(work->response),
                 &response_size);
-        } else if (work.kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
+        } else if (work->kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
             operation_result =
-                update_due_blocklists_now(&worker, work.submitted_at, NULL);
-        } else if (work.kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
+                update_due_blocklists_now(&worker, work->submitted_at, NULL);
+        } else if (work->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
             operation_result = execute_blocklist_import_job(
-                &worker, &work, work.response, sizeof(work.response),
+                &worker, work, work->response, sizeof(work->response),
                 &response_size);
-        } else if (work.kind == MANAGEMENT_JOB_BACKUP_CREATE) {
+        } else if (work->kind == MANAGEMENT_JOB_BACKUP_CREATE) {
             operation_result = execute_backup_create_job(
-                &worker, &work, work.response, sizeof(work.response),
+                &worker, work, work->response, sizeof(work->response),
                 &response_size);
-        } else if (work.kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
+        } else if (work->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
             operation_result = execute_backup_restore_job(
-                &worker, &work, work.response, sizeof(work.response),
+                &worker, work, work->response, sizeof(work->response),
                 &response_size);
-        } else if (work.kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
+        } else if (work->kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
             operation_result = execute_diagnostics_create_job(
-                &worker, &work, work.response, sizeof(work.response),
+                &worker, work, work->response, sizeof(work->response),
+                &response_size);
+        } else if (work->kind == MANAGEMENT_JOB_CERTIFICATE_CSR) {
+            operation_result = execute_certificate_csr_job(
+                &worker, work, work->response, sizeof(work->response),
                 &response_size);
         } else {
             operation_result = -EINVAL;
         }
-        if (!work.system_job && operation_result != 0 && response_size == 0U) {
+        if (!work->system_job && operation_result != 0 && response_size == 0U) {
             (void)respond_error(500, "job_failed",
                                 "The asynchronous operation failed.",
-                                work.request_id, work.response,
-                                sizeof(work.response), &response_size);
+                                work->request_id, work->response,
+                                sizeof(work->response), &response_size);
         }
-        management_job_parameters_clear(work.kind, &work.parameters);
+        management_job_parameters_clear(work->kind, &work->parameters);
         (void)current_time(&completed_at);
 
         if (pthread_mutex_lock(&jobs->mutex) != 0) {
             break;
         }
-        queued = find_job(jobs, work.id);
+        queued = find_job(jobs, work->id);
         if (queued != NULL && queued->system_job) {
             sodium_memzero(queued, sizeof(*queued));
         } else if (queued != NULL) {
@@ -8017,11 +8049,11 @@ static void *run_management_jobs(void *context)
             queued->completed_at = completed_at;
             queued->state = MANAGEMENT_JOB_COMPLETED;
             if (response_size > 0U) {
-                (void)memcpy(queued->response, work.response, response_size);
+                (void)memcpy(queued->response, work->response, response_size);
             }
         }
         (void)pthread_mutex_unlock(&jobs->mutex);
-        sodium_memzero(&work, sizeof(work));
+        sodium_memzero(work, sizeof(*work));
     }
     sodium_memzero(&worker, sizeof(worker));
     return NULL;
@@ -8121,6 +8153,8 @@ static const char *management_job_kind_name(enum management_job_kind kind)
         return "backup_restore";
     case MANAGEMENT_JOB_DIAGNOSTICS_CREATE:
         return "diagnostics_create";
+    case MANAGEMENT_JOB_CERTIFICATE_CSR:
+        return "certificate_csr";
     default:
         return NULL;
     }
@@ -9794,9 +9828,11 @@ static int certificate_alternative_names(
     for (size_t index = 0U; index < count; ++index) {
         json_t *value = json_array_get(values, index);
         const char *text = json_string_value(value);
-        const size_t text_size = bounded_length(text, 253U);
+        const size_t text_size =
+            bounded_length(text, MANAGEMENT_CERTIFICATE_NAME_MAX);
 
-        if (!json_is_string(value) || text_size == 0U || text_size > 253U ||
+        if (!json_is_string(value) || text_size == 0U ||
+            text_size > MANAGEMENT_CERTIFICATE_NAME_MAX ||
             json_string_length(value) != text_size) {
             return -EINVAL;
         }
@@ -9855,48 +9891,33 @@ static int handle_certificate_show(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
-/** @brief Create one CSR while retaining its private key on the appliance. */
-static int handle_certificate_csr(struct jg_management *management,
-                                  const struct management_request *request,
-                                  const struct remote_address *remote,
-                                  uint64_t now,
-                                  uint8_t *output,
-                                  size_t output_size,
-                                  size_t *written)
+/** @brief Execute one CSR while retaining its private key on the appliance. */
+static int execute_certificate_csr_job(struct jg_management *management,
+                                       const struct management_job *job,
+                                       uint8_t *output,
+                                       size_t output_size,
+                                       size_t *written)
 {
-    static const char *const fields[] = {
-        "common_name",
-        "alternative_names",
+    const struct management_request request = {
+        .request_id = job->request_id,
     };
-    struct authenticated_actor actor;
     struct jg_certificate_material material;
     const char *names[JG_CERTIFICATE_SAN_MAX];
-    const char *common_name = NULL;
     char pending_path[PATH_MAX];
-    size_t name_count = 0U;
     json_t *body = NULL;
-    int result = authenticate_actor(management, request, remote, true,
-                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+    int result = 0;
 
     (void)memset(&material, 0, sizeof(material));
-    if (result != 0) {
-        return respond_actor_error(result, request, output, output_size,
-                                   written);
-    }
-    common_name = required_string(request->body, "common_name", 1U, 253U);
-    if (request->query[0U] != '\0' ||
-        !fields_allowed(request->body, fields,
-                        sizeof(fields) / sizeof(fields[0U])) ||
-        common_name == NULL ||
-        certificate_alternative_names(request->body, names, &name_count) != 0) {
-        return respond_error(400, "invalid_body",
-                             "The certificate request is not valid.",
-                             request->request_id, output, output_size, written);
+    for (size_t index = 0U;
+         index < job->parameters.certificate_csr.alternative_name_count;
+         ++index) {
+        names[index] = job->parameters.certificate_csr.alternative_names[index];
     }
     result = certificate_pending_path(management, pending_path);
     if (result == 0) {
-        result = jg_certificate_create_csr(common_name, names, name_count,
-                                           &material);
+        result = jg_certificate_create_csr(
+            job->parameters.certificate_csr.common_name, names,
+            job->parameters.certificate_csr.alternative_name_count, &material);
     }
     if (result == 0) {
         result = jg_certificate_private_key_store(
@@ -9906,24 +9927,24 @@ static int handle_certificate_csr(struct jg_management *management,
         jg_certificate_material_clear(&material);
         return respond_error(400, "invalid_certificate_name",
                              "The certificate names are not valid.",
-                             request->request_id, output, output_size, written);
+                             request.request_id, output, output_size, written);
     }
     if (result != 0) {
         jg_certificate_material_clear(&material);
         return respond_error(500, "csr_create_failed",
                              "The certificate request could not be created.",
-                             request->request_id, output, output_size, written);
+                             request.request_id, output, output_size, written);
     }
-    result =
-        append_certificate_audit(management, request, remote, &actor,
-                                 "certificate.csr", common_name, NULL, now);
+    result = append_certificate_audit(
+        management, &request, &job->remote, &job->actor, "certificate.csr",
+        job->parameters.certificate_csr.common_name, NULL, job->started_at);
     if (result != 0) {
         jg_certificate_material_clear(&material);
         return respond_error(
             500, "audit_failure",
             "The certificate request was created, but its audit record could "
             "not be stored.",
-            request->request_id, output, output_size, written);
+            request.request_id, output, output_size, written);
     }
     body = json_object();
     if (body == NULL ||
@@ -9937,6 +9958,65 @@ static int handle_certificate_csr(struct jg_management *management,
     }
     jg_certificate_material_clear(&material);
     return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Queue one private-key and certificate-request generation. */
+static int handle_certificate_csr(struct jg_management *management,
+                                  const struct management_request *request,
+                                  const struct remote_address *remote,
+                                  uint64_t now,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  size_t *written)
+{
+    static const char *const fields[] = {
+        "common_name",
+        "alternative_names",
+    };
+    struct authenticated_actor actor;
+    struct management_job_submission prepared = {
+        .required_permission = JG_ACCESS_SECURITY_WRITE,
+        .kind = MANAGEMENT_JOB_CERTIFICATE_CSR,
+    };
+    const char *names[JG_CERTIFICATE_SAN_MAX];
+    const char *common_name = NULL;
+    size_t name_count = 0U;
+    uint64_t job_id = 0U;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_SECURITY_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    common_name = required_string(request->body, "common_name", 1U,
+                                  MANAGEMENT_CERTIFICATE_NAME_MAX);
+    if (request->query[0U] != '\0' ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        common_name == NULL ||
+        certificate_alternative_names(request->body, names, &name_count) != 0) {
+        return respond_error(400, "invalid_body",
+                             "The certificate request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    (void)memcpy(prepared.parameters.certificate_csr.common_name, common_name,
+                 strlen(common_name) + 1U);
+    prepared.parameters.certificate_csr.alternative_name_count = name_count;
+    for (size_t index = 0U; index < name_count; ++index) {
+        (void)memcpy(
+            prepared.parameters.certificate_csr.alternative_names[index],
+            names[index], strlen(names[index]) + 1U);
+    }
+    result = submit_management_job(management, request, remote, &actor,
+                                   &prepared, now, &job_id);
+    management_job_parameters_clear(prepared.kind, &prepared.parameters);
+    if (result != 0) {
+        return respond_job_submission_error(
+            result, request, "The certificate request could not be queued.",
+            output, output_size, written);
+    }
+    return respond_job_accepted(job_id, output, output_size, written);
 }
 
 /** @brief Install one validated server certificate with concurrency control. */

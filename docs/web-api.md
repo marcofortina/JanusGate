@@ -48,6 +48,10 @@ failures use `400` or `422`; missing resources use `404`; known resources with
 an unsupported method use `405`; rate limiting uses `429`; internal or
 temporarily unavailable operations use `5xx`.
 
+Blocklist updates, backups, diagnostics, and CSR generation return a bounded
+job reference with HTTP `202`. Poll `/jobs/{id}` as the same authenticated
+actor; completed results remain available until read, or for at most one hour.
+
 ## Resource groups
 
 - `/auth/*`: bootstrap, login, password, session, logout, and TOTP.
