@@ -217,14 +217,16 @@ int jg_blocklist_update_complete(struct jg_database *database,
                          completion, context, result);
 }
 
-/** @brief Parse one local source and persist its complete resulting state. */
-int jg_blocklist_import_local(struct jg_database *database,
-                              uint64_t source_id,
-                              uint64_t expected_revision,
-                              const uint8_t *data,
-                              size_t data_size,
-                              uint64_t now,
-                              struct jg_blocklist_update_result *result)
+/** @brief Parse one local source and optionally complete its transaction. */
+static int import_source(struct jg_database *database,
+                         uint64_t source_id,
+                         uint64_t expected_revision,
+                         const uint8_t *data,
+                         size_t data_size,
+                         uint64_t now,
+                         jg_blocklist_update_completion completion,
+                         void *context,
+                         struct jg_blocklist_update_result *result)
 {
     struct jg_blocklist_remote_state state;
     struct jg_blocklist_limits limits;
@@ -259,13 +261,14 @@ int jg_blocklist_import_local(struct jg_database *database,
     jg_blocklist_remote_state_init(&state);
     state.last_attempt_at = now;
     state.next_attempt_at = now;
-    if (result->attempt_result == 0) {
+    persist_result = jg_database_transaction_begin(database);
+    if (persist_result == 0 && result->attempt_result == 0) {
         state.last_success_at = now;
         persist_result = jg_database_activate_blocklist(
             database, source_id, expected_revision, blocklist, &state,
             &result->report.import);
         result->activated = persist_result == 0;
-    } else {
+    } else if (persist_result == 0) {
         state.last_success_at = result->source.last_success_at;
         state.consecutive_failures =
             result->source.consecutive_failures == UINT32_MAX
@@ -279,5 +282,45 @@ int jg_blocklist_import_local(struct jg_database *database,
     if (persist_result == 0) {
         persist_result = load_source(database, source_id, &result->source);
     }
+    if (persist_result == 0 && completion != NULL) {
+        persist_result = completion(context, result);
+    }
+    if (persist_result == 0) {
+        persist_result = jg_database_transaction_commit(database);
+    } else {
+        (void)jg_database_transaction_rollback(database);
+    }
     return persist_result;
+}
+
+/** @brief Parse one local source and persist its complete resulting state. */
+int jg_blocklist_import_local(struct jg_database *database,
+                              uint64_t source_id,
+                              uint64_t expected_revision,
+                              const uint8_t *data,
+                              size_t data_size,
+                              uint64_t now,
+                              struct jg_blocklist_update_result *result)
+{
+    return import_source(database, source_id, expected_revision, data,
+                         data_size, now, NULL, NULL, result);
+}
+
+/** @brief Import one source and commit caller completion with its state. */
+int jg_blocklist_import_local_complete(
+    struct jg_database *database,
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const uint8_t *data,
+    size_t data_size,
+    uint64_t now,
+    jg_blocklist_update_completion completion,
+    void *context,
+    struct jg_blocklist_update_result *result)
+{
+    if (completion == NULL) {
+        return -EINVAL;
+    }
+    return import_source(database, source_id, expected_revision, data,
+                         data_size, now, completion, context, result);
 }

@@ -350,6 +350,28 @@ static json_t *wait_for_job(struct management_fixture *fixture,
     return NULL;
 }
 
+/** @brief Consume one accepted response and wait for its final envelope. */
+static json_t *complete_accepted_job(struct management_fixture *fixture,
+                                     json_t *accepted,
+                                     const char *bearer)
+{
+    json_t *job = NULL;
+    json_t *completed = NULL;
+    uint64_t job_id = 0U;
+
+    assert_int_equal(json_integer_value(json_object_get(accepted, "status")),
+                     202);
+    job = json_object_get(json_object_get(accepted, "body"), "job");
+    assert_true(json_is_object(job));
+    assert_string_equal(json_string_value(json_object_get(job, "state")),
+                        "queued");
+    job_id = (uint64_t)json_integer_value(json_object_get(job, "id"));
+    assert_true(job_id > 0U);
+    completed = wait_for_job(fixture, job_id, bearer);
+    json_decref(accepted);
+    return completed;
+}
+
 /** @brief Wait until the scheduled worker records one source attempt. */
 static void wait_for_source_attempt(struct management_fixture *fixture,
                                     uint64_t source_id,
@@ -2055,6 +2077,7 @@ static void test_backup_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      201);
     backup = json_object_get(json_object_get(response, "body"), "backup");
@@ -2076,6 +2099,7 @@ static void test_backup_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      201);
     backup = json_object_get(json_object_get(response, "body"), "backup");
@@ -2241,6 +2265,7 @@ static void test_backup_restore_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      201);
     backup = json_object_get(json_object_get(response, "body"), "backup");
@@ -2260,6 +2285,7 @@ static void test_backup_restore_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      201);
     backup = json_object_get(json_object_get(response, "body"), "backup");
@@ -2281,6 +2307,7 @@ static void test_backup_restore_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      200);
     body = json_object_get(response, "body");
@@ -2303,6 +2330,7 @@ static void test_backup_restore_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      200);
     body = json_object_get(response, "body");
@@ -2330,6 +2358,7 @@ static void test_backup_restore_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      400);
     assert_string_equal(
@@ -2350,6 +2379,7 @@ static void test_backup_restore_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      200);
     body = json_object_get(response, "body");
@@ -2823,19 +2853,7 @@ static void test_source_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
-    assert_int_equal(json_integer_value(json_object_get(response, "status")),
-                     202);
-    value = json_object_get(json_object_get(response, "body"), "job");
-    assert_string_equal(json_string_value(json_object_get(value, "state")),
-                        "queued");
-    {
-        const uint64_t job_id =
-            (uint64_t)json_integer_value(json_object_get(value, "id"));
-
-        assert_true(job_id > 0U);
-        json_decref(response);
-        response = wait_for_job(fixture, job_id, api_token.secret);
-    }
+    response = complete_accepted_job(fixture, response, api_token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      502);
     body = json_object_get(response, "body");
@@ -2908,6 +2926,7 @@ static void test_source_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, api_token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      202);
     body = json_object_get(response, "body");
@@ -2942,6 +2961,7 @@ static void test_source_api(void **state)
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(request));
     response = process_request(fixture, request);
+    response = complete_accepted_job(fixture, response, api_token.secret);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      422);
     body = json_object_get(response, "body");

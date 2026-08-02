@@ -1138,6 +1138,24 @@ static int wait_for_api_job(const struct cli_options *options,
     return CLI_EXIT_UNAVAILABLE;
 }
 
+/** @brief Submit one asynchronous API request and wait for its result body. */
+static int post_api_job(const struct cli_options *options,
+                        const char *token,
+                        const char *path,
+                        json_t *body,
+                        json_t **result_body)
+{
+    json_t *accepted = NULL;
+    int result = post_api_object(options, token, path, body, &accepted);
+
+    *result_body = NULL;
+    if (result == CLI_EXIT_SUCCESS) {
+        result = wait_for_api_job(options, token, accepted, result_body);
+    }
+    json_decref(accepted);
+    return result;
+}
+
 /** @brief Present one locally assembled JSON result. */
 static int present_object(const struct cli_options *options, json_t *object)
 {
@@ -1779,18 +1797,13 @@ static int run_source_operation(const struct cli_options *options,
                        (unsigned long long)identifier);
     }
     if (result == CLI_EXIT_SUCCESS && strcmp(operation, "refresh") == 0) {
-        json_t *accepted = NULL;
         json_t *completed = NULL;
 
-        result = post_api_object(options, token, path, body, &accepted);
-        if (result == CLI_EXIT_SUCCESS) {
-            result = wait_for_api_job(options, token, accepted, &completed);
-        }
+        result = post_api_job(options, token, path, body, &completed);
         if (result == CLI_EXIT_SUCCESS) {
             result = present_object(options, completed);
         }
         json_decref(completed);
-        json_decref(accepted);
     } else if (result == CLI_EXIT_SUCCESS) {
         result =
             send_api_request(options, token, operation, "PATCH", path, body);
@@ -1865,8 +1878,14 @@ static int run_blocklist_import(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "blocklist import", "POST",
-                                  "/api/v1/blocklists", body);
+        json_t *completed = NULL;
+
+        result = post_api_job(options, token, "/api/v1/blocklists", body,
+                              &completed);
+        if (result == CLI_EXIT_SUCCESS) {
+            result = present_object(options, completed);
+        }
+        json_decref(completed);
     }
     json_decref(body);
     json_decref(source);
@@ -2666,8 +2685,14 @@ static int run_backup_create(const struct cli_options *options,
         result = CLI_EXIT_FAILURE;
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "backup create", "POST",
-                                  "/api/v1/backups", body);
+        json_t *completed = NULL;
+
+        result =
+            post_api_job(options, token, "/api/v1/backups", body, &completed);
+        if (result == CLI_EXIT_SUCCESS) {
+            result = present_object(options, completed);
+        }
+        json_decref(completed);
     }
     json_decref(passphrase_value);
     json_decref(body);
@@ -2787,7 +2812,7 @@ static int run_backup_restore(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = post_api_object(options, token, path, body, &dry_run);
+        result = post_api_job(options, token, path, body, &dry_run);
     }
     json_decref(body);
     body = NULL;
@@ -2817,8 +2842,13 @@ static int run_backup_restore(const struct cli_options *options,
         if (body == NULL) {
             result = CLI_EXIT_FAILURE;
         } else {
-            result = send_api_request(options, token, "backup restore", "POST",
-                                      path, body);
+            json_t *completed = NULL;
+
+            result = post_api_job(options, token, path, body, &completed);
+            if (result == CLI_EXIT_SUCCESS) {
+                result = present_object(options, completed);
+            }
+            json_decref(completed);
         }
     }
     json_decref(body);
@@ -3030,8 +3060,8 @@ static int run_diagnostics_create(const struct cli_options *options)
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = post_api_object(options, token, "/api/v1/diagnostics", request,
-                                 &response);
+        result = post_api_job(options, token, "/api/v1/diagnostics", request,
+                              &response);
     }
     sodium_memzero(token, sizeof(token));
     json_decref(request);

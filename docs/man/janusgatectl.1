@@ -188,7 +188,8 @@ List configured blocklist sources.
 .BI "blocklist import " "source file"
 Import bounded content from
 .I file
-into the named local source.
+into the named local source through the bounded management queue and wait for
+completion.
 .TP
 .B blocklist export
 Export the normalized active blocklist as JSON or one domain per line.
@@ -301,7 +302,8 @@ Revoke a client-certificate mapping immediately.
 .SH BACKUP COMMANDS
 .TP
 .B backup create configuration
-Create a configuration backup without authentication secrets.
+Create a configuration backup without authentication secrets and wait for the
+bounded job to complete.
 .TP
 .B backup create full
 Create an authenticated encrypted full backup.
@@ -314,11 +316,12 @@ Verify and display stored backup metadata.
 .TP
 .BI "backup restore " id
 Validate a backup, show the dry-run comparison, and apply it only after
-confirmation.
+confirmation. Both phases wait for their bounded management jobs.
 .SH SYSTEM COMMANDS
 .TP
 .B diagnostics create
-Create and save a bounded sanitized diagnostic archive.
+Create and save a bounded sanitized diagnostic archive after its management job
+completes.
 .TP
 .B logging show
 Show active structured-logging configuration and bounded counters.

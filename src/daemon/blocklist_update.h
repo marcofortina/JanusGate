@@ -133,6 +133,39 @@ int jg_blocklist_import_local(struct jg_database *database,
                               struct jg_blocklist_update_result *result);
 
 /**
+ * @brief Import one local source with caller completion in its transaction.
+ *
+ * Parsing finishes before the transaction begins. The required completion can
+ * publish and audit the resulting state; its failure restores the prior source
+ * and policy data.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] source_id Persistent positive source identifier.
+ * @param[in] expected_revision Source revision selected by the caller.
+ * @param[in] data Exact uploaded blocklist bytes.
+ * @param[in] data_size Uploaded byte count.
+ * @param[in] now Current Unix time in seconds.
+ * @param[in] completion Required completion callback.
+ * @param[in,out] context Opaque callback state.
+ * @param[out] result Receives the complete attempt outcome.
+ *
+ * @return 0 when source state and completion work were committed together.
+ * @return A negative errno-style validation, persistence, or callback error.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+int jg_blocklist_import_local_complete(
+    struct jg_database *database,
+    uint64_t source_id,
+    uint64_t expected_revision,
+    const uint8_t *data,
+    size_t data_size,
+    uint64_t now,
+    jg_blocklist_update_completion completion,
+    void *context,
+    struct jg_blocklist_update_result *result);
+
+/**
  * @brief Return a stable administrative description for an update failure.
  *
  * @param[in] result Negative errno-style remote update result.

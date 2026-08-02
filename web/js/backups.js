@@ -5,7 +5,7 @@
 
 "use strict";
 
-import { api, errorMessage } from "./api.js";
+import { api, errorMessage, waitForJob } from "./api.js";
 import {
   announce,
   byId,
@@ -163,13 +163,14 @@ async function validateRestore(event) {
   }
   await withBusyButton(byId("restore-validate"), async () => {
     try {
-      const result = await api(
+      const accepted = await api(
         `/api/v1/backups/${selectedBackup.id}/restore`,
         {
           method: "POST",
           body: { passphrase, dry_run: true, confirm: false },
         },
       );
+      const result = await waitForJob(accepted);
 
       validatedRestore = {
         id: selectedBackup.id,
@@ -214,7 +215,7 @@ async function applyRestore() {
   }
   await withBusyButton(byId("restore-apply"), async () => {
     try {
-      const result = await api(
+      const accepted = await api(
         `/api/v1/backups/${selectedBackup.id}/restore`,
         {
           method: "POST",
@@ -225,6 +226,7 @@ async function applyRestore() {
           },
         },
       );
+      const result = await waitForJob(accepted);
 
       renderJson(byId("restore-result"), result);
       validatedRestore = null;
@@ -276,7 +278,7 @@ async function createBackup(event) {
   }
   await withBusyButton(byId("backup-create-submit"), async () => {
     try {
-      const result = await api("/api/v1/backups", {
+      const accepted = await api("/api/v1/backups", {
         method: "POST",
         body: {
           kind,
@@ -284,6 +286,7 @@ async function createBackup(event) {
           passphrase,
         },
       });
+      const result = await waitForJob(accepted);
 
       form.reset();
       updateCreateFields();

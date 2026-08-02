@@ -380,7 +380,7 @@ async function importBlocklist(event) {
   }
   await withBusyButton(byId("import-submit"), async () => {
     try {
-      const result = await api("/api/v1/blocklists", {
+      const accepted = await api("/api/v1/blocklists", {
         method: "POST",
         body: {
           source_id: source.id,
@@ -388,6 +388,7 @@ async function importBlocklist(event) {
           content,
         },
       });
+      const result = await waitForJob(accepted);
       renderJson(byId("blocklist-result"), result);
       announce(result.published
         ? "The local blocklist was imported and published."

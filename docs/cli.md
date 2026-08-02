@@ -61,9 +61,9 @@ output and explicit high-impact operations.
 - `source add FILE`, `source update ID FILE`, `source refresh ID`,
   `source enable ID`, and `source disable ID` manage remote list sources.
 
-`source refresh` submits a bounded asynchronous job and waits for its retained
-result. The daemon continues serving short management requests during the
-download.
+Blocklist imports and remote refreshes submit bounded asynchronous jobs. The
+CLI waits for their retained results while the daemon continues serving short
+management requests.
 
 ## Identities, certificates, and recovery data
 
@@ -82,6 +82,10 @@ download.
 - `backup restore ID` requires the matching passphrase for an encrypted
   backup.
 - `diagnostics create` creates a bounded diagnostic archive.
+
+Backup creation and restore, and diagnostic archive creation, use the same
+bounded job queue; the CLI waits for completion before presenting or saving the
+result.
 
 ## Runtime operations
 

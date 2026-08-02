@@ -175,7 +175,11 @@ struct authenticated_actor {
 /** Slow operation kinds executed by the single bounded worker. */
 enum management_job_kind {
     MANAGEMENT_JOB_SOURCE_REFRESH = 1,
-    MANAGEMENT_JOB_SCHEDULED_SOURCES = 2
+    MANAGEMENT_JOB_SCHEDULED_SOURCES = 2,
+    MANAGEMENT_JOB_BLOCKLIST_IMPORT = 3,
+    MANAGEMENT_JOB_BACKUP_CREATE = 4,
+    MANAGEMENT_JOB_BACKUP_RESTORE = 5,
+    MANAGEMENT_JOB_DIAGNOSTICS_CREATE = 6
 };
 
 /** Stable lifecycle states exposed through the management API. */
@@ -183,6 +187,39 @@ enum management_job_state {
     MANAGEMENT_JOB_QUEUED = 1,
     MANAGEMENT_JOB_RUNNING = 2,
     MANAGEMENT_JOB_COMPLETED = 3
+};
+
+/** Type-specific bounded input retained only until a job starts. */
+union management_job_parameters {
+    struct {
+        uint64_t id;
+        uint64_t revision;
+    } source;
+    struct {
+        uint8_t *content;
+        size_t content_size;
+        uint64_t source_id;
+        uint64_t revision;
+    } blocklist_import;
+    struct {
+        char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U];
+        size_t passphrase_size;
+        enum jg_backup_kind kind;
+        bool include_private_key;
+    } backup_create;
+    struct {
+        char passphrase[JG_BACKUP_PASSPHRASE_MAX + 1U];
+        size_t passphrase_size;
+        uint64_t backup_id;
+        bool dry_run;
+    } backup_restore;
+};
+
+/** Compact slow-operation input prepared by the control thread. */
+struct management_job_submission {
+    union management_job_parameters parameters;
+    uint32_t required_permission;
+    enum management_job_kind kind;
 };
 
 /** One fixed-slot slow operation and its bounded final response. */
@@ -195,11 +232,10 @@ struct management_job {
     uint64_t submitted_at;
     uint64_t started_at;
     uint64_t completed_at;
-    uint64_t source_id;
-    uint64_t source_revision;
     uint32_t required_permission;
     enum management_job_kind kind;
     enum management_job_state state;
+    union management_job_parameters parameters;
     char request_id[MANAGEMENT_REQUEST_ID_MAX + 1U];
     bool occupied;
     bool system_job;
@@ -222,6 +258,58 @@ struct management_jobs {
 
 /** @brief Run queued slow operations until management shutdown. */
 static void *run_management_jobs(void *context);
+
+/** @brief Queue one prepared authenticated slow operation. */
+static int submit_management_job(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const struct remote_address *remote,
+                                 const struct authenticated_actor *actor,
+                                 struct management_job_submission *prepared,
+                                 uint64_t now,
+                                 uint64_t *job_id);
+
+/** @brief Return one accepted slow-operation reference. */
+static int respond_job_accepted(uint64_t job_id,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written);
+
+/** @brief Execute one authenticated local blocklist import job. */
+static int execute_blocklist_import_job(struct jg_management *management,
+                                        const struct management_job *job,
+                                        uint8_t *output,
+                                        size_t output_size,
+                                        size_t *written);
+
+/** Audit context completed with newly stored backup metadata. */
+struct backup_creation_audit {
+    struct jg_management *management;
+    const struct management_request *request;
+    const struct remote_address *remote;
+    const struct authenticated_actor *actor;
+    uint64_t now;
+};
+
+/** @brief Execute one authenticated backup creation job. */
+static int execute_backup_create_job(struct jg_management *management,
+                                     const struct management_job *job,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written);
+
+/** @brief Execute one authenticated backup restore job. */
+static int execute_backup_restore_job(struct jg_management *management,
+                                      const struct management_job *job,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written);
+
+/** @brief Execute one authenticated diagnostic archive job. */
+static int execute_diagnostics_create_job(struct jg_management *management,
+                                          const struct management_job *job,
+                                          uint8_t *output,
+                                          size_t output_size,
+                                          size_t *written);
 
 /** @brief Begin one persistent mutation that must share its audit commit. */
 static int audited_mutation_begin(struct jg_management *management)
@@ -369,6 +457,20 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
     return result;
 }
 
+/** @brief Securely release one job's transient input. */
+static void management_job_parameters_clear(
+    enum management_job_kind kind,
+    union management_job_parameters *parameters)
+{
+    if (kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT &&
+        parameters->blocklist_import.content != NULL) {
+        sodium_memzero(parameters->blocklist_import.content,
+                       parameters->blocklist_import.content_size);
+        free(parameters->blocklist_import.content);
+    }
+    sodium_memzero(parameters, sizeof(*parameters));
+}
+
 /** @brief Stop and release one slow-operation queue. */
 static void management_jobs_destroy(struct management_jobs *jobs)
 {
@@ -392,6 +494,10 @@ static void management_jobs_destroy(struct management_jobs *jobs)
     }
     if (jobs->mutex_initialized) {
         (void)pthread_mutex_destroy(&jobs->mutex);
+    }
+    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
+        management_job_parameters_clear(jobs->slots[index].kind,
+                                        &jobs->slots[index].parameters);
     }
     sodium_memzero(jobs->slots, sizeof(jobs->slots));
     free(jobs);
@@ -4002,13 +4108,31 @@ static int append_system_audit(struct jg_management *management,
     return jg_database_audit_append(management->database, &event, NULL);
 }
 
-/** @brief Create, store, and record one complete backup archive. */
+/** @brief Append backup creation audit inside its metadata transaction. */
+static int complete_backup_creation(void *context,
+                                    const struct jg_database_backup *created)
+{
+    const struct backup_creation_audit *audit = context;
+
+    return append_backup_audit(audit->management, audit->request, audit->remote,
+                               audit->actor, "backup.create", created, NULL,
+                               false, audit->now);
+}
+
+/** Completion invoked while newly stored backup metadata is transactional. */
+typedef int (*backup_creation_completion)(
+    void *context,
+    const struct jg_database_backup *created);
+
+/** @brief Create, store, and transactionally record one backup archive. */
 static int create_backup(struct jg_management *management,
                          enum jg_backup_kind kind,
                          bool include_private_key,
                          const char *passphrase,
                          size_t passphrase_size,
                          uint64_t now,
+                         backup_creation_completion completion,
+                         void *context,
                          struct jg_database_backup *created)
 {
     uint8_t suffix[8U];
@@ -4077,8 +4201,19 @@ static int create_backup(struct jg_management *management,
                      sizeof(metadata.checksum));
         metadata.schema_version = info.schema_version;
         metadata.size_bytes = archive_size;
+        result = jg_database_transaction_begin(management->database);
+    }
+    if (result == 0) {
         result =
             jg_database_create_backup(management->database, &metadata, created);
+    }
+    if (result == 0 && completion != NULL) {
+        result = completion(context, created);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+    } else {
+        (void)jg_database_transaction_rollback(management->database);
     }
     if (result != 0 && stored &&
         jg_backup_remove(management->backup_directory, metadata.filename) !=
@@ -6286,16 +6421,19 @@ static int diagnostic_filename(
     return 0;
 }
 
-/** @brief Create and return one authenticated diagnostic archive. */
-static int handle_diagnostics_create(struct jg_management *management,
-                                     const struct management_request *request,
-                                     const struct remote_address *remote,
-                                     uint64_t now,
-                                     uint8_t *output,
-                                     size_t output_size,
-                                     size_t *written)
+/** @brief Create and return one authenticated diagnostic archive job. */
+static int execute_diagnostics_create_job(struct jg_management *management,
+                                          const struct management_job *job,
+                                          uint8_t *output,
+                                          size_t output_size,
+                                          size_t *written)
 {
-    struct authenticated_actor actor;
+    const struct management_request request_value = {
+        .request_id = job->request_id,
+    };
+    const struct management_request *request = &request_value;
+    const struct remote_address *remote = &job->remote;
+    const struct authenticated_actor *actor = &job->actor;
     uint8_t checksum[crypto_hash_sha256_BYTES];
     char checksum_text[crypto_hash_sha256_BYTES * 2U + 1U];
     char filename[MANAGEMENT_DIAGNOSTIC_FILENAME_SIZE];
@@ -6304,18 +6442,9 @@ static int handle_diagnostics_create(struct jg_management *management,
     json_t *body = NULL;
     size_t archive_size = 0U;
     size_t encoded_size = 0U;
-    int result = authenticate_actor(management, request, remote, true,
-                                    JG_ACCESS_OPERATE, now, &actor);
+    const uint64_t now = job->started_at;
+    int result = 0;
 
-    if (result != 0) {
-        return respond_actor_error(result, request, output, output_size,
-                                   written);
-    }
-    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
-        return respond_error(400, "invalid_request",
-                             "The diagnostic request is not valid.",
-                             request->request_id, output, output_size, written);
-    }
     if (management->runtime == NULL) {
         return respond_error(
             503, "runtime_unavailable",
@@ -6369,7 +6498,7 @@ static int handle_diagnostics_create(struct jg_management *management,
                              request->request_id, output, output_size, written);
     }
     result =
-        append_diagnostic_audit(management, request, remote, &actor, filename,
+        append_diagnostic_audit(management, request, remote, actor, filename,
                                 checksum_text, archive_size, now);
     if (result != 0) {
         sodium_memzero(checksum, sizeof(checksum));
@@ -6399,6 +6528,54 @@ static int handle_diagnostics_create(struct jg_management *management,
         return result;
     }
     return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Queue one authenticated diagnostic archive creation. */
+static int handle_diagnostics_create(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    struct authenticated_actor actor;
+    struct management_job_submission prepared = {
+        .required_permission = JG_ACCESS_OPERATE,
+        .kind = MANAGEMENT_JOB_DIAGNOSTICS_CREATE,
+    };
+    uint64_t job_id = 0U;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_OPERATE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 0U) {
+        return respond_error(400, "invalid_request",
+                             "The diagnostic request is not valid.",
+                             request->request_id, output, output_size, written);
+    }
+    if (management->runtime == NULL) {
+        return respond_error(
+            503, "runtime_unavailable",
+            "Diagnostics are unavailable while the service is offline.",
+            request->request_id, output, output_size, written);
+    }
+    result = submit_management_job(management, request, remote, &actor,
+                                   &prepared, now, &job_id);
+    if (result == -EBUSY) {
+        return respond_error(503, "job_queue_full",
+                             "The slow-operation queue is currently full.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "job_queue_failed",
+                             "The diagnostic archive could not be queued.",
+                             request->request_id, output, output_size, written);
+    }
+    return respond_job_accepted(job_id, output, output_size, written);
 }
 
 /** @brief Simulate one authenticated decision on the active policy snapshot. */
@@ -7064,8 +7241,9 @@ static int execute_source_refresh_job(struct jg_management *management,
     };
     struct jg_blocklist_update_result update;
     int result = jg_blocklist_update_complete(
-        management->database, job->source_id, job->source_revision,
-        job->started_at, complete_source_refresh, &completion, &update);
+        management->database, job->parameters.source.id,
+        job->parameters.source.revision, job->started_at,
+        complete_source_refresh, &completion, &update);
 
     if (result != 0 && update.activated && management->runtime != NULL) {
         (void)jg_daemon_runtime_reload_policy(management->runtime);
@@ -7122,15 +7300,14 @@ static struct management_job *select_job_slot(struct management_jobs *jobs,
     return oldest;
 }
 
-/** @brief Queue one authenticated source refresh without blocking control. */
-static int submit_source_refresh_job(struct jg_management *management,
-                                     const struct management_request *request,
-                                     const struct remote_address *remote,
-                                     const struct authenticated_actor *actor,
-                                     uint64_t source_id,
-                                     uint64_t source_revision,
-                                     uint64_t now,
-                                     uint64_t *job_id)
+/** @brief Queue one prepared authenticated slow operation. */
+static int submit_management_job(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const struct remote_address *remote,
+                                 const struct authenticated_actor *actor,
+                                 struct management_job_submission *prepared,
+                                 uint64_t now,
+                                 uint64_t *job_id)
 {
     struct management_jobs *jobs = management->jobs;
     struct management_job *job = NULL;
@@ -7145,15 +7322,19 @@ static int submit_source_refresh_job(struct jg_management *management,
     if (job == NULL || jobs->next_id == 0U) {
         result = job == NULL ? -EBUSY : -EOVERFLOW;
     } else {
+        management_job_parameters_clear(job->kind, &job->parameters);
         sodium_memzero(job, sizeof(*job));
+        job->parameters = prepared->parameters;
+        job->required_permission = prepared->required_permission;
+        job->kind = prepared->kind;
+        if (prepared->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
+            prepared->parameters.blocklist_import.content = NULL;
+            prepared->parameters.blocklist_import.content_size = 0U;
+        }
         job->actor = *actor;
         job->remote = *remote;
         job->id = jobs->next_id++;
         job->submitted_at = now;
-        job->source_id = source_id;
-        job->source_revision = source_revision;
-        job->required_permission = JG_ACCESS_POLICY_WRITE;
-        job->kind = MANAGEMENT_JOB_SOURCE_REFRESH;
         job->state = MANAGEMENT_JOB_QUEUED;
         job->occupied = true;
         (void)snprintf(job->request_id, sizeof(job->request_id), "%s",
@@ -7161,6 +7342,7 @@ static int submit_source_refresh_job(struct jg_management *management,
         *job_id = job->id;
         status = pthread_cond_signal(&jobs->ready);
         if (status != 0) {
+            management_job_parameters_clear(job->kind, &job->parameters);
             sodium_memzero(job, sizeof(*job));
             result = -status;
         }
@@ -7206,6 +7388,10 @@ static int handle_blocklist_source_refresh(
 {
     static const char *const fields[] = {"revision"};
     struct authenticated_actor actor;
+    struct management_job_submission prepared = {
+        .required_permission = JG_ACCESS_POLICY_WRITE,
+        .kind = MANAGEMENT_JOB_SOURCE_REFRESH,
+    };
     uint64_t revision = 0U;
     uint64_t job_id = 0U;
     int result = authenticate_actor(management, request, remote, true,
@@ -7223,8 +7409,10 @@ static int handle_blocklist_source_refresh(
                              "The blocklist refresh request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = submit_source_refresh_job(management, request, remote, &actor,
-                                       source_id, revision, now, &job_id);
+    prepared.parameters.source.id = source_id;
+    prepared.parameters.source.revision = revision;
+    result = submit_management_job(management, request, remote, &actor,
+                                   &prepared, now, &job_id);
     if (result == -EBUSY) {
         return respond_error(503, "job_queue_full",
                              "The slow-operation queue is currently full.",
@@ -7238,7 +7426,64 @@ static int handle_blocklist_source_refresh(
     return respond_job_accepted(job_id, output, output_size, written);
 }
 
-/** @brief Import one uploaded blocklist into an authorized local source. */
+/** @brief Execute one authenticated local blocklist import job. */
+static int execute_blocklist_import_job(struct jg_management *management,
+                                        const struct management_job *job,
+                                        uint8_t *output,
+                                        size_t output_size,
+                                        size_t *written)
+{
+    const struct management_request request = {
+        .request_id = job->request_id,
+    };
+    struct source_refresh_completion completion = {
+        .management = management,
+        .request = &request,
+        .remote = &job->remote,
+        .actor = &job->actor,
+        .action = "blocklist.source.import",
+        .now = job->started_at,
+    };
+    struct jg_blocklist_update_result update;
+    int result = jg_blocklist_import_local_complete(
+        management->database, job->parameters.blocklist_import.source_id,
+        job->parameters.blocklist_import.revision,
+        job->parameters.blocklist_import.content,
+        job->parameters.blocklist_import.content_size, job->started_at,
+        complete_source_refresh, &completion, &update);
+
+    if (result != 0 && update.activated && management->runtime != NULL) {
+        (void)jg_daemon_runtime_reload_policy(management->runtime);
+    }
+    if (result == -ENOENT) {
+        return respond_error(404, "source_not_found",
+                             "The blocklist source was not found.",
+                             request.request_id, output, output_size, written);
+    }
+    if (result == -EAGAIN) {
+        return respond_error(409, "revision_conflict",
+                             "The source has changed; reload and retry.",
+                             request.request_id, output, output_size, written);
+    }
+    if (result == -EINVAL) {
+        return respond_error(409, "remote_source",
+                             "Remote sources cannot receive local imports.",
+                             request.request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(
+            500, "source_import_failed",
+            "The local blocklist state and audit could not be committed.",
+            request.request_id, output, output_size, written);
+    }
+    return respond_blocklist_update(
+        &request, &update, "blocklist_import_failed",
+        jg_blocklist_import_error(update.attempt_result), 422,
+        completion.published, completion.generation, output, output_size,
+        written);
+}
+
+/** @brief Queue one uploaded blocklist for an authorized local source. */
 static int handle_blocklist_import(struct jg_management *management,
                                    const struct management_request *request,
                                    const struct remote_address *remote,
@@ -7253,16 +7498,16 @@ static int handle_blocklist_import(struct jg_management *management,
         "content",
     };
     struct authenticated_actor actor;
-    struct jg_blocklist_update_result update;
+    struct management_job_submission prepared = {
+        .required_permission = JG_ACCESS_POLICY_WRITE,
+        .kind = MANAGEMENT_JOB_BLOCKLIST_IMPORT,
+    };
     json_t *content_value = json_object_get(request->body, "content");
     const char *content =
         json_is_string(content_value) ? json_string_value(content_value) : NULL;
-    size_t content_size =
+    const size_t content_size =
         json_is_string(content_value) ? json_string_length(content_value) : 0U;
-    uint64_t source_id = 0U;
-    uint64_t revision = 0U;
-    uint64_t generation = 0U;
-    bool published = false;
+    uint64_t job_id = 0U;
     int result = authenticate_actor(management, request, remote, true,
                                     JG_ACCESS_POLICY_WRITE, now, &actor);
 
@@ -7273,56 +7518,39 @@ static int handle_blocklist_import(struct jg_management *management,
     if (request->query[0U] != '\0' ||
         !fields_allowed(request->body, fields,
                         sizeof(fields) / sizeof(fields[0U])) ||
-        !required_identifier(request->body, "source_id", &source_id) ||
-        !required_identifier(request->body, "revision", &revision) ||
+        !required_identifier(request->body, "source_id",
+                             &prepared.parameters.blocklist_import.source_id) ||
+        !required_identifier(request->body, "revision",
+                             &prepared.parameters.blocklist_import.revision) ||
         content == NULL) {
         return respond_error(400, "invalid_body",
                              "The local blocklist import is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_blocklist_import_local(management->database, source_id,
-                                       revision, (const uint8_t *)content,
-                                       content_size, now, &update);
-    if (result == 0 && update.activated) {
-        publish_blocklist_source_change(management, &published, &generation);
+    prepared.parameters.blocklist_import.content =
+        malloc(content_size == 0U ? 1U : content_size);
+    if (prepared.parameters.blocklist_import.content == NULL) {
+        return -ENOMEM;
     }
-    if (update.source.id != 0U) {
-        const int audit_result = append_blocklist_update_audit(
-            management, request, remote, &actor, "blocklist.source.import",
-            &update, result, published, generation, now);
-
-        if (audit_result != 0) {
-            return respond_error(
-                500, "audit_failure",
-                "The import completed, but its audit record was not stored.",
-                request->request_id, output, output_size, written);
-        }
+    if (content_size > 0U) {
+        (void)memcpy(prepared.parameters.blocklist_import.content, content,
+                     content_size);
     }
-    if (result == -ENOENT) {
-        return respond_error(404, "source_not_found",
-                             "The blocklist source was not found.",
-                             request->request_id, output, output_size, written);
-    }
-    if (result == -EAGAIN) {
-        return respond_error(409, "revision_conflict",
-                             "The source has changed; reload and retry.",
-                             request->request_id, output, output_size, written);
-    }
-    if (result == -EINVAL) {
-        return respond_error(409, "remote_source",
-                             "Remote sources cannot receive local imports.",
+    prepared.parameters.blocklist_import.content_size = content_size;
+    result = submit_management_job(management, request, remote, &actor,
+                                   &prepared, now, &job_id);
+    management_job_parameters_clear(prepared.kind, &prepared.parameters);
+    if (result == -EBUSY) {
+        return respond_error(503, "job_queue_full",
+                             "The slow-operation queue is currently full.",
                              request->request_id, output, output_size, written);
     }
     if (result != 0) {
-        return respond_error(
-            500, "source_import_state_failed",
-            "The local blocklist state could not be persisted.",
-            request->request_id, output, output_size, written);
+        return respond_error(500, "job_queue_failed",
+                             "The local blocklist import could not be queued.",
+                             request->request_id, output, output_size, written);
     }
-    return respond_blocklist_update(
-        request, &update, "blocklist_import_failed",
-        jg_blocklist_import_error(update.attempt_result), 422, published,
-        generation, output, output_size, written);
+    return respond_job_accepted(job_id, output, output_size, written);
 }
 
 /** @brief Process and audit every enabled remote source currently due. */
@@ -7467,6 +7695,11 @@ static void *run_management_jobs(void *context)
         queued->state = MANAGEMENT_JOB_RUNNING;
         queued->started_at = started_at;
         work = *queued;
+        if (queued->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
+            queued->parameters.blocklist_import.content = NULL;
+            queued->parameters.blocklist_import.content_size = 0U;
+        }
+        sodium_memzero(&queued->parameters, sizeof(queued->parameters));
         (void)pthread_mutex_unlock(&jobs->mutex);
 
         if (work.kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
@@ -7476,6 +7709,22 @@ static void *run_management_jobs(void *context)
         } else if (work.kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
             operation_result =
                 update_due_blocklists_now(&worker, work.submitted_at, NULL);
+        } else if (work.kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
+            operation_result = execute_blocklist_import_job(
+                &worker, &work, work.response, sizeof(work.response),
+                &response_size);
+        } else if (work.kind == MANAGEMENT_JOB_BACKUP_CREATE) {
+            operation_result = execute_backup_create_job(
+                &worker, &work, work.response, sizeof(work.response),
+                &response_size);
+        } else if (work.kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
+            operation_result = execute_backup_restore_job(
+                &worker, &work, work.response, sizeof(work.response),
+                &response_size);
+        } else if (work.kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
+            operation_result = execute_diagnostics_create_job(
+                &worker, &work, work.response, sizeof(work.response),
+                &response_size);
         } else {
             operation_result = -EINVAL;
         }
@@ -7485,6 +7734,7 @@ static void *run_management_jobs(void *context)
                                 work.request_id, work.response,
                                 sizeof(work.response), &response_size);
         }
+        management_job_parameters_clear(work.kind, &work.parameters);
         (void)current_time(&completed_at);
 
         if (pthread_mutex_lock(&jobs->mutex) != 0) {
@@ -7590,6 +7840,14 @@ static const char *management_job_kind_name(enum management_job_kind kind)
         return "source_refresh";
     case MANAGEMENT_JOB_SCHEDULED_SOURCES:
         return "scheduled_sources";
+    case MANAGEMENT_JOB_BLOCKLIST_IMPORT:
+        return "blocklist_import";
+    case MANAGEMENT_JOB_BACKUP_CREATE:
+        return "backup_create";
+    case MANAGEMENT_JOB_BACKUP_RESTORE:
+        return "backup_restore";
+    case MANAGEMENT_JOB_DIAGNOSTICS_CREATE:
+        return "diagnostics_create";
     default:
         return NULL;
     }
@@ -10121,7 +10379,54 @@ static int handle_backups_list(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
-/** @brief Create one configuration or encrypted full backup. */
+/** @brief Execute one authenticated backup creation job. */
+static int execute_backup_create_job(struct jg_management *management,
+                                     const struct management_job *job,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written)
+{
+    const struct management_request request = {
+        .request_id = job->request_id,
+    };
+    struct backup_creation_audit audit = {
+        .management = management,
+        .request = &request,
+        .remote = &job->remote,
+        .actor = &job->actor,
+        .now = job->started_at,
+    };
+    struct jg_database_backup created = {0};
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    int result = create_backup(
+        management, job->parameters.backup_create.kind,
+        job->parameters.backup_create.include_private_key,
+        job->parameters.backup_create.passphrase_size == 0U
+            ? NULL
+            : job->parameters.backup_create.passphrase,
+        job->parameters.backup_create.passphrase_size, job->started_at,
+        complete_backup_creation, &audit, &created);
+
+    if (result != 0) {
+        return respond_error(
+            500, "backup_create_failed",
+            "The backup archive and audit could not be stored.",
+            request.request_id, output, output_size, written);
+    }
+    body = json_object();
+    backup = backup_json(&created);
+    if (body == NULL || backup == NULL ||
+        json_object_set(body, "backup", backup) != 0) {
+        json_decref(backup);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(backup);
+    return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Queue one configuration or encrypted full backup. */
 static int handle_backup_create(struct jg_management *management,
                                 const struct management_request *request,
                                 const struct remote_address *remote,
@@ -10136,13 +10441,13 @@ static int handle_backup_create(struct jg_management *management,
         "passphrase",
     };
     struct authenticated_actor actor;
-    struct jg_database_backup created;
+    struct management_job_submission prepared = {
+        .required_permission = JG_ACCESS_BACKUPS_WRITE,
+        .kind = MANAGEMENT_JOB_BACKUP_CREATE,
+    };
     const char *kind_text = NULL;
     const char *passphrase = NULL;
-    enum jg_backup_kind kind = 0;
-    bool include_private_key = false;
-    json_t *body = NULL;
-    json_t *backup = NULL;
+    uint64_t job_id = 0U;
     int result = authenticate_actor(management, request, remote, true,
                                     JG_ACCESS_BACKUPS_WRITE, now, &actor);
 
@@ -10151,20 +10456,22 @@ static int handle_backup_create(struct jg_management *management,
                                    written);
     }
     kind_text = required_string(request->body, "kind", 4U, 13U);
-    kind = parse_backup_kind(kind_text);
+    prepared.parameters.backup_create.kind = parse_backup_kind(kind_text);
     if (request->query[0U] != '\0' ||
         json_object_size(request->body) !=
             sizeof(fields) / sizeof(fields[0U]) ||
         !fields_allowed(request->body, fields,
                         sizeof(fields) / sizeof(fields[0U])) ||
-        kind == 0 ||
-        !required_boolean(request->body, "include_private_key",
-                          &include_private_key) ||
+        prepared.parameters.backup_create.kind == 0 ||
+        !required_boolean(
+            request->body, "include_private_key",
+            &prepared.parameters.backup_create.include_private_key) ||
         !required_nullable_string(request->body, "passphrase",
                                   JG_BACKUP_PASSPHRASE_MAX, &passphrase) ||
-        (kind == JG_BACKUP_CONFIGURATION &&
-         (include_private_key || passphrase != NULL)) ||
-        (kind == JG_BACKUP_FULL &&
+        (prepared.parameters.backup_create.kind == JG_BACKUP_CONFIGURATION &&
+         (prepared.parameters.backup_create.include_private_key ||
+          passphrase != NULL)) ||
+        (prepared.parameters.backup_create.kind == JG_BACKUP_FULL &&
          (passphrase == NULL ||
           strlen(passphrase) < JG_BACKUP_PASSPHRASE_MIN))) {
         return respond_error(
@@ -10172,32 +10479,25 @@ static int handle_backup_create(struct jg_management *management,
             "The backup kind, private-key choice, or passphrase is not valid.",
             request->request_id, output, output_size, written);
     }
-    result = create_backup(management, kind, include_private_key, passphrase,
-                           passphrase == NULL ? 0U : strlen(passphrase), now,
-                           &created);
-    if (result != 0) {
-        return respond_error(500, "backup_create_failed",
-                             "The backup archive could not be created.",
+    if (passphrase != NULL) {
+        prepared.parameters.backup_create.passphrase_size = strlen(passphrase);
+        (void)memcpy(prepared.parameters.backup_create.passphrase, passphrase,
+                     prepared.parameters.backup_create.passphrase_size + 1U);
+    }
+    result = submit_management_job(management, request, remote, &actor,
+                                   &prepared, now, &job_id);
+    management_job_parameters_clear(prepared.kind, &prepared.parameters);
+    if (result == -EBUSY) {
+        return respond_error(503, "job_queue_full",
+                             "The slow-operation queue is currently full.",
                              request->request_id, output, output_size, written);
     }
-    result = append_backup_audit(management, request, remote, &actor,
-                                 "backup.create", &created, NULL, false, now);
     if (result != 0) {
-        return respond_error(
-            500, "audit_failure",
-            "The backup was created, but its audit record was not stored.",
-            request->request_id, output, output_size, written);
+        return respond_error(500, "job_queue_failed",
+                             "The backup creation could not be queued.",
+                             request->request_id, output, output_size, written);
     }
-    body = json_object();
-    backup = backup_json(&created);
-    if (body == NULL || backup == NULL ||
-        json_object_set(body, "backup", backup) != 0) {
-        json_decref(backup);
-        json_decref(body);
-        return -ENOMEM;
-    }
-    json_decref(backup);
-    return encode_response(201, body, NULL, output, output_size, written);
+    return respond_job_accepted(job_id, output, output_size, written);
 }
 
 /** @brief Inspect one recorded backup and its validated manifest. */
@@ -10260,22 +10560,19 @@ static int handle_backup_inspect(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
-/** @brief Validate or apply one confirmed transactional backup restore. */
-static int handle_backup_restore(struct jg_management *management,
-                                 const struct management_request *request,
-                                 const struct remote_address *remote,
-                                 uint64_t backup_id,
-                                 uint64_t now,
-                                 uint8_t *output,
-                                 size_t output_size,
-                                 size_t *written)
+/** @brief Execute one authenticated backup restore job. */
+static int execute_backup_restore_job(struct jg_management *management,
+                                      const struct management_job *job,
+                                      uint8_t *output,
+                                      size_t output_size,
+                                      size_t *written)
 {
-    static const char *const fields[] = {
-        "passphrase",
-        "dry_run",
-        "confirm",
+    const struct management_request request_value = {
+        .request_id = job->request_id,
     };
-    struct authenticated_actor actor;
+    const struct management_request *request = &request_value;
+    const struct remote_address *remote = &job->remote;
+    const struct authenticated_actor *actor = &job->actor;
     struct jg_database_backup metadata;
     struct jg_database_backup checkpoint;
     struct jg_backup_info info;
@@ -10284,13 +10581,15 @@ static int handle_backup_restore(struct jg_management *management,
     struct jg_database_restore_report report;
     struct jg_database_restore_report rollback_report;
     struct jg_database_restore_report audit_report;
-    const char *passphrase = NULL;
+    const char *passphrase =
+        job->parameters.backup_restore.passphrase_size == 0U
+            ? NULL
+            : job->parameters.backup_restore.passphrase;
     uint8_t *archive = NULL;
     uint8_t *checkpoint_archive = NULL;
     size_t archive_size = 0U;
     size_t checkpoint_archive_size = 0U;
-    bool dry_run = false;
-    bool confirm = false;
+    const bool dry_run = job->parameters.backup_restore.dry_run;
     bool certificate_changes = false;
     bool changes = false;
     bool checkpoint_created = false;
@@ -10298,31 +10597,13 @@ static int handle_backup_restore(struct jg_management *management,
     json_t *backup = NULL;
     json_t *database_report = NULL;
     json_t *checkpoint_body = NULL;
-    int result = authenticate_actor(management, request, remote, true,
-                                    JG_ACCESS_BACKUPS_WRITE, now, &actor);
+    const uint64_t backup_id = job->parameters.backup_restore.backup_id;
+    const uint64_t now = job->started_at;
+    int result = 0;
 
     (void)memset(&contents, 0, sizeof(contents));
     (void)memset(&checkpoint_contents, 0, sizeof(checkpoint_contents));
     (void)memset(&checkpoint, 0, sizeof(checkpoint));
-    if (result != 0) {
-        return respond_actor_error(result, request, output, output_size,
-                                   written);
-    }
-    if (request->query[0U] != '\0' ||
-        json_object_size(request->body) !=
-            sizeof(fields) / sizeof(fields[0U]) ||
-        !fields_allowed(request->body, fields,
-                        sizeof(fields) / sizeof(fields[0U])) ||
-        !required_nullable_string(request->body, "passphrase",
-                                  JG_BACKUP_PASSPHRASE_MAX, &passphrase) ||
-        !required_boolean(request->body, "dry_run", &dry_run) ||
-        !required_boolean(request->body, "confirm", &confirm) ||
-        (dry_run && confirm) || (!dry_run && !confirm)) {
-        return respond_error(
-            400, "invalid_body",
-            "A dry run must be unconfirmed and an applied restore confirmed.",
-            request->request_id, output, output_size, written);
-    }
     result = load_backup(management, backup_id, &metadata, &archive,
                          &archive_size, &info);
     if (result != 0) {
@@ -10377,7 +10658,7 @@ static int handle_backup_restore(struct jg_management *management,
         result = create_backup(management, metadata.kind,
                                metadata.kind == JG_BACKUP_FULL, passphrase,
                                passphrase == NULL ? 0U : strlen(passphrase),
-                               now, &checkpoint);
+                               now, NULL, NULL, &checkpoint);
         checkpoint_created = result == 0;
     }
     if (!dry_run && changes && result == 0) {
@@ -10434,7 +10715,7 @@ static int handle_backup_restore(struct jg_management *management,
     }
     audit_report = report;
     audit_report.changes = changes;
-    result = append_backup_audit(management, request, remote, &actor,
+    result = append_backup_audit(management, request, remote, actor,
                                  dry_run ? "backup.restore.dry_run"
                                          : "backup.restore",
                                  &metadata, &audit_report, dry_run, now);
@@ -10474,6 +10755,75 @@ static int handle_backup_restore(struct jg_management *management,
         return result;
     }
     return encode_response(200, body, NULL, output, output_size, written);
+}
+
+/** @brief Queue one validated or confirmed backup restore. */
+static int handle_backup_restore(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const struct remote_address *remote,
+                                 uint64_t backup_id,
+                                 uint64_t now,
+                                 uint8_t *output,
+                                 size_t output_size,
+                                 size_t *written)
+{
+    static const char *const fields[] = {
+        "passphrase",
+        "dry_run",
+        "confirm",
+    };
+    struct authenticated_actor actor;
+    struct management_job_submission prepared = {
+        .required_permission = JG_ACCESS_BACKUPS_WRITE,
+        .kind = MANAGEMENT_JOB_BACKUP_RESTORE,
+    };
+    const char *passphrase = NULL;
+    bool confirm = false;
+    uint64_t job_id = 0U;
+    int result = authenticate_actor(management, request, remote, true,
+                                    JG_ACCESS_BACKUPS_WRITE, now, &actor);
+
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    prepared.parameters.backup_restore.backup_id = backup_id;
+    if (request->query[0U] != '\0' ||
+        json_object_size(request->body) !=
+            sizeof(fields) / sizeof(fields[0U]) ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U])) ||
+        !required_nullable_string(request->body, "passphrase",
+                                  JG_BACKUP_PASSPHRASE_MAX, &passphrase) ||
+        !required_boolean(request->body, "dry_run",
+                          &prepared.parameters.backup_restore.dry_run) ||
+        !required_boolean(request->body, "confirm", &confirm) ||
+        (prepared.parameters.backup_restore.dry_run && confirm) ||
+        (!prepared.parameters.backup_restore.dry_run && !confirm)) {
+        return respond_error(
+            400, "invalid_body",
+            "A dry run must be unconfirmed and an applied restore confirmed.",
+            request->request_id, output, output_size, written);
+    }
+    if (passphrase != NULL) {
+        prepared.parameters.backup_restore.passphrase_size = strlen(passphrase);
+        (void)memcpy(prepared.parameters.backup_restore.passphrase, passphrase,
+                     prepared.parameters.backup_restore.passphrase_size + 1U);
+    }
+    result = submit_management_job(management, request, remote, &actor,
+                                   &prepared, now, &job_id);
+    management_job_parameters_clear(prepared.kind, &prepared.parameters);
+    if (result == -EBUSY) {
+        return respond_error(503, "job_queue_full",
+                             "The slow-operation queue is currently full.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "job_queue_failed",
+                             "The backup restore could not be queued.",
+                             request->request_id, output, output_size, written);
+    }
+    return respond_job_accepted(job_id, output, output_size, written);
 }
 
 /** @brief Return one authenticated filtered page of operational events. */

@@ -5,7 +5,7 @@
 
 "use strict";
 
-import { api, apiText, errorMessage } from "./api.js";
+import { api, apiText, errorMessage, waitForJob } from "./api.js";
 import {
   announce,
   byId,
@@ -374,10 +374,11 @@ async function createDiagnostics() {
   showError(byId("system-error"), "");
   await withBusyButton(byId("diagnostics-create"), async () => {
     try {
-      const result = await api("/api/v1/diagnostics", {
+      const accepted = await api("/api/v1/diagnostics", {
         method: "POST",
         body: {},
       });
+      const result = await waitForJob(accepted);
       const metadata = {
         filename: result.filename,
         media_type: result.media_type,
