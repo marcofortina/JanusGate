@@ -106,26 +106,26 @@ ctest --test-dir "$fuzz_build" --output-on-failure -L fuzz
 
 python3 "$project_directory/scripts/generate-sbom.py" \
     "$output_directory/janusgate.spdx.json"
-archive=janusgate-0.1.1.tar.gz
+archive=janusgate-0.1.2.tar.gz
 git archive --format=tar --mtime="@$source_date_epoch" \
-    --prefix=janusgate-0.1.1/ 'HEAD^{tree}' -- . \
+    --prefix=janusgate-0.1.2/ 'HEAD^{tree}' -- . \
     ':(exclude)packaging/alpine/APKBUILD' |
     gzip -n >"$output_directory/$archive"
 gpg --batch --armor --local-user "$signing_key" --detach-sign \
     "$output_directory/$archive"
 
 cp "$project_directory/api/openapi.yaml" \
-    "$output_directory/janusgate-openapi-0.1.1.yaml"
+    "$output_directory/janusgate-openapi-0.1.2.yaml"
 cp "$project_directory/CHANGELOG.md" \
-    "$output_directory/janusgate-0.1.1-release-notes.md"
+    "$output_directory/janusgate-0.1.2-release-notes.md"
 tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 \
     --numeric-owner --create --gzip \
-    --file="$output_directory/janusgate-0.1.1-doxygen.tar.gz" \
+    --file="$output_directory/janusgate-0.1.2-doxygen.tar.gz" \
     --directory="$release_build/docs/html" .
 
 python3 - "$release_build/include/janusgate/version.h" \
     "$project_directory/include/janusgate/database.h" \
-    "$output_directory/janusgate-0.1.1-build-manifest.json" <<'PY'
+    "$output_directory/janusgate-0.1.2-build-manifest.json" <<'PY'
 import json
 import re
 import sys
