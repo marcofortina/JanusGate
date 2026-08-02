@@ -49,8 +49,10 @@ backups to cases that require them.
 Monitor certificate expiry. Install certificate and key together; JanusGate
 checks their match before replacement. Retain a recovery copy and console
 access while changing OS-owned management addressing or the certificate trust
-chain. A WebGUI certificate change reloads the HTTPS listeners but does not
-provide automatic post-reload file rollback.
+chain. A WebGUI certificate change preflights all listener files before it
+stops the active generation; failed preflight leaves the active listeners
+running. A later activation failure does not automatically roll back the
+installed files.
 
 Treat the remote client CA key as offline trust material. Review mappings and
 tokens independently, revoke both when retiring an automation identity, and

@@ -98,6 +98,7 @@ Stop accepting requests and shut down cleanly.
 .TP
 .B SIGHUP
 Validate current TLS material and reload both HTTPS listeners.
+If preflight fails, retain the active listener generation and record a warning.
 .SH FILES
 .TP
 .I /etc/janusgate/certs/server.pem

@@ -155,6 +155,16 @@ static int wait_for_service_signal(const sigset_t *signals, int *number)
 #endif
 }
 
+/** @brief Record one rejected reload while the active listeners remain live. */
+static void log_reload_rejected(int result)
+{
+    char details[64U];
+
+    (void)snprintf(details, sizeof(details), "{\"error_number\":%d}", -result);
+    (void)jg_log_emit(JG_LOG_WARNING, "web", "web.reload_rejected", NULL,
+                      "HTTPS listener reload rejected by preflight", details);
+}
+
 /** @brief Run the unprivileged HTTPS management service. */
 int main(int argc, char **argv)
 {
@@ -218,12 +228,18 @@ int main(int argc, char **argv)
         }
         if (result == 0 &&
             (signal_number == SIGHUP || jg_web_server_take_reload(server))) {
-            jg_web_server_destroy(server);
-            server = NULL;
-            result = jg_web_server_start(&config, &server);
-            if (result == 0) {
-                (void)jg_log_emit(JG_LOG_INFO, "web", "web.reloaded", NULL,
-                                  "HTTPS listeners reloaded", NULL);
+            const int validation_result = jg_web_server_validate(&config);
+
+            if (validation_result != 0) {
+                log_reload_rejected(validation_result);
+            } else {
+                jg_web_server_destroy(server);
+                server = NULL;
+                result = jg_web_server_start(&config, &server);
+                if (result == 0) {
+                    (void)jg_log_emit(JG_LOG_INFO, "web", "web.reloaded", NULL,
+                                      "HTTPS listeners reloaded", NULL);
+                }
             }
         }
     }

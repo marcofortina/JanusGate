@@ -239,6 +239,7 @@ static int duplicate_string(const char *input, char **output)
 /** @brief Validate one secure regular certificate PEM without symlinks. */
 static int validate_certificate(const char *path)
 {
+    struct jg_certificate_info certificate;
     struct stat metadata;
     int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     int result = 0;
@@ -254,6 +255,9 @@ static int validate_certificate(const char *path)
     }
     if (close(descriptor) != 0 && result == 0) {
         result = -errno;
+    }
+    if (result == 0) {
+        result = jg_certificate_inspect_file(path, &certificate);
     }
     return result;
 }
@@ -735,6 +739,37 @@ static int client_trust_store_available(const char *path, bool *available)
     return result;
 }
 
+/** @brief Validate one listener generation and detect optional remote API. */
+static int validate_server_config(const struct jg_web_config *config,
+                                  bool *remote_api)
+{
+    int result = jg_web_config_validate(config);
+
+    if (remote_api == NULL) {
+        return -EINVAL;
+    }
+    *remote_api = false;
+    if (result == 0) {
+        result = validate_certificate(config->certificate_path);
+    }
+    if (result == 0) {
+        result = validate_web_root(config->web_root);
+    }
+    if (result == 0) {
+        result =
+            client_trust_store_available(config->client_ca_path, remote_api);
+    }
+    return result;
+}
+
+/** @brief Validate every file needed by a listener generation. */
+int jg_web_server_validate(const struct jg_web_config *config)
+{
+    bool remote_api = false;
+
+    return validate_server_config(config, &remote_api);
+}
+
 /** @brief Start one isolated TLS listener with its authentication boundary. */
 static int start_listener(struct jg_web_server *server,
                           const char *listener,
@@ -814,17 +849,7 @@ int jg_web_server_start(const struct jg_web_config *config,
         return -EINVAL;
     }
     *server = NULL;
-    result = jg_web_config_validate(config);
-    if (result == 0) {
-        result = validate_certificate(config->certificate_path);
-    }
-    if (result == 0) {
-        result = validate_web_root(config->web_root);
-    }
-    if (result == 0) {
-        result =
-            client_trust_store_available(config->client_ca_path, &remote_api);
-    }
+    result = validate_server_config(config, &remote_api);
     if (result == 0) {
         result = jg_web_build_listener(config, config->port, web_listener,
                                        sizeof(web_listener));

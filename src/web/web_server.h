@@ -92,6 +92,9 @@ bool jg_web_host_valid(const struct jg_web_config *config,
                        uint16_t port,
                        const char *host);
 
+/** @brief Validate every file needed by a listener generation. */
+int jg_web_server_validate(const struct jg_web_config *config);
+
 /** @brief Start one TLS-only management service. */
 int jg_web_server_start(const struct jg_web_config *config,
                         struct jg_web_server **server);

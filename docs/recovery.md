@@ -49,7 +49,9 @@ state, then start the web service.
 
 A rejected certificate operation leaves the active pair unchanged. An
 accepted operation validates and atomically replaces the files before the web
-listener reload, but does not automatically restore them if activation fails.
+listener reload. Reload preflight keeps the active listeners running when the
+new files are invalid, but does not automatically restore files after a later
+activation failure.
 If HTTPS cannot start, restore a matching certificate and key from console
 with restrictive ownership and modes, validate their public keys with OpenSSL,
 and restart only `janusgate-web`. Replace a potentially exposed key rather

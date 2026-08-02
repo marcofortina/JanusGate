@@ -68,8 +68,10 @@ Policy decisions are only as good as the configured lists and exceptions.
 The audit hash chain is unkeyed and stored with its records. It detects
 inconsistent modification but cannot prevent a privileged database attacker
 from rewriting and recomputing the complete chain. Certificate activation
-also has no automatic post-reload file rollback. Stronger guarantees require
-protected external logs or checkpoints and retained console recovery access.
+preflight preserves the active listener generation when files are invalid,
+but there is no automatic file rollback after a later activation failure.
+Stronger guarantees require protected external logs or checkpoints and
+retained console recovery access.
 
 The appliance is not an intrusion-prevention system and does not inspect
 arbitrary application content. It cannot prevent a physical bypass. Hardware

@@ -2,13 +2,20 @@
  * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <cmocka.h>
 
@@ -75,6 +82,57 @@ static void test_web_host_validation(void **state)
     assert_false(
         jg_web_host_valid(&config, config.api_port, "janusgate.local:443"));
     assert_false(jg_web_host_valid(&config, config.port, NULL));
+}
+
+/** @brief Verify listener preflight rejects unsafe or malformed TLS state. */
+static void test_web_server_preflight(void **state)
+{
+    static const char template[] = "/tmp/janusgate-web-XXXXXX";
+    char directory[sizeof(template)];
+    char certificate_path[128U];
+    char client_ca_path[128U];
+    struct jg_certificate_material material;
+    struct jg_certificate_info certificate;
+    struct jg_web_config config;
+    int file_descriptor = -1;
+    int written = 0;
+
+    (void)state;
+    (void)memcpy(directory, template, sizeof(template));
+    assert_non_null(mkdtemp(directory));
+    written = snprintf(certificate_path, sizeof(certificate_path),
+                       "%s/server.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(certificate_path));
+    written = snprintf(client_ca_path, sizeof(client_ca_path),
+                       "%s/client-ca.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(client_ca_path));
+    assert_int_equal(jg_certificate_create_self_signed("janusgate.local", NULL,
+                                                       0U, 30U, &material),
+                     0);
+    assert_int_equal(
+        jg_certificate_install(certificate_path, material.certificate,
+                               material.certificate_size, material.private_key,
+                               material.private_key_size, &certificate),
+        0);
+    jg_web_config_default(&config);
+    config.certificate_path = certificate_path;
+    config.client_ca_path = client_ca_path;
+    config.web_root = directory;
+    assert_int_equal(jg_web_server_validate(&config), 0);
+    assert_int_equal(chmod(certificate_path, 0644), 0);
+    assert_int_equal(jg_web_server_validate(&config), -EACCES);
+    assert_int_equal(chmod(certificate_path, 0600), 0);
+    file_descriptor = open(certificate_path, O_WRONLY | O_TRUNC);
+    assert_true(file_descriptor >= 0);
+    assert_int_equal(write(file_descriptor, "invalid\n", 8U), 8);
+    assert_int_equal(close(file_descriptor), 0);
+    assert_int_equal(jg_web_server_validate(&config), -EINVAL);
+
+    assert_int_equal(unlink(certificate_path), 0);
+    assert_int_equal(rmdir(directory), 0);
+    jg_certificate_material_clear(&material);
 }
 
 /** @brief Verify exact IPv4 and IPv6 TLS listener expressions. */
@@ -158,6 +216,7 @@ int jg_test_web_server(void)
         cmocka_unit_test(test_web_config_validation),
         cmocka_unit_test(test_web_listener),
         cmocka_unit_test(test_web_host_validation),
+        cmocka_unit_test(test_web_server_preflight),
         cmocka_unit_test(test_gateway_response_formats),
     };
 
