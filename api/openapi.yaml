@@ -1680,11 +1680,11 @@ components:
         connect_timeout_ms:
           type: integer
           minimum: 1
-          maximum: 2147483647
+          maximum: 30000
         transfer_timeout_ms:
           type: integer
           minimum: 1
-          maximum: 2147483647
+          maximum: 300000
         redirect_limit:
           type: integer
           minimum: 0

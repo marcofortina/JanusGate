@@ -1474,7 +1474,8 @@ static void test_blocklist_source_page(void **state)
         "101112131415161718191a1b1c1d1e1f',"
         "X'1f1e1d1c1b1a19181716151413121110"
         "0f0e0d0c0b0a09080706050403020100',10,20,"
-        "'https://lists.example/domains.sig',5000,30000,3,60,900,4),("
+        "'https://lists.example/"
+        "domains.sig',2147483647,2147483647,3,60,900,4),("
         "9,'local',NULL,'domain',1,0,86400,2048,8192,NULL,NULL,30,30,NULL,"
         "10000,60000,0,300,3600,1);"
         "INSERT INTO blocklist_source_status("
@@ -1521,6 +1522,10 @@ static void test_blocklist_source_page(void **state)
     assert_true(page[0U].has_sha256_pin);
     assert_true(page[0U].has_signature);
     assert_true(page[0U].has_active_checksum);
+    assert_int_equal(page[0U].connect_timeout_ms,
+                     JG_BLOCKLIST_CONNECT_TIMEOUT_MAX);
+    assert_int_equal(page[0U].transfer_timeout_ms,
+                     JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX);
     assert_int_equal(page[0U].active_entries, 42U);
     assert_int_equal(page[0U].rejected_entries, 3U);
     assert_int_equal(page[0U].health, JG_DATABASE_BLOCKLIST_DEGRADED);
@@ -1607,6 +1612,13 @@ static void test_blocklist_source_creation(void **state)
     assert_int_equal(
         jg_database_create_blocklist_source(database, &config, &duplicate),
         -EEXIST);
+
+    config.name = "Excessive timeout";
+    config.connect_timeout_ms = JG_BLOCKLIST_CONNECT_TIMEOUT_MAX + 1U;
+    assert_int_equal(
+        jg_database_create_blocklist_source(database, &config, &duplicate),
+        -EINVAL);
+    config = make_blocklist_source();
 
     config.name = invalid_utf8;
     assert_int_equal(

@@ -149,9 +149,9 @@ static bool config_valid(const struct jg_blocklist_remote_config *config)
         config->max_download_bytes == 0U ||
         config->max_download_bytes > (size_t)INT64_MAX ||
         config->connect_timeout_ms == 0U ||
-        config->connect_timeout_ms > (uint32_t)INT32_MAX ||
+        config->connect_timeout_ms > JG_BLOCKLIST_CONNECT_TIMEOUT_MAX ||
         config->transfer_timeout_ms == 0U ||
-        config->transfer_timeout_ms > (uint32_t)INT32_MAX ||
+        config->transfer_timeout_ms > JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX ||
         config->redirect_limit > 20U || config->update_interval_seconds == 0U ||
         config->retry_base_seconds == 0U ||
         config->retry_base_seconds > config->retry_max_seconds) {

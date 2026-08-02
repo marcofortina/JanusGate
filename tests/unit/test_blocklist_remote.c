@@ -86,6 +86,17 @@ static void test_invalid_configuration(void **state)
     assert_int_equal(jg_blocklist_remote_update(&config, &remote_state, 42U,
                                                 &status, &blocklist, NULL),
                      -EINVAL);
+
+    config = test_config();
+    config.connect_timeout_ms = JG_BLOCKLIST_CONNECT_TIMEOUT_MAX + 1U;
+    assert_int_equal(jg_blocklist_remote_update(&config, &remote_state, 42U,
+                                                &status, &blocklist, NULL),
+                     -EINVAL);
+    config = test_config();
+    config.transfer_timeout_ms = JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX + 1U;
+    assert_int_equal(jg_blocklist_remote_update(&config, &remote_state, 42U,
+                                                &status, &blocklist, NULL),
+                     -EINVAL);
 }
 
 /** @brief Verify non-public destinations are rejected and schedule retry. */

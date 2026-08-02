@@ -219,9 +219,9 @@ struct jg_database_blocklist_source_config {
     size_t max_download_bytes;
     /** Maximum decompressed import bytes. */
     size_t max_decompressed_bytes;
-    /** TCP and TLS connection timeout in milliseconds. */
+    /** TCP and TLS connection timeout in the supported millisecond range. */
     uint32_t connect_timeout_ms;
-    /** Complete transfer timeout in milliseconds. */
+    /** Complete transfer timeout in the supported millisecond range. */
     uint32_t transfer_timeout_ms;
     /** Maximum followed HTTPS redirects. */
     uint32_t redirect_limit;
@@ -269,9 +269,9 @@ struct jg_database_blocklist_source {
     size_t max_download_bytes;
     /** Maximum decompressed import bytes. */
     size_t max_decompressed_bytes;
-    /** TCP and TLS connection timeout in milliseconds. */
+    /** Effective bounded TCP and TLS connection timeout in milliseconds. */
     uint32_t connect_timeout_ms;
-    /** Complete transfer timeout in milliseconds. */
+    /** Effective bounded complete transfer timeout in milliseconds. */
     uint32_t transfer_timeout_ms;
     /** Maximum followed HTTPS redirects. */
     uint32_t redirect_limit;

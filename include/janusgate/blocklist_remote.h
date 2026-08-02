@@ -35,6 +35,12 @@
 /** Maximum retained Last-Modified bytes excluding its terminator. */
 #define JG_BLOCKLIST_LAST_MODIFIED_MAX 128U
 
+/** Maximum TCP and TLS connection timeout in milliseconds. */
+#define JG_BLOCKLIST_CONNECT_TIMEOUT_MAX 30000U
+
+/** Maximum complete remote transfer timeout in milliseconds. */
+#define JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX 300000U
+
 /**
  * @brief Result of a successful remote update check.
  */
@@ -81,9 +87,9 @@ struct jg_blocklist_remote_config {
     struct jg_blocklist_limits import_limits;
     /** Maximum advertised compressed response bytes in `[1, INT64_MAX]`. */
     size_t max_download_bytes;
-    /** TCP and TLS connection timeout in `[1, INT32_MAX]` milliseconds. */
+    /** TCP and TLS connection timeout in the supported millisecond range. */
     uint32_t connect_timeout_ms;
-    /** Complete transfer timeout in `[1, INT32_MAX]` milliseconds. */
+    /** Complete transfer timeout in the supported millisecond range. */
     uint32_t transfer_timeout_ms;
     /** Maximum followed HTTPS redirects in `[0, 20]`. */
     uint32_t redirect_limit;

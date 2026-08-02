@@ -3115,8 +3115,12 @@ static int decode_blocklist_source_integers(
     source->update_interval_seconds = config[0U];
     source->max_download_bytes = (size_t)config[1U];
     source->max_decompressed_bytes = (size_t)config[2U];
-    source->connect_timeout_ms = (uint32_t)config[3U];
-    source->transfer_timeout_ms = (uint32_t)config[4U];
+    source->connect_timeout_ms = config[3U] > JG_BLOCKLIST_CONNECT_TIMEOUT_MAX
+                                     ? JG_BLOCKLIST_CONNECT_TIMEOUT_MAX
+                                     : (uint32_t)config[3U];
+    source->transfer_timeout_ms = config[4U] > JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX
+                                      ? JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX
+                                      : (uint32_t)config[4U];
     source->redirect_limit = (uint32_t)config[5U];
     source->retry_base_seconds = config[6U];
     source->retry_max_seconds = config[7U];
@@ -3383,9 +3387,9 @@ static int validate_blocklist_source_config(
         config->max_decompressed_bytes < config->max_download_bytes ||
         config->max_decompressed_bytes > (size_t)INT64_MAX ||
         config->connect_timeout_ms == 0U ||
-        config->connect_timeout_ms > (uint32_t)INT32_MAX ||
+        config->connect_timeout_ms > JG_BLOCKLIST_CONNECT_TIMEOUT_MAX ||
         config->transfer_timeout_ms == 0U ||
-        config->transfer_timeout_ms > (uint32_t)INT32_MAX ||
+        config->transfer_timeout_ms > JG_BLOCKLIST_TRANSFER_TIMEOUT_MAX ||
         config->redirect_limit > 20U || config->retry_base_seconds == 0U ||
         config->retry_base_seconds > config->retry_max_seconds ||
         config->retry_max_seconds > (uint64_t)INT64_MAX) {
