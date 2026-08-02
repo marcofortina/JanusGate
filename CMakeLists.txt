@@ -264,6 +264,9 @@ add_executable(janusgate-web src/web/main.c)
 target_include_directories(janusgate-web PRIVATE "${CIVETWEB_INCLUDE_DIR}")
 target_link_libraries(
   janusgate-web PRIVATE janusgate-web-core "${CIVETWEB_LIBRARY}")
+if(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+  set_property(TARGET janusgate-web PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
 janusgate_apply_compiler_options(janusgate-web)
 
 add_executable(janusgate-setup src/setup/main.c)

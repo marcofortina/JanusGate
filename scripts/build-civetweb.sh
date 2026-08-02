@@ -85,7 +85,7 @@ case $install_prefix in
 esac
 [ ! -e "$install_prefix" ] || fail "refusing to overwrite: $install_prefix"
 
-for program in awk basename cmake curl dirname mktemp patch tar; do
+for program in awk basename cmake curl dirname mktemp ninja patch tar; do
     command -v "$program" >/dev/null 2>&1 ||
         fail "required program is unavailable: $program"
 done
@@ -145,10 +145,10 @@ if [ "$(uname -s)" = OpenBSD ]; then
 fi
 cmake -S "$source_directory" -B "$temporary_directory/build" -G Ninja \
     -DCMAKE_BUILD_TYPE=MinSizeRel \
-    -DCMAKE_C_FLAGS=-w \
     -DCMAKE_INSTALL_PREFIX="$install_prefix" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_SHARED_LIBS=ON \
+    -DCIVETWEB_ALLOW_WARNINGS=ON \
     -DCIVETWEB_BUILD_TESTING=OFF \
     -DCIVETWEB_DISABLE_CGI=ON \
     -DCIVETWEB_ENABLE_CXX=OFF \

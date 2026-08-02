@@ -126,6 +126,7 @@ jobs:
             test -x build/openbsd-stage/etc/rc.d/janusgate_netd
             test -x build/openbsd-stage/etc/rc.d/janusgated
             test -x build/openbsd-stage/etc/rc.d/janusgate_web
+            build/openbsd-stage/usr/local/sbin/janusgate-web --version
             install -m 0600 config/janusgate.openbsd.conf.example \
               build/openbsd/ci-config.json
             packaging/install/install.sh \

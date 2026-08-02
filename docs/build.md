@@ -83,8 +83,10 @@ ctest --test-dir build/openbsd --output-on-failure
 ```
 
 The installer uses `config/janusgate.openbsd.conf.example`, installs binaries
-under `/usr/local`, and enables the supplied rc.d services without starting
-them.
+under `/usr/local`, preserves the runtime search paths of ports dependencies,
+and enables the supplied rc.d services without starting them. Validate the
+installed Web service after staging or installation with
+`/usr/local/sbin/janusgate-web --version`.
 
 The purpose, runtime role, and license of each direct dependency are recorded
 in [Dependencies](dependencies.md).
