@@ -1003,6 +1003,43 @@ static char *path_with_suffix(const char *path, const char *suffix)
     return combined;
 }
 
+/** @brief Synchronize the directory entry containing one absolute path. */
+static int sync_parent_directory(const char *path)
+{
+    const char *separator = NULL;
+    size_t length = 0U;
+    char *parent = NULL;
+    int descriptor = -1;
+    int result = 0;
+
+    if (path == NULL || path[0U] != '/') {
+        return -EINVAL;
+    }
+    separator = strrchr(path, '/');
+    if (separator == NULL || separator[1U] == '\0') {
+        return -EINVAL;
+    }
+    length = separator == path ? 1U : (size_t)(separator - path);
+    parent = malloc(length + 1U);
+    if (parent == NULL) {
+        return -ENOMEM;
+    }
+    (void)memcpy(parent, path, length);
+    parent[length] = '\0';
+    descriptor = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    free(parent);
+    if (descriptor < 0) {
+        return -errno;
+    }
+    if (fsync(descriptor) != 0) {
+        result = -errno;
+    }
+    if (close(descriptor) != 0 && result == 0) {
+        result = -errno;
+    }
+    return result;
+}
+
 /** @brief Copy one complete SQLite schema into another connection. */
 static int copy_database(sqlite3 *target,
                          const char *target_schema,
@@ -1028,17 +1065,28 @@ static int copy_database(sqlite3 *target,
     return result;
 }
 
-/** @brief Atomically write a last-known-good SQLite backup. */
-static int backup_database(const struct jg_database *database)
+/** @brief Atomically write one synchronized SQLite database copy. */
+static int backup_database(const struct jg_database *database,
+                           const char *suffix)
 {
     sqlite3 *target = NULL;
-    char *backup_path = path_with_suffix(database->path, ".lkg");
-    char *temporary_path = path_with_suffix(database->path, ".lkg.XXXXXX");
+    char temporary_suffix[64U];
+    char *backup_path = NULL;
+    char *temporary_path = NULL;
     int descriptor = -1;
     int status;
     int result = 0;
+    int written = snprintf(temporary_suffix, sizeof(temporary_suffix),
+                           "%s.XXXXXX", suffix);
 
-    if (backup_path == NULL || temporary_path == NULL) {
+    if (written <= 0 || (size_t)written >= sizeof(temporary_suffix)) {
+        result = -EINVAL;
+    }
+    if (result == 0) {
+        backup_path = path_with_suffix(database->path, suffix);
+        temporary_path = path_with_suffix(database->path, temporary_suffix);
+    }
+    if (result == 0 && (backup_path == NULL || temporary_path == NULL)) {
         result = -ENOMEM;
     }
     if (result == 0) {
@@ -1054,6 +1102,7 @@ static int backup_database(const struct jg_database *database)
         if (close(descriptor) != 0 && result == 0) {
             result = -errno;
         }
+        descriptor = -1;
     }
     if (result == 0) {
         status = sqlite3_open_v2(temporary_path, &target,
@@ -1071,14 +1120,60 @@ static int backup_database(const struct jg_database *database)
             result = jg_database_sqlite_result(status);
         }
     }
+    if (result == 0) {
+        descriptor = open(temporary_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor < 0) {
+            result = -errno;
+        }
+    }
+    if (descriptor >= 0) {
+        if (fsync(descriptor) != 0) {
+            result = -errno;
+        }
+        if (close(descriptor) != 0 && result == 0) {
+            result = -errno;
+        }
+    }
     if (result == 0 && rename(temporary_path, backup_path) != 0) {
         result = -errno;
+    }
+    if (result == 0) {
+        result = sync_parent_directory(backup_path);
     }
     if (result != 0 && temporary_path != NULL) {
         (void)unlink(temporary_path);
     }
     free(temporary_path);
     free(backup_path);
+    return result;
+}
+
+/** @brief Create the durable cross-resource recovery checkpoint. */
+int jg_database_recovery_checkpoint_create(const struct jg_database *database)
+{
+    return database == NULL ? -EINVAL : backup_database(database, ".recovery");
+}
+
+/** @brief Remove the durable cross-resource recovery checkpoint. */
+int jg_database_recovery_checkpoint_remove(const struct jg_database *database)
+{
+    char *path = NULL;
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    path = path_with_suffix(database->path, ".recovery");
+    if (path == NULL) {
+        return -ENOMEM;
+    }
+    if (unlink(path) != 0) {
+        result = -errno;
+    }
+    if (result == 0) {
+        result = sync_parent_directory(path);
+    }
+    free(path);
     return result;
 }
 
@@ -1090,7 +1185,7 @@ static int migrate_database(struct jg_database *database,
     int result = 0;
 
     if (current_version > 0U && current_version < JG_DATABASE_SCHEMA_VERSION) {
-        result = backup_database(database);
+        result = backup_database(database, ".lkg");
     }
     for (index = 0U;
          result == 0 && index < sizeof(migrations) / sizeof(migrations[0]);
@@ -1327,6 +1422,58 @@ static int replace_database(sqlite3 *current, sqlite3 *replacement)
             result = jg_database_sqlite_result(status);
         }
     }
+    return result;
+}
+
+/** @brief Replace the current database from its durable recovery checkpoint. */
+int jg_database_recovery_checkpoint_restore(struct jg_database *database)
+{
+    sqlite3 *checkpoint = NULL;
+    char *path = NULL;
+    struct stat metadata;
+    uint32_t version = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL) {
+        return -EINVAL;
+    }
+    path = path_with_suffix(database->path, ".recovery");
+    if (path == NULL) {
+        return -ENOMEM;
+    }
+    if (lstat(path, &metadata) != 0) {
+        result = -errno;
+    } else if (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
+               (metadata.st_mode & 0777U) != (S_IRUSR | S_IWUSR)) {
+        result = -EACCES;
+    }
+    if (result == 0) {
+        status = sqlite3_open_v2(path, &checkpoint,
+                                 SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX |
+                                     SQLITE_OPEN_NOFOLLOW,
+                                 NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = check_database_integrity(checkpoint);
+    }
+    if (result == 0) {
+        result = read_version(checkpoint, &version);
+    }
+    if (result == 0 && version != JG_DATABASE_SCHEMA_VERSION) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        result = replace_database(database->handle, checkpoint);
+    }
+    if (checkpoint != NULL) {
+        status = sqlite3_close(checkpoint);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    free(path);
     return result;
 }
 

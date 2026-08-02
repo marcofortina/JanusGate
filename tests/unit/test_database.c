@@ -25,6 +25,8 @@
 
 #include "janusgate/database.h"
 
+#include "database_internal.h"
+
 int jg_test_database(void);
 
 /** @brief Create one private temporary directory and database path. */
@@ -58,6 +60,10 @@ static void remove_database(const char *directory, const char *path)
         (void)unlink(auxiliary);
     }
     written = snprintf(auxiliary, sizeof(auxiliary), "%s.lkg", path);
+    if (written > 0 && (size_t)written < sizeof(auxiliary)) {
+        (void)unlink(auxiliary);
+    }
+    written = snprintf(auxiliary, sizeof(auxiliary), "%s.recovery", path);
     if (written > 0 && (size_t)written < sizeof(auxiliary)) {
         (void)unlink(auxiliary);
     }
@@ -1346,6 +1352,72 @@ static void test_network_configuration(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify durable checkpoint creation, restoration, and removal. */
+static void test_recovery_checkpoint(void **state)
+{
+    const struct jg_network_config original = {
+        .bridge = "br-data",
+        .ingress = "eth0",
+        .egress = "eth1",
+        .management = "eth2",
+        .queue_first = 100U,
+        .queue_count = 4U,
+        .queue_length = 4096U,
+        .failure_mode = JG_NETWORK_FAIL_OPEN,
+        .multicast_snooping = true,
+        .queue_cpu_fanout = true,
+    };
+    struct jg_network_config changed = original;
+    struct jg_network_config loaded;
+    char directory[64U];
+    char path[512U];
+    char checkpoint[544U];
+    char sentinel[544U];
+    struct jg_database *database = NULL;
+    int descriptor = -1;
+    int written = 0;
+
+    (void)state;
+    changed.queue_length = 8192U;
+    changed.failure_mode = JG_NETWORK_FAIL_CLOSED;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    written = snprintf(checkpoint, sizeof(checkpoint), "%s.recovery", path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(checkpoint));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_store_network_config(database, &original), 0);
+    assert_int_equal(jg_database_recovery_checkpoint_create(database), 0);
+    assert_int_equal(access(checkpoint, F_OK), 0);
+    assert_int_equal(jg_database_store_network_config(database, &changed), 0);
+    assert_int_equal(jg_database_load_network_config(database, &loaded), 0);
+    assert_int_equal(loaded.queue_length, changed.queue_length);
+
+    assert_int_equal(jg_database_recovery_checkpoint_restore(database), 0);
+    assert_int_equal(jg_database_load_network_config(database, &loaded), 0);
+    assert_int_equal(loaded.queue_length, original.queue_length);
+    assert_int_equal(loaded.failure_mode, original.failure_mode);
+    assert_int_equal(jg_database_recovery_checkpoint_remove(database), 0);
+    assert_int_equal(access(checkpoint, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    assert_int_equal(jg_database_recovery_checkpoint_remove(database), -ENOENT);
+
+    written = snprintf(sentinel, sizeof(sentinel), "%s.sentinel", path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(sentinel));
+    descriptor = open(sentinel, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    assert_true(descriptor >= 0);
+    assert_int_equal(close(descriptor), 0);
+    assert_int_equal(symlink(sentinel, checkpoint), 0);
+    assert_int_equal(jg_database_recovery_checkpoint_remove(database), 0);
+    assert_int_equal(access(checkpoint, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    assert_int_equal(access(sentinel, F_OK), 0);
+    assert_int_equal(unlink(sentinel), 0);
+
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify migration of a retained version-eight network setting. */
 static void test_network_configuration_migration(void **state)
 {
@@ -1889,6 +1961,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
+        cmocka_unit_test(test_recovery_checkpoint),
         cmocka_unit_test(test_network_configuration_migration),
         cmocka_unit_test(test_logging_configuration),
         cmocka_unit_test(test_dns_response_configuration),

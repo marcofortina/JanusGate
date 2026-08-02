@@ -1063,6 +1063,68 @@ static int atomic_write(const char *path,
     return result;
 }
 
+/** @brief Validate and atomically copy one installed server identity. */
+int jg_certificate_identity_copy(const char *source, const char *destination)
+{
+    struct jg_certificate_info info;
+    uint8_t *data = NULL;
+    size_t data_size = 0U;
+    int result = 0;
+
+    if (source == NULL || destination == NULL ||
+        strcmp(source, destination) == 0) {
+        return -EINVAL;
+    }
+    result = read_secure_file(source, &data, &data_size);
+    if (result == 0) {
+        result = inspect_identity(data, data_size, &info);
+    }
+    if (result == 0) {
+        result = atomic_write(destination, (const char *)data, data_size, NULL,
+                              0U, false);
+    }
+    if (data != NULL) {
+        sodium_memzero(data, data_size);
+        free(data);
+    }
+    return result;
+}
+
+/** @brief Validate and atomically copy one installed client trust store. */
+int jg_certificate_trust_store_copy(const char *source, const char *destination)
+{
+    struct jg_certificate_info *authorities = NULL;
+    uint8_t *data = NULL;
+    size_t data_size = 0U;
+    size_t authority_count = 0U;
+    int result = 0;
+
+    if (source == NULL || destination == NULL ||
+        strcmp(source, destination) == 0) {
+        return -EINVAL;
+    }
+    authorities = calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = read_secure_file(source, &data, &data_size);
+    if (result == 0) {
+        result = jg_certificate_trust_store_inspect(
+            (const char *)data, data_size, authorities,
+            JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    }
+    if (result == 0) {
+        result = atomic_write(destination, (const char *)data, data_size, NULL,
+                              0U, true);
+    }
+    if (data != NULL) {
+        sodium_memzero(data, data_size);
+        free(data);
+    }
+    free(authorities);
+    return result;
+}
+
 /** @brief Atomically install one matching certificate and private key. */
 int jg_certificate_install(const char *path,
                            const char *certificate,

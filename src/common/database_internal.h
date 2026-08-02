@@ -45,4 +45,13 @@ int jg_database_transaction_rollback(struct jg_database *database);
 int jg_database_open_peer(const struct jg_database *database,
                           struct jg_database **peer);
 
+/** @brief Create and synchronize the fixed durable recovery checkpoint. */
+int jg_database_recovery_checkpoint_create(const struct jg_database *database);
+
+/** @brief Replace the current database from its recovery checkpoint. */
+int jg_database_recovery_checkpoint_restore(struct jg_database *database);
+
+/** @brief Remove and synchronize the fixed recovery checkpoint. */
+int jg_database_recovery_checkpoint_remove(const struct jg_database *database);
+
 #endif

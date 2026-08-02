@@ -263,6 +263,44 @@ JG_PUBLIC int jg_certificate_export_file(const char *path,
                                          size_t *pem_size);
 
 /**
+ * @brief Validate and atomically copy one installed server identity.
+ *
+ * Both paths must be absolute. The source must be a secure combined
+ * certificate and private-key file. The destination is written with private
+ * owner-only access unless secure existing ownership requires mode 0640.
+ *
+ * @param[in] source Secure source identity path.
+ * @param[in] destination Secure destination identity path.
+ *
+ * @return 0 on success.
+ * @return -EACCES for insecure source or destination metadata.
+ * @return A result from identity validation or a negative filesystem error.
+ *
+ * @thread_safety Concurrent writes to either path require serialization.
+ *
+ * @side_effects Atomically creates or replaces @p destination.
+ */
+JG_PUBLIC int jg_certificate_identity_copy(const char *source,
+                                           const char *destination);
+
+/**
+ * @brief Validate and atomically copy one installed client trust store.
+ *
+ * @param[in] source Secure source trust-store path.
+ * @param[in] destination Secure destination trust-store path.
+ *
+ * @return 0 on success.
+ * @return -EACCES for insecure source or destination metadata.
+ * @return A result from trust-store validation or a negative filesystem error.
+ *
+ * @thread_safety Concurrent writes to either path require serialization.
+ *
+ * @side_effects Atomically creates or replaces @p destination.
+ */
+JG_PUBLIC int jg_certificate_trust_store_copy(const char *source,
+                                              const char *destination);
+
+/**
  * @brief Securely erase and release exported PEM.
  *
  * @param[in,out] pem Exported PEM, or null.

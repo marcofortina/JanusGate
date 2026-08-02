@@ -60,6 +60,8 @@ target_link_libraries(
   PRIVATE JanusGate::common janusgate-daemon-core janusgate-netd-core
           janusgate-cli-core janusgate-web-core
           PkgConfig::CMOCKA PkgConfig::JANSSON PkgConfig::SQLITE3)
+target_include_directories(
+  janusgate-unit-tests PRIVATE "${CMAKE_SOURCE_DIR}/src/common")
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)

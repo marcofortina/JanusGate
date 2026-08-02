@@ -318,6 +318,7 @@ static void test_certificate_installation(void **state)
     static const char template[] = "/tmp/janusgate-certificate-XXXXXX";
     char directory[sizeof(template)];
     char path[256U];
+    char copy[256U];
     char link[256U];
     char pending[256U];
     char *exported = NULL;
@@ -336,6 +337,9 @@ static void test_certificate_installation(void **state)
     written = snprintf(path, sizeof(path), "%s/server.pem", directory);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(path));
+    written = snprintf(copy, sizeof(copy), "%s/server-copy.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(copy));
     written = snprintf(link, sizeof(link), "%s/server-link.pem", directory);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(link));
@@ -355,6 +359,11 @@ static void test_certificate_installation(void **state)
     assert_int_equal(stat(path, &metadata), 0);
     assert_int_equal(metadata.st_mode & 0777U, S_IRUSR | S_IWUSR);
     assert_int_equal(jg_certificate_inspect_file(path, &inspected), 0);
+    assert_memory_equal(inspected.fingerprint_sha256,
+                        installed.fingerprint_sha256,
+                        sizeof(installed.fingerprint_sha256));
+    assert_int_equal(jg_certificate_identity_copy(path, copy), 0);
+    assert_int_equal(jg_certificate_inspect_file(copy, &inspected), 0);
     assert_memory_equal(inspected.fingerprint_sha256,
                         installed.fingerprint_sha256,
                         sizeof(installed.fingerprint_sha256));
@@ -411,6 +420,7 @@ static void test_certificate_installation(void **state)
         -ENOENT);
 
     assert_int_equal(unlink(link), 0);
+    assert_int_equal(unlink(copy), 0);
     assert_int_equal(unlink(path), 0);
     assert_int_equal(rmdir(directory), 0);
     jg_certificate_material_clear(&material);
@@ -422,6 +432,7 @@ static void test_client_trust_store(void **state)
     static const char template[] = "/tmp/janusgate-client-ca-XXXXXX";
     char directory[sizeof(template)];
     char path[256U];
+    char copy[256U];
     char *authority = NULL;
     char *duplicate = NULL;
     char *client = NULL;
@@ -445,6 +456,9 @@ static void test_client_trust_store(void **state)
     written = snprintf(path, sizeof(path), "%s/client-ca.pem", directory);
     assert_true(written > 0);
     assert_true((size_t)written < sizeof(path));
+    written = snprintf(copy, sizeof(copy), "%s/client-ca-copy.pem", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(copy));
     create_test_authority(&authority, &authority_size, &authority_key,
                           &authority_certificate);
     assert_int_equal(
@@ -491,6 +505,10 @@ static void test_client_trust_store(void **state)
                          path, authorities, 2U, &authority_count),
                      0);
     assert_int_equal(authority_count, 1U);
+    assert_int_equal(jg_certificate_trust_store_copy(path, copy), 0);
+    assert_int_equal(jg_certificate_trust_store_inspect_file(
+                         copy, authorities, 2U, &authority_count),
+                     0);
     create_test_leaf(authority_key, authority_certificate, "clientAuth",
                      &client, &client_size);
     create_test_leaf(authority_key, authority_certificate, "serverAuth",
@@ -519,6 +537,7 @@ static void test_client_trust_store(void **state)
                                                     path, &authorities[0U]),
                      -EACCES);
     assert_int_equal(jg_certificate_trust_store_remove(path), 0);
+    assert_int_equal(jg_certificate_trust_store_remove(copy), 0);
     assert_int_equal(jg_certificate_client_validate(client, client_size, path,
                                                     &authorities[0U]),
                      -ENOENT);
