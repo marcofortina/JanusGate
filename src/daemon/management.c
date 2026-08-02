@@ -5622,8 +5622,7 @@ static int handle_password_change(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The password was changed, but its audit record could not be "
-            "stored.",
+            "The password change and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     result = jg_account_authenticate(
@@ -7890,7 +7889,7 @@ static int handle_blocklist_source_create(
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The source was created, but its audit record was not stored.",
+            "The source creation and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     return respond_blocklist_source(published ? 201 : 202, &created, published,
@@ -7970,7 +7969,7 @@ static int handle_blocklist_source_update(
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The source changed, but its audit record was not stored.",
+            "The source update and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     return respond_blocklist_source(published ? 200 : 202, &updated, published,
@@ -8045,7 +8044,7 @@ static int handle_blocklist_source_delete(
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The source was deleted, but its audit record was not stored.",
+            "The source deletion and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -9529,7 +9528,7 @@ static int handle_domain_rule_create(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The domain rule changed, but its audit record was not stored.",
+            "The domain-rule creation and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     return respond_domain_rule(published ? 201 : 202, &created, published,
@@ -9630,7 +9629,7 @@ static int handle_domain_rule_update(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The domain rule changed, but its audit record was not stored.",
+            "The domain-rule update and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     return respond_domain_rule(published ? 200 : 202, &updated, published,
@@ -9711,7 +9710,7 @@ static int handle_domain_rule_delete(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The domain rule changed, but its audit record was not stored.",
+            "The domain-rule deletion and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -9855,8 +9854,7 @@ static int handle_destination_rule_create(
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The destination rule changed, but its audit record was not "
-            "stored.",
+            "The destination-rule creation and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     return respond_destination_rule(published ? 201 : 202, &created, published,
@@ -9944,8 +9942,7 @@ static int handle_destination_rule_update(
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The destination rule changed, but its audit record was not "
-            "stored.",
+            "The destination-rule update and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     return respond_destination_rule(published ? 200 : 202, &updated, published,
@@ -10028,8 +10025,7 @@ static int handle_destination_rule_delete(
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The destination rule changed, but its audit record was not "
-            "stored.",
+            "The destination-rule deletion and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -10209,7 +10205,7 @@ static int handle_user_create(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The user was created, but its audit record could not be stored.",
+            "The user creation and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -10301,7 +10297,7 @@ static int handle_user_update(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The user was updated, but its audit record could not be stored.",
+            "The user update and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -10393,8 +10389,7 @@ static int handle_user_password_reset(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The password was replaced, but its audit record could not be "
-            "stored.",
+            "The password replacement and its audit were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -10469,8 +10464,7 @@ static int handle_user_totp_disable(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The TOTP credential was removed, but its audit record could not "
-            "be stored.",
+            "The TOTP removal and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -10662,7 +10656,7 @@ static int handle_token_issue(struct jg_management *management,
         sodium_memzero(&issued, sizeof(issued));
         return respond_error(
             500, "audit_failure",
-            "The token was issued, but its audit record could not be stored.",
+            "The token issuance and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -10738,7 +10732,7 @@ static int handle_token_revoke(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The token was revoked, but its audit record could not be stored.",
+            "The token revocation and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -11690,8 +11684,7 @@ static int handle_mtls_mapping_create(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The mapping was created, but its audit record could not be "
-            "stored.",
+            "The mapping creation and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -11766,8 +11759,7 @@ static int handle_mtls_mapping_revoke(struct jg_management *management,
     if (result != 0) {
         return respond_error(
             500, "audit_failure",
-            "The mapping was revoked, but its audit record could not be "
-            "stored.",
+            "The mapping revocation and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();

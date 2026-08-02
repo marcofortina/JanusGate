@@ -568,6 +568,9 @@ static void test_atomic_user_audit(void **state)
     error = json_object_get(json_object_get(response, "body"), "error");
     assert_string_equal(json_string_value(json_object_get(error, "code")),
                         "audit_failure");
+    assert_string_equal(
+        json_string_value(json_object_get(error, "message")),
+        "The user creation and its audit record were not committed.");
     json_decref(response);
 
     assert_int_equal(
