@@ -194,7 +194,7 @@ paths:
     get:
       tags: [Status]
       operationId: getHealth
-      summary: Return daemon and network-helper health
+      summary: Return management, daemon, and network-helper health
       responses:
         '200':
           $ref: '#/components/responses/JsonSuccess'

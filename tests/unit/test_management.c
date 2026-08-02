@@ -800,6 +800,10 @@ static void test_browser_authentication(void **state)
     body = json_object_get(response, "body");
     assert_false(json_is_true(json_object_get(body, "healthy")));
     assert_false(json_is_true(
+        json_object_get(json_object_get(body, "management"), "degraded")));
+    assert_true(json_is_true(json_object_get(
+        json_object_get(body, "management"), "mutations_allowed")));
+    assert_false(json_is_true(
         json_object_get(json_object_get(body, "daemon"), "available")));
     assert_false(json_is_true(
         json_object_get(json_object_get(body, "network"), "available")));
@@ -2069,6 +2073,28 @@ static void test_cross_resource_audit_failure(void **state)
     assert_int_equal(jg_database_operation_load(fixture->database, &operation),
                      0);
     assert_true(operation.ready);
+    response = process_local_request(
+        fixture, "{\"request_id\":\"degraded-health\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/health\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{}}");
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    assert_true(json_is_true(json_object_get(
+        json_object_get(json_object_get(response, "body"), "management"),
+        "degraded")));
+    assert_false(json_is_true(json_object_get(
+        json_object_get(json_object_get(response, "body"), "management"),
+        "mutations_allowed")));
+    json_decref(response);
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "management_degraded");
+    json_decref(response);
 
     assert_int_equal(sqlite3_open_v2(fixture->database_path, &injection,
                                      SQLITE_OPEN_READWRITE, NULL),
@@ -2088,6 +2114,19 @@ static void test_cross_resource_audit_failure(void **state)
                      -ENOENT);
     assert_int_equal(access(fixture->client_ca_path, F_OK), -1);
     assert_int_equal(errno, ENOENT);
+    response = process_local_request(
+        fixture, "{\"request_id\":\"recovered-health\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/health\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{}}");
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    assert_false(json_is_true(json_object_get(
+        json_object_get(json_object_get(response, "body"), "management"),
+        "degraded")));
+    assert_true(json_is_true(json_object_get(
+        json_object_get(json_object_get(response, "body"), "management"),
+        "mutations_allowed")));
+    json_decref(response);
 
     sodium_memzero(encoded_authority, strlen(encoded_authority));
     free(encoded_authority);

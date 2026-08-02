@@ -126,6 +126,7 @@ int jg_management_process(struct jg_management *management,
  *
  * @return 0 when a scan was queued or one is already pending.
  * @return -EINVAL for invalid arguments.
+ * @return -EROFS while consistency recovery suspends management mutations.
  * @return A negative errno-style database, audit, allocation, or publication
  * error otherwise.
  *

@@ -41,15 +41,19 @@ function renderStatus(status) {
  * Render daemon and helper availability.
  */
 function renderHealth(health) {
+  const managementDegraded = health.management.degraded;
+
   byId("daemon-health").textContent =
     health.daemon.available ? "Available" : "Unavailable";
   byId("network-health").textContent =
     health.network.available ? "Available" : "Unavailable";
   byId("overall-health").dataset.state =
     health.healthy ? "healthy" : "degraded";
-  byId("overall-health").textContent =
-    health.healthy ? "All enforcement services are healthy." :
-      "One or more enforcement services are degraded.";
+  byId("overall-health").textContent = managementDegraded
+    ? "Management mutations are suspended pending consistency recovery."
+    : health.healthy
+      ? "All enforcement services are healthy."
+      : "One or more enforcement services are degraded.";
 }
 
 /**

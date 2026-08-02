@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -124,6 +125,18 @@ enum management_recovery_file {
     MANAGEMENT_RECOVERY_CLIENT_CA = 1U << 2U
 };
 
+/** Consistency failures that suspend ordinary management mutations. */
+enum management_degraded_reason {
+    MANAGEMENT_DEGRADED_DATABASE_ROLLBACK = 1U << 0U,
+    MANAGEMENT_DEGRADED_EXTERNAL_RECOVERY = 1U << 1U,
+    MANAGEMENT_DEGRADED_POLICY_SYNC = 1U << 2U
+};
+
+/** Health state shared by request and slow-operation worker contexts. */
+struct management_health {
+    _Atomic uint32_t degraded_reasons;
+};
+
 /** Opaque bounded slow-operation queue owned by management state. */
 struct management_jobs;
 
@@ -148,6 +161,7 @@ struct login_rate_slot {
 struct jg_management {
     struct jg_database *database;
     struct jg_daemon_runtime *runtime;
+    struct management_health *health;
     struct jg_auth_password_policy password_policy;
     struct token_rate_slot token_rates[MANAGEMENT_TOKEN_RATE_SLOT_COUNT];
     struct login_rate_slot login_rates[MANAGEMENT_LOGIN_RATE_SLOT_COUNT];
@@ -386,6 +400,57 @@ static int certificate_pending_path(const struct jg_management *management,
 static bool network_configs_equal(const struct jg_network_config *left,
                                   const struct jg_network_config *right);
 
+/** @brief Read the consistency reasons currently affecting management. */
+static uint32_t management_degraded_reasons(
+    const struct jg_management *management)
+{
+    return management == NULL || management->health == NULL
+               ? 0U
+               : atomic_load_explicit(&management->health->degraded_reasons,
+                                      memory_order_acquire);
+}
+
+/** @brief Record one consistency failure and emit its first occurrence. */
+static void mark_management_degraded(struct jg_management *management,
+                                     uint32_t reason,
+                                     const char *event_code,
+                                     const char *message)
+{
+    uint32_t previous = 0U;
+
+    if (management == NULL || management->health == NULL || reason == 0U) {
+        return;
+    }
+    previous = atomic_fetch_or_explicit(&management->health->degraded_reasons,
+                                        reason, memory_order_acq_rel);
+    if ((previous & reason) == 0U) {
+        (void)jg_log_emit(JG_LOG_ERROR, "management", event_code, "", message,
+                          NULL);
+    }
+}
+
+/** @brief Return whether a degraded appliance may execute one maintenance path.
+ */
+static bool degraded_path_allowed(const char *path)
+{
+    static const char *const paths[] = {
+        "/api/v1/auth/login",       "/api/v1/auth/logout",
+        "/api/v1/config/reload",    "/api/v1/config/validate",
+        "/api/v1/diagnostics",      "/api/v1/logging",
+        "/api/v1/network/rollback", "/api/v1/network/validate",
+        "/api/v1/service/restart",  "/api/v1/system/reboot",
+        "/api/v1/system/shutdown",
+    };
+
+    for (size_t index = 0U; index < sizeof(paths) / sizeof(paths[0U]);
+         ++index) {
+        if (strcmp(path, paths[index]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /** @brief Begin one persistent mutation that must share its audit commit. */
 static int audited_mutation_begin(struct jg_management *management)
 {
@@ -397,7 +462,16 @@ static int audited_mutation_check(struct jg_management *management,
                                   int operation_result)
 {
     if (operation_result != 0) {
-        (void)jg_database_transaction_rollback(management->database);
+        const int rollback_result =
+            jg_database_transaction_rollback(management->database);
+
+        if (rollback_result != 0) {
+            mark_management_degraded(
+                management, MANAGEMENT_DEGRADED_DATABASE_ROLLBACK,
+                "management.database_rollback",
+                "A database mutation could not be rolled back");
+            return -EIO;
+        }
     }
     return operation_result;
 }
@@ -413,9 +487,28 @@ static int audited_mutation_finish(struct jg_management *management,
         result = jg_database_transaction_commit(management->database);
     }
     if (result != 0) {
-        (void)jg_database_transaction_rollback(management->database);
+        const int rollback_result =
+            jg_database_transaction_rollback(management->database);
+        int reload_result = 0;
+
         if (reload_policy && management->runtime != NULL) {
-            (void)jg_daemon_runtime_reload_policy(management->runtime);
+            reload_result =
+                jg_daemon_runtime_reload_policy(management->runtime);
+        }
+        if (rollback_result != 0) {
+            mark_management_degraded(
+                management, MANAGEMENT_DEGRADED_DATABASE_ROLLBACK,
+                "management.database_rollback",
+                "An audited database mutation could not be rolled back");
+        }
+        if (reload_result != 0) {
+            mark_management_degraded(
+                management, MANAGEMENT_DEGRADED_POLICY_SYNC,
+                "management.policy_rollback",
+                "The runtime policy could not be synchronized after rollback");
+        }
+        if (rollback_result != 0 || reload_result != 0) {
+            result = -EIO;
         }
     }
     return result;
@@ -1015,6 +1108,18 @@ static int finish_recovery_operation(struct jg_management *management,
             jg_database_transaction_rollback(management->database);
         const int recovery_result = recover_pending_operation(management);
 
+        if (rollback_result != 0) {
+            mark_management_degraded(
+                management, MANAGEMENT_DEGRADED_DATABASE_ROLLBACK,
+                "management.database_rollback",
+                "A recovery audit transaction could not be rolled back");
+        }
+        if (recovery_result != 0) {
+            mark_management_degraded(
+                management, MANAGEMENT_DEGRADED_EXTERNAL_RECOVERY,
+                "management.external_recovery",
+                "A cross-resource mutation could not be recovered");
+        }
         if (rollback_result != 0 || recovery_result != 0) {
             result = -EIO;
         }
@@ -1036,6 +1141,12 @@ static int abort_recovery_operation(struct jg_management *management,
 {
     const int recovery_result = recover_pending_operation(management);
 
+    if (recovery_result != 0) {
+        mark_management_degraded(
+            management, MANAGEMENT_DEGRADED_EXTERNAL_RECOVERY,
+            "management.external_recovery",
+            "A failed cross-resource mutation could not be recovered");
+    }
     return recovery_result == 0 ? operation_result : -EIO;
 }
 
@@ -1190,6 +1301,12 @@ int jg_management_create(struct jg_database *database,
     if (created == NULL) {
         return -ENOMEM;
     }
+    created->health = calloc(1U, sizeof(*created->health));
+    if (created->health == NULL) {
+        free(created);
+        return -ENOMEM;
+    }
+    atomic_init(&created->health->degraded_reasons, 0U);
     created->database = database;
     created->runtime = runtime;
     (void)memcpy(created->certificate_path, certificate_path,
@@ -1202,6 +1319,13 @@ int jg_management_create(struct jg_database *database,
     result = load_totp_key(totp_key_path, created->totp_key);
     if (result == 0) {
         result = recover_pending_operation(created);
+        if (result != 0) {
+            mark_management_degraded(
+                created, MANAGEMENT_DEGRADED_EXTERNAL_RECOVERY,
+                "management.startup_recovery",
+                "Startup could not complete a pending management recovery");
+            result = 0;
+        }
     }
     if (result == 0) {
         result = management_jobs_create(created, &created->jobs);
@@ -6753,7 +6877,48 @@ static int handle_status(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
-/** @brief Return authenticated daemon and network-helper health. */
+/** @brief Encode management consistency and mutation availability. */
+static json_t *management_health_json(uint32_t reasons)
+{
+    json_t *body = json_object();
+    json_t *items = json_array();
+    int result = 0;
+
+    if (body == NULL || items == NULL) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        (reasons & MANAGEMENT_DEGRADED_DATABASE_ROLLBACK) != 0U &&
+        json_array_append_new(items, json_string("database_rollback")) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        (reasons & MANAGEMENT_DEGRADED_EXTERNAL_RECOVERY) != 0U &&
+        json_array_append_new(items, json_string("external_recovery")) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && (reasons & MANAGEMENT_DEGRADED_POLICY_SYNC) != 0U &&
+        json_array_append_new(items, json_string("policy_sync")) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 &&
+        (json_object_set_new(body, "available", json_true()) != 0 ||
+         json_object_set_new(body, "degraded", json_boolean(reasons != 0U)) !=
+             0 ||
+         json_object_set_new(body, "mutations_allowed",
+                             json_boolean(reasons == 0U)) != 0 ||
+         json_object_set(body, "reasons", items) != 0)) {
+        result = -ENOMEM;
+    }
+    json_decref(items);
+    if (result != 0) {
+        json_decref(body);
+        body = NULL;
+    }
+    return body;
+}
+
+/** @brief Return authenticated management, daemon, and helper health. */
 static int handle_health(struct jg_management *management,
                          const struct management_request *request,
                          const struct remote_address *remote,
@@ -6766,8 +6931,10 @@ static int handle_health(struct jg_management *management,
     struct jg_daemon_runtime_stats stats;
     struct jg_network_state network_state;
     json_t *body = NULL;
+    json_t *management_state = NULL;
     json_t *daemon = NULL;
     json_t *network = NULL;
+    const uint32_t degraded_reasons = management_degraded_reasons(management);
     bool daemon_available = false;
     bool network_available = false;
     int result = authenticate_actor(management, request, remote, false,
@@ -6787,12 +6954,15 @@ static int handle_health(struct jg_management *management,
         jg_daemon_runtime_get_stats(management->runtime, &stats) == 0;
     network_available = jg_netd_client_state(&network_state) == 0;
     body = json_object();
+    management_state = management_health_json(degraded_reasons);
     daemon = json_object();
     network = json_object();
-    if (body == NULL || daemon == NULL || network == NULL ||
-        json_object_set_new(
-            body, "healthy",
-            json_boolean(daemon_available && network_available)) != 0 ||
+    if (body == NULL || management_state == NULL || daemon == NULL ||
+        network == NULL ||
+        json_object_set_new(body, "healthy",
+                            json_boolean(degraded_reasons == 0U &&
+                                         daemon_available &&
+                                         network_available)) != 0 ||
         json_object_set_new(daemon, "available",
                             json_boolean(daemon_available)) != 0 ||
         json_object_set_new(network, "available",
@@ -6804,12 +6974,14 @@ static int handle_health(struct jg_management *management,
                               json_boolean(network_state.has_confirmed)) != 0 ||
           json_object_set_new(network, "pending",
                               json_boolean(network_state.pending)) != 0)) ||
+        set_object(body, "management", management_state) != 0 ||
         set_object(body, "daemon", daemon) != 0 ||
         set_object(body, "network", network) != 0) {
         result = -ENOMEM;
     }
     json_decref(network);
     json_decref(daemon);
+    json_decref(management_state);
     if (result != 0) {
         json_decref(body);
         return result;
@@ -8473,6 +8645,10 @@ static int reauthorize_management_job(struct jg_management *management,
     struct jg_account_identity identity;
     int result = 0;
 
+    if (management_degraded_reasons(management) != 0U &&
+        job->kind != MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
+        return -EROFS;
+    }
     if (job->system_job || job->actor.kind == AUTHENTICATED_ACTOR_LOCAL) {
         return 0;
     }
@@ -8576,13 +8752,19 @@ static void *run_management_jobs(void *context)
         if (authorization_result != 0) {
             const bool denied = authorization_result == -EACCES ||
                                 authorization_result == -EPERM;
+            const bool degraded = authorization_result == -EROFS;
 
             operation_result = respond_error(
-                denied ? 403 : 500,
-                denied ? "job_authorization_expired"
-                       : "job_authorization_failed",
+                denied     ? 403
+                : degraded ? 503
+                           : 500,
+                denied     ? "job_authorization_expired"
+                : degraded ? "management_degraded"
+                           : "job_authorization_failed",
                 denied ? "Authorization changed before the job could start."
-                       : "The job authorization could not be rechecked.",
+                : degraded
+                    ? "The job was suspended because management is degraded."
+                    : "The job authorization could not be rechecked.",
                 work->request_id, work->response, sizeof(work->response),
                 &response_size);
         } else if (work->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
@@ -8704,6 +8886,9 @@ int jg_management_update_due_blocklists(struct jg_management *management,
     }
     if (attempts != NULL) {
         *attempts = 0U;
+    }
+    if (management_degraded_reasons(management) != 0U) {
+        return -EROFS;
     }
     return submit_scheduled_source_job(management, now);
 }
@@ -12554,6 +12739,14 @@ static int dispatch_request(struct jg_management *management,
                              "The request origin is not permitted.",
                              request->request_id, output, output_size, written);
     }
+    if (state_change && management_degraded_reasons(management) != 0U &&
+        !degraded_path_allowed(request->path)) {
+        return respond_error(
+            503, "management_degraded",
+            "Management mutations are suspended until consistency is "
+            "restored.",
+            request->request_id, output, output_size, written);
+    }
     if (strcmp(request->path, "/api/v1/status") == 0 &&
         strcmp(request->method, "GET") == 0) {
         return handle_status(management, request, remote, now, output,
@@ -13006,6 +13199,8 @@ void jg_management_destroy(struct jg_management *management)
     }
     management_jobs_destroy(management->jobs);
     management->jobs = NULL;
+    free(management->health);
+    management->health = NULL;
     sodium_memzero(management, sizeof(*management));
     free(management);
 }
