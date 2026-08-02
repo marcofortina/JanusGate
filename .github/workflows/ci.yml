@@ -352,8 +352,11 @@ jobs:
           path: out/checksums
       - name: Create source archive
         run: |
-          git archive --format=tar --prefix=janusgate-0.1.0/ HEAD |
-            gzip -n >out/checksums/janusgate-0.1.0.tar.gz
+          source_date_epoch=$(git log -1 --format=%ct)
+          git archive --format=tar --mtime="@$source_date_epoch" \
+            --prefix=janusgate-0.1.1/ 'HEAD^{tree}' -- . \
+            ':(exclude)packaging/alpine/APKBUILD' |
+            gzip -n >out/checksums/janusgate-0.1.1.tar.gz
       - name: Create checksums
         working-directory: out/checksums
         run: |

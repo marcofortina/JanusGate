@@ -3,6 +3,20 @@
 
 # JanusGate release notes
 
+## 0.1.1
+
+Maintenance release consolidating the management, certificate, and appliance
+runtime boundaries introduced in the initial production baseline.
+
+- Commits persistent mutations and their audit records atomically.
+- Moves remote-source updates and other blocking administration work into
+  bounded, observable job queues.
+- Authorizes the configured management hostname and validates mapped client
+  certificates against the active trust chain and client-authentication use.
+- Preflights HTTPS listener changes before replacing a working listener.
+- Verifies the installed CivetWeb runtime on OpenBSD and records end-to-end
+  HTTPS forwarding measurements for the x86_64 appliance.
+
 ## 0.1.0
 
 Initial production baseline of the JanusGate transparent inline DNS policy

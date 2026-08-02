@@ -39,7 +39,7 @@ case $jobs in
 esac
 [ "$jobs" -gt 0 ] || fail "job count must be positive"
 
-for program in clang cmake cppcheck doxygen git gpg ninja python3 \
+for program in clang cmake cppcheck doxygen git gpg gzip ninja python3 \
     run-clang-tidy sha256sum sha512sum shellcheck shfmt tar xargs; do
     command -v "$program" >/dev/null 2>&1 ||
         fail "required program is unavailable: $program"
@@ -106,29 +106,26 @@ ctest --test-dir "$fuzz_build" --output-on-failure -L fuzz
 
 python3 "$project_directory/scripts/generate-sbom.py" \
     "$output_directory/janusgate.spdx.json"
-cmake --build "$release_build" --target package_source
-set -- "$release_build"/janusgate-*.tar.gz
-if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-    fail "exactly one source archive is required"
-fi
-archive=$1
-cp "$archive" "$output_directory/"
-archive=$(basename -- "$archive")
+archive=janusgate-0.1.1.tar.gz
+git archive --format=tar --mtime="@$source_date_epoch" \
+    --prefix=janusgate-0.1.1/ 'HEAD^{tree}' -- . \
+    ':(exclude)packaging/alpine/APKBUILD' |
+    gzip -n >"$output_directory/$archive"
 gpg --batch --armor --local-user "$signing_key" --detach-sign \
     "$output_directory/$archive"
 
 cp "$project_directory/api/openapi.yaml" \
-    "$output_directory/janusgate-openapi-0.1.0.yaml"
+    "$output_directory/janusgate-openapi-0.1.1.yaml"
 cp "$project_directory/CHANGELOG.md" \
-    "$output_directory/janusgate-0.1.0-release-notes.md"
+    "$output_directory/janusgate-0.1.1-release-notes.md"
 tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 \
     --numeric-owner --create --gzip \
-    --file="$output_directory/janusgate-0.1.0-doxygen.tar.gz" \
+    --file="$output_directory/janusgate-0.1.1-doxygen.tar.gz" \
     --directory="$release_build/docs/html" .
 
 python3 - "$release_build/include/janusgate/version.h" \
     "$project_directory/include/janusgate/database.h" \
-    "$output_directory/janusgate-0.1.0-build-manifest.json" <<'PY'
+    "$output_directory/janusgate-0.1.1-build-manifest.json" <<'PY'
 import json
 import re
 import sys
