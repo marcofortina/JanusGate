@@ -10156,11 +10156,23 @@ static int handle_mtls_mapping_create(struct jg_management *management,
     }
     certificate_size =
         json_string_length(json_object_get(request->body, "certificate"));
-    result = jg_certificate_inspect(certificate_pem, certificate_size, NULL, 0U,
-                                    &certificate);
-    if (result != 0) {
+    result = jg_certificate_client_validate(certificate_pem, certificate_size,
+                                            management->client_ca_path,
+                                            &certificate);
+    if (result == -ENOENT) {
+        return respond_error(409, "client_ca_not_configured",
+                             "Install the client certificate authority first.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result == -EINVAL || result == -EACCES) {
         return respond_error(400, "invalid_client_certificate",
-                             "The client certificate is not valid.",
+                             "The client certificate is not valid for the "
+                             "installed trust store.",
+                             request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(500, "client_certificate_validation_failed",
+                             "The client certificate could not be validated.",
                              request->request_id, output, output_size, written);
     }
     (void)memcpy(config.fingerprint_sha256, certificate.fingerprint_sha256,

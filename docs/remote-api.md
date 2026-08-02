@@ -108,6 +108,11 @@ sudo janusgatectl mtls mapping add /secure/operator.pem user 1
 sudo janusgatectl token create /secure/remote-token.json
 ```
 
+The mapping command accepts a leaf-first PEM chain only when the leaf is
+currently valid for TLS client authentication and chains to the installed
+client CA bundle. CA certificates and certificates restricted to another TLS
+purpose are rejected before a mapping is stored.
+
 Copy the displayed one-time token secret, and only that secret, to
 `/secure/janusgate.token` with mode `0600`.
 

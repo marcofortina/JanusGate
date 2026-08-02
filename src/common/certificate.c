@@ -40,6 +40,17 @@
 /** RSA strength used for locally created long-lived identities. */
 #define CERTIFICATE_RSA_BITS 3072
 
+/** Accepted certificate PEM prefix. */
+static const char certificate_marker[] = "-----BEGIN CERTIFICATE-----";
+
+/** Accepted unencrypted private-key PEM prefixes. */
+static const char *const private_key_markers[] = {
+    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN EC PRIVATE KEY-----",
+    "-----BEGIN DSA PRIVATE KEY-----",
+};
+
 /** @brief Return one bounded string length or one past the maximum. */
 static size_t bounded_length(const char *text, size_t maximum)
 {
@@ -52,6 +63,174 @@ static size_t bounded_length(const char *text, size_t maximum)
         ++length;
     }
     return length;
+}
+
+/** @brief Identify ASCII whitespace accepted between PEM blocks. */
+static bool pem_whitespace(char value)
+{
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n' ||
+           value == '\v' || value == '\f';
+}
+
+/** @brief Find one exact byte sequence in bounded input. */
+static const char *find_bytes(const char *input,
+                              size_t input_size,
+                              const char *needle)
+{
+    const size_t needle_size = strlen(needle);
+
+    if (needle_size == 0U || needle_size > input_size) {
+        return NULL;
+    }
+    for (size_t offset = 0U; offset <= input_size - needle_size; ++offset) {
+        if (memcmp(input + offset, needle, needle_size) == 0) {
+            return input + offset;
+        }
+    }
+    return NULL;
+}
+
+/** @brief Find the first accepted private-key marker in bounded input. */
+static const char *find_private_key_bytes(const char *pem, size_t pem_size)
+{
+    const char *first = NULL;
+
+    if (pem == NULL) {
+        return NULL;
+    }
+    for (size_t index = 0U;
+         index < sizeof(private_key_markers) / sizeof(private_key_markers[0U]);
+         ++index) {
+        const char *candidate =
+            find_bytes(pem, pem_size, private_key_markers[index]);
+
+        if (candidate != NULL && (first == NULL || candidate < first)) {
+            first = candidate;
+        }
+    }
+    return first;
+}
+
+/** @brief Consume ASCII whitespace at the current memory-BIO position. */
+static int skip_pem_whitespace(BIO *memory)
+{
+    char discarded[256U];
+    char *remaining = NULL;
+    long remaining_size = 0L;
+
+    do {
+        size_t whitespace = 0U;
+
+        remaining_size = BIO_get_mem_data(memory, &remaining);
+        if (remaining_size < 0L) {
+            return -EIO;
+        }
+        while (whitespace < (size_t)remaining_size &&
+               pem_whitespace(remaining[whitespace])) {
+            ++whitespace;
+        }
+        if (whitespace == 0U) {
+            break;
+        }
+        while (whitespace != 0U) {
+            const size_t chunk =
+                whitespace < sizeof(discarded) ? whitespace : sizeof(discarded);
+
+            if (BIO_read(memory, discarded, (int)chunk) != (int)chunk) {
+                return -EIO;
+            }
+            whitespace -= chunk;
+        }
+    } while (remaining_size != 0L);
+    return 0;
+}
+
+/** @brief Require the next non-whitespace bytes to match an allowed marker. */
+static int pem_block_available(BIO *memory,
+                               const char *const *markers,
+                               size_t marker_count)
+{
+    char *remaining = NULL;
+    long remaining_size = 0L;
+    int result = skip_pem_whitespace(memory);
+
+    if (result != 0) {
+        return result;
+    }
+    remaining_size = BIO_get_mem_data(memory, &remaining);
+    if (remaining_size < 0L) {
+        return -EIO;
+    }
+    if (remaining_size == 0L) {
+        return 0;
+    }
+    for (size_t index = 0U; index < marker_count; ++index) {
+        const size_t marker_size = strlen(markers[index]);
+
+        if (marker_size <= (size_t)remaining_size &&
+            memcmp(remaining, markers[index], marker_size) == 0) {
+            return 1;
+        }
+    }
+    return -EINVAL;
+}
+
+/** @brief Decode a strict certificate-only PEM document. */
+static int read_certificates(const char *pem,
+                             size_t pem_size,
+                             STACK_OF(X509) * *certificates)
+{
+    const char *const marker[] = {certificate_marker};
+    BIO *memory = NULL;
+    int result = 0;
+
+    if (certificates == NULL) {
+        return -EINVAL;
+    }
+    *certificates = NULL;
+    if (pem == NULL || pem_size == 0U || pem_size > JG_CERTIFICATE_PEM_MAX ||
+        pem_size > (size_t)INT_MAX) {
+        return -EINVAL;
+    }
+    memory = BIO_new_mem_buf(pem, (int)pem_size);
+    *certificates = sk_X509_new_null();
+    if (memory == NULL || *certificates == NULL) {
+        BIO_free(memory);
+        sk_X509_free(*certificates);
+        *certificates = NULL;
+        return -ENOMEM;
+    }
+    while (result == 0) {
+        X509 *certificate = NULL;
+        const int available = pem_block_available(memory, marker, 1U);
+
+        if (available <= 0) {
+            result = available;
+            break;
+        }
+        if (sk_X509_num(*certificates) >= (int)JG_CERTIFICATE_AUTHORITY_MAX) {
+            result = -EINVAL;
+            break;
+        }
+        certificate = PEM_read_bio_X509(memory, NULL, NULL, NULL);
+        if (certificate == NULL) {
+            result = -EINVAL;
+        } else if (sk_X509_push(*certificates, certificate) == 0) {
+            X509_free(certificate);
+            result = -ENOMEM;
+        } else {
+            result = 0;
+        }
+    }
+    if (result == 0 && sk_X509_num(*certificates) == 0) {
+        result = -EINVAL;
+    }
+    BIO_free(memory);
+    if (result != 0) {
+        sk_X509_pop_free(*certificates, X509_free);
+        *certificates = NULL;
+    }
+    return result;
 }
 
 /** @brief Convert one ASN.1 UTC time to a nonnegative Unix timestamp. */
@@ -104,18 +283,17 @@ static int render_name(const X509_NAME *name,
 /** @brief Decode one bounded PEM leaf certificate. */
 static X509 *read_certificate(const char *pem, size_t pem_size)
 {
-    BIO *memory = NULL;
+    STACK_OF(X509) *certificates = NULL;
     X509 *certificate = NULL;
 
-    if (pem == NULL || pem_size == 0U || pem_size > JG_CERTIFICATE_PEM_MAX ||
-        pem_size > (size_t)INT_MAX) {
+    if (read_certificates(pem, pem_size, &certificates) != 0) {
         return NULL;
     }
-    memory = BIO_new_mem_buf(pem, (int)pem_size);
-    if (memory != NULL) {
-        certificate = PEM_read_bio_X509(memory, NULL, NULL, NULL);
+    certificate = sk_X509_value(certificates, 0);
+    if (X509_up_ref(certificate) != 1) {
+        certificate = NULL;
     }
-    BIO_free(memory);
+    sk_X509_pop_free(certificates, X509_free);
     return certificate;
 }
 
@@ -124,6 +302,7 @@ static EVP_PKEY *read_private_key(const char *pem, size_t pem_size)
 {
     BIO *memory = NULL;
     EVP_PKEY *private_key = NULL;
+    int result = 0;
 
     if (pem == NULL || pem_size == 0U || pem_size > JG_CERTIFICATE_PEM_MAX ||
         pem_size > (size_t)INT_MAX) {
@@ -131,7 +310,19 @@ static EVP_PKEY *read_private_key(const char *pem, size_t pem_size)
     }
     memory = BIO_new_mem_buf(pem, (int)pem_size);
     if (memory != NULL) {
+        result = pem_block_available(memory, private_key_markers,
+                                     sizeof(private_key_markers) /
+                                         sizeof(private_key_markers[0U]));
+    }
+    if (result == 1) {
         private_key = PEM_read_bio_PrivateKey(memory, NULL, NULL, NULL);
+    }
+    if (private_key != NULL) {
+        result = skip_pem_whitespace(memory);
+        if (result != 0 || BIO_ctrl_pending(memory) != 0U) {
+            EVP_PKEY_free(private_key);
+            private_key = NULL;
+        }
     }
     BIO_free(memory);
     return private_key;
@@ -197,7 +388,9 @@ int jg_certificate_inspect(const char *certificate,
                            size_t private_key_size,
                            struct jg_certificate_info *info)
 {
+    const char *key_marker = NULL;
     X509 *parsed_certificate = NULL;
+    X509 *embedded_certificate = NULL;
     EVP_PKEY *parsed_key = NULL;
     int result = 0;
 
@@ -205,8 +398,29 @@ int jg_certificate_inspect(const char *certificate,
         return -EINVAL;
     }
     (void)memset(info, 0, sizeof(*info));
-    parsed_certificate = read_certificate(certificate, certificate_size);
-    if (parsed_certificate == NULL) {
+    if (private_key != NULL) {
+        key_marker = find_private_key_bytes(private_key, private_key_size);
+        if (key_marker == NULL) {
+            result = -EINVAL;
+        } else if (key_marker != private_key) {
+            const size_t public_size = (size_t)(key_marker - private_key);
+
+            embedded_certificate = read_certificate(private_key, public_size);
+            if (embedded_certificate == NULL) {
+                result = -EINVAL;
+            }
+            if (certificate == private_key &&
+                certificate_size == private_key_size) {
+                certificate_size = public_size;
+            }
+            private_key_size -= public_size;
+            private_key = key_marker;
+        }
+    }
+    if (result == 0) {
+        parsed_certificate = read_certificate(certificate, certificate_size);
+    }
+    if (result == 0 && parsed_certificate == NULL) {
         result = -EINVAL;
     }
     if (result == 0 && private_key != NULL) {
@@ -219,6 +433,7 @@ int jg_certificate_inspect(const char *certificate,
         result = inspect_certificate(parsed_certificate, parsed_key, info);
     }
     EVP_PKEY_free(parsed_key);
+    X509_free(embedded_certificate);
     X509_free(parsed_certificate);
     if (result != 0) {
         (void)memset(info, 0, sizeof(*info));
@@ -233,41 +448,29 @@ int jg_certificate_trust_store_inspect(const char *pem,
                                        size_t capacity,
                                        size_t *authority_count)
 {
-    STACK_OF(X509_INFO) *records = NULL;
-    BIO *memory = NULL;
+    STACK_OF(X509) *certificates = NULL;
     int result = 0;
 
     if (authority_count != NULL) {
         *authority_count = 0U;
     }
-    if (pem == NULL || pem_size == 0U || pem_size > JG_CERTIFICATE_PEM_MAX ||
-        pem_size > (size_t)INT_MAX || authorities == NULL || capacity == 0U ||
+    if (authorities == NULL || capacity == 0U ||
         capacity > JG_CERTIFICATE_AUTHORITY_MAX || authority_count == NULL) {
         return -EINVAL;
     }
     (void)memset(authorities, 0, capacity * sizeof(*authorities));
-    memory = BIO_new_mem_buf(pem, (int)pem_size);
-    records = memory == NULL ? NULL
-                             : PEM_X509_INFO_read_bio(memory, NULL, NULL, NULL);
-    if (records == NULL || sk_X509_INFO_num(records) <= 0) {
-        result = memory == NULL ? -ENOMEM : -EINVAL;
-    }
-    if (result == 0 &&
-        sk_X509_INFO_num(records) > (int)JG_CERTIFICATE_AUTHORITY_MAX) {
-        result = -EINVAL;
-    }
-    if (result == 0 && sk_X509_INFO_num(records) > (int)capacity) {
+    result = read_certificates(pem, pem_size, &certificates);
+    if (result == 0 && sk_X509_num(certificates) > (int)capacity) {
         result = -ENOSPC;
     }
-    for (int index = 0; result == 0 && index < sk_X509_INFO_num(records);
+    for (int index = 0; result == 0 && index < sk_X509_num(certificates);
          ++index) {
-        X509_INFO *record = sk_X509_INFO_value(records, index);
+        X509 *certificate = sk_X509_value(certificates, index);
 
-        if (record == NULL || record->x509 == NULL || record->crl != NULL ||
-            record->x_pkey != NULL || X509_check_ca(record->x509) <= 0) {
+        if (certificate == NULL || X509_check_ca(certificate) <= 0) {
             result = -EINVAL;
         } else {
-            result = inspect_certificate(record->x509, NULL,
+            result = inspect_certificate(certificate, NULL,
                                          &authorities[(size_t)index]);
         }
         for (int previous = 0; result == 0 && previous < index; ++previous) {
@@ -280,12 +483,11 @@ int jg_certificate_trust_store_inspect(const char *pem,
         }
     }
     if (result == 0) {
-        *authority_count = (size_t)sk_X509_INFO_num(records);
+        *authority_count = (size_t)sk_X509_num(certificates);
     } else {
         (void)memset(authorities, 0, capacity * sizeof(*authorities));
     }
-    sk_X509_INFO_pop_free(records, X509_INFO_free);
-    BIO_free(memory);
+    sk_X509_pop_free(certificates, X509_free);
     return result;
 }
 
@@ -503,6 +705,26 @@ static int read_secure_file(const char *path, uint8_t **data, size_t *data_size)
     return result;
 }
 
+/** @brief Return the first private-key marker in null-terminated PEM data. */
+static uint8_t *find_private_key(uint8_t *data);
+
+/** @brief Inspect strict combined certificate-chain and private-key data. */
+static int inspect_identity(uint8_t *data,
+                            size_t data_size,
+                            struct jg_certificate_info *info)
+{
+    uint8_t *private_key = find_private_key(data);
+    size_t certificate_size = 0U;
+
+    if (private_key == NULL) {
+        return -EINVAL;
+    }
+    certificate_size = (size_t)(private_key - data);
+    return jg_certificate_inspect((const char *)data, certificate_size,
+                                  (const char *)private_key,
+                                  data_size - certificate_size, info);
+}
+
 /** @brief Inspect one securely installed combined certificate PEM. */
 int jg_certificate_inspect_file(const char *path,
                                 struct jg_certificate_info *info)
@@ -517,8 +739,7 @@ int jg_certificate_inspect_file(const char *path,
     (void)memset(info, 0, sizeof(*info));
     result = read_secure_file(path, &data, &data_size);
     if (result == 0) {
-        result = jg_certificate_inspect((const char *)data, data_size,
-                                        (const char *)data, data_size, info);
+        result = inspect_identity(data, data_size, info);
     }
     if (data != NULL) {
         sodium_memzero(data, data_size);
@@ -555,27 +776,109 @@ int jg_certificate_trust_store_inspect_file(
     return result;
 }
 
+/** @brief Verify one parsed client chain against parsed trust anchors. */
+static int verify_client_chain(STACK_OF(X509) * certificates,
+                               STACK_OF(X509) * authorities,
+                               struct jg_certificate_info *info)
+{
+    X509_STORE *store = X509_STORE_new();
+    X509_STORE_CTX *context = X509_STORE_CTX_new();
+    STACK_OF(X509) *intermediates = sk_X509_new_null();
+    X509 *leaf = sk_X509_value(certificates, 0);
+    int result = 0;
+
+    if (store == NULL || context == NULL || intermediates == NULL) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && X509_check_ca(leaf) != 0) {
+        result = -EACCES;
+    }
+    for (int index = 1; result == 0 && index < sk_X509_num(certificates);
+         ++index) {
+        X509 *certificate = sk_X509_value(certificates, index);
+
+        if (X509_check_ca(certificate) <= 0 ||
+            sk_X509_push(intermediates, certificate) == 0) {
+            result = -EINVAL;
+        }
+    }
+    for (int index = 0; result == 0 && index < sk_X509_num(authorities);
+         ++index) {
+        X509 *authority = sk_X509_value(authorities, index);
+
+        if (X509_check_ca(authority) <= 0) {
+            result = -EINVAL;
+        } else if (X509_STORE_add_cert(store, authority) != 1) {
+            result = -EINVAL;
+        }
+    }
+    if (result == 0 &&
+        (X509_STORE_CTX_init(context, store, leaf, intermediates) != 1 ||
+         X509_STORE_CTX_set_purpose(context, X509_PURPOSE_SSL_CLIENT) != 1)) {
+        result = -EINVAL;
+    }
+    if (result == 0 && X509_verify_cert(context) != 1) {
+        result = -EACCES;
+    }
+    if (result == 0) {
+        result = inspect_certificate(leaf, NULL, info);
+    }
+    sk_X509_free(intermediates);
+    X509_STORE_CTX_free(context);
+    X509_STORE_free(store);
+    return result;
+}
+
+/** @brief Validate one client chain against the installed trust store. */
+int jg_certificate_client_validate(const char *certificate,
+                                   size_t certificate_size,
+                                   const char *trust_store_path,
+                                   struct jg_certificate_info *info)
+{
+    STACK_OF(X509) *certificates = NULL;
+    STACK_OF(X509) *authorities = NULL;
+    uint8_t *trust_store = NULL;
+    size_t trust_store_size = 0U;
+    int result = 0;
+
+    if (trust_store_path == NULL || info == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(info, 0, sizeof(*info));
+    result = read_certificates(certificate, certificate_size, &certificates);
+    if (result == 0) {
+        result =
+            read_secure_file(trust_store_path, &trust_store, &trust_store_size);
+    }
+    if (result == 0) {
+        result = read_certificates((const char *)trust_store, trust_store_size,
+                                   &authorities);
+    }
+    if (result == 0) {
+        result = verify_client_chain(certificates, authorities, info);
+    }
+    sk_X509_pop_free(authorities, X509_free);
+    sk_X509_pop_free(certificates, X509_free);
+    if (trust_store != NULL) {
+        sodium_memzero(trust_store, trust_store_size);
+        free(trust_store);
+    }
+    if (result != 0) {
+        (void)memset(info, 0, sizeof(*info));
+    }
+    return result;
+}
+
 /** @brief Return the first private-key PEM marker in canonical identity data.
  */
 static uint8_t *find_private_key(uint8_t *data)
 {
-    static const char *const markers[] = {
-        "-----BEGIN PRIVATE KEY-----",
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----BEGIN EC PRIVATE KEY-----",
-        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
-    };
-    uint8_t *first = NULL;
-    size_t index = 0U;
+    const char *marker =
+        data == NULL ? NULL
+                     : find_private_key_bytes((const char *)data,
+                                              strlen((const char *)data));
 
-    for (index = 0U; index < sizeof(markers) / sizeof(markers[0U]); ++index) {
-        uint8_t *candidate = (uint8_t *)strstr((char *)data, markers[index]);
-
-        if (candidate != NULL && (first == NULL || candidate < first)) {
-            first = candidate;
-        }
-    }
-    return first;
+    return marker == NULL ? NULL : data + (marker - (const char *)data);
 }
 
 /** @brief Export one installed identity with optional private material. */
@@ -598,8 +901,7 @@ int jg_certificate_export_file(const char *path,
     *pem_size = 0U;
     result = read_secure_file(path, &data, &data_size);
     if (result == 0) {
-        result = jg_certificate_inspect((const char *)data, data_size,
-                                        (const char *)data, data_size, &info);
+        result = inspect_identity(data, data_size, &info);
     }
     if (result == 0 && include_private_key) {
         *pem = (char *)data;

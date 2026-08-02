@@ -69,8 +69,10 @@ certificate/key pair transactionally, and creates certificate-signing
 requests. It also installs or removes the remote client CA bundle, lists its
 authorities, creates user- or role-bound client-certificate mappings, and
 revokes those mappings. Private, self-hosted, home-lab, and public CAs are
-supported. HTTPS listeners reload automatically after certificate or trust
-changes made through the WebGUI. Installation validates and atomically
+supported. New mappings are validated for TLS client authentication against
+the currently installed trust store. HTTPS listeners reload automatically
+after certificate or trust changes made through the WebGUI. Installation
+validates and atomically
 replaces files, but a listener activation failure does not roll those files
 back automatically; retain console access and a known-good pair.
 

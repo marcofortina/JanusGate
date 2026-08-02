@@ -73,25 +73,44 @@ static void write_private_file(const char *path,
     assert_int_equal(close(descriptor), 0);
 }
 
-/** @brief Create one private self-signed CA bundle for management tests. */
-static void create_management_test_authority(char **pem, size_t *pem_size)
+/** @brief Create one private CA and a signed TLS client for management tests.
+ */
+static void create_management_test_identity(char **pem,
+                                            size_t *pem_size,
+                                            char **client_pem,
+                                            size_t *client_pem_size)
 {
     char constraints_text[] = "critical,CA:TRUE,pathlen:1";
     char usage_text[] = "critical,keyCertSign,cRLSign";
+    char client_constraints_text[] = "critical,CA:FALSE";
+    char client_usage_text[] = "critical,digitalSignature";
+    char client_extended_usage_text[] = "clientAuth";
     EVP_PKEY_CTX *key_context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY_CTX *client_key_context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
     EVP_PKEY *private_key = NULL;
+    EVP_PKEY *client_private_key = NULL;
     X509 *certificate = X509_new();
+    X509 *client_certificate = X509_new();
     X509_NAME *subject = X509_NAME_new();
+    X509_NAME *client_subject = X509_NAME_new();
     X509_EXTENSION *constraints = NULL;
     X509_EXTENSION *usage = NULL;
+    X509_EXTENSION *client_constraints = NULL;
+    X509_EXTENSION *client_usage = NULL;
+    X509_EXTENSION *client_extended_usage = NULL;
     BIO *memory = BIO_new(BIO_s_mem());
     BUF_MEM *contents = NULL;
 
     *pem = NULL;
     *pem_size = 0U;
+    *client_pem = NULL;
+    *client_pem_size = 0U;
     assert_non_null(key_context);
+    assert_non_null(client_key_context);
     assert_non_null(certificate);
+    assert_non_null(client_certificate);
     assert_non_null(subject);
+    assert_non_null(client_subject);
     assert_non_null(memory);
     assert_int_equal(EVP_PKEY_keygen_init(key_context), 1);
     assert_int_equal(EVP_PKEY_CTX_set_rsa_keygen_bits(key_context, 2048), 1);
@@ -128,12 +147,68 @@ static void create_management_test_authority(char **pem, size_t *pem_size)
     (*pem)[contents->length] = '\0';
     *pem_size = contents->length;
 
+    assert_int_equal(EVP_PKEY_keygen_init(client_key_context), 1);
+    assert_int_equal(EVP_PKEY_CTX_set_rsa_keygen_bits(client_key_context, 2048),
+                     1);
+    assert_int_equal(EVP_PKEY_keygen(client_key_context, &client_private_key),
+                     1);
+    assert_non_null(client_private_key);
+    assert_int_equal(X509_NAME_add_entry_by_txt(
+                         client_subject, "CN", MBSTRING_ASC,
+                         (const unsigned char *)"JanusGate remote client", -1,
+                         -1, 0),
+                     1);
+    assert_int_equal(X509_set_version(client_certificate, 2L), 1);
+    assert_int_equal(
+        ASN1_INTEGER_set(X509_get_serialNumber(client_certificate), 2L), 1);
+    assert_int_equal(X509_set_subject_name(client_certificate, client_subject),
+                     1);
+    assert_int_equal(X509_set_issuer_name(client_certificate, subject), 1);
+    assert_int_equal(X509_set_pubkey(client_certificate, client_private_key),
+                     1);
+    assert_non_null(
+        X509_gmtime_adj(X509_getm_notBefore(client_certificate), -60L));
+    assert_non_null(
+        X509_gmtime_adj(X509_getm_notAfter(client_certificate), 86400L));
+    client_constraints = X509V3_EXT_conf_nid(NULL, NULL, NID_basic_constraints,
+                                             client_constraints_text);
+    client_usage =
+        X509V3_EXT_conf_nid(NULL, NULL, NID_key_usage, client_usage_text);
+    client_extended_usage = X509V3_EXT_conf_nid(NULL, NULL, NID_ext_key_usage,
+                                                client_extended_usage_text);
+    assert_non_null(client_constraints);
+    assert_non_null(client_usage);
+    assert_non_null(client_extended_usage);
+    assert_int_equal(X509_add_ext(client_certificate, client_constraints, -1),
+                     1);
+    assert_int_equal(X509_add_ext(client_certificate, client_usage, -1), 1);
+    assert_int_equal(
+        X509_add_ext(client_certificate, client_extended_usage, -1), 1);
+    assert_true(X509_sign(client_certificate, private_key, EVP_sha256()) > 0);
+    assert_int_equal(BIO_reset(memory), 1);
+    assert_int_equal(PEM_write_bio_X509(memory, client_certificate), 1);
+    BIO_get_mem_ptr(memory, &contents);
+    assert_non_null(contents);
+    assert_true(contents->length > 0U);
+    *client_pem = malloc(contents->length + 1U);
+    assert_non_null(*client_pem);
+    (void)memcpy(*client_pem, contents->data, contents->length);
+    (*client_pem)[contents->length] = '\0';
+    *client_pem_size = contents->length;
+
+    X509_EXTENSION_free(client_extended_usage);
+    X509_EXTENSION_free(client_usage);
+    X509_EXTENSION_free(client_constraints);
     X509_EXTENSION_free(usage);
     X509_EXTENSION_free(constraints);
     BIO_free(memory);
+    X509_NAME_free(client_subject);
     X509_NAME_free(subject);
+    X509_free(client_certificate);
     X509_free(certificate);
+    EVP_PKEY_free(client_private_key);
     EVP_PKEY_free(private_key);
+    EVP_PKEY_CTX_free(client_key_context);
     EVP_PKEY_CTX_free(key_context);
 }
 
@@ -1895,11 +1970,12 @@ static void test_mtls_api(void **state)
         "\"path\":\"/api/v1/mtls/authorities\",\"host\":\"localhost\","
         "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
     struct management_fixture *fixture = *state;
-    struct jg_certificate_material client;
     struct jg_audit_record audits[4U];
     char request[16384U];
     char *authority = NULL;
+    char *client = NULL;
     size_t authority_size = 0U;
+    size_t client_size = 0U;
     char *encoded_authority = NULL;
     char *encoded_client = NULL;
     json_t *text = NULL;
@@ -1919,7 +1995,8 @@ static void test_mtls_api(void **state)
     assert_int_equal(json_array_size(json_object_get(body, "authorities")), 0U);
     json_decref(response);
 
-    create_management_test_authority(&authority, &authority_size);
+    create_management_test_identity(&authority, &authority_size, &client,
+                                    &client_size);
     text = json_stringn(authority, authority_size);
     assert_non_null(text);
     encoded_authority = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
@@ -1948,10 +2025,7 @@ static void test_mtls_api(void **state)
     json_decref(response);
     assert_int_equal(access(fixture->client_ca_path, F_OK), 0);
 
-    assert_int_equal(jg_certificate_create_self_signed("remote-client", NULL,
-                                                       0U, 30U, &client),
-                     0);
-    text = json_stringn(client.certificate, client.certificate_size);
+    text = json_stringn(client, client_size);
     assert_non_null(text);
     encoded_client = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
     json_decref(text);
@@ -2017,7 +2091,8 @@ static void test_mtls_api(void **state)
     assert_string_equal(audits[0U].action, "mtls.authorities.remove");
     assert_string_equal(audits[3U].action, "mtls.authorities.install");
 
-    jg_certificate_material_clear(&client);
+    sodium_memzero(client, client_size);
+    free(client);
     free(encoded_client);
     free(encoded_authority);
     free(authority);

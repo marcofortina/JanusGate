@@ -75,9 +75,14 @@ struct jg_certificate_material {
 /**
  * @brief Inspect one PEM leaf certificate and optional private key.
  *
+ * Certificate chains contain certificate blocks only. Private-key input may
+ * be a single key block or a combined certificate-chain and key document.
+ * Only ASCII whitespace is accepted between or after PEM blocks.
+ *
  * @param[in] certificate Certificate or chain PEM beginning with the leaf.
  * @param[in] certificate_size Exact certificate bytes.
- * @param[in] private_key Optional unencrypted private-key PEM.
+ * @param[in] private_key Optional unencrypted private-key PEM, or a combined
+ * certificate-chain and private-key PEM.
  * @param[in] private_key_size Exact key bytes, or zero when absent.
  * @param[out] info Receives validated public metadata.
  *
@@ -143,6 +148,31 @@ JG_PUBLIC int jg_certificate_trust_store_inspect_file(
     struct jg_certificate_info *authorities,
     size_t capacity,
     size_t *authority_count);
+
+/**
+ * @brief Validate a client certificate against the installed trust store.
+ *
+ * The first certificate is treated as the client leaf. Optional following
+ * certificates must be intermediate authorities. The complete chain is
+ * checked for current validity and TLS client-authentication purpose.
+ *
+ * @param[in] certificate Client certificate or chain PEM.
+ * @param[in] certificate_size Exact certificate bytes.
+ * @param[in] trust_store_path Absolute installed trust-store path.
+ * @param[out] info Receives validated client-leaf metadata.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed PEM or an invalid chain shape.
+ * @return -EACCES when the leaf is a CA, is unsuitable for TLS client
+ * authentication, or does not chain to the installed trust store.
+ * @return A negative errno-style file or allocation error otherwise.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_certificate_client_validate(const char *certificate,
+                                             size_t certificate_size,
+                                             const char *trust_store_path,
+                                             struct jg_certificate_info *info);
 
 /**
  * @brief Validate and atomically install a shared client trust store.

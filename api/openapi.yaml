@@ -1955,6 +1955,9 @@ components:
           type: string
           minLength: 1
           maxLength: 65536
+          description: >-
+            Leaf-first PEM chain for a currently valid TLS client certificate
+            issued by the installed client authority bundle.
         user_id:
           oneOf:
             - $ref: '#/components/schemas/Identifier'
