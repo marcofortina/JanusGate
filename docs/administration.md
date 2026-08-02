@@ -42,6 +42,12 @@ archive creation run on a fixed-capacity management queue. The WebGUI follows
 each retained job until completion while short status and policy requests
 remain available.
 
+The health response also compares the newest persistent policy revision with
+the revision published to the daemon. If publication fails, further mutations
+are suspended and the dashboard identifies the pending revision. Use **System
+> Reload configuration** to validate and retry publication; successful reload
+clears the durable inconsistency state.
+
 ## Network
 
 The network page displays bridge roles, the separate management-interface

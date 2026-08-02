@@ -42,6 +42,8 @@ function renderStatus(status) {
  */
 function renderHealth(health) {
   const managementDegraded = health.management.degraded;
+  const policy = health.management.policy;
+  const policyPending = policy.available && !policy.synchronized;
 
   byId("daemon-health").textContent =
     health.daemon.available ? "Available" : "Unavailable";
@@ -49,11 +51,13 @@ function renderHealth(health) {
     health.network.available ? "Available" : "Unavailable";
   byId("overall-health").dataset.state =
     health.healthy ? "healthy" : "degraded";
-  byId("overall-health").textContent = managementDegraded
-    ? "Management mutations are suspended pending consistency recovery."
-    : health.healthy
-      ? "All enforcement services are healthy."
-      : "One or more enforcement services are degraded.";
+  byId("overall-health").textContent = policyPending
+    ? "Policy publication is pending. Use System > Reload configuration."
+    : managementDegraded
+      ? "Management mutations are suspended pending consistency recovery."
+      : health.healthy
+        ? "All enforcement services are healthy."
+        : "One or more enforcement services are degraded.";
 }
 
 /**

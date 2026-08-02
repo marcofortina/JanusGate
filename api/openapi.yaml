@@ -195,6 +195,10 @@ paths:
       tags: [Status]
       operationId: getHealth
       summary: Return management, daemon, and network-helper health
+      description: >-
+        The management policy object reports durable desired and applied
+        revisions. A mismatch suspends mutations until a successful
+        configuration reload publishes the pending policy.
       responses:
         '200':
           $ref: '#/components/responses/JsonSuccess'
@@ -232,7 +236,7 @@ paths:
     post:
       tags: [System]
       operationId: reloadPersistentConfiguration
-      summary: Validate and atomically publish persistent configuration
+      summary: Validate, publish, and reconcile persistent configuration
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:

@@ -208,7 +208,10 @@ int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime);
  * @return A negative errno-style database, allocation, validation, or
  * replacement error otherwise.
  *
- * @thread_safety Calls require one externally serialized control writer.
+ * @thread_safety Explicit reloads are internally serialized with persistent
+ * policy mutations.
+ *
+ * @side_effects Records the publication result in persistent policy health.
  */
 int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime);
 
@@ -276,10 +279,12 @@ int jg_daemon_runtime_validate_configuration(
  * @return A negative errno-style database, helper, allocation, validation, or
  * worker-update error otherwise.
  *
- * @thread_safety Calls require one externally serialized control writer.
+ * @thread_safety Explicit reloads are internally serialized with persistent
+ * policy mutations.
  *
  * @side_effects Atomically publishes a policy snapshot and updates each
- * worker's protected DNS response configuration.
+ * worker's protected DNS response configuration, then records persistent
+ * publication health.
  */
 int jg_daemon_runtime_reload_configuration(
     struct jg_daemon_runtime *runtime,

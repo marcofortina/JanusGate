@@ -429,6 +429,87 @@ static void mark_management_degraded(struct jg_management *management,
     }
 }
 
+/** @brief Clear one recovered consistency reason and report the transition. */
+static void clear_management_degraded(struct jg_management *management,
+                                      uint32_t reason,
+                                      const char *event_code,
+                                      const char *message)
+{
+    uint32_t previous = 0U;
+
+    if (management == NULL || management->health == NULL || reason == 0U) {
+        return;
+    }
+    previous = atomic_fetch_and_explicit(&management->health->degraded_reasons,
+                                         ~reason, memory_order_acq_rel);
+    if ((previous & reason) != 0U) {
+        (void)jg_log_emit(JG_LOG_INFO, "management", event_code, "", message,
+                          NULL);
+    }
+}
+
+/** @brief Reconcile shared health with persistent policy publication state. */
+static void refresh_policy_sync_health(struct jg_management *management)
+{
+    struct jg_database_policy_sync sync;
+    const int result =
+        management == NULL
+            ? -EINVAL
+            : jg_database_policy_sync_load(management->database, &sync);
+
+    if (result != 0 || sync.desired_revision != sync.applied_revision) {
+        mark_management_degraded(
+            management, MANAGEMENT_DEGRADED_POLICY_SYNC,
+            "management.policy_unsynchronized",
+            "Persistent policy is not synchronized with the runtime");
+    } else {
+        clear_management_degraded(
+            management, MANAGEMENT_DEGRADED_POLICY_SYNC,
+            "management.policy_synchronized",
+            "Persistent policy synchronization was restored");
+    }
+}
+
+/** @brief Advance, publish, and persist one policy revision attempt. */
+static int publish_policy_change(struct jg_management *management,
+                                 uint64_t now,
+                                 bool *published,
+                                 uint64_t *runtime_generation)
+{
+    struct jg_database_policy_sync sync;
+    const char *error = NULL;
+    int publish_result = 0;
+    int result = 0;
+
+    if (management == NULL || published == NULL || runtime_generation == NULL) {
+        return -EINVAL;
+    }
+    *published = false;
+    *runtime_generation = 0U;
+    result = jg_database_policy_sync_advance(management->database, now, &sync);
+    if (result == 0) {
+        publish_result = management->runtime == NULL
+                             ? -ENODEV
+                             : jg_daemon_runtime_reload_policy_from_database(
+                                   management->runtime, management->database);
+    }
+    if (result == 0 && publish_result == 0) {
+        publish_result = jg_daemon_runtime_get_policy_generation(
+            management->runtime, runtime_generation);
+    }
+    if (result == 0) {
+        *published = publish_result == 0;
+        if (!*published) {
+            error = management->runtime == NULL ? "runtime_unavailable"
+                                                : "runtime_reload_failed";
+        }
+        result = jg_database_policy_sync_record(management->database,
+                                                sync.desired_revision,
+                                                *published, error, now, &sync);
+    }
+    return result;
+}
+
 /** @brief Return whether a degraded appliance may execute one maintenance path.
  */
 static bool degraded_path_allowed(const char *path)
@@ -481,6 +562,7 @@ static int audited_mutation_finish(struct jg_management *management,
                                    int operation_result,
                                    bool reload_policy)
 {
+    bool refresh_policy_health = reload_policy;
     int result = operation_result;
 
     if (result == 0) {
@@ -502,6 +584,7 @@ static int audited_mutation_finish(struct jg_management *management,
                 "An audited database mutation could not be rolled back");
         }
         if (reload_result != 0) {
+            refresh_policy_health = false;
             mark_management_degraded(
                 management, MANAGEMENT_DEGRADED_POLICY_SYNC,
                 "management.policy_rollback",
@@ -510,6 +593,9 @@ static int audited_mutation_finish(struct jg_management *management,
         if (rollback_result != 0 || reload_result != 0) {
             result = -EIO;
         }
+    }
+    if (refresh_policy_health) {
+        refresh_policy_sync_health(management);
     }
     return result;
 }
@@ -1326,6 +1412,9 @@ int jg_management_create(struct jg_database *database,
                 "Startup could not complete a pending management recovery");
             result = 0;
         }
+    }
+    if (result == 0) {
+        refresh_policy_sync_health(created);
     }
     if (result == 0) {
         result = management_jobs_create(created, &created->jobs);
@@ -6877,14 +6966,69 @@ static int handle_status(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Encode the persistent policy-publication relationship. */
+static json_t *policy_sync_health_json(
+    const struct jg_database_policy_sync *sync,
+    bool available)
+{
+    json_t *body = json_object();
+    int result = 0;
+
+    if (body == NULL) {
+        return NULL;
+    }
+    if (json_object_set_new(body, "available", json_boolean(available)) != 0 ||
+        json_object_set_new(
+            body, "synchronized",
+            json_boolean(available && sync->desired_revision ==
+                                          sync->applied_revision)) != 0) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && available) {
+        if (set_counter(body, "desired_revision", sync->desired_revision) !=
+                0 ||
+            set_counter(body, "applied_revision", sync->applied_revision) !=
+                0 ||
+            json_object_set_new(
+                body, "last_attempt_at",
+                sync->last_attempt_at == 0U
+                    ? json_null()
+                    : json_integer((json_int_t)sync->last_attempt_at)) != 0 ||
+            json_object_set_new(body, "last_error",
+                                sync->last_error[0U] == '\0'
+                                    ? json_null()
+                                    : json_string(sync->last_error)) != 0) {
+            result = -ENOMEM;
+        }
+    } else if (result == 0 &&
+               (json_object_set_new(body, "desired_revision", json_null()) !=
+                    0 ||
+                json_object_set_new(body, "applied_revision", json_null()) !=
+                    0 ||
+                json_object_set_new(body, "last_attempt_at", json_null()) !=
+                    0 ||
+                json_object_set_new(body, "last_error", json_null()) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result != 0) {
+        json_decref(body);
+        body = NULL;
+    }
+    return body;
+}
+
 /** @brief Encode management consistency and mutation availability. */
-static json_t *management_health_json(uint32_t reasons)
+static json_t *management_health_json(
+    uint32_t reasons,
+    const struct jg_database_policy_sync *sync,
+    bool policy_available)
 {
     json_t *body = json_object();
     json_t *items = json_array();
+    json_t *policy = policy_sync_health_json(sync, policy_available);
     int result = 0;
 
-    if (body == NULL || items == NULL) {
+    if (body == NULL || items == NULL || policy == NULL) {
         result = -ENOMEM;
     }
     if (result == 0 &&
@@ -6907,9 +7051,11 @@ static json_t *management_health_json(uint32_t reasons)
              0 ||
          json_object_set_new(body, "mutations_allowed",
                              json_boolean(reasons == 0U)) != 0 ||
-         json_object_set(body, "reasons", items) != 0)) {
+         json_object_set(body, "reasons", items) != 0 ||
+         set_object(body, "policy", policy) != 0)) {
         result = -ENOMEM;
     }
+    json_decref(policy);
     json_decref(items);
     if (result != 0) {
         json_decref(body);
@@ -6929,14 +7075,16 @@ static int handle_health(struct jg_management *management,
 {
     struct authenticated_actor actor;
     struct jg_daemon_runtime_stats stats;
+    struct jg_database_policy_sync policy_sync = {0};
     struct jg_network_state network_state;
     json_t *body = NULL;
     json_t *management_state = NULL;
     json_t *daemon = NULL;
     json_t *network = NULL;
-    const uint32_t degraded_reasons = management_degraded_reasons(management);
+    uint32_t degraded_reasons = 0U;
     bool daemon_available = false;
     bool network_available = false;
+    bool policy_available = false;
     int result = authenticate_actor(management, request, remote, false,
                                     JG_ACCESS_STATUS_READ, now, &actor);
 
@@ -6953,8 +7101,19 @@ static int handle_health(struct jg_management *management,
         management->runtime != NULL &&
         jg_daemon_runtime_get_stats(management->runtime, &stats) == 0;
     network_available = jg_netd_client_state(&network_state) == 0;
+    policy_available =
+        jg_database_policy_sync_load(management->database, &policy_sync) == 0;
+    if (!policy_available ||
+        policy_sync.desired_revision != policy_sync.applied_revision) {
+        mark_management_degraded(
+            management, MANAGEMENT_DEGRADED_POLICY_SYNC,
+            "management.policy_unsynchronized",
+            "Persistent policy is not synchronized with the runtime");
+    }
+    degraded_reasons = management_degraded_reasons(management);
     body = json_object();
-    management_state = management_health_json(degraded_reasons);
+    management_state = management_health_json(degraded_reasons, &policy_sync,
+                                              policy_available);
     daemon = json_object();
     network = json_object();
     if (body == NULL || management_state == NULL || daemon == NULL ||
@@ -7087,6 +7246,7 @@ static int handle_configuration(struct jg_management *management,
         audit_result = append_configuration_audit(
             management, request, remote, &actor, result, previous_generation,
             &status, now);
+        refresh_policy_sync_health(management);
         if (audit_result != 0) {
             return respond_error(
                 500, "audit_failure",
@@ -7633,22 +7793,13 @@ static int load_blocklist_source(struct jg_management *management,
     return result;
 }
 
-/** @brief Reload policy after a source mutation when runtime is available. */
-static void publish_blocklist_source_change(struct jg_management *management,
-                                            bool *published,
-                                            uint64_t *generation)
+/** @brief Track and publish policy after a blocklist-source mutation. */
+static int publish_blocklist_source_change(struct jg_management *management,
+                                           uint64_t now,
+                                           bool *published,
+                                           uint64_t *generation)
 {
-    *published = false;
-    *generation = 0U;
-    if (management->runtime == NULL) {
-        return;
-    }
-    *published = jg_daemon_runtime_reload_policy_from_database(
-                     management->runtime, management->database) == 0;
-    if (jg_daemon_runtime_get_policy_generation(management->runtime,
-                                                generation) != 0) {
-        *generation = 0U;
-    }
+    return publish_policy_change(management, now, published, generation);
 }
 
 /** @brief Encode one created or updated blocklist-source result. */
@@ -7728,10 +7879,13 @@ static int handle_blocklist_source_create(
                              "The blocklist source could not be created.",
                              request->request_id, output, output_size, written);
     }
-    publish_blocklist_source_change(management, &published, &generation);
-    result = append_blocklist_source_audit(
-        management, request, remote, &actor, "blocklist.source.create", false,
-        0U, true, &created, published, generation, now);
+    result = publish_blocklist_source_change(management, now, &published,
+                                             &generation);
+    if (result == 0) {
+        result = append_blocklist_source_audit(
+            management, request, remote, &actor, "blocklist.source.create",
+            false, 0U, true, &created, published, generation, now);
+    }
     result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
@@ -7805,10 +7959,13 @@ static int handle_blocklist_source_update(
                              "The blocklist source could not be updated.",
                              request->request_id, output, output_size, written);
     }
-    publish_blocklist_source_change(management, &published, &generation);
-    result = append_blocklist_source_audit(
-        management, request, remote, &actor, "blocklist.source.update", true,
-        revision, true, &updated, published, generation, now);
+    result = publish_blocklist_source_change(management, now, &published,
+                                             &generation);
+    if (result == 0) {
+        result = append_blocklist_source_audit(
+            management, request, remote, &actor, "blocklist.source.update",
+            true, revision, true, &updated, published, generation, now);
+    }
     result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
@@ -7877,10 +8034,13 @@ static int handle_blocklist_source_delete(
                              "The blocklist source could not be deleted.",
                              request->request_id, output, output_size, written);
     }
-    publish_blocklist_source_change(management, &published, &generation);
-    result = append_blocklist_source_audit(
-        management, request, remote, &actor, "blocklist.source.delete", true,
-        revision, false, &removed, published, generation, now);
+    result = publish_blocklist_source_change(management, now, &published,
+                                             &generation);
+    if (result == 0) {
+        result = append_blocklist_source_audit(
+            management, request, remote, &actor, "blocklist.source.delete",
+            true, revision, false, &removed, published, generation, now);
+    }
     result = audited_mutation_finish(management, result, true);
     if (result != 0) {
         return respond_error(
@@ -7999,19 +8159,21 @@ static int complete_source_refresh(
 
     completion->called = true;
     if (update->activated) {
-        publish_blocklist_source_change(completion->management,
-                                        &completion->published,
-                                        &completion->generation);
+        result = publish_blocklist_source_change(
+            completion->management, completion->now, &completion->published,
+            &completion->generation);
     }
     completion->operation_result =
         completion->append_event && update->activated && !completion->published
             ? -EIO
             : 0;
-    result = append_blocklist_update_audit(
-        completion->management, completion->request, completion->remote,
-        completion->actor, completion->action, update,
-        completion->operation_result, completion->published,
-        completion->generation, completion->now);
+    if (result == 0) {
+        result = append_blocklist_update_audit(
+            completion->management, completion->request, completion->remote,
+            completion->actor, completion->action, update,
+            completion->operation_result, completion->published,
+            completion->generation, completion->now);
+    }
 
     if (result == 0 && completion->append_event) {
         result = append_blocklist_update_event(completion->management, update,
@@ -8019,6 +8181,30 @@ static int complete_source_refresh(
                                                completion->now);
     }
     return result;
+}
+
+/** @brief Reconcile policy health after a blocklist update transaction. */
+static void finish_blocklist_policy_transaction(
+    struct jg_management *management,
+    bool activated,
+    int transaction_result)
+{
+    int reload_result = 0;
+
+    if (!activated) {
+        return;
+    }
+    if (transaction_result != 0 && management->runtime != NULL) {
+        reload_result = jg_daemon_runtime_reload_policy(management->runtime);
+    }
+    if (reload_result != 0) {
+        mark_management_degraded(
+            management, MANAGEMENT_DEGRADED_POLICY_SYNC,
+            "management.policy_rollback",
+            "The runtime policy could not be synchronized after rollback");
+    } else {
+        refresh_policy_sync_health(management);
+    }
 }
 
 /** @brief Execute one authenticated remote-source refresh job. */
@@ -8045,9 +8231,7 @@ static int execute_source_refresh_job(struct jg_management *management,
         job->parameters.source.revision, job->started_at,
         complete_source_refresh, &completion, &update);
 
-    if (result != 0 && update.activated && management->runtime != NULL) {
-        (void)jg_daemon_runtime_reload_policy(management->runtime);
-    }
+    finish_blocklist_policy_transaction(management, update.activated, result);
     if (result == -ENOENT) {
         return respond_error(404, "source_not_found",
                              "The blocklist source was not found.",
@@ -8426,9 +8610,7 @@ static int execute_blocklist_import_job(struct jg_management *management,
         job->parameters.blocklist_import.content_size, job->started_at,
         complete_source_refresh, &completion, &update);
 
-    if (result != 0 && update.activated && management->runtime != NULL) {
-        (void)jg_daemon_runtime_reload_policy(management->runtime);
-    }
+    finish_blocklist_policy_transaction(management, update.activated, result);
     if (result == -ENOENT) {
         return respond_error(404, "source_not_found",
                              "The blocklist source was not found.",
@@ -8570,10 +8752,8 @@ static int update_due_blocklists_now(struct jg_management *management,
             if (update.attempted) {
                 ++attempt_count;
             }
-            if (result != 0 && update.activated &&
-                management->runtime != NULL) {
-                (void)jg_daemon_runtime_reload_policy(management->runtime);
-            }
+            finish_blocklist_policy_transaction(management, update.activated,
+                                                result);
             if (result == 0 && completion.operation_result != 0) {
                 result = completion.operation_result;
             }
@@ -8891,6 +9071,14 @@ int jg_management_update_due_blocklists(struct jg_management *management,
         return -EROFS;
     }
     return submit_scheduled_source_job(management, now);
+}
+
+/** @brief Refresh shared health from persistent policy publication state. */
+void jg_management_refresh_policy_health(struct jg_management *management)
+{
+    if (management != NULL) {
+        refresh_policy_sync_health(management);
+    }
 }
 
 /** @brief Return the stable API spelling for one job state. */
@@ -9247,19 +9435,15 @@ static int publish_domain_rule_change(
     bool *published,
     uint64_t *generation)
 {
-    int result = jg_daemon_runtime_reload_policy(management->runtime);
-    int audit_result = 0;
+    int result = publish_policy_change(management, now, published, generation);
 
-    *published = result == 0;
-    audit_result = jg_daemon_runtime_get_policy_generation(management->runtime,
-                                                           generation);
-    if (audit_result == 0) {
-        audit_result = append_domain_rule_audit(
-            management, request, remote, actor, action, has_previous_revision,
-            previous_revision, has_new_revision, rule, *published, *generation,
-            now);
+    if (result == 0) {
+        result = append_domain_rule_audit(management, request, remote, actor,
+                                          action, has_previous_revision,
+                                          previous_revision, has_new_revision,
+                                          rule, *published, *generation, now);
     }
-    return audit_result;
+    return result;
 }
 
 /** @brief Encode one created or updated domain-rule result. */
@@ -9560,19 +9744,15 @@ static int publish_destination_rule_change(
     bool *published,
     uint64_t *generation)
 {
-    int result = jg_daemon_runtime_reload_policy(management->runtime);
-    int audit_result = 0;
+    int result = publish_policy_change(management, now, published, generation);
 
-    *published = result == 0;
-    audit_result = jg_daemon_runtime_get_policy_generation(management->runtime,
-                                                           generation);
-    if (audit_result == 0) {
-        audit_result = append_destination_rule_audit(
+    if (result == 0) {
+        result = append_destination_rule_audit(
             management, request, remote, actor, action, has_previous_revision,
             previous_revision, has_new_revision, rule, *published, *generation,
             now);
     }
-    return audit_result;
+    return result;
 }
 
 /** @brief Encode one created or updated destination-rule result. */
@@ -11881,6 +12061,7 @@ static int execute_backup_restore_job(struct jg_management *management,
     struct jg_backup_contents contents;
     struct jg_database_restore_report report;
     struct jg_database_restore_report audit_report;
+    struct jg_database_policy_sync policy_sync;
     uint8_t recovery_payload[3U] = {MANAGEMENT_RECOVERY_VERSION, 0U, 0U};
     const char *passphrase =
         job->parameters.backup_restore.passphrase_size == 0U
@@ -12002,6 +12183,10 @@ static int execute_backup_restore_job(struct jg_management *management,
                                             contents.certificate_size, true,
                                             &certificate_changes);
     }
+    if (!dry_run && changes && result == 0) {
+        result = jg_database_policy_sync_advance(management->database, now,
+                                                 &policy_sync);
+    }
     if (!dry_run && changes && result != 0) {
         const int rollback_result =
             abort_recovery_operation(management, result);
@@ -12029,6 +12214,7 @@ static int execute_backup_restore_job(struct jg_management *management,
     }
     if (recovery_started) {
         result = finish_recovery_operation(management, result);
+        refresh_policy_sync_health(management);
     }
     if (result != 0) {
         jg_backup_contents_clear(&contents);

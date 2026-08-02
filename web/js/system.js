@@ -297,6 +297,8 @@ function renderStatus(status, health) {
   const dataplane = status.dataplane || {};
   const queues = status.queues || {};
   const managementDegraded = health.management.degraded;
+  const policy = health.management.policy;
+  const policyPending = policy.available && !policy.synchronized;
 
   byId("system-readiness").textContent =
     status.ready && health.healthy ? "Ready" : "Degraded";
@@ -310,11 +312,13 @@ function renderStatus(status, health) {
     formatNumber(queues.overflows);
   byId("system-health").dataset.state =
     health.healthy ? "healthy" : "degraded";
-  byId("system-health").textContent = managementDegraded
-    ? "Management mutations are suspended pending consistency recovery."
-    : health.healthy
-      ? "The policy daemon and transactional network service are healthy."
-      : "One or more enforcement services report a degraded state.";
+  byId("system-health").textContent = policyPending
+    ? "Policy publication is pending. Validate and reload configuration."
+    : managementDegraded
+      ? "Management mutations are suspended pending consistency recovery."
+      : health.healthy
+        ? "The policy daemon and transactional network service are healthy."
+        : "One or more enforcement services report a degraded state.";
   renderJson(byId("system-status-details"), { status, health });
 }
 

@@ -141,6 +141,15 @@ int jg_management_update_due_blocklists(struct jg_management *management,
                                         size_t *attempts);
 
 /**
+ * @brief Refresh shared health from persistent policy publication state.
+ *
+ * @param[in,out] management Management state; null is ignored.
+ *
+ * @thread_safety May run concurrently with the management worker.
+ */
+void jg_management_refresh_policy_health(struct jg_management *management);
+
+/**
  * @brief Consume one deferred authenticated lifecycle action.
  *
  * @param[in,out] management Management state.

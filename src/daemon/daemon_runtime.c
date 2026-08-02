@@ -11,9 +11,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <net/if.h>
 
+#include "database_internal.h"
 #include "dataplane_worker.h"
 #include "janusgate/database.h"
 #include "janusgate/logging.h"
@@ -34,12 +36,85 @@ struct jg_daemon_runtime {
     struct jg_packet_output *outputs[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_nfqueue_group *queues;
     pthread_mutex_t policy_mutex;
+    pthread_mutex_t reconciliation_mutex;
     struct jg_network_config active_network;
     struct jg_dns_response_config active_dns_response;
     atomic_uint_fast64_t policy_generation;
     size_t worker_count;
     bool policy_mutex_initialized;
+    bool reconciliation_mutex_initialized;
 };
+
+/** @brief Persist one attempt to publish the current desired policy. */
+static int record_policy_publication(struct jg_daemon_runtime *runtime,
+                                     bool applied,
+                                     const char *error)
+{
+    struct jg_database_policy_sync sync;
+    const time_t wall_clock = time(NULL);
+    int result = wall_clock < 0 ? -EIO : 0;
+
+    if (result == 0) {
+        result = jg_database_policy_sync_load(runtime->database, &sync);
+    }
+    if (result == 0) {
+        result = jg_database_policy_sync_record(
+            runtime->database, sync.desired_revision, applied, error,
+            (uint64_t)wall_clock, &sync);
+    }
+    return result;
+}
+
+/** @brief Serialize an explicit reload with persistent policy mutations. */
+static int begin_policy_reconciliation(struct jg_daemon_runtime *runtime)
+{
+    int status = pthread_mutex_lock(&runtime->reconciliation_mutex);
+    int result = status == 0 ? 0 : -status;
+
+    if (result == 0) {
+        result = jg_database_transaction_begin(runtime->database);
+    }
+    if (result != 0 && status == 0) {
+        (void)pthread_mutex_unlock(&runtime->reconciliation_mutex);
+    }
+    return result;
+}
+
+/** @brief Persist and release one serialized policy-reconciliation attempt. */
+static int finish_policy_reconciliation(struct jg_daemon_runtime *runtime,
+                                        int operation_result)
+{
+    int result = record_policy_publication(
+        runtime, operation_result == 0,
+        operation_result == 0 ? NULL : "runtime_reload_failed");
+    int status = 0;
+
+    if (result == 0) {
+        result = jg_database_transaction_commit(runtime->database);
+    }
+    if (result != 0) {
+        (void)jg_database_transaction_rollback(runtime->database);
+    }
+    jg_management_refresh_policy_health(runtime->management);
+    status = pthread_mutex_unlock(&runtime->reconciliation_mutex);
+    if (operation_result != 0) {
+        return operation_result;
+    }
+    return result == 0 && status != 0 ? -status : result;
+}
+
+/** @brief Mark the policy loaded during startup as the desired revision. */
+static void record_initial_policy_publication(struct jg_daemon_runtime *runtime)
+{
+    struct jg_database_policy_sync sync;
+    int result = jg_database_policy_sync_load(runtime->database, &sync);
+
+    if (result == 0 && sync.desired_revision != sync.applied_revision) {
+        result = record_policy_publication(runtime, true, NULL);
+    }
+    (void)result;
+    jg_management_refresh_policy_health(runtime->management);
+}
 
 /** Complete validated candidate retained until publication or destruction. */
 struct runtime_configuration_candidate {
@@ -321,6 +396,13 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
         started->policy_mutex_initialized = result == 0;
     }
     if (result == 0) {
+        const int status =
+            pthread_mutex_init(&started->reconciliation_mutex, NULL);
+
+        result = status == 0 ? 0 : -status;
+        started->reconciliation_mutex_initialized = result == 0;
+    }
+    if (result == 0) {
         result = jg_database_open(config->database_path,
                                   config->database_busy_timeout_ms,
                                   &started->database);
@@ -383,6 +465,7 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
     if (result == 0) {
         started->active_network = network;
         started->active_dns_response = dns_response;
+        record_initial_policy_publication(started);
     }
     jg_policy_snapshot_destroy(snapshot);
     if (result != 0) {
@@ -457,9 +540,18 @@ int jg_daemon_runtime_reload_policy_from_database(
 /** @brief Load and publish the next committed policy generation. */
 int jg_daemon_runtime_reload_policy(struct jg_daemon_runtime *runtime)
 {
-    return runtime == NULL ? -EINVAL
-                           : jg_daemon_runtime_reload_policy_from_database(
-                                 runtime, runtime->database);
+    int result = 0;
+
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    result = begin_policy_reconciliation(runtime);
+    if (result == 0) {
+        result = jg_daemon_runtime_reload_policy_from_database(
+            runtime, runtime->database);
+        result = finish_policy_reconciliation(runtime, result);
+    }
+    return result;
 }
 
 /** @brief Build and validate one complete persistent runtime candidate. */
@@ -573,6 +665,10 @@ int jg_daemon_runtime_reload_configuration(
         return -EINVAL;
     }
     (void)memset(status, 0, sizeof(*status));
+    result = begin_policy_reconciliation(runtime);
+    if (result != 0) {
+        return result;
+    }
     mutex_status = pthread_mutex_lock(&runtime->policy_mutex);
     result = mutex_status == 0 ? 0 : -mutex_status;
     if (result == 0) {
@@ -628,7 +724,7 @@ int jg_daemon_runtime_reload_configuration(
             result = -mutex_status;
         }
     }
-    return result;
+    return finish_policy_reconciliation(runtime, result);
 }
 
 /** @brief Read the current published policy generation. */
@@ -746,6 +842,9 @@ void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
         jg_dataplane_worker_destroy(runtime->workers[index]);
     }
     jg_policy_store_destroy(runtime->policies);
+    if (runtime->reconciliation_mutex_initialized) {
+        (void)pthread_mutex_destroy(&runtime->reconciliation_mutex);
+    }
     if (runtime->policy_mutex_initialized) {
         (void)pthread_mutex_destroy(&runtime->policy_mutex);
     }

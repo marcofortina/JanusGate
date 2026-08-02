@@ -152,6 +152,7 @@ Use the least invasive evidence first:
 | API operation fails | Request ID and audit | Management correlation |
 | Queue loss | Metrics and status | Load and capacity |
 | Source refresh fails | Source health and events | URL, limits, schedule |
+| Policy not synchronized | `health` revisions | Reload configuration |
 | Trace is empty | `logging show` | Expiry, level, capacity |
 | Syslog is empty | Destinations | Platform logger |
 

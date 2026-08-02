@@ -381,6 +381,21 @@ static json_t *process_local_request(struct management_fixture *fixture,
     return parsed;
 }
 
+/** @brief Simulate successful runtime publication in a runtime-free fixture. */
+static void synchronize_policy(struct management_fixture *fixture)
+{
+    struct jg_database_policy_sync sync;
+    const time_t now = time(NULL);
+
+    assert_true(now > 0);
+    assert_int_equal(jg_database_policy_sync_load(fixture->database, &sync), 0);
+    assert_int_equal(jg_database_policy_sync_record(fixture->database,
+                                                    sync.desired_revision, true,
+                                                    NULL, (uint64_t)now, &sync),
+                     0);
+    jg_management_refresh_policy_health(fixture->management);
+}
+
 /** @brief Wait for one accepted API job and return its final envelope. */
 static json_t *wait_for_job(struct management_fixture *fixture,
                             uint64_t job_id,
@@ -2136,6 +2151,87 @@ static void test_cross_resource_audit_failure(void **state)
     free(authority);
 }
 
+/** @brief Verify policy divergence survives restart and suspends mutations. */
+static void test_policy_sync_health(void **state)
+{
+    static const char health_request[] =
+        "{\"request_id\":\"policy-health\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/health\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char mutation_request[] =
+        "{\"request_id\":\"policy-blocked\",\"method\":\"DELETE\","
+        "\"path\":\"/api/v1/mtls/authorities\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    struct management_fixture *fixture = *state;
+    struct jg_database_policy_sync sync;
+    json_t *response = NULL;
+    json_t *management = NULL;
+    json_t *policy = NULL;
+    const time_t now = time(NULL);
+
+    assert_true(now > 0);
+    assert_int_equal(jg_database_policy_sync_advance(fixture->database,
+                                                     (uint64_t)now, &sync),
+                     0);
+    assert_int_equal(jg_database_policy_sync_record(
+                         fixture->database, sync.desired_revision, false,
+                         "runtime_reload_failed", (uint64_t)now, &sync),
+                     0);
+
+    jg_management_destroy(fixture->management);
+    fixture->management = NULL;
+    assert_int_equal(
+        jg_management_create(fixture->database, fixture->key_path,
+                             fixture->certificate_path, fixture->client_ca_path,
+                             fixture->directory, NULL, &fixture->management),
+        0);
+    response = process_local_request(fixture, health_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    management =
+        json_object_get(json_object_get(response, "body"), "management");
+    policy = json_object_get(management, "policy");
+    assert_true(json_is_true(json_object_get(management, "degraded")));
+    assert_false(
+        json_is_true(json_object_get(management, "mutations_allowed")));
+    assert_string_equal(json_string_value(json_array_get(
+                            json_object_get(management, "reasons"), 0U)),
+                        "policy_sync");
+    assert_true(json_is_true(json_object_get(policy, "available")));
+    assert_false(json_is_true(json_object_get(policy, "synchronized")));
+    assert_int_equal(
+        json_integer_value(json_object_get(policy, "desired_revision")), 2);
+    assert_int_equal(
+        json_integer_value(json_object_get(policy, "applied_revision")), 1);
+    assert_string_equal(
+        json_string_value(json_object_get(policy, "last_error")),
+        "runtime_reload_failed");
+    json_decref(response);
+
+    response = process_local_request(fixture, mutation_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "management_degraded");
+    json_decref(response);
+
+    synchronize_policy(fixture);
+    response = process_local_request(fixture, health_request);
+    management =
+        json_object_get(json_object_get(response, "body"), "management");
+    policy = json_object_get(management, "policy");
+    assert_false(json_is_true(json_object_get(management, "degraded")));
+    assert_true(json_is_true(json_object_get(management, "mutations_allowed")));
+    assert_true(json_is_true(json_object_get(policy, "synchronized")));
+    assert_int_equal(
+        json_integer_value(json_object_get(policy, "applied_revision")), 2);
+    assert_true(json_is_null(json_object_get(policy, "last_error")));
+    json_decref(response);
+}
+
 /** @brief Verify private CA and client-certificate mapping administration. */
 static void test_mtls_api(void **state)
 {
@@ -2775,6 +2871,7 @@ static void test_backup_restore_api(void **state)
         jg_database_load_network_config(fixture->database, &loaded), 0);
     assert_int_equal(loaded.queue_length, initial.queue_length);
     assert_int_equal(loaded.failure_mode, initial.failure_mode);
+    synchronize_policy(fixture);
 
     assert_int_equal(
         jg_database_store_network_config(fixture->database, &changed), 0);
@@ -3242,6 +3339,7 @@ static void test_source_api(void **state)
     assert_true(source_id > source.id);
     assert_int_equal(source_revision, 1U);
     json_decref(response);
+    synchronize_policy(fixture);
 
     written = snprintf(
         request, sizeof(request),
@@ -3272,6 +3370,7 @@ static void test_source_api(void **state)
     assert_string_equal(json_string_value(json_object_get(value, "format")),
                         "hosts");
     json_decref(response);
+    synchronize_policy(fixture);
 
     written = snprintf(request, sizeof(request),
                        "{\"request_id\":\"source-refresh\",\"method\":\"POST\","
@@ -3320,6 +3419,7 @@ static void test_source_api(void **state)
     assert_int_equal(json_integer_value(json_object_get(body, "id")),
                      (json_int_t)source_id);
     json_decref(response);
+    synchronize_policy(fixture);
 
     written = snprintf(
         request, sizeof(request),
@@ -3344,6 +3444,7 @@ static void test_source_api(void **state)
     source_revision =
         (uint64_t)json_integer_value(json_object_get(value, "revision"));
     json_decref(response);
+    synchronize_policy(fixture);
 
     written = snprintf(request, sizeof(request),
                        "{\"request_id\":\"local-blocklist-import\","
@@ -3372,6 +3473,7 @@ static void test_source_api(void **state)
     assert_string_equal(json_string_value(json_object_get(value, "outcome")),
                         "updated");
     json_decref(response);
+    synchronize_policy(fixture);
     assert_int_equal(jg_database_list_domain_rules(fixture->database, 0U, 2U,
                                                    rules, &count, &has_more),
                      0);
@@ -3927,6 +4029,8 @@ int jg_test_management(void)
                                         setup_certificate_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_cross_resource_audit_failure,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_policy_sync_health,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_mtls_api, setup_management,
                                         teardown_management),
