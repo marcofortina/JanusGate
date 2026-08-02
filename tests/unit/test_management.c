@@ -1955,6 +1955,148 @@ static void test_certificate_api(void **state)
     sodium_memzero(&token, sizeof(token));
 }
 
+/** @brief Verify startup restores a durable interrupted certificate change. */
+static void test_cross_resource_recovery(void **state)
+{
+    static const uint8_t recovery_payload[] = {1U, 1U, 3U};
+    struct management_fixture *fixture = *state;
+    struct jg_certificate_material replacement;
+    struct jg_certificate_info original;
+    struct jg_certificate_info installed;
+    struct jg_certificate_info recovered;
+    struct jg_database_operation operation;
+    char snapshot[160U];
+    int written = 0;
+
+    assert_int_equal(
+        jg_certificate_inspect_file(fixture->certificate_path, &original), 0);
+    written = snprintf(snapshot, sizeof(snapshot), "%s.rollback",
+                       fixture->certificate_path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(snapshot));
+    assert_int_equal(jg_database_operation_prepare(
+                         fixture->database, "certificate_install",
+                         recovery_payload, sizeof(recovery_payload), 100U),
+                     0);
+    assert_int_equal(
+        jg_certificate_identity_copy(fixture->certificate_path, snapshot), 0);
+    assert_int_equal(jg_database_operation_mark_ready(fixture->database), 0);
+    assert_int_equal(jg_certificate_create_self_signed(
+                         "interrupted.example", NULL, 0U, 30U, &replacement),
+                     0);
+    assert_int_equal(jg_certificate_install(
+                         fixture->certificate_path, replacement.certificate,
+                         replacement.certificate_size, replacement.private_key,
+                         replacement.private_key_size, &installed),
+                     0);
+    assert_true(sodium_memcmp(installed.fingerprint_sha256,
+                              original.fingerprint_sha256,
+                              sizeof(original.fingerprint_sha256)) != 0);
+
+    jg_management_destroy(fixture->management);
+    fixture->management = NULL;
+    assert_int_equal(
+        jg_management_create(fixture->database, fixture->key_path,
+                             fixture->certificate_path, fixture->client_ca_path,
+                             fixture->directory, NULL, &fixture->management),
+        0);
+    assert_int_equal(
+        jg_certificate_inspect_file(fixture->certificate_path, &recovered), 0);
+    assert_memory_equal(recovered.fingerprint_sha256,
+                        original.fingerprint_sha256,
+                        sizeof(original.fingerprint_sha256));
+    assert_int_equal(jg_database_operation_load(fixture->database, &operation),
+                     -ENOENT);
+    assert_int_equal(access(snapshot, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    jg_certificate_material_clear(&replacement);
+}
+
+/** @brief Verify audit failure restores and retains a retryable operation. */
+static void test_cross_resource_audit_failure(void **state)
+{
+    static const char reject_audit[] =
+        "CREATE TRIGGER reject_audit BEFORE INSERT ON audit_events "
+        "BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;";
+    struct management_fixture *fixture = *state;
+    struct jg_database_operation operation;
+    char request[16384U];
+    char *authority = NULL;
+    char *client = NULL;
+    char *encoded_authority = NULL;
+    size_t authority_size = 0U;
+    size_t client_size = 0U;
+    sqlite3 *injection = NULL;
+    json_t *text = NULL;
+    json_t *response = NULL;
+    int written = 0;
+
+    create_management_test_identity(&authority, &authority_size, &client,
+                                    &client_size);
+    text = json_stringn(authority, authority_size);
+    assert_non_null(text);
+    encoded_authority = json_dumps(text, JSON_COMPACT | JSON_ENCODE_ANY);
+    json_decref(text);
+    assert_non_null(encoded_authority);
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"mtls-audit-failure\",\"method\":\"PUT\","
+                 "\"path\":\"/api/v1/mtls/authorities\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{"
+                 "\"certificate_authorities\":%s}}",
+                 encoded_authority);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    assert_int_equal(sqlite3_open_v2(fixture->database_path, &injection,
+                                     SQLITE_OPEN_READWRITE, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_exec(injection, reject_audit, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(injection), SQLITE_OK);
+    injection = NULL;
+
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     500);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "audit_failure");
+    json_decref(response);
+    assert_int_equal(access(fixture->client_ca_path, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    assert_int_equal(jg_database_operation_load(fixture->database, &operation),
+                     0);
+    assert_true(operation.ready);
+
+    assert_int_equal(sqlite3_open_v2(fixture->database_path, &injection,
+                                     SQLITE_OPEN_READWRITE, NULL),
+                     SQLITE_OK);
+    assert_int_equal(
+        sqlite3_exec(injection, "DROP TRIGGER reject_audit;", NULL, NULL, NULL),
+        SQLITE_OK);
+    assert_int_equal(sqlite3_close(injection), SQLITE_OK);
+    jg_management_destroy(fixture->management);
+    fixture->management = NULL;
+    assert_int_equal(
+        jg_management_create(fixture->database, fixture->key_path,
+                             fixture->certificate_path, fixture->client_ca_path,
+                             fixture->directory, NULL, &fixture->management),
+        0);
+    assert_int_equal(jg_database_operation_load(fixture->database, &operation),
+                     -ENOENT);
+    assert_int_equal(access(fixture->client_ca_path, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+
+    sodium_memzero(encoded_authority, strlen(encoded_authority));
+    free(encoded_authority);
+    sodium_memzero(client, client_size);
+    free(client);
+    sodium_memzero(authority, authority_size);
+    free(authority);
+}
+
 /** @brief Verify private CA and client-certificate mapping administration. */
 static void test_mtls_api(void **state)
 {
@@ -3742,6 +3884,11 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_certificate_api,
                                         setup_certificate_management,
                                         teardown_management),
+        cmocka_unit_test_setup_teardown(test_cross_resource_recovery,
+                                        setup_certificate_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_cross_resource_audit_failure,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_mtls_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(

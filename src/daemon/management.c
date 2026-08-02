@@ -104,6 +104,26 @@
 /** Largest job identifier represented exactly by every supported client. */
 #define MANAGEMENT_JOB_IDENTIFIER_MAX UINT64_C(9007199254740991)
 
+/** Version byte for durable cross-resource recovery payloads. */
+#define MANAGEMENT_RECOVERY_VERSION UINT8_C(1)
+
+/** Suffix reserved for durable certificate recovery snapshots. */
+#define MANAGEMENT_RECOVERY_SUFFIX ".rollback"
+
+/** Persistent cross-resource operation kinds. */
+#define MANAGEMENT_OPERATION_CERTIFICATE_CSR "certificate_csr"
+#define MANAGEMENT_OPERATION_CERTIFICATE_INSTALL "certificate_install"
+#define MANAGEMENT_OPERATION_MTLS_AUTHORITIES "mtls_authorities"
+#define MANAGEMENT_OPERATION_BACKUP_RESTORE "backup_restore"
+#define MANAGEMENT_OPERATION_NETWORK_CONFIRM "network_confirm"
+
+/** Files whose previous generation is retained by one recovery operation. */
+enum management_recovery_file {
+    MANAGEMENT_RECOVERY_CERTIFICATE = 1U << 0U,
+    MANAGEMENT_RECOVERY_PENDING_KEY = 1U << 1U,
+    MANAGEMENT_RECOVERY_CLIENT_CA = 1U << 2U
+};
+
 /** Opaque bounded slow-operation queue owned by management state. */
 struct management_jobs;
 
@@ -357,6 +377,15 @@ static int execute_certificate_csr_job(struct jg_management *management,
                                        size_t output_size,
                                        size_t *written);
 
+/** @brief Build the private pending-key path paired with the server identity.
+ */
+static int certificate_pending_path(const struct jg_management *management,
+                                    char path[PATH_MAX]);
+
+/** @brief Compare every semantic field of two network configurations. */
+static bool network_configs_equal(const struct jg_network_config *left,
+                                  const struct jg_network_config *right);
+
 /** @brief Begin one persistent mutation that must share its audit commit. */
 static int audited_mutation_begin(struct jg_management *management)
 {
@@ -503,6 +532,544 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
     return result;
 }
 
+/** @brief Append the fixed recovery suffix to one validated absolute path. */
+static int recovery_path(const char *path, char output[PATH_MAX])
+{
+    const int written = path == NULL ? -1
+                                     : snprintf(output, PATH_MAX, "%s%s", path,
+                                                MANAGEMENT_RECOVERY_SUFFIX);
+
+    return written <= 0 || written >= PATH_MAX ? -ENAMETOOLONG : 0;
+}
+
+/** @brief Remove one secure recovery snapshot when it exists. */
+static int remove_recovery_file(const char *path)
+{
+    const int result = jg_certificate_private_key_remove(path);
+
+    return result == -ENOENT ? 0 : result;
+}
+
+/** @brief Inspect whether a secure server identity currently exists. */
+static int server_identity_present(const char *path, bool *present)
+{
+    struct jg_certificate_info info;
+    int result = 0;
+
+    if (present == NULL) {
+        return -EINVAL;
+    }
+    result = jg_certificate_inspect_file(path, &info);
+    *present = result == 0;
+    return result == -ENOENT ? 0 : result;
+}
+
+/** @brief Inspect whether a secure pending private key currently exists. */
+static int pending_key_present(const char *path, bool *present)
+{
+    char *private_key = NULL;
+    size_t private_key_size = 0U;
+    int result = 0;
+
+    if (present == NULL) {
+        return -EINVAL;
+    }
+    result =
+        jg_certificate_private_key_load(path, &private_key, &private_key_size);
+    *present = result == 0;
+    jg_certificate_pem_clear(private_key, private_key_size);
+    return result == -ENOENT ? 0 : result;
+}
+
+/** @brief Inspect whether a secure client trust store currently exists. */
+static int client_ca_present(const char *path, bool *present)
+{
+    struct jg_certificate_info *authorities = NULL;
+    size_t authority_count = 0U;
+    int result = 0;
+
+    if (present == NULL) {
+        return -EINVAL;
+    }
+    authorities = calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = jg_certificate_trust_store_inspect_file(
+        path, authorities, JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    *present = result == 0;
+    free(authorities);
+    return result == -ENOENT ? 0 : result;
+}
+
+/** @brief Snapshot one pending private key into its reserved recovery path. */
+static int snapshot_pending_key(const char *path)
+{
+    char snapshot[PATH_MAX];
+    char *private_key = NULL;
+    size_t private_key_size = 0U;
+    int result = recovery_path(path, snapshot);
+
+    if (result == 0) {
+        result = jg_certificate_private_key_load(path, &private_key,
+                                                 &private_key_size);
+    }
+    if (result == 0) {
+        result = jg_certificate_private_key_store(snapshot, private_key,
+                                                  private_key_size);
+    }
+    jg_certificate_pem_clear(private_key, private_key_size);
+    return result;
+}
+
+/** @brief Create every durable snapshot selected by one operation. */
+static int create_recovery_snapshots(struct jg_management *management,
+                                     uint8_t files,
+                                     bool database)
+{
+    char pending[PATH_MAX];
+    char snapshot[PATH_MAX];
+    int result = 0;
+
+    if ((files & MANAGEMENT_RECOVERY_CERTIFICATE) != 0U) {
+        result = recovery_path(management->certificate_path, snapshot);
+        if (result == 0) {
+            result = jg_certificate_identity_copy(management->certificate_path,
+                                                  snapshot);
+        }
+    }
+    if (result == 0 && (files & MANAGEMENT_RECOVERY_PENDING_KEY) != 0U) {
+        result = certificate_pending_path(management, pending);
+        if (result == 0) {
+            result = snapshot_pending_key(pending);
+        }
+    }
+    if (result == 0 && (files & MANAGEMENT_RECOVERY_CLIENT_CA) != 0U) {
+        result = recovery_path(management->client_ca_path, snapshot);
+        if (result == 0) {
+            result = jg_certificate_trust_store_copy(management->client_ca_path,
+                                                     snapshot);
+        }
+    }
+    if (result == 0 && database) {
+        result = jg_database_recovery_checkpoint_create(management->database);
+    }
+    return result;
+}
+
+/** @brief Remove every reserved recovery snapshot left by an operation. */
+static int cleanup_recovery_snapshots(struct jg_management *management)
+{
+    char pending[PATH_MAX];
+    char snapshot[PATH_MAX];
+    int result = 0;
+    int cleanup_result = recovery_path(management->certificate_path, snapshot);
+
+    if (cleanup_result == 0) {
+        cleanup_result = remove_recovery_file(snapshot);
+    }
+    if (cleanup_result != 0) {
+        result = cleanup_result;
+    }
+    cleanup_result = certificate_pending_path(management, pending);
+    if (cleanup_result == 0) {
+        cleanup_result = recovery_path(pending, snapshot);
+    }
+    if (cleanup_result == 0) {
+        cleanup_result = remove_recovery_file(snapshot);
+    }
+    if (cleanup_result != 0 && result == 0) {
+        result = cleanup_result;
+    }
+    cleanup_result = recovery_path(management->client_ca_path, snapshot);
+    if (cleanup_result == 0) {
+        cleanup_result = remove_recovery_file(snapshot);
+    }
+    if (cleanup_result != 0 && result == 0) {
+        result = cleanup_result;
+    }
+    cleanup_result =
+        jg_database_recovery_checkpoint_remove(management->database);
+    if (cleanup_result == -ENOENT) {
+        cleanup_result = 0;
+    }
+    if (cleanup_result != 0 && result == 0) {
+        result = cleanup_result;
+    }
+    return result;
+}
+
+/** @brief Restore one file from a snapshot or remove a newly created file. */
+static int restore_recovery_file(const char *path,
+                                 bool existed,
+                                 bool trust_store)
+{
+    char snapshot[PATH_MAX];
+    int result = recovery_path(path, snapshot);
+
+    if (result == 0 && existed) {
+        result = trust_store ? jg_certificate_trust_store_copy(snapshot, path)
+                             : jg_certificate_identity_copy(snapshot, path);
+    } else if (result == 0) {
+        result = remove_recovery_file(path);
+    }
+    return result;
+}
+
+/** @brief Restore a pending key from a snapshot or remove its new value. */
+static int restore_pending_key(const char *path, bool existed)
+{
+    char snapshot[PATH_MAX];
+    char *private_key = NULL;
+    size_t private_key_size = 0U;
+    int result = recovery_path(path, snapshot);
+
+    if (result == 0 && existed) {
+        result = jg_certificate_private_key_load(snapshot, &private_key,
+                                                 &private_key_size);
+        if (result == 0) {
+            result = jg_certificate_private_key_store(path, private_key,
+                                                      private_key_size);
+        }
+    } else if (result == 0) {
+        result = remove_recovery_file(path);
+    }
+    jg_certificate_pem_clear(private_key, private_key_size);
+    return result;
+}
+
+/** @brief Restore all file generations selected by a recovery bit mask. */
+static int restore_recovery_files(struct jg_management *management,
+                                  uint8_t files,
+                                  uint8_t tracked)
+{
+    char pending[PATH_MAX];
+    int result = 0;
+
+    if ((tracked & MANAGEMENT_RECOVERY_CERTIFICATE) != 0U) {
+        result = restore_recovery_file(
+            management->certificate_path,
+            (files & MANAGEMENT_RECOVERY_CERTIFICATE) != 0U, false);
+    }
+    if (result == 0 && (tracked & MANAGEMENT_RECOVERY_PENDING_KEY) != 0U) {
+        result = certificate_pending_path(management, pending);
+        if (result == 0) {
+            result = restore_pending_key(
+                pending, (files & MANAGEMENT_RECOVERY_PENDING_KEY) != 0U);
+        }
+    }
+    if (result == 0 && (tracked & MANAGEMENT_RECOVERY_CLIENT_CA) != 0U) {
+        result = restore_recovery_file(
+            management->client_ca_path,
+            (files & MANAGEMENT_RECOVERY_CLIENT_CA) != 0U, true);
+    }
+    return result;
+}
+
+/** @brief Reserve, snapshot, and arm one cross-resource operation. */
+static int start_recovery_operation(struct jg_management *management,
+                                    const char *kind,
+                                    const uint8_t *payload,
+                                    size_t payload_size,
+                                    uint8_t files,
+                                    bool database,
+                                    uint64_t now)
+{
+    int result = jg_database_operation_prepare(management->database, kind,
+                                               payload, payload_size, now);
+    const bool prepared = result == 0;
+
+    if (result == 0) {
+        result = create_recovery_snapshots(management, files, database);
+    }
+    if (result == 0) {
+        result = jg_database_operation_mark_ready(management->database);
+    }
+    if (result != 0 && prepared) {
+        const int cleanup_result = cleanup_recovery_snapshots(management);
+        const int clear_result =
+            jg_database_operation_clear(management->database);
+
+        if ((cleanup_result != 0 ||
+             (clear_result != 0 && clear_result != -ENOENT)) &&
+            result != -EIO) {
+            result = -EIO;
+        }
+    }
+    return result;
+}
+
+/** @brief Persist one recovery network value only when it differs. */
+static int restore_persistent_network(struct jg_management *management,
+                                      const struct jg_network_config *config)
+{
+    struct jg_database_network_config current;
+    struct jg_database_network_config updated;
+    int result =
+        jg_database_load_network_config_record(management->database, &current);
+
+    if (result == 0 && !network_configs_equal(&current.config, config)) {
+        result = jg_database_replace_network_config(
+            management->database, config, current.revision, &updated);
+    }
+    return result;
+}
+
+/** @brief Recover a confirmed network mutation to its previous generation. */
+static int restore_recovery_network(struct jg_management *management,
+                                    const uint8_t *payload,
+                                    size_t payload_size)
+{
+    const size_t expected_size = 1U + JG_NETWORK_CONFIG_WIRE_SIZE * 2U;
+    struct jg_network_config previous;
+    struct jg_network_config replacement;
+    struct jg_network_state state;
+    int result = 0;
+
+    if (payload == NULL || payload_size != expected_size ||
+        payload[0U] != MANAGEMENT_RECOVERY_VERSION ||
+        jg_network_config_decode(payload + 1U, JG_NETWORK_CONFIG_WIRE_SIZE,
+                                 &previous) != 0 ||
+        jg_network_config_decode(payload + 1U + JG_NETWORK_CONFIG_WIRE_SIZE,
+                                 JG_NETWORK_CONFIG_WIRE_SIZE,
+                                 &replacement) != 0) {
+        return -EILSEQ;
+    }
+    result = jg_netd_client_state(&state);
+    if (result == 0 && state.pending) {
+        result = jg_netd_client_rollback();
+    }
+    if (result == -EBUSY) {
+        result = 0;
+    }
+    if (result == 0) {
+        result = jg_netd_client_apply(&previous);
+    }
+    if (result == 0) {
+        result = restore_persistent_network(management, &previous);
+        if (result != 0) {
+            (void)jg_netd_client_rollback();
+        }
+    }
+    if (result == 0) {
+        result = jg_netd_client_confirm();
+    }
+    if (result != 0) {
+        const int rollback_result = jg_netd_client_rollback();
+        const int database_result =
+            restore_persistent_network(management, &replacement);
+
+        if ((rollback_result != 0 && rollback_result != -EBUSY) ||
+            database_result != 0) {
+            result = -EIO;
+        }
+    }
+    return result;
+}
+
+/** @brief Append and atomically retire one recovered durable operation. */
+static int finish_recovered_operation(
+    struct jg_management *management,
+    const struct jg_database_operation *operation)
+{
+    char details[JG_DATABASE_OPERATION_KIND_MAX + 48U];
+    const time_t wall_clock = time(NULL);
+    struct jg_audit_event event;
+    int written = 0;
+    int result = 0;
+
+    if (wall_clock < 0) {
+        return -EIO;
+    }
+    written =
+        snprintf(details, sizeof(details), "{\"kind\":\"%s\",\"ready\":%s}",
+                 operation->kind, operation->ready ? "true" : "false");
+    if (written <= 0 || (size_t)written >= sizeof(details)) {
+        return -EOVERFLOW;
+    }
+    event = (struct jg_audit_event){
+        .occurred_at = (uint64_t)wall_clock,
+        .actor_type = JG_AUDIT_ACTOR_SYSTEM,
+        .source = "local",
+        .action = operation->ready ? "management.operation.recover"
+                                   : "management.operation.discard",
+        .object_type = "management_operation",
+        .object_id = operation->kind,
+        .details = details,
+        .success = true,
+        .request_id = "",
+    };
+    result = jg_database_transaction_begin(management->database);
+    if (result == 0) {
+        result = jg_database_audit_append(management->database, &event, NULL);
+    }
+    if (result == 0) {
+        result = jg_database_operation_clear(management->database);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+    }
+    if (result != 0) {
+        const int rollback_result =
+            jg_database_transaction_rollback(management->database);
+
+        if (rollback_result != 0) {
+            result = -EIO;
+        }
+    }
+    return result;
+}
+
+/** @brief Restore or discard one operation left pending across a restart. */
+static int recover_pending_operation(struct jg_management *management)
+{
+    struct jg_database_operation operation;
+    uint8_t existing = 0U;
+    uint8_t tracked = 0U;
+    int result = jg_database_operation_load(management->database, &operation);
+
+    if (result == -ENOENT) {
+        return cleanup_recovery_snapshots(management);
+    }
+    if (result != 0) {
+        return result;
+    }
+    if (!operation.ready) {
+        result = 0;
+    } else if (strcmp(operation.kind, MANAGEMENT_OPERATION_NETWORK_CONFIRM) ==
+               0) {
+        result = restore_recovery_network(management, operation.payload,
+                                          operation.payload_size);
+    } else {
+        if (operation.payload_size != 3U ||
+            operation.payload[0U] != MANAGEMENT_RECOVERY_VERSION) {
+            result = -EILSEQ;
+        } else {
+            existing = operation.payload[1U];
+            tracked = operation.payload[2U];
+        }
+        if (result == 0 && (existing & (uint8_t)~tracked) != 0U) {
+            result = -EILSEQ;
+        }
+        if (result == 0 &&
+            strcmp(operation.kind, MANAGEMENT_OPERATION_CERTIFICATE_CSR) == 0) {
+            if (tracked != MANAGEMENT_RECOVERY_PENDING_KEY) {
+                result = -EILSEQ;
+            }
+        } else if (result == 0 &&
+                   strcmp(operation.kind,
+                          MANAGEMENT_OPERATION_CERTIFICATE_INSTALL) == 0) {
+            if (tracked != (MANAGEMENT_RECOVERY_CERTIFICATE |
+                            MANAGEMENT_RECOVERY_PENDING_KEY)) {
+                result = -EILSEQ;
+            }
+        } else if (result == 0 &&
+                   strcmp(operation.kind,
+                          MANAGEMENT_OPERATION_MTLS_AUTHORITIES) == 0) {
+            if (tracked != MANAGEMENT_RECOVERY_CLIENT_CA) {
+                result = -EILSEQ;
+            }
+        } else if (result == 0 &&
+                   strcmp(operation.kind,
+                          MANAGEMENT_OPERATION_BACKUP_RESTORE) == 0) {
+            if ((tracked & ~MANAGEMENT_RECOVERY_CERTIFICATE) != 0U) {
+                result = -EILSEQ;
+            }
+            if (result == 0) {
+                result = jg_database_recovery_checkpoint_restore(
+                    management->database);
+            }
+            if (result == 0) {
+                result = jg_database_operation_mark_ready(management->database);
+            }
+        } else if (result == 0) {
+            result = -EILSEQ;
+        }
+        if (result == 0) {
+            result = restore_recovery_files(management, existing, tracked);
+        }
+    }
+    if (result == 0) {
+        result = finish_recovered_operation(management, &operation);
+    }
+    if (result == 0) {
+        result = cleanup_recovery_snapshots(management);
+    }
+    return result;
+}
+
+/** @brief Commit one final audit and retire its durable recovery intent. */
+static int finish_recovery_operation(struct jg_management *management,
+                                     int audit_result)
+{
+    int result = audit_result;
+
+    if (result == 0) {
+        result = jg_database_operation_clear(management->database);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+    }
+    if (result != 0) {
+        const int rollback_result =
+            jg_database_transaction_rollback(management->database);
+        const int recovery_result = recover_pending_operation(management);
+
+        if (rollback_result != 0 || recovery_result != 0) {
+            result = -EIO;
+        }
+    } else {
+        const int cleanup_result = cleanup_recovery_snapshots(management);
+
+        if (cleanup_result != 0) {
+            (void)jg_log_emit(
+                JG_LOG_WARNING, "management", "management.recovery_cleanup", "",
+                "Committed recovery snapshots remain on disk", NULL);
+        }
+    }
+    return result;
+}
+
+/** @brief Compensate a failed external operation using its durable intent. */
+static int abort_recovery_operation(struct jg_management *management,
+                                    int operation_result)
+{
+    const int recovery_result = recover_pending_operation(management);
+
+    return recovery_result == 0 ? operation_result : -EIO;
+}
+
+/** @brief Arm durable recovery for one confirmed network mutation. */
+static int start_network_recovery(struct jg_management *management,
+                                  const struct jg_network_config *previous,
+                                  const struct jg_network_config *replacement,
+                                  uint64_t now)
+{
+    uint8_t payload[1U + JG_NETWORK_CONFIG_WIRE_SIZE * 2U];
+    size_t previous_size = 0U;
+    size_t replacement_size = 0U;
+    int result = 0;
+
+    payload[0U] = MANAGEMENT_RECOVERY_VERSION;
+    result = jg_network_config_encode(
+        previous, payload + 1U, JG_NETWORK_CONFIG_WIRE_SIZE, &previous_size);
+    if (result == 0) {
+        result = jg_network_config_encode(
+            replacement, payload + 1U + JG_NETWORK_CONFIG_WIRE_SIZE,
+            JG_NETWORK_CONFIG_WIRE_SIZE, &replacement_size);
+    }
+    if (result == 0 && (previous_size != JG_NETWORK_CONFIG_WIRE_SIZE ||
+                        replacement_size != JG_NETWORK_CONFIG_WIRE_SIZE)) {
+        result = -EIO;
+    }
+    if (result == 0) {
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_NETWORK_CONFIRM, payload,
+            sizeof(payload), 0U, false, now);
+    }
+    return result;
+}
+
 /** @brief Securely release one job's transient input. */
 static void management_job_parameters_clear(
     enum management_job_kind kind,
@@ -611,8 +1178,12 @@ int jg_management_create(struct jg_database *database,
     *management = NULL;
     if (database == NULL || totp_key_path == NULL ||
         !key_path_valid(certificate_path) ||
-        strlen(certificate_path) > PATH_MAX - sizeof(".pending-key") ||
-        !key_path_valid(client_ca_path) || !key_path_valid(backup_directory)) {
+        strlen(certificate_path) >
+            PATH_MAX - sizeof(".pending-key" MANAGEMENT_RECOVERY_SUFFIX) ||
+        !key_path_valid(client_ca_path) ||
+        strlen(client_ca_path) >
+            PATH_MAX - sizeof(MANAGEMENT_RECOVERY_SUFFIX) ||
+        !key_path_valid(backup_directory)) {
         return -EINVAL;
     }
     created = calloc(1U, sizeof(*created));
@@ -629,6 +1200,9 @@ int jg_management_create(struct jg_database *database,
                  strlen(backup_directory) + 1U);
     jg_auth_password_policy_default(&created->password_policy);
     result = load_totp_key(totp_key_path, created->totp_key);
+    if (result == 0) {
+        result = recover_pending_operation(created);
+    }
     if (result == 0) {
         result = management_jobs_create(created, &created->jobs);
     }
@@ -5259,7 +5833,6 @@ static int handle_network_confirm(struct jg_management *management,
     struct jg_database_network_config updated;
     struct jg_database_network_config recovered;
     struct jg_network_state state;
-    struct jg_network_state recovery_state;
     json_t *body = NULL;
     json_t *configuration = NULL;
     json_t *runtime = NULL;
@@ -5330,13 +5903,32 @@ static int handle_network_confirm(struct jg_management *management,
                 : "The pending network state could not be read.",
             request->request_id, output, output_size, written);
     }
+    result = start_network_recovery(management, &record.config,
+                                    &state.pending_config, now);
+    if (result == -EBUSY) {
+        return respond_error(
+            409, "operation_conflict",
+            "Another recoverable management operation is in progress.",
+            request->request_id, output, output_size, written);
+    }
+    if (result != 0) {
+        return respond_error(503, "recovery_unavailable",
+                             "Durable network recovery could not be prepared.",
+                             request->request_id, output, output_size, written);
+    }
     result = jg_database_replace_network_config(
         management->database, &state.pending_config, record.revision, &updated);
     if (result != 0) {
-        (void)jg_netd_client_rollback();
+        const int operation_result = result;
+
+        recovery_result =
+            abort_recovery_operation(management, operation_result);
+
         audit_result = append_network_audit(
             management, request, remote, &actor, "network.confirm",
-            &state.pending_config, result, record.revision, false, 0U, now);
+            &state.pending_config,
+            recovery_result == -EIO ? -EIO : operation_result, record.revision,
+            false, 0U, now);
         if (audit_result != 0) {
             return respond_error(500, "audit_failure",
                                  "The network attempt could not be audited.",
@@ -5344,66 +5936,60 @@ static int handle_network_confirm(struct jg_management *management,
                                  written);
         }
         return respond_error(
-            result == -EAGAIN ? 409 : 500,
-            result == -EAGAIN ? "revision_conflict" : "network_store_failure",
-            result == -EAGAIN
+            recovery_result == -EIO       ? 503
+            : operation_result == -EAGAIN ? 409
+                                          : 500,
+            recovery_result == -EIO       ? "network_recovery_failure"
+            : operation_result == -EAGAIN ? "revision_conflict"
+                                          : "network_store_failure",
+            recovery_result == -EIO
+                ? "The failed network confirmation could not be recovered."
+            : operation_result == -EAGAIN
                 ? "The network configuration revision has changed."
-                : "The pending network configuration could not be persisted.",
+                : "The pending network configuration could not be "
+                  "persisted.",
             request->request_id, output, output_size, written);
     }
     result = jg_netd_client_confirm();
     if (result != 0) {
-        state_result = jg_netd_client_state(&recovery_state);
-        if (state_result == 0 && !recovery_state.pending &&
-            recovery_state.has_confirmed &&
-            network_configs_equal(&recovery_state.confirmed,
-                                  &state.pending_config)) {
-            result = 0;
-        } else if (state_result == 0) {
-            recovery_result =
-                recovery_state.pending ? jg_netd_client_rollback() : 0;
-            if (recovery_result == -EBUSY) {
-                recovery_result = 0;
-            }
-        } else {
-            recovery_result = state_result;
+        const int operation_result = result;
+
+        recovery_result =
+            abort_recovery_operation(management, operation_result);
+        state_result = jg_database_load_network_config_record(
+            management->database, &recovered);
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.confirm",
+            &state.pending_config,
+            recovery_result == -EIO ? -EIO : operation_result, record.revision,
+            state_result == 0,
+            state_result == 0 ? recovered.revision : updated.revision, now);
+        if (audit_result != 0) {
+            return respond_error(500, "audit_failure",
+                                 "The network recovery could not be audited.",
+                                 request->request_id, output, output_size,
+                                 written);
         }
-        if (result != 0 && recovery_result == 0) {
-            recovery_result = jg_database_replace_network_config(
-                management->database, &record.config, updated.revision,
-                &recovered);
-        }
-        if (result != 0) {
-            audit_result = append_network_audit(
-                management, request, remote, &actor, "network.confirm",
-                &state.pending_config, recovery_result == 0 ? result : -EIO,
-                record.revision, true,
-                recovery_result == 0 ? recovered.revision : updated.revision,
-                now);
-            if (audit_result != 0) {
-                return respond_error(
-                    500, "audit_failure",
-                    "The network recovery could not be audited.",
-                    request->request_id, output, output_size, written);
-            }
-            return respond_error(
-                500,
-                recovery_result == 0 ? "network_confirm_failure"
-                                     : "network_recovery_failure",
-                recovery_result == 0
-                    ? "The network change was not confirmed and was restored."
-                    : "The network change could not be restored consistently.",
-                request->request_id, output, output_size, written);
-        }
-    }
-    audit_result = append_network_audit(
-        management, request, remote, &actor, "network.confirm", &updated.config,
-        0, record.revision, true, updated.revision, now);
-    if (audit_result != 0) {
         return respond_error(
-            500, "audit_failure",
-            "The confirmed network change could not be audited.",
+            recovery_result == -EIO ? 503 : 500,
+            recovery_result == -EIO ? "network_recovery_failure"
+                                    : "network_confirm_failure",
+            recovery_result == -EIO
+                ? "The network change could not be restored consistently."
+                : "The network change was not confirmed and was restored.",
             request->request_id, output, output_size, written);
+    }
+    audit_result = jg_database_transaction_begin(management->database);
+    if (audit_result == 0) {
+        audit_result = append_network_audit(
+            management, request, remote, &actor, "network.confirm",
+            &updated.config, 0, record.revision, true, updated.revision, now);
+    }
+    audit_result = finish_recovery_operation(management, audit_result);
+    if (audit_result != 0) {
+        return respond_error(500, "audit_failure",
+                             "The network confirmation was not committed.",
+                             request->request_id, output, output_size, written);
     }
     state_result = jg_netd_client_state(&state);
     body = json_object();
@@ -9903,7 +10489,14 @@ static int execute_certificate_csr_job(struct jg_management *management,
     };
     struct jg_certificate_material material;
     const char *names[JG_CERTIFICATE_SAN_MAX];
+    uint8_t recovery_payload[3U] = {
+        MANAGEMENT_RECOVERY_VERSION,
+        0U,
+        MANAGEMENT_RECOVERY_PENDING_KEY,
+    };
     char pending_path[PATH_MAX];
+    bool pending_exists = false;
+    bool recovery_started = false;
     json_t *body = NULL;
     int result = 0;
 
@@ -9915,9 +10508,21 @@ static int execute_certificate_csr_job(struct jg_management *management,
     }
     result = certificate_pending_path(management, pending_path);
     if (result == 0) {
+        result = pending_key_present(pending_path, &pending_exists);
+    }
+    if (result == 0) {
         result = jg_certificate_create_csr(
             job->parameters.certificate_csr.common_name, names,
             job->parameters.certificate_csr.alternative_name_count, &material);
+    }
+    if (result == 0) {
+        recovery_payload[1U] =
+            pending_exists ? MANAGEMENT_RECOVERY_PENDING_KEY : 0U;
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_CERTIFICATE_CSR, recovery_payload,
+            sizeof(recovery_payload), recovery_payload[1U], false,
+            job->started_at);
+        recovery_started = result == 0;
     }
     if (result == 0) {
         result = jg_certificate_private_key_store(
@@ -9929,21 +10534,38 @@ static int execute_certificate_csr_job(struct jg_management *management,
                              "The certificate names are not valid.",
                              request.request_id, output, output_size, written);
     }
-    if (result != 0) {
+    if (result == -EBUSY) {
         jg_certificate_material_clear(&material);
-        return respond_error(500, "csr_create_failed",
-                             "The certificate request could not be created.",
-                             request.request_id, output, output_size, written);
+        return respond_error(
+            409, "operation_conflict",
+            "Another recoverable management operation is in progress.",
+            request.request_id, output, output_size, written);
     }
-    result = append_certificate_audit(
-        management, &request, &job->remote, &job->actor, "certificate.csr",
-        job->parameters.certificate_csr.common_name, NULL, job->started_at);
+    if (result != 0) {
+        if (recovery_started) {
+            result = abort_recovery_operation(management, result);
+        }
+        jg_certificate_material_clear(&material);
+        return respond_error(
+            result == -EIO ? 503 : 500,
+            result == -EIO ? "recovery_failure" : "csr_create_failed",
+            result == -EIO
+                ? "The failed certificate request could not be recovered."
+                : "The certificate request could not be created.",
+            request.request_id, output, output_size, written);
+    }
+    result = jg_database_transaction_begin(management->database);
+    if (result == 0) {
+        result = append_certificate_audit(
+            management, &request, &job->remote, &job->actor, "certificate.csr",
+            job->parameters.certificate_csr.common_name, NULL, job->started_at);
+    }
+    result = finish_recovery_operation(management, result);
     if (result != 0) {
         jg_certificate_material_clear(&material);
         return respond_error(
             500, "audit_failure",
-            "The certificate request was created, but its audit record could "
-            "not be stored.",
+            "The certificate request and pending key were not committed.",
             request.request_id, output, output_size, written);
     }
     body = json_object();
@@ -10036,6 +10658,11 @@ static int handle_certificate_install(struct jg_management *management,
     struct authenticated_actor actor;
     struct jg_certificate_info current;
     struct jg_certificate_info installed;
+    uint8_t recovery_payload[3U] = {
+        MANAGEMENT_RECOVERY_VERSION,
+        0U,
+        MANAGEMENT_RECOVERY_CERTIFICATE | MANAGEMENT_RECOVERY_PENDING_KEY,
+    };
     uint8_t expected[32U];
     const char *certificate = NULL;
     const char *private_key = NULL;
@@ -10045,6 +10672,8 @@ static int handle_certificate_install(struct jg_management *management,
     size_t private_key_size = 0U;
     bool expected_present = false;
     bool current_present = false;
+    bool pending_present = false;
+    bool recovery_started = false;
     json_t *body = NULL;
     json_t *value = NULL;
     int result = authenticate_actor(management, request, remote, true,
@@ -10091,10 +10720,23 @@ static int handle_certificate_install(struct jg_management *management,
             request->request_id, output, output_size, written);
     }
     result = certificate_pending_path(management, pending_path);
+    if (result == 0) {
+        result = pending_key_present(pending_path, &pending_present);
+    }
     if (result == 0 && private_key == NULL) {
         result = jg_certificate_private_key_load(pending_path, &loaded_key,
                                                  &private_key_size);
         private_key = loaded_key;
+    }
+    if (result == 0) {
+        recovery_payload[1U] =
+            (current_present ? MANAGEMENT_RECOVERY_CERTIFICATE : 0U) |
+            (pending_present ? MANAGEMENT_RECOVERY_PENDING_KEY : 0U);
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_CERTIFICATE_INSTALL,
+            recovery_payload, sizeof(recovery_payload), recovery_payload[1U],
+            false, now);
+        recovery_started = result == 0;
     }
     if (result == 0) {
         result = jg_certificate_install(
@@ -10105,6 +10747,12 @@ static int handle_certificate_install(struct jg_management *management,
         sodium_memzero(loaded_key, private_key_size);
         free(loaded_key);
     }
+    if (result == -EBUSY && !recovery_started) {
+        return respond_error(
+            409, "operation_conflict",
+            "Another recoverable management operation is in progress.",
+            request->request_id, output, output_size, written);
+    }
     if (result == -ENOENT) {
         return respond_error(
             409, "pending_key_not_found",
@@ -10112,34 +10760,54 @@ static int handle_certificate_install(struct jg_management *management,
             request->request_id, output, output_size, written);
     }
     if (result == -EINVAL || result == -EACCES) {
+        if (recovery_started &&
+            abort_recovery_operation(management, result) == -EIO) {
+            return respond_error(
+                503, "recovery_failure",
+                "The failed certificate installation could not be recovered.",
+                request->request_id, output, output_size, written);
+        }
         return respond_error(400, "invalid_certificate",
                              "The certificate or its private key is not valid.",
                              request->request_id, output, output_size, written);
     }
     if (result != 0) {
-        return respond_error(500, "certificate_install_failed",
-                             "The server certificate could not be installed.",
-                             request->request_id, output, output_size, written);
+        if (recovery_started) {
+            result = abort_recovery_operation(management, result);
+        }
+        return respond_error(
+            result == -EIO ? 503 : 500,
+            result == -EIO ? "recovery_failure" : "certificate_install_failed",
+            result == -EIO
+                ? "The failed certificate installation could not be recovered."
+                : "The server certificate could not be installed.",
+            request->request_id, output, output_size, written);
     }
     result = jg_certificate_private_key_remove(pending_path);
     if (result == -ENOENT) {
         result = 0;
     }
     if (result != 0) {
+        result = abort_recovery_operation(management, result);
         return respond_error(
-            500, "pending_key_cleanup_failed",
-            "The certificate was installed, but pending key cleanup failed.",
+            result == -EIO ? 503 : 500, "pending_key_cleanup_failed",
+            result == -EIO
+                ? "Pending-key cleanup failed and recovery was incomplete."
+                : "Pending-key cleanup failed; the previous state was "
+                  "restored.",
             request->request_id, output, output_size, written);
     }
-    result =
-        append_certificate_audit(management, request, remote, &actor,
-                                 "certificate.install", NULL, &installed, now);
+    result = jg_database_transaction_begin(management->database);
+    if (result == 0) {
+        result = append_certificate_audit(management, request, remote, &actor,
+                                          "certificate.install", NULL,
+                                          &installed, now);
+    }
+    result = finish_recovery_operation(management, result);
     if (result != 0) {
-        return respond_error(
-            500, "audit_failure",
-            "The certificate was installed, but its audit record could not be "
-            "stored.",
-            request->request_id, output, output_size, written);
+        return respond_error(500, "audit_failure",
+                             "The certificate installation was not committed.",
+                             request->request_id, output, output_size, written);
     }
     body = json_object();
     value = certificate_json(&installed);
@@ -10259,9 +10927,16 @@ static int handle_mtls_authorities_install(
     };
     struct authenticated_actor actor;
     struct jg_certificate_info *authorities = NULL;
+    uint8_t recovery_payload[3U] = {
+        MANAGEMENT_RECOVERY_VERSION,
+        0U,
+        MANAGEMENT_RECOVERY_CLIENT_CA,
+    };
     const char *pem = NULL;
     size_t pem_size = 0U;
     size_t authority_count = 0U;
+    bool existing = false;
+    bool recovery_started = false;
     int result = authenticate_actor(management, request, remote, true,
                                     JG_ACCESS_SECURITY_WRITE, now, &actor);
 
@@ -10285,9 +10960,9 @@ static int handle_mtls_authorities_install(
     if (authorities == NULL) {
         return -ENOMEM;
     }
-    result = jg_certificate_trust_store_install(
-        management->client_ca_path, pem, pem_size, authorities,
-        JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    result = jg_certificate_trust_store_inspect(pem, pem_size, authorities,
+                                                JG_CERTIFICATE_AUTHORITY_MAX,
+                                                &authority_count);
     if (result == -EINVAL || result == -ENOSPC || result == -EACCES) {
         free(authorities);
         return respond_error(
@@ -10295,23 +10970,54 @@ static int handle_mtls_authorities_install(
             "The bundle must contain only unique CA certificates.",
             request->request_id, output, output_size, written);
     }
-    if (result != 0) {
+    if (result == 0) {
+        result = client_ca_present(management->client_ca_path, &existing);
+    }
+    if (result == 0) {
+        recovery_payload[1U] = existing ? MANAGEMENT_RECOVERY_CLIENT_CA : 0U;
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_MTLS_AUTHORITIES, recovery_payload,
+            sizeof(recovery_payload), recovery_payload[1U], false, now);
+        recovery_started = result == 0;
+    }
+    if (result == 0) {
+        result = jg_certificate_trust_store_install(
+            management->client_ca_path, pem, pem_size, authorities,
+            JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    }
+    if (result == -EBUSY && !recovery_started) {
         free(authorities);
         return respond_error(
-            500, "client_authorities_install_failed",
-            "The client-certificate authorities could not be installed.",
+            409, "operation_conflict",
+            "Another recoverable management operation is in progress.",
             request->request_id, output, output_size, written);
     }
-    result = append_mtls_authority_audit(management, request, remote, &actor,
-                                         "mtls.authorities.install",
-                                         authority_count, now);
     if (result != 0) {
+        if (recovery_started) {
+            result = abort_recovery_operation(management, result);
+        }
         free(authorities);
         return respond_error(
-            500, "audit_failure",
-            "The authorities were installed, but their audit record could "
-            "not be stored.",
+            result == -EIO ? 503 : 500,
+            result == -EIO ? "recovery_failure"
+                           : "client_authorities_install_failed",
+            result == -EIO
+                ? "The failed trust-store installation could not be recovered."
+                : "The client-certificate authorities could not be installed.",
             request->request_id, output, output_size, written);
+    }
+    result = jg_database_transaction_begin(management->database);
+    if (result == 0) {
+        result = append_mtls_authority_audit(management, request, remote,
+                                             &actor, "mtls.authorities.install",
+                                             authority_count, now);
+    }
+    result = finish_recovery_operation(management, result);
+    if (result != 0) {
+        free(authorities);
+        return respond_error(500, "audit_failure",
+                             "The trust-store installation was not committed.",
+                             request->request_id, output, output_size, written);
     }
     result = respond_mtls_authorities(authorities, authority_count, true, true,
                                       200, output, output_size, written);
@@ -10331,7 +11037,14 @@ static int handle_mtls_authorities_remove(
 {
     struct authenticated_actor actor;
     struct jg_certificate_info *authorities = NULL;
+    uint8_t recovery_payload[3U] = {
+        MANAGEMENT_RECOVERY_VERSION,
+        0U,
+        MANAGEMENT_RECOVERY_CLIENT_CA,
+    };
     size_t authority_count = 0U;
+    bool existing = true;
+    bool recovery_started = false;
     int result = authenticate_actor(management, request, remote, true,
                                     JG_ACCESS_SECURITY_WRITE, now, &actor);
 
@@ -10353,6 +11066,7 @@ static int handle_mtls_authorities_remove(
         &authority_count);
     if (result == -ENOENT) {
         authority_count = 0U;
+        existing = false;
         result = 0;
     }
     free(authorities);
@@ -10362,22 +11076,48 @@ static int handle_mtls_authorities_remove(
             "The client-certificate authorities could not be inspected.",
             request->request_id, output, output_size, written);
     }
-    result = jg_certificate_trust_store_remove(management->client_ca_path);
-    if (result != 0) {
+    recovery_payload[1U] = existing ? MANAGEMENT_RECOVERY_CLIENT_CA : 0U;
+    result = start_recovery_operation(
+        management, MANAGEMENT_OPERATION_MTLS_AUTHORITIES, recovery_payload,
+        sizeof(recovery_payload), recovery_payload[1U], false, now);
+    recovery_started = result == 0;
+    if (result == -EBUSY) {
         return respond_error(
-            500, "client_authorities_remove_failed",
-            "The client-certificate authorities could not be removed.",
+            409, "operation_conflict",
+            "Another recoverable management operation is in progress.",
             request->request_id, output, output_size, written);
     }
-    result = append_mtls_authority_audit(management, request, remote, &actor,
-                                         "mtls.authorities.remove",
-                                         authority_count, now);
     if (result != 0) {
         return respond_error(
-            500, "audit_failure",
-            "The authorities were removed, but their audit record could not "
-            "be stored.",
+            503, "recovery_unavailable",
+            "Durable trust-store recovery could not be prepared.",
             request->request_id, output, output_size, written);
+    }
+    result = jg_certificate_trust_store_remove(management->client_ca_path);
+    if (result != 0) {
+        if (recovery_started) {
+            result = abort_recovery_operation(management, result);
+        }
+        return respond_error(
+            result == -EIO ? 503 : 500,
+            result == -EIO ? "recovery_failure"
+                           : "client_authorities_remove_failed",
+            result == -EIO
+                ? "The failed trust-store removal could not be recovered."
+                : "The client-certificate authorities could not be removed.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_database_transaction_begin(management->database);
+    if (result == 0) {
+        result = append_mtls_authority_audit(management, request, remote,
+                                             &actor, "mtls.authorities.remove",
+                                             authority_count, now);
+    }
+    result = finish_recovery_operation(management, result);
+    if (result != 0) {
+        return respond_error(500, "audit_failure",
+                             "The trust-store removal was not committed.",
+                             request->request_id, output, output_size, written);
     }
     return respond_mtls_authorities(NULL, 0U, false, true, 200, output,
                                     output_size, written);
@@ -10954,22 +11694,21 @@ static int execute_backup_restore_job(struct jg_management *management,
     struct jg_database_backup checkpoint;
     struct jg_backup_info info;
     struct jg_backup_contents contents;
-    struct jg_backup_contents checkpoint_contents;
     struct jg_database_restore_report report;
-    struct jg_database_restore_report rollback_report;
     struct jg_database_restore_report audit_report;
+    uint8_t recovery_payload[3U] = {MANAGEMENT_RECOVERY_VERSION, 0U, 0U};
     const char *passphrase =
         job->parameters.backup_restore.passphrase_size == 0U
             ? NULL
             : job->parameters.backup_restore.passphrase;
     uint8_t *archive = NULL;
-    uint8_t *checkpoint_archive = NULL;
     size_t archive_size = 0U;
-    size_t checkpoint_archive_size = 0U;
     const bool dry_run = job->parameters.backup_restore.dry_run;
     bool certificate_changes = false;
     bool changes = false;
     bool checkpoint_created = false;
+    bool certificate_present = false;
+    bool recovery_started = false;
     json_t *body = NULL;
     json_t *backup = NULL;
     json_t *database_report = NULL;
@@ -10979,7 +11718,6 @@ static int execute_backup_restore_job(struct jg_management *management,
     int result = 0;
 
     (void)memset(&contents, 0, sizeof(contents));
-    (void)memset(&checkpoint_contents, 0, sizeof(checkpoint_contents));
     (void)memset(&checkpoint, 0, sizeof(checkpoint));
     result = load_backup(management, backup_id, &metadata, &archive,
                          &archive_size, &info);
@@ -11038,23 +11776,35 @@ static int execute_backup_restore_job(struct jg_management *management,
                                now, NULL, NULL, &checkpoint);
         checkpoint_created = result == 0;
     }
-    if (!dry_run && changes && result == 0) {
-        result =
-            jg_backup_load(management->backup_directory, checkpoint.filename,
-                           &checkpoint_archive, &checkpoint_archive_size);
-    }
-    if (!dry_run && changes && result == 0) {
-        result = jg_backup_open(
-            checkpoint_archive, checkpoint_archive_size, passphrase,
-            passphrase == NULL ? 0U : strlen(passphrase), &checkpoint_contents);
-    }
-    jg_backup_data_clear(checkpoint_archive, checkpoint_archive_size);
     if (!dry_run && changes && result != 0) {
         jg_backup_contents_clear(&contents);
-        jg_backup_contents_clear(&checkpoint_contents);
         return respond_error(
             500, "checkpoint_failed",
             "The automatic pre-restore checkpoint could not be created.",
+            request->request_id, output, output_size, written);
+    }
+    if (!dry_run && changes && certificate_changes) {
+        result = server_identity_present(management->certificate_path,
+                                         &certificate_present);
+    }
+    if (!dry_run && changes && result == 0) {
+        recovery_payload[1U] =
+            certificate_present ? MANAGEMENT_RECOVERY_CERTIFICATE : 0U;
+        recovery_payload[2U] =
+            certificate_changes ? MANAGEMENT_RECOVERY_CERTIFICATE : 0U;
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_BACKUP_RESTORE, recovery_payload,
+            sizeof(recovery_payload), recovery_payload[1U], true, now);
+        recovery_started = result == 0;
+    }
+    if (!dry_run && changes && result != 0) {
+        jg_backup_contents_clear(&contents);
+        return respond_error(
+            result == -EBUSY ? 409 : 503,
+            result == -EBUSY ? "operation_conflict" : "recovery_unavailable",
+            result == -EBUSY
+                ? "Another recoverable management operation is in progress."
+                : "Durable restore recovery could not be prepared.",
             request->request_id, output, output_size, written);
     }
     if (!dry_run && changes) {
@@ -11068,40 +11818,38 @@ static int execute_backup_restore_job(struct jg_management *management,
                                             &certificate_changes);
     }
     if (!dry_run && changes && result != 0) {
-        int rollback_result = jg_database_restore(
-            management->database, checkpoint_contents.database,
-            checkpoint_contents.database_size,
-            checkpoint.kind == JG_BACKUP_FULL, false, &rollback_report);
-        bool rollback_certificate_changes = false;
+        const int rollback_result =
+            abort_recovery_operation(management, result);
 
-        if (rollback_result == 0) {
-            rollback_result = restore_backup_certificate(
-                management, checkpoint_contents.certificate,
-                checkpoint_contents.certificate_size, true,
-                &rollback_certificate_changes);
-        }
         jg_backup_contents_clear(&contents);
-        jg_backup_contents_clear(&checkpoint_contents);
         return respond_error(
-            rollback_result == 0 ? 500 : 503,
-            rollback_result == 0 ? "restore_failed" : "restore_rollback_failed",
-            rollback_result == 0
+            rollback_result == -EIO ? 503 : 500,
+            rollback_result == -EIO ? "restore_rollback_failed"
+                                    : "restore_failed",
+            rollback_result != -EIO
                 ? "The restore failed and the previous state was recovered."
                 : "The restore and its automatic rollback both failed.",
             request->request_id, output, output_size, written);
     }
     audit_report = report;
     audit_report.changes = changes;
-    result = append_backup_audit(management, request, remote, actor,
-                                 dry_run ? "backup.restore.dry_run"
-                                         : "backup.restore",
-                                 &metadata, &audit_report, dry_run, now);
+    if (recovery_started) {
+        result = jg_database_transaction_begin(management->database);
+    }
+    if (result == 0) {
+        result = append_backup_audit(management, request, remote, actor,
+                                     dry_run ? "backup.restore.dry_run"
+                                             : "backup.restore",
+                                     &metadata, &audit_report, dry_run, now);
+    }
+    if (recovery_started) {
+        result = finish_recovery_operation(management, result);
+    }
     if (result != 0) {
         jg_backup_contents_clear(&contents);
-        jg_backup_contents_clear(&checkpoint_contents);
         return respond_error(
             500, "audit_failure",
-            "The restore completed, but its audit record was not stored.",
+            "The restore and its audit record were not committed.",
             request->request_id, output, output_size, written);
     }
     body = json_object();
@@ -11126,7 +11874,6 @@ static int execute_backup_restore_job(struct jg_management *management,
     json_decref(database_report);
     json_decref(checkpoint_body);
     jg_backup_contents_clear(&contents);
-    jg_backup_contents_clear(&checkpoint_contents);
     if (result != 0) {
         json_decref(body);
         return result;
