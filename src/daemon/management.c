@@ -421,7 +421,10 @@ int jg_management_create(struct jg_database *database,
     (void)memcpy(created->backup_directory, backup_directory,
                  strlen(backup_directory) + 1U);
     jg_auth_password_policy_default(&created->password_policy);
-    result = load_totp_key(totp_key_path, created->totp_key);
+    result = management_consistency_create(&created->consistency);
+    if (result == 0) {
+        result = load_totp_key(totp_key_path, created->totp_key);
+    }
     if (result == 0) {
         result = recover_pending_operation(created);
         if (result != 0) {
@@ -5608,7 +5611,8 @@ static json_t *policy_sync_health_json(
 static json_t *management_health_json(
     uint32_t reasons,
     const struct jg_database_policy_sync *sync,
-    bool policy_available)
+    bool policy_available,
+    bool restore_in_progress)
 {
     json_t *body = json_object();
     json_t *items = json_array();
@@ -5636,8 +5640,11 @@ static json_t *management_health_json(
         (json_object_set_new(body, "available", json_true()) != 0 ||
          json_object_set_new(body, "degraded", json_boolean(reasons != 0U)) !=
              0 ||
-         json_object_set_new(body, "mutations_allowed",
-                             json_boolean(reasons == 0U)) != 0 ||
+         json_object_set_new(
+             body, "mutations_allowed",
+             json_boolean(reasons == 0U && !restore_in_progress)) != 0 ||
+         json_object_set_new(body, "restore_in_progress",
+                             json_boolean(restore_in_progress)) != 0 ||
          json_object_set(body, "reasons", items) != 0 ||
          set_object(body, "policy", policy) != 0)) {
         result = -ENOMEM;
@@ -5672,6 +5679,7 @@ static int handle_health(struct jg_management *management,
     bool daemon_available = false;
     bool network_available = false;
     bool policy_available = false;
+    bool restore_in_progress = false;
     int result = authenticate_actor(management, request, remote, false,
                                     JG_ACCESS_STATUS_READ, now, &actor);
 
@@ -5698,9 +5706,10 @@ static int handle_health(struct jg_management *management,
             "Persistent policy is not synchronized with the runtime");
     }
     degraded_reasons = management_degraded_reasons(management);
+    restore_in_progress = management_restore_in_progress(management);
     body = json_object();
-    management_state = management_health_json(degraded_reasons, &policy_sync,
-                                              policy_available);
+    management_state = management_health_json(
+        degraded_reasons, &policy_sync, policy_available, restore_in_progress);
     daemon = json_object();
     network = json_object();
     if (body == NULL || management_state == NULL || daemon == NULL ||
@@ -7143,8 +7152,25 @@ int execute_management_job(struct jg_management *management,
                            int authorization_result,
                            size_t *response_size)
 {
+    bool mutation_active = false;
     int result = 0;
 
+    if (authorization_result == 0 &&
+        job->kind != MANAGEMENT_JOB_BACKUP_RESTORE) {
+        result = management_mutation_begin(management);
+        mutation_active = result == 0;
+        if (result != 0 && !job->system_job) {
+            (void)respond_error(
+                result == -EBUSY ? 503 : 500,
+                result == -EBUSY ? "restore_in_progress"
+                                 : "consistency_unavailable",
+                result == -EBUSY
+                    ? "An applied restore temporarily prevents mutations."
+                    : "The management consistency gate is unavailable.",
+                job->request_id, job->response, sizeof(job->response),
+                response_size);
+        }
+    }
     if (authorization_result != 0) {
         const bool denied =
             authorization_result == -EACCES || authorization_result == -EPERM;
@@ -7162,34 +7188,40 @@ int execute_management_job(struct jg_management *management,
                        : "The job authorization could not be rechecked.",
             job->request_id, job->response, sizeof(job->response),
             response_size);
-    } else if (job->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
-        result =
-            execute_source_refresh_job(management, job, job->response,
-                                       sizeof(job->response), response_size);
-    } else if (job->kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
-        result = update_due_blocklists_now(management, job->submitted_at, NULL);
-    } else if (job->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
-        result =
-            execute_blocklist_import_job(management, job, job->response,
-                                         sizeof(job->response), response_size);
-    } else if (job->kind == MANAGEMENT_JOB_BACKUP_CREATE) {
-        result =
-            execute_backup_create_job(management, job, job->response,
-                                      sizeof(job->response), response_size);
-    } else if (job->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
-        result =
-            execute_backup_restore_job(management, job, job->response,
-                                       sizeof(job->response), response_size);
-    } else if (job->kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
-        result = execute_diagnostics_create_job(management, job, job->response,
+    } else if (result == 0) {
+        if (job->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
+            result = execute_source_refresh_job(management, job, job->response,
                                                 sizeof(job->response),
                                                 response_size);
-    } else if (job->kind == MANAGEMENT_JOB_CERTIFICATE_CSR) {
-        result =
-            execute_certificate_csr_job(management, job, job->response,
-                                        sizeof(job->response), response_size);
-    } else {
-        result = -EINVAL;
+        } else if (job->kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
+            result =
+                update_due_blocklists_now(management, job->submitted_at, NULL);
+        } else if (job->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
+            result = execute_blocklist_import_job(
+                management, job, job->response, sizeof(job->response),
+                response_size);
+        } else if (job->kind == MANAGEMENT_JOB_BACKUP_CREATE) {
+            result =
+                execute_backup_create_job(management, job, job->response,
+                                          sizeof(job->response), response_size);
+        } else if (job->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
+            result = execute_backup_restore_job(management, job, job->response,
+                                                sizeof(job->response),
+                                                response_size);
+        } else if (job->kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
+            result = execute_diagnostics_create_job(
+                management, job, job->response, sizeof(job->response),
+                response_size);
+        } else if (job->kind == MANAGEMENT_JOB_CERTIFICATE_CSR) {
+            result = execute_certificate_csr_job(management, job, job->response,
+                                                 sizeof(job->response),
+                                                 response_size);
+        } else {
+            result = -EINVAL;
+        }
+    }
+    if (mutation_active) {
+        management_mutation_end(management);
     }
     if (!job->system_job && result != 0 && *response_size == 0U) {
         (void)respond_error(500, "job_failed",
@@ -10868,6 +10900,8 @@ int jg_management_process(struct jg_management *management,
     struct remote_address remote;
     json_t *root = NULL;
     uint64_t now = 0U;
+    bool mutation_active = false;
+    bool mutation_blocked = false;
     int result = 0;
 
     if (management == NULL || request_data == NULL || response == NULL ||
@@ -10891,9 +10925,28 @@ int jg_management_process(struct jg_management *management,
     if (result == 0) {
         result = current_time(&now);
     }
-    if (result == 0) {
+    if (result == 0 && strcmp(request.method, "GET") != 0) {
+        const int consistency_result = management_mutation_begin(management);
+
+        mutation_active = consistency_result == 0;
+        mutation_blocked = consistency_result != 0;
+        if (consistency_result != 0) {
+            result = respond_error(
+                consistency_result == -EBUSY ? 503 : 500,
+                consistency_result == -EBUSY ? "restore_in_progress"
+                                             : "consistency_unavailable",
+                consistency_result == -EBUSY
+                    ? "An applied restore temporarily prevents mutations."
+                    : "The management consistency gate is unavailable.",
+                request.request_id, response, response_size, written);
+        }
+    }
+    if (result == 0 && !mutation_blocked) {
         result = dispatch_request(management, &request, &remote, now, response,
                                   response_size, written);
+    }
+    if (mutation_active) {
+        management_mutation_end(management);
     }
     trace_management_completion(&request, response, *written, result);
     json_decref(root);
@@ -10921,6 +10974,8 @@ void jg_management_destroy(struct jg_management *management)
     }
     management_jobs_destroy(management->jobs);
     management->jobs = NULL;
+    management_consistency_destroy(management->consistency);
+    management->consistency = NULL;
     free(management->health);
     management->health = NULL;
     sodium_memzero(management, sizeof(*management));

@@ -120,6 +120,9 @@ struct management_health {
 /** Opaque bounded slow-operation queue owned by management state. */
 struct management_jobs;
 
+/** Opaque reader/exclusive gate shared by every management context. */
+struct management_consistency;
+
 /** One bounded fixed-window token request counter. */
 struct token_rate_slot {
     uint64_t token_id;
@@ -152,6 +155,7 @@ struct jg_management {
     char backup_directory[PATH_MAX];
     uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
     enum jg_system_action pending_system_action;
+    struct management_consistency *consistency;
     struct management_jobs *jobs;
 };
 
@@ -302,6 +306,27 @@ struct management_jobs {
 
 /** @brief Read the consistency reasons currently affecting management. */
 uint32_t management_degraded_reasons(const struct jg_management *management);
+
+/** @brief Create one management mutation and restore consistency gate. */
+int management_consistency_create(struct management_consistency **consistency);
+
+/** @brief Release one unused management consistency gate. */
+void management_consistency_destroy(struct management_consistency *consistency);
+
+/** @brief Enter one ordinary state-changing management operation. */
+int management_mutation_begin(struct jg_management *management);
+
+/** @brief Leave one ordinary state-changing management operation. */
+void management_mutation_end(struct jg_management *management);
+
+/** @brief Exclude new mutations and wait for active mutations to finish. */
+int management_restore_begin(struct jg_management *management);
+
+/** @brief Reopen management mutations after a restore attempt. */
+void management_restore_end(struct jg_management *management);
+
+/** @brief Report whether an exclusive restore currently owns the gate. */
+bool management_restore_in_progress(struct jg_management *management);
 
 /** @brief Parse one exact lowercase SHA-256 certificate fingerprint. */
 int parse_certificate_fingerprint(const char *text, uint8_t fingerprint[32U]);

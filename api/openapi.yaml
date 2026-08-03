@@ -198,7 +198,9 @@ paths:
       description: >-
         The management policy object reports durable desired and applied
         revisions. A mismatch suspends mutations until a successful
-        configuration reload publishes the pending policy.
+        configuration reload publishes the pending policy. During an applied
+        restore, `restore_in_progress` is true and `mutations_allowed` is false;
+        authenticated reads and job polling remain available.
       responses:
         '200':
           $ref: '#/components/responses/JsonSuccess'

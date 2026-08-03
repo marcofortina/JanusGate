@@ -756,6 +756,7 @@ int execute_backup_restore_job(struct jg_management *management,
     bool checkpoint_created = false;
     bool certificate_present = false;
     bool recovery_started = false;
+    bool restore_active = false;
     json_t *body = NULL;
     json_t *backup = NULL;
     json_t *database_report = NULL;
@@ -800,6 +801,20 @@ int execute_backup_restore_job(struct jg_management *management,
                               : "The backup payload could not be validated.",
             request->request_id, output, output_size, written);
     }
+    if (!dry_run) {
+        result = management_restore_begin(management);
+        restore_active = result == 0;
+    }
+    if (result != 0) {
+        jg_backup_contents_clear(&contents);
+        return respond_error(
+            result == -EBUSY ? 409 : 503,
+            result == -EBUSY ? "restore_conflict" : "consistency_unavailable",
+            result == -EBUSY
+                ? "Another applied restore is already in progress."
+                : "The management consistency gate is unavailable.",
+            request->request_id, output, output_size, written);
+    }
     result = jg_database_restore(
         management->database, contents.database, contents.database_size,
         metadata.kind == JG_BACKUP_FULL, true, &report);
@@ -809,6 +824,9 @@ int execute_backup_restore_job(struct jg_management *management,
                                             &certificate_changes);
     }
     if (result != 0) {
+        if (restore_active) {
+            management_restore_end(management);
+        }
         jg_backup_contents_clear(&contents);
         return respond_error(
             result == -ENOTSUP ? 409 : 400, "restore_validation_failed",
@@ -824,6 +842,7 @@ int execute_backup_restore_job(struct jg_management *management,
         checkpoint_created = result == 0;
     }
     if (!dry_run && changes && result != 0) {
+        management_restore_end(management);
         jg_backup_contents_clear(&contents);
         return respond_error(
             500, "checkpoint_failed",
@@ -845,6 +864,7 @@ int execute_backup_restore_job(struct jg_management *management,
         recovery_started = result == 0;
     }
     if (!dry_run && changes && result != 0) {
+        management_restore_end(management);
         jg_backup_contents_clear(&contents);
         return respond_error(
             result == -EBUSY ? 409 : 503,
@@ -872,6 +892,7 @@ int execute_backup_restore_job(struct jg_management *management,
         const int rollback_result =
             abort_recovery_operation(management, result);
 
+        management_restore_end(management);
         jg_backup_contents_clear(&contents);
         return respond_error(
             rollback_result == -EIO ? 503 : 500,
@@ -898,11 +919,17 @@ int execute_backup_restore_job(struct jg_management *management,
         refresh_policy_sync_health(management);
     }
     if (result != 0) {
+        if (restore_active) {
+            management_restore_end(management);
+        }
         jg_backup_contents_clear(&contents);
         return respond_error(
             500, "audit_failure",
             "The restore and its audit record were not committed.",
             request->request_id, output, output_size, written);
+    }
+    if (restore_active) {
+        management_restore_end(management);
     }
     body = json_object();
     backup = backup_json(&metadata);

@@ -187,6 +187,7 @@ add_library(
   src/daemon/fragment.c
   src/daemon/management.c
   src/daemon/management_backup.c
+  src/daemon/management_consistency.c
   src/daemon/management_jobs.c
   src/daemon/management_recovery.c
   src/daemon/netd_client.c

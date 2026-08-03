@@ -11,6 +11,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +38,7 @@
 #include "janusgate/ipc.h"
 #include "janusgate/logging.h"
 #include "management.h"
+#include "management_internal.h"
 
 int jg_test_management(void);
 
@@ -53,6 +56,52 @@ struct management_fixture {
     struct jg_database *database;
     struct jg_management *management;
 };
+
+/** Result storage for one restore gate acquisition thread. */
+struct restore_gate_thread {
+    struct jg_management *management;
+    int result;
+};
+
+/** @brief Wait for exclusive restore ownership in a helper thread. */
+static void *enter_restore_gate(void *context)
+{
+    struct restore_gate_thread *thread = context;
+
+    thread->result = management_restore_begin(thread->management);
+    return NULL;
+}
+
+/** @brief Verify restores drain mutations and reject new ones
+ * deterministically.
+ */
+static void test_management_consistency(void **state)
+{
+    struct jg_management management = {0};
+    struct restore_gate_thread context = {.management = &management};
+    pthread_t thread;
+    size_t attempts = 0U;
+
+    (void)state;
+    assert_int_equal(management_consistency_create(&management.consistency), 0);
+    assert_int_equal(management_mutation_begin(&management), 0);
+    assert_int_equal(
+        pthread_create(&thread, NULL, enter_restore_gate, &context), 0);
+    while (!management_restore_in_progress(&management) && attempts < 100000U) {
+        ++attempts;
+        (void)sched_yield();
+    }
+    assert_true(management_restore_in_progress(&management));
+    assert_int_equal(management_mutation_begin(&management), -EBUSY);
+    management_mutation_end(&management);
+    assert_int_equal(pthread_join(thread, NULL), 0);
+    assert_int_equal(context.result, 0);
+    management_restore_end(&management);
+    assert_false(management_restore_in_progress(&management));
+    assert_int_equal(management_mutation_begin(&management), 0);
+    management_mutation_end(&management);
+    management_consistency_destroy(management.consistency);
+}
 
 /** @brief Write one exact buffer to a newly created private file. */
 static void write_private_file(const char *path,
@@ -379,6 +428,43 @@ static json_t *process_local_request(struct management_fixture *fixture,
     assert_non_null(parsed);
     assert_true(json_is_object(parsed));
     return parsed;
+}
+
+/** @brief Verify reads continue while an applied restore rejects mutations. */
+static void test_restore_request_exclusion(void **state)
+{
+    static const char read_request[] =
+        "{\"request_id\":\"restore-read\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/auth/state\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char mutation_request[] =
+        "{\"request_id\":\"restore-mutation\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/auth/bootstrap\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    struct management_fixture *fixture = *state;
+    json_t *response = NULL;
+
+    assert_int_equal(management_restore_begin(fixture->management), 0);
+    response = process_local_request(fixture, read_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    response = process_local_request(fixture, mutation_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     503);
+    assert_string_equal(
+        json_string_value(json_object_get(
+            json_object_get(json_object_get(response, "body"), "error"),
+            "code")),
+        "restore_in_progress");
+    json_decref(response);
+    management_restore_end(fixture->management);
+    response = process_local_request(fixture, mutation_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+    assert_int_equal(management_restore_begin(fixture->management), 0);
+    management_restore_end(fixture->management);
 }
 
 /** @brief Simulate successful runtime publication in a runtime-free fixture. */
@@ -4009,6 +4095,9 @@ static void test_logging_api(void **state)
 int jg_test_management(void)
 {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_management_consistency),
+        cmocka_unit_test_setup_teardown(test_restore_request_exclusion,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_local_administration,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_atomic_user_audit,
