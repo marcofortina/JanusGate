@@ -45,18 +45,6 @@
 #include "metrics.h"
 #include "netd_client.h"
 
-/** @brief Run queued slow operations until management shutdown. */
-static void *run_management_jobs(void *context);
-
-/** @brief Queue one prepared authenticated slow operation. */
-static int submit_management_job(struct jg_management *management,
-                                 const struct management_request *request,
-                                 const struct remote_address *remote,
-                                 const struct authenticated_actor *actor,
-                                 struct management_job_submission *prepared,
-                                 uint64_t now,
-                                 uint64_t *job_id);
-
 /** @brief Return one accepted slow-operation reference. */
 static int respond_job_accepted(uint64_t job_id,
                                 uint8_t *output,
@@ -117,8 +105,7 @@ static int execute_certificate_csr_job(struct jg_management *management,
                                        size_t *written);
 
 /** @brief Read the consistency reasons currently affecting management. */
-static uint32_t management_degraded_reasons(
-    const struct jg_management *management)
+uint32_t management_degraded_reasons(const struct jg_management *management)
 {
     return management == NULL || management->health == NULL
                ? 0U
@@ -425,96 +412,6 @@ static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
         sodium_memzero(key, JG_AUTH_TOTP_KEY_SIZE);
     }
     return result;
-}
-
-/** @brief Securely release one job's transient input. */
-static void management_job_parameters_clear(
-    enum management_job_kind kind,
-    union management_job_parameters *parameters)
-{
-    if (kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT &&
-        parameters->blocklist_import.content != NULL) {
-        sodium_memzero(parameters->blocklist_import.content,
-                       parameters->blocklist_import.content_size);
-        free(parameters->blocklist_import.content);
-    }
-    sodium_memzero(parameters, sizeof(*parameters));
-}
-
-/** @brief Stop and release one slow-operation queue. */
-static void management_jobs_destroy(struct management_jobs *jobs)
-{
-    if (jobs == NULL) {
-        return;
-    }
-    if (jobs->mutex_initialized) {
-        (void)pthread_mutex_lock(&jobs->mutex);
-        jobs->stopping = true;
-        if (jobs->condition_initialized) {
-            (void)pthread_cond_broadcast(&jobs->ready);
-        }
-        (void)pthread_mutex_unlock(&jobs->mutex);
-    }
-    if (jobs->thread_started) {
-        (void)pthread_join(jobs->thread, NULL);
-    }
-    jg_database_close(jobs->database);
-    if (jobs->condition_initialized) {
-        (void)pthread_cond_destroy(&jobs->ready);
-    }
-    if (jobs->mutex_initialized) {
-        (void)pthread_mutex_destroy(&jobs->mutex);
-    }
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        management_job_parameters_clear(jobs->slots[index].kind,
-                                        &jobs->slots[index].parameters);
-    }
-    sodium_memzero(jobs->slots, sizeof(jobs->slots));
-    sodium_memzero(&jobs->worker_job, sizeof(jobs->worker_job));
-    free(jobs);
-}
-
-/** @brief Create one fixed-capacity slow-operation worker. */
-static int management_jobs_create(struct jg_management *management,
-                                  struct management_jobs **jobs)
-{
-    struct management_jobs *created = NULL;
-    int status = 0;
-    int result = 0;
-
-    if (management == NULL || jobs == NULL) {
-        return -EINVAL;
-    }
-    *jobs = NULL;
-    created = calloc(1U, sizeof(*created));
-    if (created == NULL) {
-        return -ENOMEM;
-    }
-    created->management = management;
-    created->next_sequence = 1U;
-    result = jg_database_open_peer(management->database, &created->database);
-    if (result == 0) {
-        status = pthread_mutex_init(&created->mutex, NULL);
-        result = status == 0 ? 0 : -status;
-        created->mutex_initialized = result == 0;
-    }
-    if (result == 0) {
-        status = pthread_cond_init(&created->ready, NULL);
-        result = status == 0 ? 0 : -status;
-        created->condition_initialized = result == 0;
-    }
-    if (result == 0) {
-        status = pthread_create(&created->thread, NULL, run_management_jobs,
-                                created);
-        result = status == 0 ? 0 : -status;
-        created->thread_started = result == 0;
-    }
-    if (result != 0) {
-        management_jobs_destroy(created);
-        return result;
-    }
-    *jobs = created;
-    return 0;
 }
 
 /** @brief Create management state and load the appliance-local TOTP key. */
@@ -836,8 +733,7 @@ static int hexadecimal_value(char character, uint8_t *value)
 }
 
 /** @brief Decode one exact SHA-256 client-certificate fingerprint. */
-static int parse_certificate_fingerprint(const char *text,
-                                         uint8_t fingerprint[32U])
+int parse_certificate_fingerprint(const char *text, uint8_t fingerprint[32U])
 {
     if (text == NULL || strlen(text) != 64U) {
         return -EINVAL;
@@ -7419,234 +7315,6 @@ static int execute_source_refresh_job(struct jg_management *management,
         written);
 }
 
-/** @brief Return whether one completed job slot may be safely reused. */
-static bool job_slot_reusable(const struct management_job *job, uint64_t now)
-{
-    return !job->occupied ||
-           (job->state == MANAGEMENT_JOB_COMPLETED &&
-            (job->observed ||
-             (job->completed_at <= now &&
-              now - job->completed_at >= MANAGEMENT_JOB_RETENTION_SECONDS)));
-}
-
-/** @brief Select one free, observed, or expired completed job slot. */
-static struct management_job *select_job_slot(struct management_jobs *jobs,
-                                              uint64_t now)
-{
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        struct management_job *job = &jobs->slots[index];
-
-        if (job_slot_reusable(job, now)) {
-            return job;
-        }
-    }
-    return NULL;
-}
-
-/** @brief Return whether two authenticated actors own the same job scope. */
-static bool job_actors_equal(const struct authenticated_actor *left,
-                             const struct authenticated_actor *right)
-{
-    return left->kind == right->kind && left->actor_id == right->actor_id;
-}
-
-/** @brief Enforce per-actor and reserved-system queue capacity. */
-static int check_job_capacity(const struct management_jobs *jobs,
-                              const struct authenticated_actor *actor,
-                              uint64_t now)
-{
-    size_t actor_jobs = 0U;
-    size_t user_jobs = 0U;
-
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        const struct management_job *job = &jobs->slots[index];
-
-        if (job_slot_reusable(job, now) || job->system_job) {
-            continue;
-        }
-        ++user_jobs;
-        if (job_actors_equal(&job->actor, actor)) {
-            ++actor_jobs;
-        }
-    }
-    if (actor_jobs >= MANAGEMENT_JOB_ACTOR_CAPACITY) {
-        return -EAGAIN;
-    }
-    return user_jobs >= MANAGEMENT_JOB_USER_CAPACITY ? -EBUSY : 0;
-}
-
-/** @brief Coalesce refreshes and serialize restore operations. */
-static int check_job_conflict(const struct management_jobs *jobs,
-                              const struct authenticated_actor *actor,
-                              const struct management_job_submission *prepared,
-                              uint64_t now,
-                              uint64_t *job_id)
-{
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        const struct management_job *job = &jobs->slots[index];
-
-        if (!job->occupied) {
-            continue;
-        }
-        if (prepared->kind == MANAGEMENT_JOB_CERTIFICATE_CSR &&
-            job->kind == MANAGEMENT_JOB_CERTIFICATE_CSR &&
-            !job_slot_reusable(job, now)) {
-            return -EALREADY;
-        }
-        if (job->state == MANAGEMENT_JOB_COMPLETED) {
-            continue;
-        }
-        if (prepared->kind == MANAGEMENT_JOB_SOURCE_REFRESH &&
-            job->kind == MANAGEMENT_JOB_SOURCE_REFRESH &&
-            job->resource_id == prepared->parameters.source.id) {
-            if (job->state == MANAGEMENT_JOB_QUEUED &&
-                job_actors_equal(&job->actor, actor)) {
-                *job_id = job->id;
-                return 1;
-            }
-            return -EALREADY;
-        }
-        if (prepared->kind == MANAGEMENT_JOB_BACKUP_RESTORE &&
-            job->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
-            return -EALREADY;
-        }
-    }
-    return 0;
-}
-
-/** @brief Generate one nonzero client-safe job identifier without collision.
- */
-static int generate_job_identifier(const struct management_jobs *jobs,
-                                   uint64_t *identifier)
-{
-    for (size_t attempt = 0U; attempt < MANAGEMENT_JOB_CAPACITY * 2U;
-         ++attempt) {
-        uint64_t candidate = 0U;
-        bool collision = false;
-
-        randombytes_buf(&candidate, sizeof(candidate));
-        candidate &= MANAGEMENT_JOB_IDENTIFIER_MAX;
-        if (candidate == 0U) {
-            continue;
-        }
-        for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-            if (jobs->slots[index].occupied &&
-                jobs->slots[index].id == candidate) {
-                collision = true;
-                break;
-            }
-        }
-        if (!collision) {
-            *identifier = candidate;
-            return 0;
-        }
-    }
-    return -EIO;
-}
-
-/** @brief Prepare deferred authorization without retaining a credential. */
-static int prepare_job_authorization(
-    const struct management_request *request,
-    const struct authenticated_actor *actor,
-    struct management_job_authorization *authorization)
-{
-    (void)memset(authorization, 0, sizeof(*authorization));
-    if (actor->kind == AUTHENTICATED_ACTOR_LOCAL) {
-        return 0;
-    }
-    if (actor->kind == AUTHENTICATED_ACTOR_USER) {
-        return jg_auth_secret_digest((const uint8_t *)request->session,
-                                     strlen(request->session),
-                                     authorization->session_digest);
-    }
-    if (actor->kind == AUTHENTICATED_ACTOR_TOKEN) {
-        return parse_certificate_fingerprint(
-            request->client_certificate,
-            authorization->certificate_fingerprint);
-    }
-    return -EINVAL;
-}
-
-/** @brief Queue one prepared authenticated slow operation. */
-static int submit_management_job(struct jg_management *management,
-                                 const struct management_request *request,
-                                 const struct remote_address *remote,
-                                 const struct authenticated_actor *actor,
-                                 struct management_job_submission *prepared,
-                                 uint64_t now,
-                                 uint64_t *job_id)
-{
-    struct management_jobs *jobs = management->jobs;
-    struct management_job *job = NULL;
-    struct management_job_authorization authorization;
-    uint64_t identifier = 0U;
-    bool coalesced = false;
-    int status = 0;
-    int result = prepare_job_authorization(request, actor, &authorization);
-
-    if (result != 0) {
-        return result;
-    }
-    status = pthread_mutex_lock(&jobs->mutex);
-    if (status != 0) {
-        sodium_memzero(&authorization, sizeof(authorization));
-        return -status;
-    }
-    result = check_job_conflict(jobs, actor, prepared, now, job_id);
-    if (result == 1) {
-        result = 0;
-        coalesced = true;
-    }
-    if (result == 0 && !coalesced) {
-        result = check_job_capacity(jobs, actor, now);
-    }
-    if (result == 0 && !coalesced) {
-        job = select_job_slot(jobs, now);
-        if (job == NULL || jobs->next_sequence == 0U) {
-            result = job == NULL ? -EBUSY : -EOVERFLOW;
-        } else {
-            result = generate_job_identifier(jobs, &identifier);
-        }
-    }
-    if (result == 0 && !coalesced) {
-        management_job_parameters_clear(job->kind, &job->parameters);
-        sodium_memzero(job, sizeof(*job));
-        job->parameters = prepared->parameters;
-        job->required_permission = prepared->required_permission;
-        job->kind = prepared->kind;
-        if (prepared->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
-            prepared->parameters.blocklist_import.content = NULL;
-            prepared->parameters.blocklist_import.content_size = 0U;
-        }
-        job->actor = *actor;
-        job->authorization = authorization;
-        job->remote = *remote;
-        job->id = identifier;
-        if (prepared->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
-            job->resource_id = prepared->parameters.source.id;
-        }
-        job->sequence = jobs->next_sequence++;
-        job->submitted_at = now;
-        job->state = MANAGEMENT_JOB_QUEUED;
-        job->occupied = true;
-        (void)snprintf(job->request_id, sizeof(job->request_id), "%s",
-                       request->request_id);
-        *job_id = job->id;
-        status = pthread_cond_signal(&jobs->ready);
-        if (status != 0) {
-            management_job_parameters_clear(job->kind, &job->parameters);
-            sodium_memzero(job, sizeof(*job));
-            result = -status;
-        }
-    }
-    status = pthread_mutex_unlock(&jobs->mutex);
-    if (result == 0 && status != 0) {
-        result = -status;
-    }
-    sodium_memzero(&authorization, sizeof(authorization));
-    return result;
-}
-
 /** @brief Return one accepted slow-operation reference. */
 static int respond_job_accepted(uint64_t job_id,
                                 uint8_t *output,
@@ -7938,279 +7606,65 @@ static int update_due_blocklists_now(struct jg_management *management,
     return result;
 }
 
-/** @brief Return the oldest queued job while holding the queue mutex. */
-static struct management_job *next_queued_job(struct management_jobs *jobs)
+/** @brief Execute or reject one reauthorized worker-owned operation. */
+int execute_management_job(struct jg_management *management,
+                           struct management_job *job,
+                           int authorization_result,
+                           size_t *response_size)
 {
-    struct management_job *next = NULL;
-
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        struct management_job *job = &jobs->slots[index];
-
-        if (job->occupied && job->state == MANAGEMENT_JOB_QUEUED &&
-            (next == NULL || job->sequence < next->sequence)) {
-            next = job;
-        }
-    }
-    return next;
-}
-
-/** @brief Find one retained job by identifier while holding the queue mutex. */
-static struct management_job *find_job(struct management_jobs *jobs,
-                                       uint64_t job_id)
-{
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        if (jobs->slots[index].occupied && jobs->slots[index].id == job_id) {
-            return &jobs->slots[index];
-        }
-    }
-    return NULL;
-}
-
-/** @brief Return whether one actor may inspect a retained user job. */
-static bool job_is_visible_to_actor(const struct management_job *job,
-                                    const struct authenticated_actor *actor)
-{
-    if (actor->kind == AUTHENTICATED_ACTOR_LOCAL) {
-        return true;
-    }
-    return actor->actor_id != 0U && job_actors_equal(actor, &job->actor);
-}
-
-/** @brief Recheck a queued job against current persistent authorization. */
-static int reauthorize_management_job(struct jg_management *management,
-                                      struct management_job *job,
-                                      uint64_t now)
-{
-    struct jg_account_identity identity;
     int result = 0;
 
-    if (management_degraded_reasons(management) != 0U &&
-        job->kind != MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
-        return -EROFS;
-    }
-    if (job->system_job || job->actor.kind == AUTHENTICATED_ACTOR_LOCAL) {
-        return 0;
-    }
-    if (job->actor.kind == AUTHENTICATED_ACTOR_USER) {
-        result = jg_account_session_reauthorize(
-            management->database, job->authorization.session_digest, now,
-            MANAGEMENT_SESSION_INACTIVITY, job->remote.family,
-            job->remote.address, &identity);
-    } else if (job->actor.kind == AUTHENTICATED_ACTOR_TOKEN) {
-        result = jg_account_token_reauthorize(
-            management->database, job->actor.actor_id, now, job->remote.family,
-            job->remote.address, &identity);
-        if (result == 0) {
-            result = jg_account_mtls_mapping_authorize(
-                management->database,
-                job->authorization.certificate_fingerprint, identity.user_id,
-                now);
-        }
+    if (authorization_result != 0) {
+        const bool denied =
+            authorization_result == -EACCES || authorization_result == -EPERM;
+        const bool degraded = authorization_result == -EROFS;
+
+        result = respond_error(
+            denied     ? 403
+            : degraded ? 503
+                       : 500,
+            denied     ? "job_authorization_expired"
+            : degraded ? "management_degraded"
+                       : "job_authorization_failed",
+            denied     ? "Authorization changed before the job could start."
+            : degraded ? "The job was suspended because management is degraded."
+                       : "The job authorization could not be rechecked.",
+            job->request_id, job->response, sizeof(job->response),
+            response_size);
+    } else if (job->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
+        result =
+            execute_source_refresh_job(management, job, job->response,
+                                       sizeof(job->response), response_size);
+    } else if (job->kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
+        result = update_due_blocklists_now(management, job->submitted_at, NULL);
+    } else if (job->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
+        result =
+            execute_blocklist_import_job(management, job, job->response,
+                                         sizeof(job->response), response_size);
+    } else if (job->kind == MANAGEMENT_JOB_BACKUP_CREATE) {
+        result =
+            execute_backup_create_job(management, job, job->response,
+                                      sizeof(job->response), response_size);
+    } else if (job->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
+        result =
+            execute_backup_restore_job(management, job, job->response,
+                                       sizeof(job->response), response_size);
+    } else if (job->kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
+        result = execute_diagnostics_create_job(management, job, job->response,
+                                                sizeof(job->response),
+                                                response_size);
+    } else if (job->kind == MANAGEMENT_JOB_CERTIFICATE_CSR) {
+        result =
+            execute_certificate_csr_job(management, job, job->response,
+                                        sizeof(job->response), response_size);
     } else {
-        result = -EACCES;
+        result = -EINVAL;
     }
-    if (result == 0 &&
-        (identity.user_id != job->actor.identity.user_id ||
-         identity.force_password_change ||
-         !jg_access_grants(identity.permissions, job->required_permission))) {
-        result = -EPERM;
-    }
-    if (result == 0) {
-        job->actor.identity = identity;
-    }
-    sodium_memzero(&identity, sizeof(identity));
-    return result;
-}
-
-/** @brief Execute queued slow operations on an independent DB connection. */
-static void *run_management_jobs(void *context)
-{
-    struct management_jobs *jobs = context;
-    struct jg_management worker = *jobs->management;
-    struct management_job *work = &jobs->worker_job;
-
-    worker.database = jobs->database;
-    worker.jobs = NULL;
-    for (;;) {
-        struct management_job *queued = NULL;
-        uint64_t started_at = 0U;
-        uint64_t completed_at = 0U;
-        size_t response_size = 0U;
-        int authorization_result = 0;
-        int operation_result = 0;
-        int status = pthread_mutex_lock(&jobs->mutex);
-
-        if (status != 0) {
-            return NULL;
-        }
-        queued = next_queued_job(jobs);
-        while (!jobs->stopping && queued == NULL) {
-            status = pthread_cond_wait(&jobs->ready, &jobs->mutex);
-            if (status != 0) {
-                jobs->stopping = true;
-                break;
-            }
-            queued = next_queued_job(jobs);
-        }
-        if (jobs->stopping) {
-            (void)pthread_mutex_unlock(&jobs->mutex);
-            break;
-        }
-        *work = *queued;
-        (void)current_time(&started_at);
-        (void)pthread_mutex_unlock(&jobs->mutex);
-
-        authorization_result =
-            reauthorize_management_job(&worker, work, started_at);
-        status = pthread_mutex_lock(&jobs->mutex);
-        if (status != 0) {
-            break;
-        }
-        queued = find_job(jobs, work->id);
-        if (queued == NULL) {
-            (void)pthread_mutex_unlock(&jobs->mutex);
-            management_job_parameters_clear(work->kind, &work->parameters);
-            sodium_memzero(work, sizeof(*work));
-            continue;
-        }
-        if (authorization_result == 0) {
-            queued->actor = work->actor;
-            queued->state = MANAGEMENT_JOB_RUNNING;
-            queued->started_at = started_at;
-            work->started_at = started_at;
-        }
-        if (queued->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
-            queued->parameters.blocklist_import.content = NULL;
-            queued->parameters.blocklist_import.content_size = 0U;
-        }
-        sodium_memzero(&queued->parameters, sizeof(queued->parameters));
-        sodium_memzero(&queued->authorization, sizeof(queued->authorization));
-        (void)pthread_mutex_unlock(&jobs->mutex);
-        sodium_memzero(&work->authorization, sizeof(work->authorization));
-
-        if (authorization_result != 0) {
-            const bool denied = authorization_result == -EACCES ||
-                                authorization_result == -EPERM;
-            const bool degraded = authorization_result == -EROFS;
-
-            operation_result = respond_error(
-                denied     ? 403
-                : degraded ? 503
-                           : 500,
-                denied     ? "job_authorization_expired"
-                : degraded ? "management_degraded"
-                           : "job_authorization_failed",
-                denied ? "Authorization changed before the job could start."
-                : degraded
-                    ? "The job was suspended because management is degraded."
-                    : "The job authorization could not be rechecked.",
-                work->request_id, work->response, sizeof(work->response),
-                &response_size);
-        } else if (work->kind == MANAGEMENT_JOB_SOURCE_REFRESH) {
-            operation_result = execute_source_refresh_job(
-                &worker, work, work->response, sizeof(work->response),
-                &response_size);
-        } else if (work->kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
-            operation_result =
-                update_due_blocklists_now(&worker, work->submitted_at, NULL);
-        } else if (work->kind == MANAGEMENT_JOB_BLOCKLIST_IMPORT) {
-            operation_result = execute_blocklist_import_job(
-                &worker, work, work->response, sizeof(work->response),
-                &response_size);
-        } else if (work->kind == MANAGEMENT_JOB_BACKUP_CREATE) {
-            operation_result = execute_backup_create_job(
-                &worker, work, work->response, sizeof(work->response),
-                &response_size);
-        } else if (work->kind == MANAGEMENT_JOB_BACKUP_RESTORE) {
-            operation_result = execute_backup_restore_job(
-                &worker, work, work->response, sizeof(work->response),
-                &response_size);
-        } else if (work->kind == MANAGEMENT_JOB_DIAGNOSTICS_CREATE) {
-            operation_result = execute_diagnostics_create_job(
-                &worker, work, work->response, sizeof(work->response),
-                &response_size);
-        } else if (work->kind == MANAGEMENT_JOB_CERTIFICATE_CSR) {
-            operation_result = execute_certificate_csr_job(
-                &worker, work, work->response, sizeof(work->response),
-                &response_size);
-        } else {
-            operation_result = -EINVAL;
-        }
-        if (!work->system_job && operation_result != 0 && response_size == 0U) {
-            (void)respond_error(500, "job_failed",
-                                "The asynchronous operation failed.",
-                                work->request_id, work->response,
-                                sizeof(work->response), &response_size);
-        }
-        management_job_parameters_clear(work->kind, &work->parameters);
-        (void)current_time(&completed_at);
-
-        if (pthread_mutex_lock(&jobs->mutex) != 0) {
-            break;
-        }
-        queued = find_job(jobs, work->id);
-        if (queued != NULL && queued->system_job) {
-            sodium_memzero(queued, sizeof(*queued));
-        } else if (queued != NULL) {
-            queued->response_size = response_size;
-            queued->completed_at = completed_at;
-            queued->state = MANAGEMENT_JOB_COMPLETED;
-            if (response_size > 0U) {
-                (void)memcpy(queued->response, work->response, response_size);
-            }
-        }
-        (void)pthread_mutex_unlock(&jobs->mutex);
-        sodium_memzero(work, sizeof(*work));
-    }
-    sodium_memzero(&worker, sizeof(worker));
-    return NULL;
-}
-
-/** @brief Queue one coalesced scheduled-source scan. */
-static int submit_scheduled_source_job(struct jg_management *management,
-                                       uint64_t now)
-{
-    struct management_jobs *jobs = management->jobs;
-    struct management_job *job = NULL;
-    uint64_t identifier = 0U;
-    int status = pthread_mutex_lock(&jobs->mutex);
-    int result = 0;
-
-    if (status != 0) {
-        return -status;
-    }
-    for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
-        if (jobs->slots[index].occupied &&
-            jobs->slots[index].kind == MANAGEMENT_JOB_SCHEDULED_SOURCES) {
-            job = &jobs->slots[index];
-            break;
-        }
-    }
-    if (job == NULL) {
-        job = select_job_slot(jobs, now);
-        if (job == NULL || jobs->next_sequence == 0U) {
-            result = job == NULL ? -EBUSY : -EOVERFLOW;
-        } else if (generate_job_identifier(jobs, &identifier) != 0) {
-            result = -EAGAIN;
-        } else {
-            sodium_memzero(job, sizeof(*job));
-            job->id = identifier;
-            job->sequence = jobs->next_sequence++;
-            job->submitted_at = now;
-            job->kind = MANAGEMENT_JOB_SCHEDULED_SOURCES;
-            job->state = MANAGEMENT_JOB_QUEUED;
-            job->occupied = true;
-            job->system_job = true;
-            status = pthread_cond_signal(&jobs->ready);
-            if (status != 0) {
-                sodium_memzero(job, sizeof(*job));
-                result = -status;
-            }
-        }
-    }
-    status = pthread_mutex_unlock(&jobs->mutex);
-    if (result == 0 && status != 0) {
-        result = -status;
+    if (!job->system_job && result != 0 && *response_size == 0U) {
+        (void)respond_error(500, "job_failed",
+                            "The asynchronous operation failed.",
+                            job->request_id, job->response,
+                            sizeof(job->response), response_size);
     }
     return result;
 }
@@ -8240,44 +7694,6 @@ void jg_management_refresh_policy_health(struct jg_management *management)
     }
 }
 
-/** @brief Return the stable API spelling for one job state. */
-static const char *management_job_state_name(enum management_job_state state)
-{
-    switch (state) {
-    case MANAGEMENT_JOB_QUEUED:
-        return "queued";
-    case MANAGEMENT_JOB_RUNNING:
-        return "running";
-    case MANAGEMENT_JOB_COMPLETED:
-        return "completed";
-    default:
-        return NULL;
-    }
-}
-
-/** @brief Return the stable API spelling for one job kind. */
-static const char *management_job_kind_name(enum management_job_kind kind)
-{
-    switch (kind) {
-    case MANAGEMENT_JOB_SOURCE_REFRESH:
-        return "source_refresh";
-    case MANAGEMENT_JOB_SCHEDULED_SOURCES:
-        return "scheduled_sources";
-    case MANAGEMENT_JOB_BLOCKLIST_IMPORT:
-        return "blocklist_import";
-    case MANAGEMENT_JOB_BACKUP_CREATE:
-        return "backup_create";
-    case MANAGEMENT_JOB_BACKUP_RESTORE:
-        return "backup_restore";
-    case MANAGEMENT_JOB_DIAGNOSTICS_CREATE:
-        return "diagnostics_create";
-    case MANAGEMENT_JOB_CERTIFICATE_CSR:
-        return "certificate_csr";
-    default:
-        return NULL;
-    }
-}
-
 /** @brief Return one authorized retained slow-operation state. */
 static int handle_job_get(struct jg_management *management,
                           const struct management_request *request,
@@ -8296,7 +7712,6 @@ static int handle_job_get(struct jg_management *management,
     json_t *response = NULL;
     const char *kind = NULL;
     const char *state = NULL;
-    int status = 0;
     int result =
         authenticate_actor(management, request, remote, false, 0U, now, &actor);
 
@@ -8309,25 +7724,8 @@ static int handle_job_get(struct jg_management *management,
                              "Job inspection accepts no query or body.",
                              request->request_id, output, output_size, written);
     }
-    status = pthread_mutex_lock(&management->jobs->mutex);
-    if (status != 0) {
-        return -status;
-    }
-    {
-        const struct management_job *stored =
-            find_job(management->jobs, job_id);
-
-        if (stored == NULL || stored->system_job ||
-            !job_is_visible_to_actor(stored, &actor)) {
-            result = -ENOENT;
-        } else {
-            snapshot = *stored;
-        }
-    }
-    status = pthread_mutex_unlock(&management->jobs->mutex);
-    if (result == 0 && status != 0) {
-        result = -status;
-    }
+    result =
+        management_jobs_snapshot(management->jobs, job_id, &actor, &snapshot);
     if (result == -ENOENT) {
         return respond_error(404, "job_not_found",
                              "The requested job is no longer available.",
@@ -8393,18 +7791,7 @@ static int handle_job_get(struct jg_management *management,
     }
     result = encode_response(200, body, NULL, output, output_size, written);
     if (result == 0 && snapshot.state == MANAGEMENT_JOB_COMPLETED) {
-        status = pthread_mutex_lock(&management->jobs->mutex);
-        if (status == 0) {
-            struct management_job *stored = find_job(management->jobs, job_id);
-
-            if (stored != NULL && stored->state == MANAGEMENT_JOB_COMPLETED) {
-                stored->observed = true;
-            }
-            status = pthread_mutex_unlock(&management->jobs->mutex);
-        }
-        if (status != 0) {
-            result = -status;
-        }
+        result = management_jobs_observe(management->jobs, job_id);
     }
     sodium_memzero(&snapshot, sizeof(snapshot));
     return result;

@@ -285,8 +285,8 @@ struct management_job {
 
 /** Complete synchronized queue and independent worker database connection. */
 struct management_jobs {
-    struct jg_management *management;
     struct jg_database *database;
+    struct jg_management worker;
     struct management_job slots[MANAGEMENT_JOB_CAPACITY];
     struct management_job worker_job;
     pthread_mutex_t mutex;
@@ -298,6 +298,57 @@ struct management_jobs {
     bool thread_started;
     bool stopping;
 };
+
+/** @brief Read the consistency reasons currently affecting management. */
+uint32_t management_degraded_reasons(const struct jg_management *management);
+
+/** @brief Parse one exact lowercase SHA-256 certificate fingerprint. */
+int parse_certificate_fingerprint(const char *text, uint8_t fingerprint[32U]);
+
+/** @brief Securely release one job's transient input. */
+void management_job_parameters_clear(
+    enum management_job_kind kind,
+    union management_job_parameters *parameters);
+
+/** @brief Create one fixed-capacity slow-operation worker. */
+int management_jobs_create(struct jg_management *management,
+                           struct management_jobs **jobs);
+
+/** @brief Stop and release one slow-operation queue. */
+void management_jobs_destroy(struct management_jobs *jobs);
+
+/** @brief Queue one prepared authenticated slow operation. */
+int submit_management_job(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          const struct authenticated_actor *actor,
+                          struct management_job_submission *prepared,
+                          uint64_t now,
+                          uint64_t *job_id);
+
+/** @brief Queue one coalesced scheduled-source scan. */
+int submit_scheduled_source_job(struct jg_management *management, uint64_t now);
+
+/** @brief Copy one retained job visible to an authenticated actor. */
+int management_jobs_snapshot(struct management_jobs *jobs,
+                             uint64_t job_id,
+                             const struct authenticated_actor *actor,
+                             struct management_job *snapshot);
+
+/** @brief Mark one completed retained job as consumed. */
+int management_jobs_observe(struct management_jobs *jobs, uint64_t job_id);
+
+/** @brief Return the stable API spelling for one job state. */
+const char *management_job_state_name(enum management_job_state state);
+
+/** @brief Return the stable API spelling for one job kind. */
+const char *management_job_kind_name(enum management_job_kind kind);
+
+/** @brief Execute or reject one reauthorized worker-owned operation. */
+int execute_management_job(struct jg_management *management,
+                           struct management_job *job,
+                           int authorization_result,
+                           size_t *response_size);
 
 /** @brief Build the private pending-key path paired with the server identity.
  */
