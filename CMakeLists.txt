@@ -215,6 +215,7 @@ add_library(
   src/daemon/nfqueue_group.c
   ${janusgate_packet_output_source}
   src/daemon/policy_store.c
+  src/daemon/policy_stats_collector.c
   src/daemon/tcp_reset.c
   src/daemon/tcp_stream.c)
 target_include_directories(
