@@ -49,6 +49,9 @@
 /** Maximum blocklist source name bytes excluding the terminator. */
 #define JG_DATABASE_BLOCKLIST_NAME_MAX 128U
 
+/** Maximum policy group or scope-mode name bytes excluding the terminator. */
+#define JG_DATABASE_POLICY_NAME_MAX 128U
+
 /** Maximum stored source URL bytes excluding the terminator. */
 #define JG_DATABASE_BLOCKLIST_URL_MAX 2048U
 
@@ -194,6 +197,54 @@ struct jg_database_logging_config {
     uint64_t revision;
     /** Last modification time as Unix seconds. */
     uint64_t updated_at;
+};
+
+/**
+ * @brief Persistent snapshot-wide policy enforcement configuration.
+ */
+struct jg_database_policy_config {
+    /** Global enforcement inherited by every blocking rule. */
+    enum jg_policy_enforcement enforcement;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Last modification time as Unix seconds. */
+    uint64_t updated_at;
+};
+
+/**
+ * @brief Caller-owned configuration for one client or VLAN policy mode.
+ */
+struct jg_database_policy_scope_mode_config {
+    /** Unique human-readable selector name. */
+    const char *name;
+    /** Enforcement inherited by matching clients. */
+    enum jg_policy_enforcement enforcement;
+    /** Canonicalizable MAC, IPv4, IPv6, or VLAN selector. */
+    struct jg_policy_scope scope;
+    /** Whether the selector participates in active policy. */
+    bool enabled;
+};
+
+/**
+ * @brief Self-contained persistent client or VLAN policy mode.
+ */
+struct jg_database_policy_scope_mode {
+    /** Stable positive selector identifier. */
+    uint64_t id;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Creation time as Unix seconds. */
+    uint64_t created_at;
+    /** Last modification time as Unix seconds. */
+    uint64_t updated_at;
+    /** Unique human-readable selector name. */
+    char name[JG_DATABASE_POLICY_NAME_MAX + 1U];
+    /** Enforcement inherited by matching clients. */
+    enum jg_policy_enforcement enforcement;
+    /** Canonical MAC, IP-prefix, or VLAN selector. */
+    struct jg_policy_scope scope;
+    /** Whether the selector participates in active policy. */
+    bool enabled;
 };
 
 /**
@@ -898,6 +949,136 @@ JG_PUBLIC int jg_database_store_dns_response_config(
 JG_PUBLIC int jg_database_load_dns_response_config(
     struct jg_database *database,
     struct jg_dns_response_config *config);
+
+/**
+ * @brief Load snapshot-wide policy enforcement and concurrency metadata.
+ *
+ * @param[in] database Open database.
+ * @param[out] config Receives the persistent singleton configuration.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EILSEQ when persistent content is invalid.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_load_policy_config(
+    struct jg_database *database,
+    struct jg_database_policy_config *config);
+
+/**
+ * @brief Replace snapshot-wide policy enforcement at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] enforcement New global enforcement mode.
+ * @param[in] expected_revision Revision observed by the caller.
+ * @param[out] updated Receives the updated configuration.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or enforcement.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Advances the singleton policy revision atomically.
+ */
+JG_PUBLIC int jg_database_replace_policy_config(
+    struct jg_database *database,
+    enum jg_policy_enforcement enforcement,
+    uint64_t expected_revision,
+    struct jg_database_policy_config *updated);
+
+/**
+ * @brief Create one client or VLAN policy-mode selector.
+ *
+ * @param[in] database Open database.
+ * @param[in] config Complete selector configuration.
+ * @param[out] created Receives the assigned persistent record.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments, text, enforcement, or scope.
+ * @return -EEXIST when the name is already used.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_create_policy_scope_mode(
+    struct jg_database *database,
+    const struct jg_database_policy_scope_mode_config *config,
+    struct jg_database_policy_scope_mode *created);
+
+/**
+ * @brief Replace one policy-mode selector at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] mode_id Persistent positive selector identifier.
+ * @param[in] config Complete replacement configuration.
+ * @param[in] expected_revision Revision observed by the caller.
+ * @param[out] updated Receives the updated record.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or configuration.
+ * @return -EEXIST when another selector already uses the name.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_update_policy_scope_mode(
+    struct jg_database *database,
+    uint64_t mode_id,
+    const struct jg_database_policy_scope_mode_config *config,
+    uint64_t expected_revision,
+    struct jg_database_policy_scope_mode *updated);
+
+/**
+ * @brief Delete one policy-mode selector at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] mode_id Persistent positive selector identifier.
+ * @param[in] expected_revision Revision observed by the caller.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_delete_policy_scope_mode(struct jg_database *database,
+                                                   uint64_t mode_id,
+                                                   uint64_t expected_revision);
+
+/**
+ * @brief Read one stable identifier-ordered page of policy-mode selectors.
+ *
+ * @param[in] database Open database.
+ * @param[in] after_id Exclusive identifier cursor, or zero.
+ * @param[in] limit Requested page size.
+ * @param[out] modes Array with room for at least @p limit records.
+ * @param[out] count Number of records written.
+ * @param[out] has_more Whether another record follows this page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_list_policy_scope_modes(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_policy_scope_mode *modes,
+    size_t *count,
+    bool *has_more);
 
 /**
  * @brief Atomically replace every active persistent domain rule.

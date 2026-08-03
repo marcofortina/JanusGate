@@ -1057,6 +1057,118 @@ static void test_insecure_permissions_rejected(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify global and scoped policy-mode persistence. */
+static void test_policy_modes(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_database_policy_config global;
+    struct jg_database_policy_scope_mode_config config;
+    struct jg_database_policy_scope_mode first;
+    struct jg_database_policy_scope_mode second;
+    struct jg_database_policy_scope_mode page[1U];
+    struct jg_database *database = NULL;
+    uint64_t first_id = 0U;
+    uint64_t first_revision = 0U;
+    size_t count = 0U;
+    bool has_more = false;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+
+    assert_int_equal(jg_database_load_policy_config(database, &global), 0);
+    assert_int_equal(global.enforcement, JG_POLICY_ENFORCE);
+    assert_int_equal(global.revision, 1U);
+    assert_int_equal(jg_database_replace_policy_config(
+                         database, JG_POLICY_OBSERVE, global.revision, &global),
+                     0);
+    assert_int_equal(global.enforcement, JG_POLICY_OBSERVE);
+    assert_int_equal(global.revision, 2U);
+    assert_int_equal(jg_database_replace_policy_config(
+                         database, JG_POLICY_ENFORCE, 1U, &global),
+                     -EAGAIN);
+    assert_int_equal(jg_database_replace_policy_config(
+                         database, (enum jg_policy_enforcement)99, 2U, &global),
+                     -EINVAL);
+
+    (void)memset(&config, 0, sizeof(config));
+    config.name = "VLAN 30 preview";
+    config.enforcement = JG_POLICY_OBSERVE;
+    config.scope.type = JG_POLICY_SCOPE_VLAN;
+    config.scope.value.vlan_id = 30U;
+    config.enabled = true;
+    assert_int_equal(
+        jg_database_create_policy_scope_mode(database, &config, &first), 0);
+    assert_int_equal(first.revision, 1U);
+    assert_string_equal(first.name, config.name);
+    assert_int_equal(first.enforcement, JG_POLICY_OBSERVE);
+    assert_int_equal(first.scope.value.vlan_id, 30U);
+    assert_true(first.enabled);
+    assert_int_equal(
+        jg_database_create_policy_scope_mode(database, &config, &second),
+        -EEXIST);
+
+    config.name = "Lab clients";
+    config.scope.type = JG_POLICY_SCOPE_IPV4;
+    config.scope.value.network.address[0U] = 192U;
+    config.scope.value.network.address[1U] = 0U;
+    config.scope.value.network.address[2U] = 2U;
+    config.scope.value.network.address[3U] = 129U;
+    config.scope.value.network.prefix_length = 24U;
+    assert_int_equal(
+        jg_database_create_policy_scope_mode(database, &config, &second), 0);
+    assert_int_equal(second.scope.value.network.address[3U], 0U);
+    assert_int_equal(jg_database_list_policy_scope_modes(database, 0U, 1U, page,
+                                                         &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_true(has_more);
+    assert_int_equal(page[0U].id, first.id);
+    assert_int_equal(jg_database_list_policy_scope_modes(
+                         database, first.id, 1U, page, &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(page[0U].id, second.id);
+
+    (void)memset(&config, 0, sizeof(config));
+    config.name = "VLAN 31 enforced";
+    config.enforcement = JG_POLICY_ENFORCE;
+    config.scope.type = JG_POLICY_SCOPE_VLAN;
+    config.scope.value.vlan_id = 31U;
+    assert_int_equal(jg_database_update_policy_scope_mode(
+                         database, first.id, &config, first.revision, &first),
+                     0);
+    assert_int_equal(first.revision, 2U);
+    assert_false(first.enabled);
+    first_id = first.id;
+    first_revision = first.revision;
+    assert_int_equal(jg_database_update_policy_scope_mode(database, first_id,
+                                                          &config, 1U, &first),
+                     -EAGAIN);
+    assert_int_equal(
+        jg_database_delete_policy_scope_mode(database, first_id, 1U), -EAGAIN);
+    assert_int_equal(jg_database_delete_policy_scope_mode(database, first_id,
+                                                          first_revision),
+                     0);
+    assert_int_equal(jg_database_delete_policy_scope_mode(database, first_id,
+                                                          first_revision),
+                     -ENOENT);
+
+    config.name = "invalid global";
+    config.scope.type = JG_POLICY_SCOPE_GLOBAL;
+    assert_int_equal(
+        jg_database_create_policy_scope_mode(database, &config, &first),
+        -EINVAL);
+    assert_int_equal(jg_database_list_policy_scope_modes(database, 0U, 0U, page,
+                                                         &count, &has_more),
+                     -EINVAL);
+
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify atomic policy replacement and immutable snapshot loading. */
 static void test_policy_round_trip(void **state)
 {
@@ -2070,6 +2182,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_version_two_migration),
         cmocka_unit_test(test_insecure_permissions_rejected),
+        cmocka_unit_test(test_policy_modes),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
