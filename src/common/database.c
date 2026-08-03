@@ -6279,6 +6279,50 @@ int jg_database_load_backup(struct jg_database *database,
     return result;
 }
 
+/** @brief Test whether one archive filename has persistent backup metadata. */
+int jg_database_backup_filename_exists(struct jg_database *database,
+                                       const char *filename,
+                                       bool *exists)
+{
+    static const char query[] =
+        "SELECT 1 FROM backup_metadata WHERE path=?1 LIMIT 1;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (database == NULL || !backup_filename_valid(filename) ||
+        exists == NULL) {
+        return -EINVAL;
+    }
+    *exists = false;
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status =
+            sqlite3_bind_text(statement, 1, filename, -1, SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status == SQLITE_ROW) {
+            *exists = true;
+        } else if (status != SQLITE_DONE) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0 && *exists && sqlite3_step(statement) != SQLITE_DONE) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
 /** @brief Read one stable identifier-ordered backup metadata page. */
 int jg_database_list_backups(struct jg_database *database,
                              uint64_t after_id,

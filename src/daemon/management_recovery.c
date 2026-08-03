@@ -43,6 +43,47 @@ static const char *recovery_actor_name(enum jg_audit_actor_type actor)
     }
 }
 
+/** @brief Retain only generated archives referenced by backup metadata. */
+static int retain_recorded_backup(void *context,
+                                  const char *filename,
+                                  bool *retain)
+{
+    struct jg_management *management = context;
+
+    return jg_database_backup_filename_exists(management->database, filename,
+                                              retain);
+}
+
+/** @brief Remove the uncommitted archive named by a backup-create intent. */
+static int recover_backup_creation(
+    struct jg_management *management,
+    const struct jg_database_operation *operation)
+{
+    char filename[JG_BACKUP_FILENAME_MAX + 1U];
+    const size_t filename_size =
+        operation->payload_size > 0U ? operation->payload_size - 1U : 0U;
+    int result = 0;
+
+    if (operation->payload_size < 2U ||
+        operation->payload_size > sizeof(filename) ||
+        operation->payload[0U] != MANAGEMENT_RECOVERY_VERSION ||
+        memchr(operation->payload + 1U, '\0', filename_size) != NULL) {
+        return -EILSEQ;
+    }
+    (void)memcpy(filename, operation->payload + 1U, filename_size);
+    filename[filename_size] = '\0';
+    if (!jg_backup_generated_filename_valid(filename)) {
+        return -EILSEQ;
+    }
+    if (operation->ready) {
+        result = jg_backup_remove(management->backup_directory, filename);
+        if (result == -ENOENT) {
+            result = 0;
+        }
+    }
+    return result;
+}
+
 /** @brief Append the fixed recovery suffix to one validated absolute path. */
 static int recovery_path(const char *path, char output[PATH_MAX])
 {
@@ -479,7 +520,15 @@ int recover_pending_operation(struct jg_management *management)
     struct jg_database_operation operation;
     uint8_t existing = 0U;
     uint8_t tracked = 0U;
-    int result = jg_database_operation_load(management->database, &operation);
+    int result = jg_backup_reconcile(management->backup_directory,
+                                     retain_recorded_backup, management, NULL);
+
+    if (result == -ENOENT) {
+        result = 0;
+    }
+    if (result == 0) {
+        result = jg_database_operation_load(management->database, &operation);
+    }
 
     if (result == -ENOENT) {
         return cleanup_recovery_snapshots(management);
@@ -487,7 +536,9 @@ int recover_pending_operation(struct jg_management *management)
     if (result != 0) {
         return result;
     }
-    if (!operation.ready) {
+    if (strcmp(operation.kind, MANAGEMENT_OPERATION_BACKUP_CREATE) == 0) {
+        result = recover_backup_creation(management, &operation);
+    } else if (!operation.ready) {
         result = 0;
     } else if (strcmp(operation.kind, MANAGEMENT_OPERATION_NETWORK_CONFIRM) ==
                0) {

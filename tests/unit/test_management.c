@@ -2139,6 +2139,68 @@ static void test_cross_resource_recovery(void **state)
     jg_certificate_material_clear(&replacement);
 }
 
+/** @brief Verify startup removes an archive left before metadata commit. */
+static void test_backup_creation_recovery(void **state)
+{
+    static const uint8_t database_image[] = "uncommitted backup snapshot";
+    static const char filename[] = "backup-100-0123456789abcdef.jgb";
+    static const struct jg_database_operation_context operation_context = {
+        .actor_type = JG_AUDIT_ACTOR_LOCAL,
+        .source = "127.0.0.1",
+        .request_id = "interrupted-backup",
+        .requested_action = "backup.create",
+    };
+    struct management_fixture *fixture = *state;
+    struct jg_database_operation operation;
+    struct jg_audit_record audit;
+    uint8_t payload[1U + sizeof(filename) - 1U];
+    uint8_t *archive = NULL;
+    size_t archive_size = 0U;
+    size_t audit_count = 0U;
+    uint64_t audit_total = 0U;
+    char path[256U];
+    int written = 0;
+
+    payload[0U] = MANAGEMENT_RECOVERY_VERSION;
+    (void)memcpy(payload + 1U, filename, sizeof(filename) - 1U);
+    assert_int_equal(
+        jg_backup_create(JG_BACKUP_CONFIGURATION, database_image,
+                         sizeof(database_image) - 1U, NULL, 0U, NULL, 0U, 100U,
+                         JG_DATABASE_SCHEMA_VERSION, &archive, &archive_size),
+        0);
+    jg_management_destroy(fixture->management);
+    fixture->management = NULL;
+    assert_int_equal(jg_database_operation_prepare(
+                         fixture->database, "backup_create", payload,
+                         sizeof(payload), &operation_context, 100U),
+                     0);
+    assert_int_equal(jg_database_operation_mark_ready(fixture->database), 0);
+    assert_int_equal(
+        jg_backup_store(fixture->directory, filename, archive, archive_size),
+        0);
+    jg_backup_data_clear(archive, archive_size);
+    written =
+        snprintf(path, sizeof(path), "%s/%s", fixture->directory, filename);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(path));
+    assert_int_equal(access(path, F_OK), 0);
+    assert_int_equal(
+        jg_management_create(fixture->database, fixture->key_path,
+                             fixture->certificate_path, fixture->client_ca_path,
+                             fixture->directory, NULL, &fixture->management),
+        0);
+    assert_int_equal(access(path, F_OK), -1);
+    assert_int_equal(errno, ENOENT);
+    assert_int_equal(jg_database_operation_load(fixture->database, &operation),
+                     -ENOENT);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, &audit, 1U,
+                                            &audit_count, &audit_total),
+                     0);
+    assert_int_equal(audit_count, 1U);
+    assert_string_equal(audit.request_id, "interrupted-backup");
+    assert_string_equal(audit.action, "management.operation.recover");
+}
+
 /** @brief Verify audit failure restores and retains a retryable operation. */
 static void test_cross_resource_audit_failure(void **state)
 {
@@ -4139,6 +4201,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_cross_resource_recovery,
                                         setup_certificate_management,
                                         teardown_management),
+        cmocka_unit_test_setup_teardown(test_backup_creation_recovery,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_cross_resource_audit_failure,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_policy_sync_health,

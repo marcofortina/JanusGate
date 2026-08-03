@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,31 @@
 #include "janusgate/backup.h"
 
 int jg_test_backup(void);
+
+/** One generated archive filename retained by reconciliation tests. */
+struct backup_retention {
+    const char *filename;
+};
+
+/** @brief Retain only the configured generated archive filename. */
+static int retain_backup(void *context, const char *filename, bool *retain)
+{
+    const struct backup_retention *retention = context;
+
+    *retain = strcmp(filename, retention->filename) == 0;
+    return 0;
+}
+
+/** @brief Create one owner-private test file containing one byte. */
+static void create_private_file(const char *path)
+{
+    static const uint8_t value = 1U;
+    int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+
+    assert_true(descriptor >= 0);
+    assert_int_equal(write(descriptor, &value, sizeof(value)), sizeof(value));
+    assert_int_equal(close(descriptor), 0);
+}
 
 /** @brief Find whether a byte sequence occurs inside another byte sequence. */
 static bool contains_bytes(const uint8_t *data,
@@ -245,6 +271,60 @@ static void test_archive_storage(void **state)
     jg_backup_data_clear(archive, archive_size);
 }
 
+/** @brief Verify reconciliation removes only abandoned private files. */
+static void test_archive_reconciliation(void **state)
+{
+    static const char staging_name[] = ".janusgate-0123456789abcdef";
+    static const char orphan_name[] = "backup-100-0123456789abcdef.jgb";
+    static const char retained_name[] = "backup-101-fedcba9876543210.jgb";
+    static const char linked_name[] = "backup-102-0011223344556677.jgb";
+    static const char foreign_name[] = "operator-note.txt";
+    struct backup_retention retention = {.filename = retained_name};
+    const char *private_names[] = {
+        staging_name,
+        orphan_name,
+        retained_name,
+        foreign_name,
+    };
+    char directory[] = "/tmp/janusgate-reconcile-XXXXXX";
+    char path[256U];
+    char linked_path[256U];
+    struct stat metadata;
+    size_t removed = 0U;
+
+    (void)state;
+    assert_non_null(mkdtemp(directory));
+    for (size_t index = 0U;
+         index < sizeof(private_names) / sizeof(private_names[0U]); ++index) {
+        assert_true(snprintf(path, sizeof(path), "%s/%s", directory,
+                             private_names[index]) > 0);
+        create_private_file(path);
+    }
+    assert_true(snprintf(linked_path, sizeof(linked_path), "%s/%s", directory,
+                         linked_name) > 0);
+    assert_int_equal(symlink(foreign_name, linked_path), 0);
+    assert_int_equal(
+        jg_backup_reconcile(directory, retain_backup, &retention, &removed), 0);
+    assert_int_equal(removed, 2U);
+    for (size_t index = 0U; index < 2U; ++index) {
+        assert_true(snprintf(path, sizeof(path), "%s/%s", directory,
+                             private_names[index]) > 0);
+        assert_int_equal(access(path, F_OK), -1);
+        assert_int_equal(errno, ENOENT);
+    }
+    for (size_t index = 2U;
+         index < sizeof(private_names) / sizeof(private_names[0U]); ++index) {
+        assert_true(snprintf(path, sizeof(path), "%s/%s", directory,
+                             private_names[index]) > 0);
+        assert_int_equal(access(path, F_OK), 0);
+        assert_int_equal(unlink(path), 0);
+    }
+    assert_int_equal(lstat(linked_path, &metadata), 0);
+    assert_true(S_ISLNK(metadata.st_mode));
+    assert_int_equal(unlink(linked_path), 0);
+    assert_int_equal(rmdir(directory), 0);
+}
+
 /** @brief Run the backup archive test group. */
 int jg_test_backup(void)
 {
@@ -253,6 +333,7 @@ int jg_test_backup(void)
         cmocka_unit_test(test_encrypted_archive),
         cmocka_unit_test(test_archive_rejection),
         cmocka_unit_test(test_archive_storage),
+        cmocka_unit_test(test_archive_reconciliation),
     };
 
     return cmocka_run_group_tests_name("backup", tests, NULL, NULL);

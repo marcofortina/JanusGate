@@ -699,6 +699,23 @@ JG_PUBLIC int jg_database_load_backup(struct jg_database *database,
                                       struct jg_database_backup *backup);
 
 /**
+ * @brief Test whether one archive filename is referenced by backup metadata.
+ *
+ * @param[in] database Open database.
+ * @param[in] filename Plain backup archive filename.
+ * @param[out] exists Receives whether matching metadata exists.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for malformed arguments.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_backup_filename_exists(struct jg_database *database,
+                                                 const char *filename,
+                                                 bool *exists);
+
+/**
  * @brief Read one stable identifier-ordered page of backup metadata.
  *
  * @param[in] database Open database.

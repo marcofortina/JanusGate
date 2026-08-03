@@ -259,11 +259,13 @@ static int create_backup(struct jg_management *management,
                          const char *passphrase,
                          size_t passphrase_size,
                          uint64_t now,
+                         const struct management_operation_origin *origin,
                          backup_creation_completion completion,
                          void *context,
                          struct jg_database_backup *created)
 {
     uint8_t suffix[8U];
+    uint8_t recovery_payload[1U + JG_BACKUP_FILENAME_MAX];
     char suffix_text[sizeof(suffix) * 2U + 1U];
     char *certificate = NULL;
     uint8_t *database = NULL;
@@ -273,11 +275,12 @@ static int create_backup(struct jg_management *management,
     size_t archive_size = 0U;
     struct jg_backup_info info;
     struct jg_database_backup metadata;
-    bool stored = false;
+    bool journal_started = false;
+    bool transaction_started = false;
     int result = 0;
     int written = 0;
 
-    if (management == NULL || created == NULL ||
+    if (management == NULL || origin == NULL || created == NULL ||
         (kind == JG_BACKUP_CONFIGURATION && include_private_key)) {
         return -EINVAL;
     }
@@ -318,9 +321,18 @@ static int create_backup(struct jg_management *management,
         }
     }
     if (result == 0) {
+        const size_t filename_size = strlen(metadata.filename);
+
+        recovery_payload[0U] = MANAGEMENT_RECOVERY_VERSION;
+        (void)memcpy(recovery_payload + 1U, metadata.filename, filename_size);
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_BACKUP_CREATE, recovery_payload,
+            filename_size + 1U, 0U, false, origin, now);
+        journal_started = result == 0;
+    }
+    if (result == 0) {
         result = jg_backup_store(management->backup_directory,
                                  metadata.filename, archive, archive_size);
-        stored = result == 0;
     }
     if (result == 0) {
         metadata.created_at = info.created_at;
@@ -330,6 +342,7 @@ static int create_backup(struct jg_management *management,
         metadata.schema_version = info.schema_version;
         metadata.size_bytes = archive_size;
         result = jg_database_transaction_begin(management->database);
+        transaction_started = result == 0;
     }
     if (result == 0) {
         result =
@@ -339,14 +352,19 @@ static int create_backup(struct jg_management *management,
         result = completion(context, created);
     }
     if (result == 0) {
-        result = jg_database_transaction_commit(management->database);
-    } else {
-        (void)jg_database_transaction_rollback(management->database);
+        result = jg_database_operation_clear(management->database);
     }
-    if (result != 0 && stored &&
-        jg_backup_remove(management->backup_directory, metadata.filename) !=
-            0) {
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+        transaction_started = result != 0;
+        journal_started = result != 0;
+    }
+    if (result != 0 && transaction_started &&
+        jg_database_transaction_rollback(management->database) != 0) {
         result = -EIO;
+    }
+    if (result != 0 && journal_started) {
+        result = abort_recovery_operation(management, result);
     }
     sodium_memzero(suffix, sizeof(suffix));
     jg_backup_data_clear(archive, archive_size);
@@ -564,6 +582,12 @@ int execute_backup_create_job(struct jg_management *management,
         .actor = &job->actor,
         .now = job->started_at,
     };
+    const struct management_operation_origin operation_origin = {
+        .request = &request,
+        .remote = &job->remote,
+        .actor = &job->actor,
+        .action = "backup.create",
+    };
     struct jg_database_backup created = {0};
     json_t *body = NULL;
     json_t *backup = NULL;
@@ -574,7 +598,7 @@ int execute_backup_create_job(struct jg_management *management,
             ? NULL
             : job->parameters.backup_create.passphrase,
         job->parameters.backup_create.passphrase_size, job->started_at,
-        complete_backup_creation, &audit, &created);
+        &operation_origin, complete_backup_creation, &audit, &created);
 
     if (result != 0) {
         return respond_error(
@@ -844,7 +868,7 @@ int execute_backup_restore_job(struct jg_management *management,
         result = create_backup(management, metadata.kind,
                                metadata.kind == JG_BACKUP_FULL, passphrase,
                                passphrase == NULL ? 0U : strlen(passphrase),
-                               now, NULL, NULL, &checkpoint);
+                               now, &operation_origin, NULL, NULL, &checkpoint);
         checkpoint_created = result == 0;
     }
     if (!dry_run && changes && result != 0) {

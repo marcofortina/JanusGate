@@ -816,6 +816,7 @@ static void test_backup_metadata(void **state)
     struct jg_database_backup page[1U];
     size_t count = 0U;
     bool has_more = false;
+    bool exists = false;
     size_t index = 0U;
 
     (void)state;
@@ -835,6 +836,14 @@ static void test_backup_metadata(void **state)
     assert_int_equal(loaded.size_bytes, input.size_bytes);
     assert_memory_equal(loaded.checksum, input.checksum,
                         sizeof(input.checksum));
+    assert_int_equal(
+        jg_database_backup_filename_exists(database, input.filename, &exists),
+        0);
+    assert_true(exists);
+    assert_int_equal(jg_database_backup_filename_exists(
+                         database, "backup-missing.jgb", &exists),
+                     0);
+    assert_false(exists);
 
     input.created_at = 200U;
     input.kind = JG_BACKUP_FULL;

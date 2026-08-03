@@ -6,6 +6,7 @@
 
 #include "janusgate/backup.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -143,6 +144,61 @@ static bool filename_valid(const char *filename)
                            character == '.';
 
         if (!valid) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Return whether one name is an exact private staging filename. */
+static bool staging_filename(const char *filename)
+{
+    static const char prefix[] = ".janusgate-";
+    const size_t prefix_size = sizeof(prefix) - 1U;
+
+    if (filename == NULL || strlen(filename) != prefix_size + 16U ||
+        memcmp(filename, prefix, prefix_size) != 0) {
+        return false;
+    }
+    for (size_t index = prefix_size; filename[index] != '\0'; ++index) {
+        if (!((filename[index] >= '0' && filename[index] <= '9') ||
+              (filename[index] >= 'a' && filename[index] <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Return whether one name follows the generated archive convention. */
+bool jg_backup_generated_filename_valid(const char *filename)
+{
+    static const char prefix[] = "backup-";
+    static const char suffix[] = ".jgb";
+    const size_t length = filename == NULL ? 0U : strlen(filename);
+    const size_t prefix_size = sizeof(prefix) - 1U;
+    const size_t suffix_size = sizeof(suffix) - 1U;
+    const char *separator = NULL;
+
+    if (length <= prefix_size + 1U + 16U + suffix_size ||
+        length > JG_BACKUP_FILENAME_MAX ||
+        memcmp(filename, prefix, prefix_size) != 0 ||
+        memcmp(filename + length - suffix_size, suffix, suffix_size) != 0) {
+        return false;
+    }
+    separator = filename + length - suffix_size - 17U;
+    if (*separator != '-') {
+        return false;
+    }
+    for (const char *cursor = filename + prefix_size; cursor < separator;
+         ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+    }
+    for (const char *cursor = separator + 1U;
+         cursor < filename + length - suffix_size; ++cursor) {
+        if (!((*cursor >= '0' && *cursor <= '9') ||
+              (*cursor >= 'a' && *cursor <= 'f'))) {
             return false;
         }
     }
@@ -767,6 +823,93 @@ int jg_backup_remove(const char *directory, const char *filename)
     if (directory_descriptor >= 0 && close(directory_descriptor) != 0 &&
         result == 0) {
         result = -errno;
+    }
+    return result;
+}
+
+/** @brief Remove abandoned private staging and generated archive files. */
+int jg_backup_reconcile(const char *directory,
+                        jg_backup_retain_callback retain,
+                        void *context,
+                        size_t *removed)
+{
+    DIR *entries = NULL;
+    int directory_descriptor = -1;
+    int scan_descriptor = -1;
+    size_t removed_count = 0U;
+    int result = 0;
+
+    if (retain == NULL) {
+        return -EINVAL;
+    }
+    if (removed != NULL) {
+        *removed = 0U;
+    }
+    result = open_directory(directory, &directory_descriptor);
+    if (result == 0) {
+        scan_descriptor = dup(directory_descriptor);
+        if (scan_descriptor < 0) {
+            result = -errno;
+        }
+    }
+    if (result == 0) {
+        entries = fdopendir(scan_descriptor);
+        if (entries == NULL) {
+            result = -errno;
+            (void)close(scan_descriptor);
+        }
+    }
+    while (result == 0 && entries != NULL) {
+        struct dirent *entry = NULL;
+        struct stat metadata;
+        bool remove_entry = false;
+        bool retain_entry = true;
+
+        errno = 0;
+        entry = readdir(entries);
+        if (entry == NULL) {
+            if (errno != 0) {
+                result = -errno;
+            }
+            break;
+        }
+        remove_entry = staging_filename(entry->d_name);
+        if (!remove_entry &&
+            jg_backup_generated_filename_valid(entry->d_name)) {
+            result = retain(context, entry->d_name, &retain_entry);
+            remove_entry = result == 0 && !retain_entry;
+        }
+        if (result == 0 && remove_entry &&
+            fstatat(directory_descriptor, entry->d_name, &metadata,
+                    AT_SYMLINK_NOFOLLOW) != 0) {
+            result = errno == ENOENT ? 0 : -errno;
+            remove_entry = false;
+        }
+        if (result == 0 && remove_entry &&
+            (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
+             (metadata.st_mode & 0777U) != (S_IRUSR | S_IWUSR))) {
+            remove_entry = false;
+        }
+        if (result == 0 && remove_entry) {
+            if (unlinkat(directory_descriptor, entry->d_name, 0) == 0) {
+                ++removed_count;
+            } else if (errno != ENOENT) {
+                result = -errno;
+            }
+        }
+    }
+    if (entries != NULL && closedir(entries) != 0 && result == 0) {
+        result = -errno;
+    }
+    if (result == 0 && removed_count > 0U && fsync(directory_descriptor) != 0) {
+        result = -errno;
+    }
+    if (directory_descriptor >= 0 && close(directory_descriptor) != 0 &&
+        result == 0) {
+        result = -errno;
+    }
+    if (result == 0 && removed != NULL) {
+        *removed = removed_count;
     }
     return result;
 }
