@@ -140,6 +140,7 @@ add_library(
   src/common/database_blocklist.c
   src/common/database_configuration.c
   src/common/database_operation.c
+  src/common/database_policy_analysis.c
   src/common/database_policy.c
   src/common/database_policy_group.c
   src/common/database_policy_mode.c

@@ -1612,6 +1612,203 @@ static void test_policy_statistics(void **state)
                          database, (enum jg_policy_stats_dimension)99, 0U, 1U,
                          rule_stats, &count, &has_more),
                      -EINVAL);
+    assert_int_equal(
+        sqlite3_exec(database->handle,
+                     "UPDATE policy_rule_stats SET enforced_block_count=3 "
+                     "WHERE dimension='domain' AND rule_id=10;",
+                     NULL, NULL, NULL),
+        SQLITE_OK);
+    assert_int_equal(
+        jg_database_list_policy_rule_stats(database, JG_POLICY_STATS_DOMAIN, 0U,
+                                           2U, rule_stats, &count, &has_more),
+        -EILSEQ);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
+/** @brief Verify retained impact and conservative rule relationships. */
+static void test_policy_analysis(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_policy_rule_input domain_rules[4U];
+    struct jg_policy_destination_rule_input destination_rules[3U];
+    struct jg_policy_rule_input disabled_input;
+    struct jg_database_domain_rule disabled_rule;
+    struct jg_policy_rule_sample samples[3U] = {
+        {
+            .occurred_at = 3600U,
+            .dimension = JG_POLICY_STATS_DOMAIN,
+            .rule_id = 10U,
+            .path = JG_POLICY_STATS_DNS,
+            .domain = "first.example.org",
+            .query_type = 1U,
+            .decision = true,
+            .would_block = true,
+            .enforced_block = true,
+        },
+        {
+            .occurred_at = 7200U,
+            .dimension = JG_POLICY_STATS_DOMAIN,
+            .rule_id = 10U,
+            .path = JG_POLICY_STATS_TLS_SNI,
+            .domain = "second.example.org",
+            .decision = true,
+            .would_block = true,
+        },
+        {
+            .occurred_at = 7200U,
+            .dimension = JG_POLICY_STATS_DESTINATION,
+            .rule_id = 20U,
+            .path = JG_POLICY_STATS_NETWORK_DESTINATION,
+            .domain = "",
+            .decision = true,
+            .would_block = true,
+            .enforced_block = true,
+        },
+    };
+    struct jg_policy_rule_stats stats;
+    struct jg_policy_rule_impact impact;
+    struct jg_policy_client_impact clients[2U];
+    struct jg_policy_rule_relations relations;
+    struct jg_database *database = NULL;
+    size_t client_count = 0U;
+    bool has_stats = false;
+
+    (void)state;
+    domain_rules[0U] = make_rule(10U, "example.org", true, JG_POLICY_BLOCK,
+                                 JG_POLICY_SOURCE_BLOCKLIST);
+    domain_rules[1U] = make_rule(11U, "safe.example.org", false,
+                                 JG_POLICY_ALLOW, JG_POLICY_SOURCE_EXPLICIT);
+    domain_rules[2U] = domain_rules[0U];
+    domain_rules[2U].id = 12U;
+    domain_rules[3U] = make_rule(13U, "example.org", true, JG_POLICY_ALLOW,
+                                 JG_POLICY_SOURCE_EXPLICIT);
+    destination_rules[0U] = make_destination_rule(20U, JG_POLICY_BLOCK);
+    destination_rules[0U].has_port = true;
+    destination_rules[0U].port = 443U;
+    destination_rules[1U] = destination_rules[0U];
+    destination_rules[1U].id = 21U;
+    destination_rules[2U] = make_destination_rule(22U, JG_POLICY_ALLOW);
+    destination_rules[2U].has_port = true;
+    destination_rules[2U].port = 443U;
+    disabled_input = make_rule(0U, "disabled.example", false, JG_POLICY_BLOCK,
+                               JG_POLICY_SOURCE_EXPLICIT);
+
+    samples[0U].client.address_family = JG_POLICY_ADDRESS_IPV4;
+    samples[0U].client.address[0U] = 192U;
+    samples[0U].client.address[1U] = 0U;
+    samples[0U].client.address[2U] = 2U;
+    samples[0U].client.address[3U] = 10U;
+    samples[0U].client.has_vlan = true;
+    samples[0U].client.vlan_id = 30U;
+    samples[1U].client = samples[0U].client;
+    samples[1U].client.address[3U] = 11U;
+    samples[1U].client.vlan_id = 31U;
+    samples[2U].client = samples[0U].client;
+
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_database_replace_domain_rules(database, domain_rules, 4U), 0);
+    assert_int_equal(
+        jg_database_replace_destination_rules(database, destination_rules, 3U),
+        0);
+    assert_int_equal(jg_database_create_domain_rule(database, &disabled_input,
+                                                    false, &disabled_rule),
+                     0);
+    assert_int_equal(
+        jg_database_record_policy_stats(database, NULL, 0U, samples, 3U), 0);
+
+    assert_int_equal(jg_database_load_policy_rule_impact(
+                         database, JG_POLICY_STATS_DOMAIN, 10U, &stats,
+                         &has_stats, &impact, clients, 2U, &client_count),
+                     0);
+    assert_true(has_stats);
+    assert_int_equal(stats.match_count, 2U);
+    assert_int_equal(stats.would_block_count, 2U);
+    assert_int_equal(stats.enforced_block_count, 1U);
+    assert_int_equal(impact.distinct_client_count, 2U);
+    assert_int_equal(impact.distinct_vlan_count, 2U);
+    assert_int_equal(impact.distinct_domain_count, 2U);
+    assert_int_equal(impact.dns_match_count, 1U);
+    assert_int_equal(impact.tls_sni_match_count, 1U);
+    assert_int_equal(impact.destination_match_count, 0U);
+    assert_int_equal(client_count, 2U);
+    assert_int_equal(clients[0U].address[3U], 11U);
+    assert_int_equal(clients[0U].vlan_id, 31U);
+    assert_int_equal(clients[0U].last_hit_at, 7200U);
+    assert_int_equal(clients[1U].address[3U], 10U);
+    assert_int_equal(clients[1U].vlan_id, 30U);
+
+    assert_int_equal(jg_database_load_policy_rule_impact(
+                         database, JG_POLICY_STATS_DOMAIN, 11U, &stats,
+                         &has_stats, &impact, clients, 2U, &client_count),
+                     0);
+    assert_false(has_stats);
+    assert_int_equal(impact.distinct_client_count, 0U);
+    assert_int_equal(client_count, 0U);
+
+    assert_int_equal(jg_database_analyze_policy_rule(
+                         database, JG_POLICY_STATS_DOMAIN, 10U, &relations),
+                     0);
+    assert_int_equal(relations.duplicate_count, 1U);
+    assert_int_equal(relations.duplicate_ids[0U], 12U);
+    assert_int_equal(relations.conflict_count, 1U);
+    assert_int_equal(relations.conflict_ids[0U], 13U);
+    assert_int_equal(relations.shadowing_count, 1U);
+    assert_int_equal(relations.shadowing_ids[0U], 13U);
+    assert_int_equal(relations.allow_exception_count, 2U);
+    assert_int_equal(relations.allow_exception_ids[0U], 11U);
+    assert_int_equal(relations.allow_exception_ids[1U], 13U);
+    assert_false(relations.unreachable);
+    assert_false(relations.truncated);
+
+    assert_int_equal(jg_database_analyze_policy_rule(
+                         database, JG_POLICY_STATS_DOMAIN, 12U, &relations),
+                     0);
+    assert_true(relations.unreachable);
+    assert_false(relations.disabled);
+    assert_int_equal(
+        jg_database_analyze_policy_rule(database, JG_POLICY_STATS_DOMAIN,
+                                        disabled_rule.id, &relations),
+        0);
+    assert_true(relations.unreachable);
+    assert_true(relations.disabled);
+
+    assert_int_equal(
+        jg_database_analyze_policy_rule(database, JG_POLICY_STATS_DESTINATION,
+                                        20U, &relations),
+        0);
+    assert_int_equal(relations.duplicate_count, 1U);
+    assert_int_equal(relations.duplicate_ids[0U], 21U);
+    assert_int_equal(relations.conflict_count, 1U);
+    assert_int_equal(relations.conflict_ids[0U], 22U);
+    assert_int_equal(relations.shadowing_count, 1U);
+    assert_int_equal(relations.shadowing_ids[0U], 22U);
+    assert_int_equal(relations.allow_exception_count, 1U);
+    assert_int_equal(relations.allow_exception_ids[0U], 22U);
+    assert_false(relations.unreachable);
+    assert_int_equal(
+        jg_database_analyze_policy_rule(database, JG_POLICY_STATS_DESTINATION,
+                                        21U, &relations),
+        0);
+    assert_true(relations.unreachable);
+
+    assert_int_equal(
+        jg_database_analyze_policy_rule(database, JG_POLICY_STATS_DOMAIN,
+                                        UINT64_C(999999), &relations),
+        -ENOENT);
+    assert_int_equal(jg_database_load_policy_rule_impact(
+                         database, (enum jg_policy_stats_dimension)99, 10U,
+                         &stats, &has_stats, &impact, clients, 2U,
+                         &client_count),
+                     -EINVAL);
+    assert_int_equal(jg_database_load_policy_rule_impact(
+                         database, JG_POLICY_STATS_DOMAIN, 10U, &stats,
+                         &has_stats, &impact, clients, 0U, &client_count),
+                     -EINVAL);
+
     jg_database_close(database);
     remove_database(directory, path);
 }
@@ -2669,6 +2866,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_policy_modes),
         cmocka_unit_test(test_policy_groups),
         cmocka_unit_test(test_policy_statistics),
+        cmocka_unit_test(test_policy_analysis),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),

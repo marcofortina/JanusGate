@@ -35,6 +35,9 @@
 /** Largest cleanup batch, bounding one write transaction. */
 #define JG_POLICY_STATS_CLEANUP_BATCH_MAX 10000U
 
+/** Largest number of related rules or impacted clients in one analysis. */
+#define JG_POLICY_ANALYSIS_RELATED_MAX 16U
+
 /** Policy rule namespace used by statistics and analysis. */
 enum jg_policy_stats_dimension {
     /** Domain rule namespace. */
@@ -147,6 +150,70 @@ struct jg_policy_rule_stats {
     uint64_t first_hit_at;
     /** Most recent recorded match time as Unix seconds. */
     uint64_t last_hit_at;
+};
+
+/** Detailed impact summary retained for one rule. */
+struct jg_policy_rule_impact {
+    /** Distinct client identities represented by retained detail. */
+    uint64_t distinct_client_count;
+    /** Distinct VLAN identifiers represented by retained detail. */
+    uint64_t distinct_vlan_count;
+    /** Distinct queried domains represented by retained detail. */
+    uint64_t distinct_domain_count;
+    /** Retained matches observed through classic DNS. */
+    uint64_t dns_match_count;
+    /** Retained matches observed through visible TLS SNI. */
+    uint64_t tls_sni_match_count;
+    /** Retained matches observed through destination policy. */
+    uint64_t destination_match_count;
+};
+
+/** One impacted client returned by rule analysis. */
+struct jg_policy_client_impact {
+    /** Client address family, or none when unavailable. */
+    enum jg_policy_address_family address_family;
+    /** Client network address; IPv4 uses the first four bytes. */
+    uint8_t address[16U];
+    /** Whether a MAC address was available. */
+    bool has_mac;
+    /** Client MAC address when @ref has_mac is true. */
+    uint8_t mac[6U];
+    /** Whether a VLAN identifier was available. */
+    bool has_vlan;
+    /** VLAN identifier when @ref has_vlan is true. */
+    uint16_t vlan_id;
+    /** Retained matches attributed to this client identity. */
+    uint64_t match_count;
+    /** Retained would-block matches for this client identity. */
+    uint64_t would_block_count;
+    /** Most recent retained bucket containing this client. */
+    uint64_t last_hit_at;
+};
+
+/** Conservative static relationships for one persistent policy rule. */
+struct jg_policy_rule_relations {
+    /** Exact functional duplicate identifiers. */
+    uint64_t duplicate_ids[JG_POLICY_ANALYSIS_RELATED_MAX];
+    /** Number of identifiers stored in @ref duplicate_ids. */
+    size_t duplicate_count;
+    /** Exact-predicate opposite-action identifiers. */
+    uint64_t conflict_ids[JG_POLICY_ANALYSIS_RELATED_MAX];
+    /** Number of identifiers stored in @ref conflict_ids. */
+    size_t conflict_count;
+    /** Higher-precedence exact-predicate rule identifiers. */
+    uint64_t shadowing_ids[JG_POLICY_ANALYSIS_RELATED_MAX];
+    /** Number of identifiers stored in @ref shadowing_ids. */
+    size_t shadowing_count;
+    /** More-specific allows or broader blocks forming allow exceptions. */
+    uint64_t allow_exception_ids[JG_POLICY_ANALYSIS_RELATED_MAX];
+    /** Number of identifiers stored in @ref allow_exception_ids. */
+    size_t allow_exception_count;
+    /** Whether any relationship list exceeded its returned bound. */
+    bool truncated;
+    /** Whether the rule cannot currently participate in policy. */
+    bool unreachable;
+    /** Whether unreachability is caused by the rule being disabled. */
+    bool disabled;
 };
 
 /** Preview or result of one incremental detailed-statistics cleanup. */
@@ -282,6 +349,62 @@ JG_PUBLIC int jg_database_list_policy_rule_stats(
     struct jg_policy_rule_stats *stats,
     size_t *count,
     bool *has_more);
+
+/**
+ * @brief Load lifetime and retained-detail impact for one rule.
+ *
+ * @param[in] database Open database.
+ * @param[in] dimension Domain or destination rule namespace.
+ * @param[in] rule_id Stable positive rule identifier.
+ * @param[out] stats Receives lifetime counters when present.
+ * @param[out] has_stats Whether @p stats contains persistent counters.
+ * @param[out] impact Receives retained-detail cardinalities and path counts.
+ * @param[out] clients Receives the most active retained client identities.
+ * @param[in] client_limit Number of client slots, up to the analysis maximum.
+ * @param[out] client_count Number of client records written.
+ *
+ * @return 0 on success, including a rule without traffic.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_load_policy_rule_impact(
+    struct jg_database *database,
+    enum jg_policy_stats_dimension dimension,
+    uint64_t rule_id,
+    struct jg_policy_rule_stats *stats,
+    bool *has_stats,
+    struct jg_policy_rule_impact *impact,
+    struct jg_policy_client_impact *clients,
+    size_t client_limit,
+    size_t *client_count);
+
+/**
+ * @brief Analyze provable static relationships for one persistent rule.
+ *
+ * Findings intentionally omit ambiguous relationships rather than producing
+ * false positives. Exact duplicates can make a rule unreachable; disabled
+ * rules are reported separately.
+ *
+ * @param[in] database Open database.
+ * @param[in] dimension Domain or destination rule namespace.
+ * @param[in] rule_id Stable positive rule identifier.
+ * @param[out] relations Receives bounded related-rule identifiers.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when the rule does not exist.
+ * @return -EINVAL for invalid arguments.
+ * @return A negative errno-style value for another SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_analyze_policy_rule(
+    struct jg_database *database,
+    enum jg_policy_stats_dimension dimension,
+    uint64_t rule_id,
+    struct jg_policy_rule_relations *relations);
 
 /**
  * @brief Preview detailed rows eligible under the retention configuration.

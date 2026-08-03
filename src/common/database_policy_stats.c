@@ -501,8 +501,14 @@ static int decode_rule_stats(sqlite3_stmt *statement,
     if (result == 0) {
         result = jg_database_column_unsigned(statement, 9, &stats->last_hit_at);
     }
-    if (result == 0 && (stats->rule_id == 0U || stats->match_count == 0U ||
-                        stats->last_hit_at < stats->first_hit_at)) {
+    if (result == 0 &&
+        (stats->rule_id == 0U || stats->match_count == 0U ||
+         stats->decision_count > stats->match_count ||
+         stats->would_block_count > stats->match_count ||
+         stats->enforced_block_count > stats->would_block_count ||
+         stats->allow_decision_count > stats->match_count ||
+         stats->shadowed_count > stats->match_count ||
+         stats->last_hit_at < stats->first_hit_at)) {
         result = -EILSEQ;
     }
     return result;
