@@ -186,6 +186,7 @@ add_library(
   src/daemon/dns_response.c
   src/daemon/fragment.c
   src/daemon/management.c
+  src/daemon/management_recovery.c
   src/daemon/netd_client.c
   ${janusgate_nfqueue_source}
   src/daemon/nfqueue_group.c

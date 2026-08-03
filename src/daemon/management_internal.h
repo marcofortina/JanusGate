@@ -299,6 +299,56 @@ struct management_jobs {
     bool stopping;
 };
 
+/** @brief Build the private pending-key path paired with the server identity.
+ */
+int certificate_pending_path(const struct jg_management *management,
+                             char path[PATH_MAX]);
+
+/** @brief Compare every semantic field of two network configurations. */
+bool network_configs_equal(const struct jg_network_config *left,
+                           const struct jg_network_config *right);
+
+/** @brief Record one consistency failure and emit its first occurrence. */
+void mark_management_degraded(struct jg_management *management,
+                              uint32_t reason,
+                              const char *event_code,
+                              const char *message);
+
+/** @brief Inspect whether a secure server identity currently exists. */
+int server_identity_present(const char *path, bool *present);
+
+/** @brief Inspect whether a secure pending private key currently exists. */
+int pending_key_present(const char *path, bool *present);
+
+/** @brief Inspect whether a secure client trust store currently exists. */
+int client_ca_present(const char *path, bool *present);
+
+/** @brief Reserve, snapshot, and arm one cross-resource operation. */
+int start_recovery_operation(struct jg_management *management,
+                             const char *kind,
+                             const uint8_t *payload,
+                             size_t payload_size,
+                             uint8_t files,
+                             bool database,
+                             uint64_t now);
+
+/** @brief Restore or discard one operation left pending across a restart. */
+int recover_pending_operation(struct jg_management *management);
+
+/** @brief Commit one final audit and retire its durable recovery intent. */
+int finish_recovery_operation(struct jg_management *management,
+                              int audit_result);
+
+/** @brief Compensate a failed external operation using its durable intent. */
+int abort_recovery_operation(struct jg_management *management,
+                             int operation_result);
+
+/** @brief Arm durable recovery for one confirmed network mutation. */
+int start_network_recovery(struct jg_management *management,
+                           const struct jg_network_config *previous,
+                           const struct jg_network_config *replacement,
+                           uint64_t now);
+
 /** @endcond */
 
 #endif
