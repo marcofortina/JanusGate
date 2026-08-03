@@ -622,6 +622,7 @@ int handle_login(struct jg_management *management,
                              request->request_id, output, output_size, written);
     }
     if (result != 0) {
+        management_alert_authentication_failed(management);
         return respond_error(401, "invalid_credentials",
                              "The supplied credentials are not valid.",
                              request->request_id, output, output_size, written);
@@ -976,12 +977,14 @@ int authenticate_actor(struct jg_management *management,
         return 0;
     }
     if (has_session == has_bearer || has_certificate != has_bearer) {
+        management_alert_authentication_failed(management);
         return -EACCES;
     }
     if (has_bearer) {
         if (strlen(request->bearer) != JG_AUTH_SECRET_TEXT_SIZE - 1U ||
             parse_certificate_fingerprint(request->client_certificate,
                                           certificate_fingerprint) != 0) {
+            management_alert_authentication_failed(management);
             return -EACCES;
         }
         result = jg_account_token_validate(
@@ -1015,6 +1018,9 @@ int authenticate_actor(struct jg_management *management,
     if (result == 0 && required_permissions != 0U &&
         !jg_access_grants(actor->identity.permissions, required_permissions)) {
         result = -EPERM;
+    }
+    if (result == -EACCES || result == -ENOENT || result == -EBADMSG) {
+        management_alert_authentication_failed(management);
     }
     if (result != 0) {
         sodium_memzero(actor, sizeof(*actor));

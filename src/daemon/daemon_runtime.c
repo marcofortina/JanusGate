@@ -491,6 +491,7 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
 int jg_daemon_runtime_start(struct jg_daemon_runtime *runtime)
 {
     bool collector_started = false;
+    bool queues_started = false;
     int result = 0;
 
     if (runtime == NULL) {
@@ -500,6 +501,17 @@ int jg_daemon_runtime_start(struct jg_daemon_runtime *runtime)
     if (result == 0) {
         collector_started = true;
         result = jg_nfqueue_group_start(runtime->queues);
+    }
+    if (result == 0) {
+        queues_started = true;
+        result = jg_management_start(runtime->management);
+    }
+    if (result != 0 && queues_started) {
+        const int stop_result = jg_nfqueue_group_request_stop(runtime->queues);
+
+        if (stop_result == 0) {
+            (void)jg_nfqueue_group_join(runtime->queues);
+        }
     }
     if (result != 0 && collector_started) {
         const int stop_result =

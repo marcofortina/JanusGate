@@ -203,6 +203,7 @@ add_library(
   src/daemon/dns_response.c
   src/daemon/fragment.c
   src/daemon/management.c
+  src/daemon/management_alerts.c
   src/daemon/management_backup.c
   src/daemon/management_blocklist.c
   src/daemon/management_certificate.c

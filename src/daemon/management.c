@@ -288,6 +288,25 @@ int jg_management_create(struct jg_database *database,
         return -ENOMEM;
     }
     atomic_init(&created->health->degraded_reasons, 0U);
+    atomic_init(&created->health->authentication_failures_total, 0U);
+    for (size_t index = 0U; index < JG_ALERT_TYPE_COUNT; ++index) {
+        atomic_init(&created->health->alert_open_by_type[index], 0U);
+    }
+    atomic_init(&created->health->alert_incidents_retained, 0U);
+    atomic_init(&created->health->alert_resolutions_retained, 0U);
+    atomic_init(&created->health->alert_deliveries_pending, 0U);
+    atomic_init(&created->health->alert_deliveries_succeeded, 0U);
+    atomic_init(&created->health->alert_deliveries_failed, 0U);
+    atomic_init(&created->health->alert_last_evaluation_at, 0U);
+    atomic_init(&created->health->certificate_expiry_timestamp, 0U);
+    atomic_init(&created->health->blocklist_sources_unhealthy, 0U);
+    atomic_init(&created->health->blocklist_sources_stale, 0U);
+    atomic_init(&created->health->filesystem_minimum_available_bytes, 0U);
+    atomic_init(&created->health->filesystem_minimum_available_basis_points,
+                0U);
+    atomic_init(&created->health->alert_evaluation_successful, false);
+    atomic_init(&created->health->audit_valid, false);
+    atomic_init(&created->health->policy_synchronized, false);
     created->database = database;
     created->runtime = runtime;
     (void)memcpy(created->totp_key_path, totp_key_path,
@@ -320,12 +339,22 @@ int jg_management_create(struct jg_database *database,
     if (result == 0) {
         result = management_jobs_create(created, &created->jobs);
     }
+    if (result == 0) {
+        result = management_alerts_create(created, &created->alerts);
+    }
     if (result != 0) {
         jg_management_destroy(created);
         return result;
     }
     *management = created;
     return 0;
+}
+
+/** @brief Start background management services after runtime preparation. */
+int jg_management_start(struct jg_management *management)
+{
+    return management == NULL ? -EINVAL
+                              : management_alerts_start(management->alerts);
 }
 
 /** @brief Validate text accepted as an internal request identifier. */
@@ -1865,6 +1894,8 @@ void jg_management_destroy(struct jg_management *management)
     if (management == NULL) {
         return;
     }
+    management_alerts_destroy(management->alerts);
+    management->alerts = NULL;
     management_jobs_destroy(management->jobs);
     management->jobs = NULL;
     management_consistency_destroy(management->consistency);

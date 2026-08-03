@@ -20,6 +20,7 @@
 
 #include "daemon_runtime.h"
 #include "janusgate/account.h"
+#include "janusgate/alert.h"
 #include "janusgate/audit.h"
 #include "janusgate/backup.h"
 #include "janusgate/ipc.h"
@@ -117,6 +118,22 @@ enum management_degraded_reason {
 /** Health state shared by request and slow-operation worker contexts. */
 struct management_health {
     _Atomic uint32_t degraded_reasons;
+    _Atomic uint64_t authentication_failures_total;
+    _Atomic uint64_t alert_open_by_type[JG_ALERT_TYPE_COUNT];
+    _Atomic uint64_t alert_incidents_retained;
+    _Atomic uint64_t alert_resolutions_retained;
+    _Atomic uint64_t alert_deliveries_pending;
+    _Atomic uint64_t alert_deliveries_succeeded;
+    _Atomic uint64_t alert_deliveries_failed;
+    _Atomic uint64_t alert_last_evaluation_at;
+    _Atomic uint64_t certificate_expiry_timestamp;
+    _Atomic uint64_t blocklist_sources_unhealthy;
+    _Atomic uint64_t blocklist_sources_stale;
+    _Atomic uint64_t filesystem_minimum_available_bytes;
+    _Atomic uint64_t filesystem_minimum_available_basis_points;
+    _Atomic bool alert_evaluation_successful;
+    _Atomic bool audit_valid;
+    _Atomic bool policy_synchronized;
 };
 
 /** Secret material shared by request processing and the job worker. */
@@ -126,6 +143,9 @@ struct management_secrets {
 
 /** Opaque bounded slow-operation queue owned by management state. */
 struct management_jobs;
+
+/** Opaque native alert evaluator and delivery worker. */
+struct management_alerts;
 
 /** Opaque reader/exclusive gate shared by every management context. */
 struct management_consistency;
@@ -165,6 +185,7 @@ struct jg_management {
     enum jg_system_action pending_system_action;
     struct management_consistency *consistency;
     struct management_jobs *jobs;
+    struct management_alerts *alerts;
 };
 
 /** Validated borrowed view of one internal JSON request envelope. */
@@ -370,6 +391,22 @@ int management_jobs_create(struct jg_management *management,
 
 /** @brief Stop and release one slow-operation queue. */
 void management_jobs_destroy(struct management_jobs *jobs);
+
+/** @brief Start native alert evaluation and asynchronous delivery. */
+int management_alerts_create(struct jg_management *management,
+                             struct management_alerts **alerts);
+
+/** @brief Start one fully initialized native alert worker. */
+int management_alerts_start(struct management_alerts *alerts);
+
+/** @brief Stop and release native alert evaluation state. */
+void management_alerts_destroy(struct management_alerts *alerts);
+
+/** @brief Wake alert evaluation after a relevant configuration change. */
+void management_alerts_wake(struct management_alerts *alerts);
+
+/** @brief Count one rejected credential or authenticated transport. */
+void management_alert_authentication_failed(struct jg_management *management);
 
 /** @brief Queue one prepared authenticated slow operation. */
 int submit_management_job(struct jg_management *management,

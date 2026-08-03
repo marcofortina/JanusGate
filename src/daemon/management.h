@@ -82,6 +82,19 @@ int jg_management_create(struct jg_database *database,
                          struct jg_management **management);
 
 /**
+ * @brief Start background management services after runtime preparation.
+ *
+ * @param[in,out] management Fully initialized management state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid or already-started state.
+ * @return A negative errno-style thread creation error otherwise.
+ *
+ * @thread_safety The caller must serialize runtime startup.
+ */
+int jg_management_start(struct jg_management *management);
+
+/**
  * @brief Process one bounded canonical management request.
  *
  * The request and response use the internal JSON envelope documented with the
