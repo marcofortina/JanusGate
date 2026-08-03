@@ -26,50 +26,13 @@
 #include <jansson.h>
 #include <sodium.h>
 
+#include "cli_internal.h"
 #include "client.h"
 #include "janusgate/backup.h"
 #include "janusgate/certificate.h"
 #include "janusgate/ipc.h"
 #include "janusgate/ipc_client.h"
 #include "janusgate/version.h"
-
-/** Successful command completion. */
-#define CLI_EXIT_SUCCESS 0
-
-/** Transport, protocol, or generic API failure. */
-#define CLI_EXIT_FAILURE 1
-
-/** Invalid command-line usage. */
-#define CLI_EXIT_USAGE 2
-
-/** Authentication or authorization failure. */
-#define CLI_EXIT_AUTH 3
-
-/** Revision or transaction conflict. */
-#define CLI_EXIT_CONFLICT 4
-
-/** Required service is unhealthy or unavailable. */
-#define CLI_EXIT_UNAVAILABLE 5
-
-/** Parsed process-wide command options. */
-struct cli_options {
-    const char *socket_path;
-    const char *endpoint;
-    const char *token_file;
-    const char *passphrase_file;
-    const char *client_certificate;
-    const char *client_key;
-    const char *ca_file;
-    unsigned timeout_seconds;
-    bool socket_set;
-    bool json;
-    bool quiet;
-    bool verbose;
-    bool yes;
-    bool include_private_key;
-    bool help;
-    bool version;
-};
 
 /** Long-option values kept outside the unsigned-character range. */
 enum cli_option {
@@ -200,7 +163,7 @@ static int parse_timeout(const char *text, unsigned *timeout_seconds)
 }
 
 /** @brief Parse one nonzero decimal resource identifier. */
-static int parse_identifier(const char *text, uint64_t *identifier)
+int jg_cli_parse_identifier(const char *text, uint64_t *identifier)
 {
     char *end = NULL;
     unsigned long long value = 0ULL;
@@ -756,8 +719,8 @@ static int request_api(const struct cli_options *options,
 }
 
 /** @brief Read and report the configured private API token. */
-static int load_token(const struct cli_options *options,
-                      char token[JG_AUTH_SECRET_TEXT_SIZE])
+int load_token(const struct cli_options *options,
+               char token[JG_AUTH_SECRET_TEXT_SIZE])
 {
     int result = 0;
 
@@ -779,7 +742,7 @@ static int load_token(const struct cli_options *options,
 }
 
 /** @brief Execute one API-backed CLI command through the selected transport. */
-static int run_api_command(const struct cli_options *options,
+int jg_cli_run_api_command(const struct cli_options *options,
                            const char *command)
 {
     struct jg_cli_response response = {0};
@@ -811,7 +774,7 @@ static int run_api_command(const struct cli_options *options,
 }
 
 /** @brief Read one bounded JSON object from a file or standard input. */
-static json_t *read_json_object(const char *path, int *result)
+json_t *jg_cli_read_json_object(const char *path, int *result)
 {
     FILE *input = NULL;
     char *data = NULL;
@@ -856,7 +819,7 @@ static json_t *read_json_object(const char *path, int *result)
 }
 
 /** @brief Read one bounded text file or standard input. */
-static char *read_text(const char *path, size_t *text_size, int *result)
+char *jg_cli_read_text(const char *path, size_t *text_size, int *result)
 {
     FILE *input = NULL;
     char *text = NULL;
@@ -940,7 +903,7 @@ static int load_network_revision(const struct cli_options *options,
 }
 
 /** @brief Send and present one JSON management request. */
-static int send_api_request(const struct cli_options *options,
+int jg_cli_send_api_request(const struct cli_options *options,
                             const char *token,
                             const char *command,
                             const char *method,
@@ -962,7 +925,7 @@ static int send_api_request(const struct cli_options *options,
 }
 
 /** @brief Fetch and decode one successful JSON API object. */
-static int fetch_api_object(const struct cli_options *options,
+int jg_cli_fetch_api_object(const struct cli_options *options,
                             const char *token,
                             const char *path,
                             const char *query,
@@ -1000,7 +963,7 @@ static int fetch_api_object(const struct cli_options *options,
 }
 
 /** @brief Send one JSON body and decode a successful JSON response. */
-static int post_api_object(const struct cli_options *options,
+int jg_cli_post_api_object(const struct cli_options *options,
                            const char *token,
                            const char *path,
                            json_t *body,
@@ -1085,7 +1048,8 @@ static int wait_for_api_job(const struct cli_options *options,
         json_t *status_value = NULL;
         json_t *body = NULL;
         const char *state = NULL;
-        int result = fetch_api_object(options, token, path, NULL, &status_body);
+        int result =
+            jg_cli_fetch_api_object(options, token, path, NULL, &status_body);
 
         if (result != CLI_EXIT_SUCCESS) {
             json_decref(status_body);
@@ -1139,14 +1103,14 @@ static int wait_for_api_job(const struct cli_options *options,
 }
 
 /** @brief Submit one asynchronous API request and wait for its result body. */
-static int post_api_job(const struct cli_options *options,
+int jg_cli_post_api_job(const struct cli_options *options,
                         const char *token,
                         const char *path,
                         json_t *body,
                         json_t **result_body)
 {
     json_t *accepted = NULL;
-    int result = post_api_object(options, token, path, body, &accepted);
+    int result = jg_cli_post_api_object(options, token, path, body, &accepted);
 
     *result_body = NULL;
     if (result == CLI_EXIT_SUCCESS) {
@@ -1157,7 +1121,7 @@ static int post_api_job(const struct cli_options *options,
 }
 
 /** @brief Present one locally assembled JSON result. */
-static int present_object(const struct cli_options *options, json_t *object)
+int jg_cli_present_object(const struct cli_options *options, json_t *object)
 {
     char *encoded = NULL;
 
@@ -1191,7 +1155,7 @@ static int run_network_configuration(const struct cli_options *options,
     uint64_t revision = 0U;
     int result = 0;
 
-    configuration = read_json_object(path, &result);
+    configuration = jg_cli_read_json_object(path, &result);
     if (configuration == NULL) {
         (void)fprintf(stderr, "janusgatectl: network configuration: %s\n",
                       strerror(-result));
@@ -1199,8 +1163,9 @@ static int run_network_configuration(const struct cli_options *options,
                                                         : CLI_EXIT_FAILURE;
     }
     if (strcmp(operation, "validate") == 0) {
-        result = send_api_request(options, token, "network validate", "POST",
-                                  "/api/v1/network/validate", configuration);
+        result =
+            jg_cli_send_api_request(options, token, "network validate", "POST",
+                                    "/api/v1/network/validate", configuration);
         json_decref(configuration);
         return result;
     }
@@ -1215,7 +1180,7 @@ static int run_network_configuration(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(
+        result = jg_cli_send_api_request(
             options, token,
             strcmp(operation, "set") == 0 ? "network set" : "network apply",
             "POST", "/api/v1/network/apply", body);
@@ -1246,13 +1211,14 @@ static int run_network_transaction(const struct cli_options *options,
         return CLI_EXIT_FAILURE;
     }
     (void)snprintf(path, sizeof(path), "/api/v1/network/%s", operation);
-    result = send_api_request(options, token, operation, "POST", path, body);
+    result =
+        jg_cli_send_api_request(options, token, operation, "POST", path, body);
     json_decref(body);
     return result;
 }
 
 /** @brief Run one recognized network administration command. */
-static int run_network_command(const struct cli_options *options,
+int jg_cli_run_network_command(const struct cli_options *options,
                                int argc,
                                char **argv)
 {
@@ -1268,8 +1234,8 @@ static int run_network_command(const struct cli_options *options,
         if (body == NULL) {
             result = CLI_EXIT_FAILURE;
         } else {
-            result = send_api_request(options, token, "network show", "GET",
-                                      "/api/v1/network", body);
+            result = jg_cli_send_api_request(options, token, "network show",
+                                             "GET", "/api/v1/network", body);
         }
         json_decref(body);
     } else if (argc == 3) {
@@ -1281,68 +1247,8 @@ static int run_network_command(const struct cli_options *options,
     return result;
 }
 
-/** @brief Map one CLI policy kind to its API collection and array field. */
-static int policy_collection(const char *kind,
-                             const char **path,
-                             const char **array_name)
-{
-    if (strcmp(kind, "domain") == 0) {
-        *path = "/api/v1/domains";
-        *array_name = "domains";
-        return 0;
-    }
-    if (strcmp(kind, "destination") == 0) {
-        *path = "/api/v1/policies/destinations";
-        *array_name = "destination_rules";
-        return 0;
-    }
-    return -EINVAL;
-}
-
-/** @brief Fetch one exact policy rule and return an owned JSON object. */
-static int fetch_policy_rule(const struct cli_options *options,
-                             const char *token,
-                             const char *kind,
-                             uint64_t identifier,
-                             json_t **rule)
-{
-    const char *collection = NULL;
-    const char *array_name = NULL;
-    char query[96U];
-    json_t *page = NULL;
-    json_t *rules = NULL;
-    json_t *candidate = NULL;
-    json_t *value = NULL;
-    int result = policy_collection(kind, &collection, &array_name);
-
-    *rule = NULL;
-    if (result != 0) {
-        return CLI_EXIT_USAGE;
-    }
-    (void)snprintf(query, sizeof(query), "after_id=%llu&limit=1",
-                   (unsigned long long)(identifier - 1U));
-    result = fetch_api_object(options, token, collection, query, &page);
-    if (result == CLI_EXIT_SUCCESS) {
-        rules = json_object_get(page, array_name);
-        candidate = json_array_get(rules, 0U);
-        value = json_object_get(candidate, "id");
-        if (!json_is_integer(value) ||
-            (uint64_t)json_integer_value(value) != identifier) {
-            (void)fprintf(stderr, "janusgatectl: policy rule not found\n");
-            result = CLI_EXIT_FAILURE;
-        } else {
-            *rule = json_deep_copy(candidate);
-            if (*rule == NULL) {
-                result = CLI_EXIT_FAILURE;
-            }
-        }
-    }
-    json_decref(page);
-    return result;
-}
-
 /** @brief Confirm a destructive operation unless approval was already given. */
-static bool destructive_operation_confirmed(const struct cli_options *options,
+bool jg_cli_destructive_operation_confirmed(const struct cli_options *options,
                                             const char *description)
 {
     char answer[8U];
@@ -1365,618 +1271,6 @@ static bool destructive_operation_confirmed(const struct cli_options *options,
            (answer[1U] == '\n' || answer[1U] == '\0');
 }
 
-/** @brief List both policy-rule collections as one stable document. */
-static int run_policy_list(const struct cli_options *options, const char *token)
-{
-    json_t *domains = NULL;
-    json_t *destinations = NULL;
-    json_t *body = NULL;
-    int result =
-        fetch_api_object(options, token, "/api/v1/domains", NULL, &domains);
-
-    if (result == CLI_EXIT_SUCCESS) {
-        result =
-            fetch_api_object(options, token, "/api/v1/policies/destinations",
-                             NULL, &destinations);
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        body = json_object();
-        if (body == NULL ||
-            json_object_set(body, "domain_rules", domains) != 0 ||
-            json_object_set(body, "destination_rules", destinations) != 0) {
-            result = CLI_EXIT_FAILURE;
-        } else {
-            result = present_object(options, body);
-        }
-    }
-    json_decref(body);
-    json_decref(destinations);
-    json_decref(domains);
-    return result;
-}
-
-/** @brief Display one exact domain or destination policy rule. */
-static int run_policy_show(const struct cli_options *options,
-                           const char *token,
-                           const char *kind,
-                           const char *identifier_text)
-{
-    json_t *rule = NULL;
-    uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
-
-    if (result != 0) {
-        return CLI_EXIT_USAGE;
-    }
-    result = fetch_policy_rule(options, token, kind, identifier, &rule);
-    if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, rule);
-    }
-    json_decref(rule);
-    return result;
-}
-
-/** @brief Build one exact API path for a typed policy rule. */
-static int policy_rule_path(const char *kind,
-                            uint64_t identifier,
-                            char *path,
-                            size_t path_size)
-{
-    const char *collection = NULL;
-    const char *array_name = NULL;
-    int written = 0;
-
-    if (policy_collection(kind, &collection, &array_name) != 0) {
-        return -EINVAL;
-    }
-    (void)array_name;
-    written = snprintf(path, path_size, "%s/%llu", collection,
-                       (unsigned long long)identifier);
-    return written > 0 && (size_t)written < path_size ? 0 : -ENOSPC;
-}
-
-/** @brief Create or replace one typed policy rule from a JSON document. */
-static int run_policy_write(const struct cli_options *options,
-                            const char *token,
-                            const char *operation,
-                            const char *kind,
-                            const char *identifier_text,
-                            const char *file)
-{
-    const char *collection = NULL;
-    const char *array_name = NULL;
-    char path[128U];
-    json_t *body = NULL;
-    json_t *current = NULL;
-    json_t *revision = NULL;
-    uint64_t identifier = 0U;
-    int result = policy_collection(kind, &collection, &array_name);
-
-    (void)array_name;
-    if (result != 0 || (identifier_text != NULL &&
-                        parse_identifier(identifier_text, &identifier) != 0)) {
-        return CLI_EXIT_USAGE;
-    }
-    body = read_json_object(file, &result);
-    if (body == NULL) {
-        (void)fprintf(stderr, "janusgatectl: policy document: %s\n",
-                      strerror(-result));
-        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
-                                                        : CLI_EXIT_FAILURE;
-    }
-    if (identifier_text == NULL) {
-        (void)snprintf(path, sizeof(path), "%s", collection);
-    } else {
-        result = fetch_policy_rule(options, token, kind, identifier, &current);
-        revision = json_object_get(current, "revision");
-        if (result == CLI_EXIT_SUCCESS &&
-            (!json_is_integer(revision) ||
-             json_object_set(body, "revision", revision) != 0 ||
-             policy_rule_path(kind, identifier, path, sizeof(path)) != 0)) {
-            result = CLI_EXIT_FAILURE;
-        }
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(
-            options, token,
-            strcmp(operation, "add") == 0 ? "policy add" : "policy update",
-            strcmp(operation, "add") == 0 ? "POST" : "PATCH", path, body);
-    }
-    json_decref(current);
-    json_decref(body);
-    return result;
-}
-
-/** @brief Delete one revision-bound typed policy rule. */
-static int run_policy_remove(const struct cli_options *options,
-                             const char *token,
-                             const char *kind,
-                             const char *identifier_text)
-{
-    char path[128U];
-    json_t *rule = NULL;
-    json_t *revision = NULL;
-    json_t *body = NULL;
-    uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
-
-    if (result != 0) {
-        return CLI_EXIT_USAGE;
-    }
-    result = fetch_policy_rule(options, token, kind, identifier, &rule);
-    if (result == CLI_EXIT_SUCCESS &&
-        !destructive_operation_confirmed(options, "Remove the policy rule")) {
-        result = CLI_EXIT_FAILURE;
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        revision = json_object_get(rule, "revision");
-        body = json_object();
-        if (!json_is_integer(revision) || body == NULL ||
-            json_object_set(body, "revision", revision) != 0 ||
-            policy_rule_path(kind, identifier, path, sizeof(path)) != 0) {
-            result = CLI_EXIT_FAILURE;
-        }
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "policy remove", "DELETE",
-                                  path, body);
-    }
-    json_decref(body);
-    json_decref(rule);
-    return result;
-}
-
-/** @brief Simulate one policy decision from a JSON document. */
-static int run_policy_simulation(const struct cli_options *options,
-                                 const char *token,
-                                 const char *file)
-{
-    json_t *body = NULL;
-    int result = 0;
-
-    body = read_json_object(file, &result);
-    if (body == NULL) {
-        (void)fprintf(stderr, "janusgatectl: simulation document: %s\n",
-                      strerror(-result));
-        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
-                                                        : CLI_EXIT_FAILURE;
-    }
-    result = send_api_request(options, token, "policy simulate", "POST",
-                              "/api/v1/policies/simulate", body);
-    json_decref(body);
-    return result;
-}
-
-/** @brief Run one recognized policy administration command. */
-static int run_policy_command(const struct cli_options *options,
-                              int argc,
-                              char **argv)
-{
-    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
-    int result = load_token(options, token);
-
-    if (result != CLI_EXIT_SUCCESS) {
-        return result;
-    }
-    if (argc == 2) {
-        result = run_policy_list(options, token);
-    } else if (strcmp(argv[1], "show") == 0) {
-        result = run_policy_show(options, token, argv[2], argv[3]);
-    } else if (strcmp(argv[1], "add") == 0) {
-        result =
-            run_policy_write(options, token, "add", argv[2], NULL, argv[3]);
-    } else if (strcmp(argv[1], "update") == 0) {
-        result = run_policy_write(options, token, "update", argv[2], argv[3],
-                                  argv[4]);
-    } else if (strcmp(argv[1], "remove") == 0) {
-        result = run_policy_remove(options, token, argv[2], argv[3]);
-    } else {
-        result = run_policy_simulation(options, token, argv[2]);
-    }
-    sodium_memzero(token, sizeof(token));
-    return result;
-}
-
-/** @brief Create one global DNS domain rule from a CLI shorthand. */
-static int run_domain_create(const struct cli_options *options,
-                             const char *token,
-                             const char *action,
-                             const char *domain)
-{
-    json_t *body = json_object();
-    json_t *scope = json_object();
-    int result = 0;
-
-    if (body == NULL || scope == NULL ||
-        json_object_set_new(scope, "type", json_string("global")) != 0 ||
-        json_object_set_new(body, "domain", json_string(domain)) != 0 ||
-        json_object_set_new(body, "include_subdomains", json_true()) != 0 ||
-        json_object_set_new(body, "action", json_string(action)) != 0 ||
-        json_object_set_new(body, "target", json_string("dns")) != 0 ||
-        json_object_set(body, "scope", scope) != 0 ||
-        json_object_set_new(body, "attribution", json_string("janusgatectl")) !=
-            0 ||
-        json_object_set_new(body, "enabled", json_true()) != 0) {
-        result = CLI_EXIT_FAILURE;
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token,
-                                  strcmp(action, "block") == 0 ? "domain block"
-                                                               : "domain allow",
-                                  "POST", "/api/v1/domains", body);
-    }
-    json_decref(scope);
-    json_decref(body);
-    return result;
-}
-
-/** @brief Run one recognized domain-policy shorthand command. */
-static int run_domain_command(const struct cli_options *options, char **argv)
-{
-    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
-    int result = load_token(options, token);
-
-    if (result != CLI_EXIT_SUCCESS) {
-        return result;
-    }
-    if (strcmp(argv[1], "remove") == 0) {
-        result = run_policy_remove(options, token, "domain", argv[2]);
-    } else {
-        result = run_domain_create(options, token, argv[1], argv[2]);
-    }
-    sodium_memzero(token, sizeof(token));
-    return result;
-}
-
-/** @brief Fetch one exact blocklist source and return an owned object. */
-static int fetch_source(const struct cli_options *options,
-                        const char *token,
-                        uint64_t identifier,
-                        json_t **source)
-{
-    char query[96U];
-    json_t *page = NULL;
-    json_t *sources = NULL;
-    json_t *candidate = NULL;
-    json_t *value = NULL;
-    int result = 0;
-
-    *source = NULL;
-    (void)snprintf(query, sizeof(query), "after_id=%llu&limit=1",
-                   (unsigned long long)(identifier - 1U));
-    result = fetch_api_object(options, token, "/api/v1/sources", query, &page);
-    if (result == CLI_EXIT_SUCCESS) {
-        sources = json_object_get(page, "sources");
-        candidate = json_array_get(sources, 0U);
-        value = json_object_get(candidate, "id");
-        if (!json_is_integer(value) ||
-            (uint64_t)json_integer_value(value) != identifier) {
-            (void)fprintf(stderr, "janusgatectl: blocklist source not found\n");
-            result = CLI_EXIT_FAILURE;
-        } else {
-            *source = json_deep_copy(candidate);
-            if (*source == NULL) {
-                result = CLI_EXIT_FAILURE;
-            }
-        }
-    }
-    json_decref(page);
-    return result;
-}
-
-/** @brief Remove read-only source-state fields before an update. */
-static void retain_source_configuration(json_t *source)
-{
-    static const char *const read_only[] = {
-        "id",
-        "created_at",
-        "updated_at",
-        "etag",
-        "last_modified",
-        "last_attempt_at",
-        "last_success_at",
-        "next_attempt_at",
-        "consecutive_failures",
-        "active_checksum",
-        "active_entries",
-        "rejected_entries",
-        "health",
-        "last_error",
-    };
-
-    for (size_t index = 0U; index < sizeof(read_only) / sizeof(read_only[0U]);
-         ++index) {
-        json_object_del(source, read_only[index]);
-    }
-}
-
-/** @brief List blocklist-source configuration and update health. */
-static int run_source_list(const struct cli_options *options, const char *token)
-{
-    json_t *body = NULL;
-    int result =
-        fetch_api_object(options, token, "/api/v1/sources", NULL, &body);
-
-    if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
-    }
-    json_decref(body);
-    return result;
-}
-
-/** @brief Add or replace one blocklist-source JSON configuration. */
-static int run_source_write(const struct cli_options *options,
-                            const char *token,
-                            const char *operation,
-                            const char *identifier_text,
-                            const char *file)
-{
-    char path[96U];
-    json_t *body = NULL;
-    json_t *source = NULL;
-    json_t *revision = NULL;
-    uint64_t identifier = 0U;
-    int result = 0;
-
-    if (identifier_text != NULL &&
-        parse_identifier(identifier_text, &identifier) != 0) {
-        return CLI_EXIT_USAGE;
-    }
-    body = read_json_object(file, &result);
-    if (body == NULL) {
-        (void)fprintf(stderr, "janusgatectl: source document: %s\n",
-                      strerror(-result));
-        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
-                                                        : CLI_EXIT_FAILURE;
-    }
-    if (identifier_text == NULL) {
-        (void)snprintf(path, sizeof(path), "/api/v1/sources");
-    } else {
-        result = fetch_source(options, token, identifier, &source);
-        revision = json_object_get(source, "revision");
-        if (result == CLI_EXIT_SUCCESS &&
-            (!json_is_integer(revision) ||
-             json_object_set(body, "revision", revision) != 0)) {
-            result = CLI_EXIT_FAILURE;
-        }
-        (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu",
-                       (unsigned long long)identifier);
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(
-            options, token,
-            strcmp(operation, "add") == 0 ? "source add" : "source update",
-            strcmp(operation, "add") == 0 ? "POST" : "PATCH", path, body);
-    }
-    json_decref(source);
-    json_decref(body);
-    return result;
-}
-
-/** @brief Refresh, enable, or disable one blocklist source. */
-static int run_source_operation(const struct cli_options *options,
-                                const char *token,
-                                const char *operation,
-                                const char *identifier_text)
-{
-    char path[128U];
-    json_t *source = NULL;
-    json_t *revision = NULL;
-    json_t *body = NULL;
-    uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
-
-    if (result != 0) {
-        return CLI_EXIT_USAGE;
-    }
-    result = fetch_source(options, token, identifier, &source);
-    revision = json_object_get(source, "revision");
-    if (result == CLI_EXIT_SUCCESS && !json_is_integer(revision)) {
-        result = CLI_EXIT_FAILURE;
-    }
-    if (result == CLI_EXIT_SUCCESS && strcmp(operation, "refresh") == 0) {
-        body = json_object();
-        if (body == NULL || json_object_set(body, "revision", revision) != 0) {
-            result = CLI_EXIT_FAILURE;
-        }
-        (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu/refresh",
-                       (unsigned long long)identifier);
-    } else if (result == CLI_EXIT_SUCCESS) {
-        body = json_deep_copy(source);
-        if (body == NULL) {
-            result = CLI_EXIT_FAILURE;
-        } else {
-            retain_source_configuration(body);
-            if (json_object_set_new(
-                    body, "enabled",
-                    json_boolean(strcmp(operation, "enable") == 0)) != 0) {
-                result = CLI_EXIT_FAILURE;
-            }
-        }
-        (void)snprintf(path, sizeof(path), "/api/v1/sources/%llu",
-                       (unsigned long long)identifier);
-    }
-    if (result == CLI_EXIT_SUCCESS && strcmp(operation, "refresh") == 0) {
-        json_t *completed = NULL;
-
-        result = post_api_job(options, token, path, body, &completed);
-        if (result == CLI_EXIT_SUCCESS) {
-            result = present_object(options, completed);
-        }
-        json_decref(completed);
-    } else if (result == CLI_EXIT_SUCCESS) {
-        result =
-            send_api_request(options, token, operation, "PATCH", path, body);
-    }
-    json_decref(body);
-    json_decref(source);
-    return result;
-}
-
-/** @brief Run one recognized blocklist-source administration command. */
-static int run_source_command(const struct cli_options *options,
-                              int argc,
-                              char **argv)
-{
-    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
-    int result = load_token(options, token);
-
-    if (result != CLI_EXIT_SUCCESS) {
-        return result;
-    }
-    if (argc == 2) {
-        result = run_source_list(options, token);
-    } else if (strcmp(argv[1], "add") == 0) {
-        result = run_source_write(options, token, "add", NULL, argv[2]);
-    } else if (strcmp(argv[1], "update") == 0) {
-        result = run_source_write(options, token, "update", argv[2], argv[3]);
-    } else {
-        result = run_source_operation(options, token, argv[1], argv[2]);
-    }
-    sodium_memzero(token, sizeof(token));
-    return result;
-}
-
-/** @brief Import one local source payload with its current revision. */
-static int run_blocklist_import(const struct cli_options *options,
-                                const char *token,
-                                const char *identifier_text,
-                                const char *file)
-{
-    char *text = NULL;
-    json_t *source = NULL;
-    json_t *revision = NULL;
-    json_t *body = NULL;
-    size_t text_size = 0U;
-    uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
-
-    if (result != 0) {
-        return CLI_EXIT_USAGE;
-    }
-    result = fetch_source(options, token, identifier, &source);
-    if (result == CLI_EXIT_SUCCESS) {
-        text = read_text(file, &text_size, &result);
-        if (text == NULL) {
-            (void)fprintf(stderr, "janusgatectl: blocklist input: %s\n",
-                          strerror(-result));
-            result = result == -EINVAL || result == -EMSGSIZE
-                         ? CLI_EXIT_USAGE
-                         : CLI_EXIT_FAILURE;
-        }
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        revision = json_object_get(source, "revision");
-        body = json_object();
-        if (!json_is_integer(revision) || body == NULL ||
-            json_object_set_new(body, "source_id",
-                                json_integer((json_int_t)identifier)) != 0 ||
-            json_object_set(body, "revision", revision) != 0 ||
-            json_object_set_new(body, "content",
-                                json_stringn(text, text_size)) != 0) {
-            result = CLI_EXIT_FAILURE;
-        }
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        json_t *completed = NULL;
-
-        result = post_api_job(options, token, "/api/v1/blocklists", body,
-                              &completed);
-        if (result == CLI_EXIT_SUCCESS) {
-            result = present_object(options, completed);
-        }
-        json_decref(completed);
-    }
-    json_decref(body);
-    json_decref(source);
-    if (text != NULL) {
-        sodium_memzero(text, text_size);
-        free(text);
-    }
-    return result;
-}
-
-/** @brief Export active blocklist-derived domain rules as JSON. */
-static int run_blocklist_export(const struct cli_options *options,
-                                const char *token)
-{
-    json_t *exported = json_object();
-    json_t *domains = json_array();
-    uint64_t after_id = 0U;
-    bool more = true;
-    int result = exported == NULL || domains == NULL ? CLI_EXIT_FAILURE
-                                                     : CLI_EXIT_SUCCESS;
-
-    while (result == CLI_EXIT_SUCCESS && more) {
-        char query[96U];
-        json_t *page = NULL;
-        json_t *items = NULL;
-        json_t *next = NULL;
-
-        (void)snprintf(query, sizeof(query), "after_id=%llu&limit=100",
-                       (unsigned long long)after_id);
-        result =
-            fetch_api_object(options, token, "/api/v1/domains", query, &page);
-        if (result == CLI_EXIT_SUCCESS) {
-            items = json_object_get(page, "domains");
-            for (size_t index = 0U; index < json_array_size(items); ++index) {
-                json_t *item = json_array_get(items, index);
-                const char *source =
-                    json_string_value(json_object_get(item, "source"));
-
-                if (source != NULL && strcmp(source, "blocklist") == 0 &&
-                    json_array_append(domains, item) != 0) {
-                    result = CLI_EXIT_FAILURE;
-                    break;
-                }
-            }
-            more = json_is_true(json_object_get(page, "has_more"));
-            next = json_object_get(page, "next_after_id");
-            if (result == CLI_EXIT_SUCCESS && more &&
-                (!json_is_integer(next) ||
-                 json_integer_value(next) <= (json_int_t)after_id)) {
-                result = CLI_EXIT_FAILURE;
-            } else if (result == CLI_EXIT_SUCCESS && more) {
-                after_id = (uint64_t)json_integer_value(next);
-            }
-        }
-        json_decref(page);
-    }
-    if (result == CLI_EXIT_SUCCESS &&
-        json_object_set(exported, "domains", domains) != 0) {
-        result = CLI_EXIT_FAILURE;
-    }
-    if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, exported);
-    }
-    json_decref(domains);
-    json_decref(exported);
-    return result;
-}
-
-/** @brief Run one recognized blocklist administration command. */
-static int run_blocklist_command(const struct cli_options *options,
-                                 int argc,
-                                 char **argv)
-{
-    char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
-    int result = load_token(options, token);
-
-    if (result != CLI_EXIT_SUCCESS) {
-        return result;
-    }
-    if (strcmp(argv[1], "list") == 0) {
-        result = run_source_list(options, token);
-    } else if (strcmp(argv[1], "export") == 0) {
-        result = run_blocklist_export(options, token);
-    } else {
-        result = run_blocklist_import(options, token, argv[2], argv[3]);
-    }
-    (void)argc;
-    sodium_memzero(token, sizeof(token));
-    return result;
-}
-
 /** @brief Fetch one exact local user from stable paginated API results. */
 static int fetch_user(const struct cli_options *options,
                       const char *token,
@@ -1996,8 +1290,8 @@ static int fetch_user(const struct cli_options *options,
 
         (void)snprintf(query, sizeof(query), "offset=%llu&limit=100",
                        (unsigned long long)offset);
-        result =
-            fetch_api_object(options, token, "/api/v1/users", query, &page);
+        result = jg_cli_fetch_api_object(options, token, "/api/v1/users", query,
+                                         &page);
         if (result == CLI_EXIT_SUCCESS) {
             users = json_object_get(page, "users");
             if (!json_is_array(users)) {
@@ -2041,11 +1335,11 @@ static int fetch_user(const struct cli_options *options,
 static int run_user_list(const struct cli_options *options, const char *token)
 {
     json_t *body = NULL;
-    int result =
-        fetch_api_object(options, token, "/api/v1/users", "limit=100", &body);
+    int result = jg_cli_fetch_api_object(options, token, "/api/v1/users",
+                                         "limit=100", &body);
 
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
@@ -2068,19 +1362,19 @@ static int run_user_write(const struct cli_options *options,
     int result = CLI_EXIT_SUCCESS;
     int read_result = 0;
 
-    if (!add && parse_identifier(identifier_text, &identifier) != 0) {
+    if (!add && jg_cli_parse_identifier(identifier_text, &identifier) != 0) {
         return CLI_EXIT_USAGE;
     }
     if (!add) {
         result = fetch_user(options, token, identifier, &user);
     }
     if (result == CLI_EXIT_SUCCESS && password &&
-        !destructive_operation_confirmed(options,
-                                         "Replace the user's password")) {
+        !jg_cli_destructive_operation_confirmed(
+            options, "Replace the user's password")) {
         result = CLI_EXIT_FAILURE;
     }
     if (result == CLI_EXIT_SUCCESS) {
-        body = read_json_object(file, &read_result);
+        body = jg_cli_read_json_object(file, &read_result);
         if (body == NULL) {
             (void)fprintf(stderr, "janusgatectl: user document: %s\n",
                           strerror(-read_result));
@@ -2106,7 +1400,7 @@ static int run_user_write(const struct cli_options *options,
                        (unsigned long long)identifier);
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(
+        result = jg_cli_send_api_request(
             options, token,
             add ? "user add" : (password ? "user password" : "user update"),
             add || password ? "POST" : "PATCH", path, body);
@@ -2128,14 +1422,14 @@ static int run_user_disable(const struct cli_options *options,
     json_t *role = NULL;
     json_t *force_password_change = NULL;
     uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
 
     if (result != 0) {
         return CLI_EXIT_USAGE;
     }
     result = fetch_user(options, token, identifier, &user);
-    if (result == CLI_EXIT_SUCCESS &&
-        !destructive_operation_confirmed(options, "Disable the local user")) {
+    if (result == CLI_EXIT_SUCCESS && !jg_cli_destructive_operation_confirmed(
+                                          options, "Disable the local user")) {
         result = CLI_EXIT_FAILURE;
     }
     if (result == CLI_EXIT_SUCCESS) {
@@ -2156,8 +1450,8 @@ static int run_user_disable(const struct cli_options *options,
     if (result == CLI_EXIT_SUCCESS) {
         (void)snprintf(path, sizeof(path), "/api/v1/users/%llu",
                        (unsigned long long)identifier);
-        result = send_api_request(options, token, "user disable", "PATCH", path,
-                                  body);
+        result = jg_cli_send_api_request(options, token, "user disable",
+                                         "PATCH", path, body);
     }
     json_decref(body);
     json_decref(user);
@@ -2174,14 +1468,14 @@ static int run_user_totp_disable(const struct cli_options *options,
     json_t *body = NULL;
     json_t *revision = NULL;
     uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
 
     if (result != 0) {
         return CLI_EXIT_USAGE;
     }
     result = fetch_user(options, token, identifier, &user);
     if (result == CLI_EXIT_SUCCESS &&
-        !destructive_operation_confirmed(
+        !jg_cli_destructive_operation_confirmed(
             options, "Remove the user's TOTP credentials")) {
         result = CLI_EXIT_FAILURE;
     }
@@ -2196,8 +1490,8 @@ static int run_user_totp_disable(const struct cli_options *options,
     if (result == CLI_EXIT_SUCCESS) {
         (void)snprintf(path, sizeof(path), "/api/v1/users/%llu/totp",
                        (unsigned long long)identifier);
-        result =
-            send_api_request(options, token, "user totp", "DELETE", path, body);
+        result = jg_cli_send_api_request(options, token, "user totp", "DELETE",
+                                         path, body);
     }
     json_decref(body);
     json_decref(user);
@@ -2205,7 +1499,7 @@ static int run_user_totp_disable(const struct cli_options *options,
 }
 
 /** @brief Run one recognized local-user administration command. */
-static int run_user_command(const struct cli_options *options,
+int jg_cli_run_user_command(const struct cli_options *options,
                             int argc,
                             char **argv)
 {
@@ -2236,11 +1530,11 @@ static int run_user_command(const struct cli_options *options,
 static int run_token_list(const struct cli_options *options, const char *token)
 {
     json_t *body = NULL;
-    int result =
-        fetch_api_object(options, token, "/api/v1/tokens", "limit=100", &body);
+    int result = jg_cli_fetch_api_object(options, token, "/api/v1/tokens",
+                                         "limit=100", &body);
 
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
@@ -2255,7 +1549,7 @@ static int run_token_create(const struct cli_options *options,
     int read_result = 0;
     int result = CLI_EXIT_SUCCESS;
 
-    body = read_json_object(file, &read_result);
+    body = jg_cli_read_json_object(file, &read_result);
     if (body == NULL) {
         (void)fprintf(stderr, "janusgatectl: token document: %s\n",
                       strerror(-read_result));
@@ -2263,8 +1557,8 @@ static int run_token_create(const struct cli_options *options,
                    ? CLI_EXIT_USAGE
                    : CLI_EXIT_FAILURE;
     }
-    result = send_api_request(options, token, "token create", "POST",
-                              "/api/v1/tokens", body);
+    result = jg_cli_send_api_request(options, token, "token create", "POST",
+                                     "/api/v1/tokens", body);
     json_decref(body);
     return result;
 }
@@ -2277,12 +1571,13 @@ static int run_token_revoke(const struct cli_options *options,
     char path[sizeof("/api/v1/tokens/18446744073709551615")];
     json_t *body = NULL;
     uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
 
     if (result != 0) {
         return CLI_EXIT_USAGE;
     }
-    if (!destructive_operation_confirmed(options, "Revoke the API token")) {
+    if (!jg_cli_destructive_operation_confirmed(options,
+                                                "Revoke the API token")) {
         return CLI_EXIT_FAILURE;
     }
     body = json_object();
@@ -2291,14 +1586,14 @@ static int run_token_revoke(const struct cli_options *options,
     }
     (void)snprintf(path, sizeof(path), "/api/v1/tokens/%llu",
                    (unsigned long long)identifier);
-    result =
-        send_api_request(options, token, "token revoke", "DELETE", path, body);
+    result = jg_cli_send_api_request(options, token, "token revoke", "DELETE",
+                                     path, body);
     json_decref(body);
     return result;
 }
 
 /** @brief Run one recognized API-token administration command. */
-static int run_token_command(const struct cli_options *options,
+int jg_cli_run_token_command(const struct cli_options *options,
                              int argc,
                              char **argv)
 {
@@ -2325,11 +1620,11 @@ static int run_certificate_show(const struct cli_options *options,
                                 const char *token)
 {
     json_t *body = NULL;
-    int result =
-        fetch_api_object(options, token, "/api/v1/certificates", NULL, &body);
+    int result = jg_cli_fetch_api_object(options, token, "/api/v1/certificates",
+                                         NULL, &body);
 
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
@@ -2345,16 +1640,16 @@ static int run_certificate_install(const struct cli_options *options,
     json_t *fingerprint = NULL;
     json_t *body = NULL;
     int read_result = 0;
-    int result = fetch_api_object(options, token, "/api/v1/certificates", NULL,
-                                  &current);
+    int result = jg_cli_fetch_api_object(options, token, "/api/v1/certificates",
+                                         NULL, &current);
 
     if (result == CLI_EXIT_SUCCESS &&
-        !destructive_operation_confirmed(options,
-                                         "Replace the server certificate")) {
+        !jg_cli_destructive_operation_confirmed(
+            options, "Replace the server certificate")) {
         result = CLI_EXIT_FAILURE;
     }
     if (result == CLI_EXIT_SUCCESS) {
-        body = read_json_object(file, &read_result);
+        body = jg_cli_read_json_object(file, &read_result);
         if (body == NULL) {
             (void)fprintf(stderr, "janusgatectl: certificate document: %s\n",
                           strerror(-read_result));
@@ -2374,8 +1669,9 @@ static int run_certificate_install(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "certificate install", "POST",
-                                  "/api/v1/certificates/install", body);
+        result = jg_cli_send_api_request(options, token, "certificate install",
+                                         "POST", "/api/v1/certificates/install",
+                                         body);
     }
     json_decref(body);
     json_decref(current);
@@ -2392,7 +1688,7 @@ static int run_certificate_csr(const struct cli_options *options,
     int read_result = 0;
     int result = CLI_EXIT_SUCCESS;
 
-    body = read_json_object(file, &read_result);
+    body = jg_cli_read_json_object(file, &read_result);
     if (body == NULL) {
         (void)fprintf(stderr, "janusgatectl: CSR document: %s\n",
                       strerror(-read_result));
@@ -2400,10 +1696,10 @@ static int run_certificate_csr(const struct cli_options *options,
                    ? CLI_EXIT_USAGE
                    : CLI_EXIT_FAILURE;
     }
-    result = post_api_job(options, token, "/api/v1/certificates/csr", body,
-                          &completed);
+    result = jg_cli_post_api_job(options, token, "/api/v1/certificates/csr",
+                                 body, &completed);
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, completed);
+        result = jg_cli_present_object(options, completed);
     }
     json_decref(completed);
     json_decref(body);
@@ -2411,7 +1707,7 @@ static int run_certificate_csr(const struct cli_options *options,
 }
 
 /** @brief Run one recognized server-certificate administration command. */
-static int run_certificate_command(const struct cli_options *options,
+int jg_cli_run_certificate_command(const struct cli_options *options,
                                    int argc,
                                    char **argv)
 {
@@ -2438,11 +1734,11 @@ static int run_mtls_ca_show(const struct cli_options *options,
                             const char *token)
 {
     json_t *body = NULL;
-    int result = fetch_api_object(options, token, "/api/v1/mtls/authorities",
-                                  NULL, &body);
+    int result = jg_cli_fetch_api_object(
+        options, token, "/api/v1/mtls/authorities", NULL, &body);
 
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
@@ -2459,11 +1755,11 @@ static int run_mtls_ca_install(const struct cli_options *options,
     int read_result = 0;
     int result = CLI_EXIT_SUCCESS;
 
-    if (!destructive_operation_confirmed(
+    if (!jg_cli_destructive_operation_confirmed(
             options, "Replace the remote client CA trust store")) {
         return CLI_EXIT_FAILURE;
     }
-    pem = read_text(file, &pem_size, &read_result);
+    pem = jg_cli_read_text(file, &pem_size, &read_result);
     if (pem == NULL || pem_size > JG_CERTIFICATE_PEM_MAX) {
         (void)fprintf(stderr, "janusgatectl: client CA bundle: %s\n",
                       strerror(pem == NULL ? -read_result : EFBIG));
@@ -2479,8 +1775,9 @@ static int run_mtls_ca_install(const struct cli_options *options,
         result = CLI_EXIT_FAILURE;
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "mTLS CA install", "PUT",
-                                  "/api/v1/mtls/authorities", body);
+        result =
+            jg_cli_send_api_request(options, token, "mTLS CA install", "PUT",
+                                    "/api/v1/mtls/authorities", body);
     }
     json_decref(body);
     free(pem);
@@ -2494,7 +1791,7 @@ static int run_mtls_ca_remove(const struct cli_options *options,
     json_t *body = NULL;
     int result = CLI_EXIT_SUCCESS;
 
-    if (!destructive_operation_confirmed(
+    if (!jg_cli_destructive_operation_confirmed(
             options, "Remove the remote client CA trust store")) {
         return CLI_EXIT_FAILURE;
     }
@@ -2502,8 +1799,8 @@ static int run_mtls_ca_remove(const struct cli_options *options,
     if (body == NULL) {
         return CLI_EXIT_FAILURE;
     }
-    result = send_api_request(options, token, "mTLS CA remove", "DELETE",
-                              "/api/v1/mtls/authorities", body);
+    result = jg_cli_send_api_request(options, token, "mTLS CA remove", "DELETE",
+                                     "/api/v1/mtls/authorities", body);
     json_decref(body);
     return result;
 }
@@ -2513,11 +1810,11 @@ static int run_mtls_mapping_list(const struct cli_options *options,
                                  const char *token)
 {
     json_t *body = NULL;
-    int result = fetch_api_object(options, token, "/api/v1/mtls/mappings",
-                                  "limit=100", &body);
+    int result = jg_cli_fetch_api_object(
+        options, token, "/api/v1/mtls/mappings", "limit=100", &body);
 
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
@@ -2545,13 +1842,13 @@ static int run_mtls_mapping_add(const struct cli_options *options,
     int result = CLI_EXIT_SUCCESS;
 
     if ((strcmp(target_kind, "user") == 0 &&
-         parse_identifier(target, &user_id) != 0) ||
+         jg_cli_parse_identifier(target, &user_id) != 0) ||
         (strcmp(target_kind, "role") == 0 && !mtls_role_valid(target)) ||
         (strcmp(target_kind, "user") != 0 &&
          strcmp(target_kind, "role") != 0)) {
         return CLI_EXIT_USAGE;
     }
-    pem = read_text(file, &pem_size, &read_result);
+    pem = jg_cli_read_text(file, &pem_size, &read_result);
     if (pem == NULL || pem_size > JG_CERTIFICATE_PEM_MAX) {
         (void)fprintf(stderr, "janusgatectl: client certificate: %s\n",
                       strerror(pem == NULL ? -read_result : EFBIG));
@@ -2575,8 +1872,8 @@ static int run_mtls_mapping_add(const struct cli_options *options,
         result = CLI_EXIT_FAILURE;
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "mTLS mapping add", "POST",
-                                  "/api/v1/mtls/mappings", body);
+        result = jg_cli_send_api_request(options, token, "mTLS mapping add",
+                                         "POST", "/api/v1/mtls/mappings", body);
     }
     json_decref(body);
     free(pem);
@@ -2592,12 +1889,12 @@ static int run_mtls_mapping_revoke(const struct cli_options *options,
     uint64_t identifier = 0U;
     json_t *body = NULL;
     int written = 0;
-    int result = parse_identifier(identifier_text, &identifier);
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
 
     if (result != 0) {
         return CLI_EXIT_USAGE;
     }
-    if (!destructive_operation_confirmed(
+    if (!jg_cli_destructive_operation_confirmed(
             options, "Revoke the client-certificate mapping")) {
         return CLI_EXIT_FAILURE;
     }
@@ -2608,14 +1905,14 @@ static int run_mtls_mapping_revoke(const struct cli_options *options,
         json_decref(body);
         return CLI_EXIT_FAILURE;
     }
-    result = send_api_request(options, token, "mTLS mapping revoke", "DELETE",
-                              path, body);
+    result = jg_cli_send_api_request(options, token, "mTLS mapping revoke",
+                                     "DELETE", path, body);
     json_decref(body);
     return result;
 }
 
 /** @brief Run one recognized mTLS administration command. */
-static int run_mtls_command(const struct cli_options *options,
+int jg_cli_run_mtls_command(const struct cli_options *options,
                             int argc,
                             char **argv)
 {
@@ -2692,10 +1989,10 @@ static int run_backup_create(const struct cli_options *options,
     if (result == CLI_EXIT_SUCCESS) {
         json_t *completed = NULL;
 
-        result =
-            post_api_job(options, token, "/api/v1/backups", body, &completed);
+        result = jg_cli_post_api_job(options, token, "/api/v1/backups", body,
+                                     &completed);
         if (result == CLI_EXIT_SUCCESS) {
-            result = present_object(options, completed);
+            result = jg_cli_present_object(options, completed);
         }
         json_decref(completed);
     }
@@ -2713,16 +2010,16 @@ static int run_backup_inspect(const struct cli_options *options,
     char path[sizeof("/api/v1/backups/18446744073709551615")];
     json_t *body = NULL;
     uint64_t identifier = 0U;
-    int result = parse_identifier(identifier_text, &identifier);
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
 
     if (result != 0) {
         return CLI_EXIT_USAGE;
     }
     (void)snprintf(path, sizeof(path), "/api/v1/backups/%llu",
                    (unsigned long long)identifier);
-    result = fetch_api_object(options, token, path, NULL, &body);
+    result = jg_cli_fetch_api_object(options, token, path, NULL, &body);
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
@@ -2768,7 +2065,7 @@ static int run_backup_restore(const struct cli_options *options,
     uint64_t identifier = 0U;
     bool full = false;
     bool changes = false;
-    int result = parse_identifier(identifier_text, &identifier);
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
 
     (void)memset(passphrase, 0, sizeof(passphrase));
     if (result != 0 || options->include_private_key) {
@@ -2778,7 +2075,8 @@ static int run_backup_restore(const struct cli_options *options,
                    (unsigned long long)identifier);
     (void)snprintf(path, sizeof(path), "/api/v1/backups/%llu/restore",
                    (unsigned long long)identifier);
-    result = fetch_api_object(options, token, inspect_path, NULL, &inspection);
+    result = jg_cli_fetch_api_object(options, token, inspect_path, NULL,
+                                     &inspection);
     if (result == CLI_EXIT_SUCCESS) {
         backup = json_object_get(inspection, "backup");
         kind_value = json_object_get(backup, "kind");
@@ -2817,7 +2115,7 @@ static int run_backup_restore(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = post_api_job(options, token, path, body, &dry_run);
+        result = jg_cli_post_api_job(options, token, path, body, &dry_run);
     }
     json_decref(body);
     body = NULL;
@@ -2831,15 +2129,15 @@ static int run_backup_restore(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS && !options->json) {
-        result = present_object(options, dry_run);
+        result = jg_cli_present_object(options, dry_run);
     }
     if (result == CLI_EXIT_SUCCESS && !changes) {
         if (options->json) {
-            result = present_object(options, dry_run);
+            result = jg_cli_present_object(options, dry_run);
         }
     } else if (result == CLI_EXIT_SUCCESS &&
-               !destructive_operation_confirmed(options,
-                                                "Apply the backup restore")) {
+               !jg_cli_destructive_operation_confirmed(
+                   options, "Apply the backup restore")) {
         result = CLI_EXIT_FAILURE;
     } else if (result == CLI_EXIT_SUCCESS) {
         body = backup_restore_body(full ? passphrase : NULL, passphrase_size,
@@ -2849,9 +2147,10 @@ static int run_backup_restore(const struct cli_options *options,
         } else {
             json_t *completed = NULL;
 
-            result = post_api_job(options, token, path, body, &completed);
+            result =
+                jg_cli_post_api_job(options, token, path, body, &completed);
             if (result == CLI_EXIT_SUCCESS) {
-                result = present_object(options, completed);
+                result = jg_cli_present_object(options, completed);
             }
             json_decref(completed);
         }
@@ -2864,7 +2163,7 @@ static int run_backup_restore(const struct cli_options *options,
 }
 
 /** @brief Run one recognized backup administration command. */
-static int run_backup_command(const struct cli_options *options,
+int jg_cli_run_backup_command(const struct cli_options *options,
                               int argc,
                               char **argv)
 {
@@ -2887,7 +2186,7 @@ static int run_backup_command(const struct cli_options *options,
 }
 
 /** @brief Validate or reload persistent appliance configuration. */
-static int run_config_command(const struct cli_options *options,
+int jg_cli_run_config_command(const struct cli_options *options,
                               const char *operation)
 {
     char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
@@ -2904,7 +2203,8 @@ static int run_config_command(const struct cli_options *options,
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = send_api_request(options, token, "config", "POST", path, body);
+        result = jg_cli_send_api_request(options, token, "config", "POST", path,
+                                         body);
     }
     json_decref(body);
     sodium_memzero(token, sizeof(token));
@@ -2912,7 +2212,7 @@ static int run_config_command(const struct cli_options *options,
 }
 
 /** @brief Show, replace, or inspect bounded operational logging state. */
-static int run_logging_command(const struct cli_options *options,
+int jg_cli_run_logging_command(const struct cli_options *options,
                                int argc,
                                char **argv)
 {
@@ -2930,12 +2230,12 @@ static int run_logging_command(const struct cli_options *options,
                                ? "/api/v1/logging"
                                : "/api/v1/logging/traces";
 
-        result = fetch_api_object(options, token, path, NULL, &body);
+        result = jg_cli_fetch_api_object(options, token, path, NULL, &body);
         if (result == CLI_EXIT_SUCCESS) {
-            result = present_object(options, body);
+            result = jg_cli_present_object(options, body);
         }
     } else {
-        body = read_json_object(argv[2], &result);
+        body = jg_cli_read_json_object(argv[2], &result);
         if (body == NULL) {
             (void)fprintf(stderr, "janusgatectl: logging document: %s\n",
                           strerror(-result));
@@ -2944,8 +2244,8 @@ static int run_logging_command(const struct cli_options *options,
                          : CLI_EXIT_FAILURE;
         }
         if (result == CLI_EXIT_SUCCESS) {
-            result = fetch_api_object(options, token, "/api/v1/logging", NULL,
-                                      &current);
+            result = jg_cli_fetch_api_object(options, token, "/api/v1/logging",
+                                             NULL, &current);
         }
         revision = json_object_get(current, "revision");
         if (result == CLI_EXIT_SUCCESS &&
@@ -2954,8 +2254,8 @@ static int run_logging_command(const struct cli_options *options,
             result = CLI_EXIT_FAILURE;
         }
         if (result == CLI_EXIT_SUCCESS) {
-            result = send_api_request(options, token, "logging set", "PUT",
-                                      "/api/v1/logging", body);
+            result = jg_cli_send_api_request(options, token, "logging set",
+                                             "PUT", "/api/v1/logging", body);
         }
     }
     json_decref(current);
@@ -3033,7 +2333,7 @@ static int write_diagnostic_archive(const char *filename,
 }
 
 /** @brief Create, verify, and store one sanitized diagnostic archive. */
-static int run_diagnostics_create(const struct cli_options *options)
+int jg_cli_run_diagnostics_create(const struct cli_options *options)
 {
     char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
     uint8_t expected_checksum[crypto_hash_sha256_BYTES];
@@ -3065,8 +2365,8 @@ static int run_diagnostics_create(const struct cli_options *options)
         }
     }
     if (result == CLI_EXIT_SUCCESS) {
-        result = post_api_job(options, token, "/api/v1/diagnostics", request,
-                              &response);
+        result = jg_cli_post_api_job(options, token, "/api/v1/diagnostics",
+                                     request, &response);
     }
     sodium_memzero(token, sizeof(token));
     json_decref(request);
@@ -3146,7 +2446,7 @@ static int run_diagnostics_create(const struct cli_options *options)
     }
     if (result == CLI_EXIT_SUCCESS && !options->quiet) {
         if (options->json) {
-            result = present_object(options, response);
+            result = jg_cli_present_object(options, response);
         } else if (printf("Created %s (%zu bytes)\nSHA-256: %s\n", filename,
                           archive_size, checksum_text) < 0) {
             result = CLI_EXIT_FAILURE;
@@ -3164,7 +2464,7 @@ static int run_diagnostics_create(const struct cli_options *options)
 }
 
 /** @brief Query operational events or immutable audit records. */
-static int run_record_command(const struct cli_options *options,
+int jg_cli_run_record_command(const struct cli_options *options,
                               int argc,
                               char **argv)
 {
@@ -3178,18 +2478,18 @@ static int run_record_command(const struct cli_options *options,
     int result = load_token(options, token);
 
     if (result == CLI_EXIT_SUCCESS) {
-        result = fetch_api_object(options, token, path, query, &body);
+        result = jg_cli_fetch_api_object(options, token, path, query, &body);
     }
     sodium_memzero(token, sizeof(token));
     if (result == CLI_EXIT_SUCCESS) {
-        result = present_object(options, body);
+        result = jg_cli_present_object(options, body);
     }
     json_decref(body);
     return result;
 }
 
 /** @brief Confirm and request one authenticated appliance lifecycle action. */
-static int run_system_command(const struct cli_options *options,
+int jg_cli_run_system_command(const struct cli_options *options,
                               const char *family,
                               const char *operation)
 {
@@ -3203,7 +2503,7 @@ static int run_system_command(const struct cli_options *options,
                                                 : "Shut down the appliance");
     int result = 0;
 
-    if (!destructive_operation_confirmed(options, message)) {
+    if (!jg_cli_destructive_operation_confirmed(options, message)) {
         return CLI_EXIT_USAGE;
     }
     result = load_token(options, token);
@@ -3216,8 +2516,8 @@ static int run_system_command(const struct cli_options *options,
         json_object_set_new(body, "confirm", json_true()) != 0) {
         result = CLI_EXIT_FAILURE;
     } else {
-        result =
-            send_api_request(options, token, operation, "POST", path, body);
+        result = jg_cli_send_api_request(options, token, operation, "POST",
+                                         path, body);
     }
     json_decref(body);
     sodium_memzero(token, sizeof(token));
@@ -3247,7 +2547,7 @@ static int run_command(const struct cli_options *options,
     if (argc == 1 &&
         (strcmp(argv[0], "status") == 0 || strcmp(argv[0], "health") == 0 ||
          strcmp(argv[0], "stats") == 0)) {
-        return run_api_command(options, argv[0]);
+        return jg_cli_run_api_command(options, argv[0]);
     }
     if (argc >= 2 && strcmp(argv[0], "network") == 0 &&
         ((argc == 2 &&
@@ -3256,7 +2556,7 @@ static int run_command(const struct cli_options *options,
          (argc == 3 &&
           (strcmp(argv[1], "validate") == 0 || strcmp(argv[1], "apply") == 0 ||
            strcmp(argv[1], "set") == 0)))) {
-        return run_network_command(options, argc, argv);
+        return jg_cli_run_network_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "policy") == 0 &&
         ((argc == 2 && strcmp(argv[1], "list") == 0) ||
@@ -3265,12 +2565,12 @@ static int run_command(const struct cli_options *options,
           (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "add") == 0 ||
            strcmp(argv[1], "remove") == 0)) ||
          (argc == 5 && strcmp(argv[1], "update") == 0))) {
-        return run_policy_command(options, argc, argv);
+        return jg_cli_run_policy_command(options, argc, argv);
     }
     if (argc == 3 && strcmp(argv[0], "domain") == 0 &&
         (strcmp(argv[1], "block") == 0 || strcmp(argv[1], "allow") == 0 ||
          strcmp(argv[1], "remove") == 0)) {
-        return run_domain_command(options, argv);
+        return jg_cli_run_domain_command(options, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "source") == 0 &&
         ((argc == 2 && strcmp(argv[1], "list") == 0) ||
@@ -3279,17 +2579,17 @@ static int run_command(const struct cli_options *options,
            strcmp(argv[1], "enable") == 0 ||
            strcmp(argv[1], "disable") == 0)) ||
          (argc == 4 && strcmp(argv[1], "update") == 0))) {
-        return run_source_command(options, argc, argv);
+        return jg_cli_run_source_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "blocklist") == 0 &&
         ((argc == 2 &&
           (strcmp(argv[1], "list") == 0 || strcmp(argv[1], "export") == 0)) ||
          (argc == 4 && strcmp(argv[1], "import") == 0))) {
-        return run_blocklist_command(options, argc, argv);
+        return jg_cli_run_blocklist_command(options, argc, argv);
     }
     if ((argc == 1 || argc == 2) &&
         (strcmp(argv[0], "events") == 0 || strcmp(argv[0], "audit") == 0)) {
-        return run_record_command(options, argc, argv);
+        return jg_cli_run_record_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "user") == 0 &&
         ((argc == 2 && strcmp(argv[1], "list") == 0) ||
@@ -3298,19 +2598,19 @@ static int run_command(const struct cli_options *options,
            strcmp(argv[1], "totp") == 0)) ||
          (argc == 4 && (strcmp(argv[1], "update") == 0 ||
                         strcmp(argv[1], "password") == 0)))) {
-        return run_user_command(options, argc, argv);
+        return jg_cli_run_user_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "token") == 0 &&
         ((argc == 2 && strcmp(argv[1], "list") == 0) ||
          (argc == 3 && (strcmp(argv[1], "create") == 0 ||
                         strcmp(argv[1], "revoke") == 0)))) {
-        return run_token_command(options, argc, argv);
+        return jg_cli_run_token_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "certificate") == 0 &&
         ((argc == 2 && strcmp(argv[1], "show") == 0) ||
          (argc == 3 &&
           (strcmp(argv[1], "install") == 0 || strcmp(argv[1], "csr") == 0)))) {
-        return run_certificate_command(options, argc, argv);
+        return jg_cli_run_certificate_command(options, argc, argv);
     }
     if (argc >= 3 && strcmp(argv[0], "mtls") == 0 &&
         ((strcmp(argv[1], "ca") == 0 &&
@@ -3321,36 +2621,36 @@ static int run_command(const struct cli_options *options,
           ((argc == 3 && strcmp(argv[2], "list") == 0) ||
            (argc == 4 && strcmp(argv[2], "revoke") == 0) ||
            (argc == 6 && strcmp(argv[2], "add") == 0))))) {
-        return run_mtls_command(options, argc, argv);
+        return jg_cli_run_mtls_command(options, argc, argv);
     }
     if (argc == 3 && strcmp(argv[0], "backup") == 0 &&
         ((strcmp(argv[1], "create") == 0 &&
           (strcmp(argv[2], "configuration") == 0 ||
            strcmp(argv[2], "full") == 0)) ||
          strcmp(argv[1], "inspect") == 0 || strcmp(argv[1], "restore") == 0)) {
-        return run_backup_command(options, argc, argv);
+        return jg_cli_run_backup_command(options, argc, argv);
     }
     if (argc == 2 && strcmp(argv[0], "config") == 0 &&
         (strcmp(argv[1], "validate") == 0 || strcmp(argv[1], "reload") == 0)) {
-        return run_config_command(options, argv[1]);
+        return jg_cli_run_config_command(options, argv[1]);
     }
     if (argc == 2 && strcmp(argv[0], "diagnostics") == 0 &&
         strcmp(argv[1], "create") == 0) {
-        return run_diagnostics_create(options);
+        return jg_cli_run_diagnostics_create(options);
     }
     if (argc >= 2 && strcmp(argv[0], "logging") == 0 &&
         ((argc == 2 &&
           (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "traces") == 0)) ||
          (argc == 3 && strcmp(argv[1], "set") == 0))) {
-        return run_logging_command(options, argc, argv);
+        return jg_cli_run_logging_command(options, argc, argv);
     }
     if (argc == 2 && strcmp(argv[0], "service") == 0 &&
         strcmp(argv[1], "restart") == 0) {
-        return run_system_command(options, argv[0], argv[1]);
+        return jg_cli_run_system_command(options, argv[0], argv[1]);
     }
     if (argc == 2 && strcmp(argv[0], "system") == 0 &&
         (strcmp(argv[1], "reboot") == 0 || strcmp(argv[1], "shutdown") == 0)) {
-        return run_system_command(options, argv[0], argv[1]);
+        return jg_cli_run_system_command(options, argv[0], argv[1]);
     }
     if (argc == 1 && strcmp(argv[0], "ping") == 0 &&
         options->endpoint == NULL) {
