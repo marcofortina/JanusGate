@@ -127,10 +127,18 @@ static json_t *backup_manifest_json(const struct jg_backup_info *info)
         json_object_set_new(body, "certificate_size",
                             json_integer((json_int_t)info->certificate_size)) !=
             0 ||
+        json_object_set_new(body, "totp_key_size",
+                            json_integer((json_int_t)info->totp_key_size)) !=
+            0 ||
+        json_object_set_new(body, "client_ca_size",
+                            json_integer((json_int_t)info->client_ca_size)) !=
+            0 ||
         json_object_set_new(body, "archive_size",
                             json_integer((json_int_t)info->archive_size)) !=
             0 ||
         json_object_set_new(body, "encrypted", json_boolean(info->encrypted)) !=
+            0 ||
+        json_object_set_new(body, "portable", json_boolean(info->portable)) !=
             0) {
         json_decref(body);
         return NULL;
@@ -295,9 +303,11 @@ static int create_backup(struct jg_management *management,
     uint8_t recovery_payload[1U + JG_BACKUP_FILENAME_MAX];
     char suffix_text[sizeof(suffix) * 2U + 1U];
     char *certificate = NULL;
+    char *client_ca = NULL;
     uint8_t *database = NULL;
     uint8_t *archive = NULL;
     size_t certificate_size = 0U;
+    size_t client_ca_size = 0U;
     size_t database_size = 0U;
     size_t archive_size = 0U;
     struct jg_backup_payload payload;
@@ -333,10 +343,19 @@ static int create_backup(struct jg_management *management,
         if (kind == JG_BACKUP_FULL) {
             payload.totp_key = management->secrets->totp_key;
             payload.totp_key_size = JG_AUTH_TOTP_KEY_SIZE;
+            result = jg_certificate_trust_store_export_file(
+                management->client_ca_path, &client_ca, &client_ca_size);
+            if (result == -ENOENT) {
+                result = 0;
+            }
+            payload.client_ca = (const uint8_t *)client_ca;
+            payload.client_ca_size = client_ca_size;
         }
-        result = jg_backup_create(kind, &payload, passphrase, passphrase_size,
-                                  now, JG_DATABASE_SCHEMA_VERSION, &archive,
-                                  &archive_size);
+        if (result == 0) {
+            result = jg_backup_create(
+                kind, &payload, passphrase, passphrase_size, now,
+                JG_DATABASE_SCHEMA_VERSION, &archive, &archive_size);
+        }
     }
     if (result == 0) {
         result = jg_backup_inspect(archive, archive_size, &info);
@@ -406,6 +425,7 @@ static int create_backup(struct jg_management *management,
     jg_backup_data_clear(archive, archive_size);
     jg_database_export_clear(database, database_size);
     jg_certificate_pem_clear(certificate, certificate_size);
+    jg_certificate_pem_clear(client_ca, client_ca_size);
     return result;
 }
 
@@ -514,6 +534,100 @@ static int restore_backup_certificate(struct jg_management *management,
             certificate_size, private_key, private_key_size, &installed);
     }
     jg_certificate_pem_clear(current_identity, current_identity_size);
+    return result;
+}
+
+/** @brief Validate or atomically apply a portable TOTP protection key. */
+static int restore_backup_totp_key(struct jg_management *management,
+                                   const struct jg_backup_contents *contents,
+                                   bool apply,
+                                   bool *changes)
+{
+    int result = 0;
+
+    if (management == NULL || contents == NULL || changes == NULL) {
+        return -EINVAL;
+    }
+    *changes = false;
+    if (!contents->info.portable) {
+        return 0;
+    }
+    if (contents->totp_key == NULL ||
+        contents->totp_key_size != JG_AUTH_TOTP_KEY_SIZE) {
+        return -EINVAL;
+    }
+    *changes = sodium_memcmp(contents->totp_key, management->secrets->totp_key,
+                             JG_AUTH_TOTP_KEY_SIZE) != 0;
+    if (apply && *changes) {
+        result = management_totp_key_store(management->totp_key_path,
+                                           contents->totp_key);
+        if (result == 0) {
+            (void)memcpy(management->secrets->totp_key, contents->totp_key,
+                         JG_AUTH_TOTP_KEY_SIZE);
+        }
+    }
+    return result;
+}
+
+/** @brief Validate or atomically apply a portable client trust store. */
+static int restore_backup_client_ca(struct jg_management *management,
+                                    const struct jg_backup_contents *contents,
+                                    bool apply,
+                                    bool *changes)
+{
+    struct jg_certificate_info *authorities = NULL;
+    char *current = NULL;
+    size_t current_size = 0U;
+    size_t authority_count = 0U;
+    bool current_present = false;
+    int result = 0;
+
+    if (management == NULL || contents == NULL || changes == NULL) {
+        return -EINVAL;
+    }
+    *changes = false;
+    if (!contents->info.portable) {
+        return 0;
+    }
+    if ((contents->client_ca == NULL) != (contents->client_ca_size == 0U)) {
+        return -EINVAL;
+    }
+    result = jg_certificate_trust_store_export_file(management->client_ca_path,
+                                                    &current, &current_size);
+    if (result == 0) {
+        current_present = true;
+    } else if (result == -ENOENT) {
+        result = 0;
+    }
+    if (result == 0 && contents->client_ca_size > 0U) {
+        authorities =
+            calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+        if (authorities == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 && contents->client_ca_size > 0U) {
+        result = jg_certificate_trust_store_inspect(
+            (const char *)contents->client_ca, contents->client_ca_size,
+            authorities, JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    }
+    if (result == 0) {
+        *changes =
+            current_present != (contents->client_ca_size > 0U) ||
+            current_size != contents->client_ca_size ||
+            (current_size > 0U &&
+             sodium_memcmp(current, contents->client_ca, current_size) != 0);
+    }
+    if (result == 0 && apply && *changes && contents->client_ca_size > 0U) {
+        result = jg_certificate_trust_store_install(
+            management->client_ca_path, (const char *)contents->client_ca,
+            contents->client_ca_size, authorities, JG_CERTIFICATE_AUTHORITY_MAX,
+            &authority_count);
+    } else if (result == 0 && apply && *changes) {
+        result = jg_certificate_trust_store_remove(management->client_ca_path);
+    }
+    free(authorities);
+    jg_certificate_pem_clear(current, current_size);
     return result;
 }
 
@@ -825,9 +939,12 @@ int execute_backup_restore_job(struct jg_management *management,
     size_t archive_size = 0U;
     const bool dry_run = job->parameters.backup_restore.dry_run;
     bool certificate_changes = false;
+    bool totp_key_changes = false;
+    bool client_ca_changes = false;
     bool changes = false;
     bool checkpoint_created = false;
     bool certificate_present = false;
+    bool client_ca_was_present = false;
     bool recovery_started = false;
     bool restore_active = false;
     json_t *body = NULL;
@@ -910,6 +1027,14 @@ int execute_backup_restore_job(struct jg_management *management,
                                             contents.certificate_size, false,
                                             &certificate_changes);
     }
+    if (result == 0) {
+        result = restore_backup_totp_key(management, &contents, false,
+                                         &totp_key_changes);
+    }
+    if (result == 0) {
+        result = restore_backup_client_ca(management, &contents, false,
+                                          &client_ca_changes);
+    }
     if (result != 0) {
         if (restore_active) {
             management_restore_end(management);
@@ -920,7 +1045,8 @@ int execute_backup_restore_job(struct jg_management *management,
             "The backup contents cannot be restored on this appliance.",
             request->request_id, output, output_size, written);
     }
-    changes = report.changes || certificate_changes;
+    changes = report.changes || certificate_changes || totp_key_changes ||
+              client_ca_changes;
     if (!dry_run && changes) {
         result = create_backup(
             management, metadata.kind, metadata.kind == JG_BACKUP_FULL,
@@ -941,11 +1067,23 @@ int execute_backup_restore_job(struct jg_management *management,
         result = server_identity_present(management->certificate_path,
                                          &certificate_present);
     }
+    if (!dry_run && changes && result == 0 && client_ca_changes) {
+        result = client_ca_present(management->client_ca_path,
+                                   &client_ca_was_present);
+    }
     if (!dry_run && changes && result == 0) {
         recovery_payload[1U] =
             certificate_present ? MANAGEMENT_RECOVERY_CERTIFICATE : 0U;
+        recovery_payload[1U] |=
+            client_ca_was_present ? MANAGEMENT_RECOVERY_CLIENT_CA : 0U;
+        recovery_payload[1U] |=
+            totp_key_changes ? MANAGEMENT_RECOVERY_TOTP_KEY : 0U;
         recovery_payload[2U] =
             certificate_changes ? MANAGEMENT_RECOVERY_CERTIFICATE : 0U;
+        recovery_payload[2U] |=
+            client_ca_changes ? MANAGEMENT_RECOVERY_CLIENT_CA : 0U;
+        recovery_payload[2U] |=
+            totp_key_changes ? MANAGEMENT_RECOVERY_TOTP_KEY : 0U;
         result = start_recovery_operation(
             management, MANAGEMENT_OPERATION_BACKUP_RESTORE, recovery_payload,
             sizeof(recovery_payload), recovery_payload[1U], true,
@@ -972,6 +1110,14 @@ int execute_backup_restore_job(struct jg_management *management,
         result = restore_backup_certificate(management, contents.certificate,
                                             contents.certificate_size, true,
                                             &certificate_changes);
+    }
+    if (!dry_run && changes && result == 0) {
+        result = restore_backup_totp_key(management, &contents, true,
+                                         &totp_key_changes);
+    }
+    if (!dry_run && changes && result == 0) {
+        result = restore_backup_client_ca(management, &contents, true,
+                                          &client_ca_changes);
     }
     if (!dry_run && changes && result == 0) {
         result = jg_database_policy_sync_advance(management->database, now,
@@ -1036,9 +1182,17 @@ int execute_backup_restore_job(struct jg_management *management,
         json_object_set(body, "database", database_report) != 0 ||
         json_object_set_new(body, "certificate_changes",
                             json_boolean(certificate_changes)) != 0 ||
+        json_object_set_new(body, "totp_key_changes",
+                            json_boolean(totp_key_changes)) != 0 ||
+        json_object_set_new(body, "client_ca_changes",
+                            json_boolean(client_ca_changes)) != 0 ||
+        json_object_set_new(body, "portable", json_boolean(info.portable)) !=
+            0 ||
         json_object_set(body, "checkpoint", checkpoint_body) != 0 ||
-        json_object_set_new(body, "reload_required",
-                            json_boolean(!dry_run && changes)) != 0) {
+        json_object_set_new(
+            body, "reload_required",
+            json_boolean(!dry_run && (report.changes || certificate_changes ||
+                                      client_ca_changes))) != 0) {
         result = -ENOMEM;
     }
     json_decref(backup);

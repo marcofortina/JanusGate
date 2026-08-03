@@ -2628,6 +2628,94 @@ static void test_cross_resource_recovery(void **state)
     jg_certificate_material_clear(&replacement);
 }
 
+/** @brief Verify startup recovers portable authentication state atomically. */
+static void test_portable_backup_recovery(void **state)
+{
+    struct management_fixture *fixture = *state;
+    const struct management_request request = {
+        .request_id = "portable-recovery",
+    };
+    const struct remote_address remote = {
+        .family = JG_POLICY_ADDRESS_IPV4,
+        .address = {127U, 0U, 0U, 1U},
+    };
+    const struct authenticated_actor actor = {
+        .kind = AUTHENTICATED_ACTOR_LOCAL,
+    };
+    const struct management_operation_origin origin = {
+        .request = &request,
+        .remote = &remote,
+        .actor = &actor,
+        .action = "backup.restore",
+    };
+    const uint8_t files =
+        MANAGEMENT_RECOVERY_CLIENT_CA | MANAGEMENT_RECOVERY_TOTP_KEY;
+    const uint8_t recovery_payload[3U] = {
+        MANAGEMENT_RECOVERY_VERSION,
+        files,
+        files,
+    };
+    struct jg_certificate_info authority_info;
+    uint8_t original_key[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t replacement_key[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t recovered_key[JG_AUTH_TOTP_KEY_SIZE];
+    char *authority = NULL;
+    char *client = NULL;
+    char *recovered_authority = NULL;
+    size_t authority_size = 0U;
+    size_t client_size = 0U;
+    size_t recovered_authority_size = 0U;
+    size_t authority_count = 0U;
+
+    create_management_test_identity(&authority, &authority_size, &client,
+                                    &client_size);
+    assert_int_equal(jg_certificate_trust_store_install(
+                         fixture->client_ca_path, authority, authority_size,
+                         &authority_info, 1U, &authority_count),
+                     0);
+    (void)memcpy(original_key, fixture->management->secrets->totp_key,
+                 sizeof(original_key));
+    (void)memset(replacement_key, 0x3c, sizeof(replacement_key));
+    assert_int_equal(start_recovery_operation(
+                         fixture->management,
+                         MANAGEMENT_OPERATION_BACKUP_RESTORE, recovery_payload,
+                         sizeof(recovery_payload), files, true, &origin, 100U),
+                     0);
+    assert_int_equal(
+        management_totp_key_store(fixture->key_path, replacement_key), 0);
+    (void)memcpy(fixture->management->secrets->totp_key, replacement_key,
+                 sizeof(replacement_key));
+    assert_int_equal(jg_certificate_trust_store_remove(fixture->client_ca_path),
+                     0);
+
+    jg_management_destroy(fixture->management);
+    fixture->management = NULL;
+    assert_int_equal(
+        jg_management_create(fixture->database, fixture->key_path,
+                             fixture->certificate_path, fixture->client_ca_path,
+                             fixture->directory, NULL, &fixture->management),
+        0);
+    assert_int_equal(management_totp_key_load(fixture->key_path, recovered_key),
+                     0);
+    assert_memory_equal(recovered_key, original_key, sizeof(original_key));
+    assert_int_equal(jg_certificate_trust_store_export_file(
+                         fixture->client_ca_path, &recovered_authority,
+                         &recovered_authority_size),
+                     0);
+    assert_int_equal(recovered_authority_size, authority_size);
+    assert_memory_equal(recovered_authority, authority, authority_size);
+
+    assert_int_equal(jg_certificate_trust_store_remove(fixture->client_ca_path),
+                     0);
+    jg_certificate_pem_clear(recovered_authority, recovered_authority_size);
+    sodium_memzero(recovered_key, sizeof(recovered_key));
+    sodium_memzero(replacement_key, sizeof(replacement_key));
+    sodium_memzero(original_key, sizeof(original_key));
+    sodium_memzero(client, client_size);
+    free(client);
+    free(authority);
+}
+
 /** @brief Verify startup removes an archive left before metadata commit. */
 static void test_backup_creation_recovery(void **state)
 {
@@ -3203,6 +3291,12 @@ static void test_backup_api(void **state)
         json_integer_value(json_object_get(manifest, "format_version")),
         JG_BACKUP_FORMAT_VERSION);
     assert_true(json_is_true(json_object_get(manifest, "encrypted")));
+    assert_true(json_is_true(json_object_get(manifest, "portable")));
+    assert_int_equal(
+        json_integer_value(json_object_get(manifest, "totp_key_size")),
+        JG_AUTH_TOTP_KEY_SIZE);
+    assert_int_equal(
+        json_integer_value(json_object_get(manifest, "client_ca_size")), 0);
     assert_true(
         json_integer_value(json_object_get(manifest, "certificate_size")) > 0);
     json_decref(response);
@@ -3413,8 +3507,15 @@ static void test_backup_restore_api(void **state)
     struct jg_audit_verification verification;
     struct jg_database_backup records[4U];
     struct jg_network_config loaded;
+    struct jg_certificate_info authority_info;
+    uint8_t original_totp_key[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t replacement_totp_key[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t loaded_totp_key[JG_AUTH_TOTP_KEY_SIZE];
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
     char request[2048U];
+    char *authority = NULL;
+    char *client = NULL;
+    char *restored_authority = NULL;
     json_t *response = NULL;
     json_t *body = NULL;
     json_t *backup = NULL;
@@ -3427,6 +3528,10 @@ static void test_backup_restore_api(void **state)
     size_t audit_count = 0U;
     size_t checkpoint_audits = 0U;
     size_t restore_audits = 0U;
+    size_t authority_size = 0U;
+    size_t client_size = 0U;
+    size_t restored_authority_size = 0U;
+    size_t authority_count = 0U;
     uint64_t audit_total = 0U;
     bool has_more = false;
     int written = 0;
@@ -3469,6 +3574,16 @@ static void test_backup_restore_api(void **state)
     assert_true(configuration_backup_id > 0U);
     json_decref(response);
 
+    create_management_test_identity(&authority, &authority_size, &client,
+                                    &client_size);
+    assert_int_equal(jg_certificate_trust_store_install(
+                         fixture->client_ca_path, authority, authority_size,
+                         &authority_info, 1U, &authority_count),
+                     0);
+    assert_int_equal(authority_count, 1U);
+    (void)memcpy(original_totp_key, fixture->management->secrets->totp_key,
+                 sizeof(original_totp_key));
+
     written =
         snprintf(request, sizeof(request),
                  "{\"request_id\":\"restore-full-create\",\"method\":\"POST\","
@@ -3488,6 +3603,14 @@ static void test_backup_restore_api(void **state)
         (uint64_t)json_integer_value(json_object_get(backup, "id"));
     assert_true(full_backup_id > configuration_backup_id);
     json_decref(response);
+
+    (void)memset(replacement_totp_key, 0xa5, sizeof(replacement_totp_key));
+    assert_int_equal(
+        management_totp_key_store(fixture->key_path, replacement_totp_key), 0);
+    (void)memcpy(fixture->management->secrets->totp_key, replacement_totp_key,
+                 sizeof(replacement_totp_key));
+    assert_int_equal(jg_certificate_trust_store_remove(fixture->client_ca_path),
+                     0);
 
     assert_int_equal(
         jg_database_store_network_config(fixture->database, &changed), 0);
@@ -3582,6 +3705,9 @@ static void test_backup_restore_api(void **state)
     checkpoint = json_object_get(body, "checkpoint");
     assert_true(json_is_true(json_object_get(body, "changes")));
     assert_false(json_is_true(json_object_get(body, "certificate_changes")));
+    assert_true(json_is_true(json_object_get(body, "totp_key_changes")));
+    assert_true(json_is_true(json_object_get(body, "client_ca_changes")));
+    assert_true(json_is_true(json_object_get(body, "portable")));
     assert_string_equal(json_string_value(json_object_get(checkpoint, "kind")),
                         "full");
     json_decref(response);
@@ -3589,6 +3715,18 @@ static void test_backup_restore_api(void **state)
         jg_database_load_network_config(fixture->database, &loaded), 0);
     assert_int_equal(loaded.queue_length, initial.queue_length);
     assert_int_equal(loaded.failure_mode, initial.failure_mode);
+    assert_int_equal(
+        management_totp_key_load(fixture->key_path, loaded_totp_key), 0);
+    assert_memory_equal(loaded_totp_key, original_totp_key,
+                        sizeof(original_totp_key));
+    assert_memory_equal(fixture->management->secrets->totp_key,
+                        original_totp_key, sizeof(original_totp_key));
+    assert_int_equal(jg_certificate_trust_store_export_file(
+                         fixture->client_ca_path, &restored_authority,
+                         &restored_authority_size),
+                     0);
+    assert_int_equal(restored_authority_size, authority_size);
+    assert_memory_equal(restored_authority, authority, authority_size);
 
     assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
                      0);
@@ -3626,6 +3764,15 @@ static void test_backup_restore_api(void **state)
         assert_int_equal(
             jg_backup_remove(fixture->directory, records[index].filename), 0);
     }
+    assert_int_equal(jg_certificate_trust_store_remove(fixture->client_ca_path),
+                     0);
+    jg_certificate_pem_clear(restored_authority, restored_authority_size);
+    sodium_memzero(loaded_totp_key, sizeof(loaded_totp_key));
+    sodium_memzero(replacement_totp_key, sizeof(replacement_totp_key));
+    sodium_memzero(original_totp_key, sizeof(original_totp_key));
+    sodium_memzero(client, client_size);
+    free(client);
+    free(authority);
     sodium_memzero(&token, sizeof(token));
 }
 
@@ -4719,6 +4866,9 @@ int jg_test_management(void)
                                         setup_certificate_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_cross_resource_recovery,
+                                        setup_certificate_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_portable_backup_recovery,
                                         setup_certificate_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_backup_creation_recovery,
