@@ -3,6 +3,32 @@
 
 # JanusGate release notes
 
+## 0.2.0
+
+Feature release for staged policy rollout, explainable impact, portable
+recovery, and integrated appliance monitoring.
+
+- Adds persistent observe-only enforcement globally and by rule, source,
+  group, client, network, MAC address, or VLAN without automatic expiry.
+- Explains configured and effective decisions, records lifetime rule hits and
+  retained client impact, and identifies conservative conflicts, duplicates,
+  shadowing, reachability, and allow exceptions for operator review.
+- Provides configurable detailed-statistics retention and previewed bounded
+  cleanup without deleting lifetime aggregates or changing policy.
+- Makes encrypted full backups portable with the identity protection key,
+  public client trust, explicit server-key handling, serialized restore, and
+  audited recovery checkpoints.
+- Adds persistent native incidents for appliance consistency, policy
+  synchronization, audit integrity, certificate expiry, source health,
+  filesystem headroom, queue transport failures, and rejected credentials.
+- Delivers incident transitions through a durable, deduplicated HTTPS webhook
+  outbox with HMAC signatures, bounded retry, and private-CA support.
+- Exposes stable fixed-cardinality Prometheus metrics, Alertmanager rules, and
+  a provisionable Grafana appliance dashboard over least-privilege mTLS
+  monitoring access.
+- Completes WebGUI, CLI, API, documentation, shell completion, Linux, and
+  OpenBSD administration paths for the new policy and alerting workflows.
+
 ## 0.1.3
 
 Maintenance release improving restore safety and simplifying internal

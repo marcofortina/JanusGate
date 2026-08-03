@@ -3,7 +3,7 @@
 # Maintainer: Marco Fortina <marco_fortina@hotmail.it>
 
 pkgname=janusgate
-pkgver=0.1.3
+pkgver=0.2.0
 pkgrel=0
 pkgdesc="Transparent inline DNS policy appliance"
 url="https://github.com/marcofortina/JanusGate"
@@ -80,5 +80,5 @@ package() {
 }
 
 sha512sums="
-5c2a99613c4a7ddb992fd210422c14541353ff3d6784c90966dd05a0d9634994841e0579c884511cea280ffafceb29cd6f16f3fc0bab094ce6af0ff47d2ca6a5  janusgate-0.1.3.tar.gz
+c8535329140f726bef5133fb111538da6ac208aabac711012929afc7a2dadb52fc08c697bb25e990d9146ef5ae4b8e4c12a8053c45c12dbd6894fd4bb1156342  janusgate-0.2.0.tar.gz
 "
