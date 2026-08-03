@@ -103,7 +103,8 @@
 enum management_recovery_file {
     MANAGEMENT_RECOVERY_CERTIFICATE = 1U << 0U,
     MANAGEMENT_RECOVERY_PENDING_KEY = 1U << 1U,
-    MANAGEMENT_RECOVERY_CLIENT_CA = 1U << 2U
+    MANAGEMENT_RECOVERY_CLIENT_CA = 1U << 2U,
+    MANAGEMENT_RECOVERY_TOTP_KEY = 1U << 3U
 };
 
 /** Consistency failures that suspend ordinary management mutations. */
@@ -116,6 +117,11 @@ enum management_degraded_reason {
 /** Health state shared by request and slow-operation worker contexts. */
 struct management_health {
     _Atomic uint32_t degraded_reasons;
+};
+
+/** Secret material shared by request processing and the job worker. */
+struct management_secrets {
+    uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
 };
 
 /** Opaque bounded slow-operation queue owned by management state. */
@@ -151,10 +157,11 @@ struct jg_management {
     struct login_rate_slot login_rates[MANAGEMENT_LOGIN_RATE_SLOT_COUNT];
     uint64_t login_global_window_started_at;
     uint32_t login_global_requests;
+    char totp_key_path[PATH_MAX];
     char certificate_path[PATH_MAX];
     char client_ca_path[PATH_MAX];
     char backup_directory[PATH_MAX];
-    uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
+    struct management_secrets *secrets;
     enum jg_system_action pending_system_action;
     struct management_consistency *consistency;
     struct management_jobs *jobs;
@@ -1268,6 +1275,17 @@ int pending_key_present(const char *path, bool *present);
 
 /** @brief Inspect whether a secure client trust store currently exists. */
 int client_ca_present(const char *path, bool *present);
+
+/** @brief Load one exact owner-private TOTP protection key. */
+int management_totp_key_load(const char *path,
+                             uint8_t key[JG_AUTH_TOTP_KEY_SIZE]);
+
+/** @brief Atomically replace one owner-private TOTP protection key. */
+int management_totp_key_store(const char *path,
+                              const uint8_t key[JG_AUTH_TOTP_KEY_SIZE]);
+
+/** @brief Atomically copy one validated TOTP protection key. */
+int management_totp_key_copy(const char *source, const char *destination);
 
 /** @brief Reserve, snapshot, and arm one cross-resource operation. */
 int start_recovery_operation(struct jg_management *management,

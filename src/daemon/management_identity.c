@@ -477,8 +477,8 @@ static int complete_multifactor(
             return -EINVAL;
         }
         return jg_account_totp_authenticate(
-            management->database, password_identity, management->totp_key,
-            (uint32_t)code, now, identity);
+            management->database, password_identity,
+            management->secrets->totp_key, (uint32_t)code, now, identity);
     }
     if (recovery[0U] != '\0') {
         return jg_account_recovery_authenticate(
@@ -1847,9 +1847,9 @@ int handle_totp_provision(struct jg_management *management,
                              "The enrollment request must be empty.",
                              request->request_id, output, output_size, written);
     }
-    result =
-        jg_account_totp_provision(management->database, identity.user_id,
-                                  management->totp_key, now, &provisioning);
+    result = jg_account_totp_provision(management->database, identity.user_id,
+                                       management->secrets->totp_key, now,
+                                       &provisioning);
     if (result == -EEXIST) {
         return respond_error(409, "totp_enabled",
                              "TOTP is already enabled for this user.",
@@ -1926,9 +1926,9 @@ int handle_totp_confirm(struct jg_management *management,
                              "A six-digit TOTP code is required.",
                              request->request_id, output, output_size, written);
     }
-    result =
-        jg_account_totp_confirm(management->database, identity.user_id,
-                                management->totp_key, code, now, &recovery);
+    result = jg_account_totp_confirm(management->database, identity.user_id,
+                                     management->secrets->totp_key, code, now,
+                                     &recovery);
     if (result == -EACCES) {
         return respond_error(401, "invalid_totp",
                              "The supplied TOTP code is not valid.",
@@ -1992,8 +1992,8 @@ int handle_totp_disable(struct jg_management *management,
     if (result == 0) {
         identity.mfa_complete = false;
         result = jg_account_totp_authenticate(management->database, &identity,
-                                              management->totp_key, code, now,
-                                              &verified);
+                                              management->secrets->totp_key,
+                                              code, now, &verified);
     }
     if (result != 0) {
         return respond_error(

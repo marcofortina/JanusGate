@@ -203,6 +203,13 @@ static int create_recovery_snapshots(struct jg_management *management,
                                                      snapshot);
         }
     }
+    if (result == 0 && (files & MANAGEMENT_RECOVERY_TOTP_KEY) != 0U) {
+        result = recovery_path(management->totp_key_path, snapshot);
+        if (result == 0) {
+            result =
+                management_totp_key_copy(management->totp_key_path, snapshot);
+        }
+    }
     if (result == 0 && database) {
         result = jg_database_recovery_checkpoint_create(management->database);
     }
@@ -234,6 +241,13 @@ static int cleanup_recovery_snapshots(struct jg_management *management)
         result = cleanup_result;
     }
     cleanup_result = recovery_path(management->client_ca_path, snapshot);
+    if (cleanup_result == 0) {
+        cleanup_result = remove_recovery_file(snapshot);
+    }
+    if (cleanup_result != 0 && result == 0) {
+        result = cleanup_result;
+    }
+    cleanup_result = recovery_path(management->totp_key_path, snapshot);
     if (cleanup_result == 0) {
         cleanup_result = remove_recovery_file(snapshot);
     }
@@ -314,6 +328,23 @@ static int restore_recovery_files(struct jg_management *management,
         result = restore_recovery_file(
             management->client_ca_path,
             (files & MANAGEMENT_RECOVERY_CLIENT_CA) != 0U, true);
+    }
+    if (result == 0 && (tracked & MANAGEMENT_RECOVERY_TOTP_KEY) != 0U) {
+        if ((files & MANAGEMENT_RECOVERY_TOTP_KEY) == 0U) {
+            result = -EILSEQ;
+        } else {
+            char snapshot[PATH_MAX];
+
+            result = recovery_path(management->totp_key_path, snapshot);
+            if (result == 0) {
+                result = management_totp_key_copy(snapshot,
+                                                  management->totp_key_path);
+            }
+            if (result == 0) {
+                result = management_totp_key_load(
+                    management->totp_key_path, management->secrets->totp_key);
+            }
+        }
     }
     return result;
 }
@@ -576,7 +607,11 @@ int recover_pending_operation(struct jg_management *management)
         } else if (result == 0 &&
                    strcmp(operation.kind,
                           MANAGEMENT_OPERATION_BACKUP_RESTORE) == 0) {
-            if ((tracked & ~MANAGEMENT_RECOVERY_CERTIFICATE) != 0U) {
+            if ((tracked & ~(MANAGEMENT_RECOVERY_CERTIFICATE |
+                             MANAGEMENT_RECOVERY_CLIENT_CA |
+                             MANAGEMENT_RECOVERY_TOTP_KEY)) != 0U ||
+                ((tracked & MANAGEMENT_RECOVERY_TOTP_KEY) != 0U &&
+                 (existing & MANAGEMENT_RECOVERY_TOTP_KEY) == 0U)) {
                 result = -EILSEQ;
             }
             if (result == 0) {

@@ -109,7 +109,10 @@ int management_jobs_create(struct jg_management *management,
         created->worker.database = created->database;
         created->worker.runtime = management->runtime;
         created->worker.health = management->health;
+        created->worker.secrets = management->secrets;
         created->worker.consistency = management->consistency;
+        (void)memcpy(created->worker.totp_key_path, management->totp_key_path,
+                     strlen(management->totp_key_path) + 1U);
         (void)memcpy(created->worker.certificate_path,
                      management->certificate_path,
                      strlen(management->certificate_path) + 1U);

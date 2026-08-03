@@ -10,7 +10,6 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -18,9 +17,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
 
 #include <netinet/in.h>
 
@@ -248,61 +245,6 @@ static bool key_path_valid(const char *path)
     return length > 1U && length < PATH_MAX;
 }
 
-/** @brief Load one exact private key from a secure regular file. */
-static int load_totp_key(const char *path, uint8_t key[JG_AUTH_TOTP_KEY_SIZE])
-{
-    struct stat metadata;
-    uint8_t extra = 0U;
-    size_t offset = 0U;
-    int descriptor = -1;
-    int result = 0;
-
-    if (!key_path_valid(path)) {
-        return -EINVAL;
-    }
-    descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (descriptor < 0) {
-        return -errno;
-    }
-    if (fstat(descriptor, &metadata) != 0) {
-        result = -errno;
-    } else if (!S_ISREG(metadata.st_mode) ||
-               (metadata.st_mode & S_IRUSR) == 0U ||
-               (metadata.st_mode & (S_IXUSR | S_IRWXG | S_IRWXO)) != 0U ||
-               (geteuid() != 0U && metadata.st_uid != geteuid())) {
-        result = -EACCES;
-    }
-    while (result == 0 && offset < JG_AUTH_TOTP_KEY_SIZE) {
-        const ssize_t count =
-            read(descriptor, key + offset, JG_AUTH_TOTP_KEY_SIZE - offset);
-
-        if (count < 0) {
-            result = errno == EINTR ? 0 : -errno;
-        } else if (count == 0) {
-            result = -EMSGSIZE;
-        } else {
-            offset += (size_t)count;
-        }
-    }
-    if (result == 0) {
-        ssize_t count = 0;
-
-        do {
-            count = read(descriptor, &extra, sizeof(extra));
-        } while (count < 0 && errno == EINTR);
-        if (count < 0) {
-            result = -errno;
-        } else if (count != 0) {
-            result = -EMSGSIZE;
-        }
-    }
-    (void)close(descriptor);
-    if (result != 0) {
-        sodium_memzero(key, JG_AUTH_TOTP_KEY_SIZE);
-    }
-    return result;
-}
-
 /** @brief Create management state and load the appliance-local TOTP key. */
 int jg_management_create(struct jg_database *database,
                          const char *totp_key_path,
@@ -319,7 +261,8 @@ int jg_management_create(struct jg_database *database,
         return -EINVAL;
     }
     *management = NULL;
-    if (database == NULL || totp_key_path == NULL ||
+    if (database == NULL || !key_path_valid(totp_key_path) ||
+        strlen(totp_key_path) > PATH_MAX - sizeof(MANAGEMENT_RECOVERY_SUFFIX) ||
         !key_path_valid(certificate_path) ||
         strlen(certificate_path) >
             PATH_MAX - sizeof(".pending-key" MANAGEMENT_RECOVERY_SUFFIX) ||
@@ -333,14 +276,22 @@ int jg_management_create(struct jg_database *database,
     if (created == NULL) {
         return -ENOMEM;
     }
+    created->secrets = calloc(1U, sizeof(*created->secrets));
+    if (created->secrets == NULL) {
+        free(created);
+        return -ENOMEM;
+    }
     created->health = calloc(1U, sizeof(*created->health));
     if (created->health == NULL) {
+        free(created->secrets);
         free(created);
         return -ENOMEM;
     }
     atomic_init(&created->health->degraded_reasons, 0U);
     created->database = database;
     created->runtime = runtime;
+    (void)memcpy(created->totp_key_path, totp_key_path,
+                 strlen(totp_key_path) + 1U);
     (void)memcpy(created->certificate_path, certificate_path,
                  strlen(certificate_path) + 1U);
     (void)memcpy(created->client_ca_path, client_ca_path,
@@ -350,7 +301,8 @@ int jg_management_create(struct jg_database *database,
     jg_auth_password_policy_default(&created->password_policy);
     result = management_consistency_create(&created->consistency);
     if (result == 0) {
-        result = load_totp_key(totp_key_path, created->totp_key);
+        result =
+            management_totp_key_load(totp_key_path, created->secrets->totp_key);
     }
     if (result == 0) {
         result = recover_pending_operation(created);
@@ -1905,6 +1857,11 @@ void jg_management_destroy(struct jg_management *management)
     management->jobs = NULL;
     management_consistency_destroy(management->consistency);
     management->consistency = NULL;
+    if (management->secrets != NULL) {
+        sodium_memzero(management->secrets, sizeof(*management->secrets));
+        free(management->secrets);
+        management->secrets = NULL;
+    }
     free(management->health);
     management->health = NULL;
     sodium_memzero(management, sizeof(*management));

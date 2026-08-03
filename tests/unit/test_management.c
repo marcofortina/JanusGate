@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/stat.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -101,6 +102,50 @@ static void test_management_consistency(void **state)
     assert_int_equal(management_mutation_begin(&management), 0);
     management_mutation_end(&management);
     management_consistency_destroy(management.consistency);
+}
+
+/** @brief Verify atomic owner-private TOTP key storage and copying. */
+static void test_management_secret_storage(void **state)
+{
+    static const char template[] = "/tmp/janusgate-secret-XXXXXX";
+    char directory[sizeof(template)];
+    char key_path[128U];
+    char copy_path[128U];
+    uint8_t key[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t replacement[JG_AUTH_TOTP_KEY_SIZE];
+    uint8_t loaded[JG_AUTH_TOTP_KEY_SIZE];
+    int written = 0;
+
+    (void)state;
+    (void)memcpy(directory, template, sizeof(template));
+    assert_non_null(mkdtemp(directory));
+    written = snprintf(key_path, sizeof(key_path), "%s/totp.key", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(key_path));
+    written =
+        snprintf(copy_path, sizeof(copy_path), "%s/totp-copy.key", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(copy_path));
+    (void)memset(key, 0x11, sizeof(key));
+    (void)memset(replacement, 0x22, sizeof(replacement));
+    assert_int_equal(management_totp_key_store(key_path, key), 0);
+    assert_int_equal(management_totp_key_load(key_path, loaded), 0);
+    assert_memory_equal(loaded, key, sizeof(key));
+    assert_int_equal(management_totp_key_copy(key_path, copy_path), 0);
+    assert_int_equal(management_totp_key_load(copy_path, loaded), 0);
+    assert_memory_equal(loaded, key, sizeof(key));
+    assert_int_equal(management_totp_key_store(key_path, replacement), 0);
+    assert_int_equal(management_totp_key_load(key_path, loaded), 0);
+    assert_memory_equal(loaded, replacement, sizeof(replacement));
+    assert_int_equal(chmod(key_path, 0644), 0);
+    assert_int_equal(management_totp_key_load(key_path, loaded), -EACCES);
+    assert_int_equal(management_totp_key_store(key_path, key), -EACCES);
+    assert_int_equal(unlink(key_path), 0);
+    assert_int_equal(unlink(copy_path), 0);
+    assert_int_equal(rmdir(directory), 0);
+    sodium_memzero(loaded, sizeof(loaded));
+    sodium_memzero(replacement, sizeof(replacement));
+    sodium_memzero(key, sizeof(key));
 }
 
 /** @brief Write one exact buffer to a newly created private file. */
@@ -4647,6 +4692,7 @@ int jg_test_management(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_management_consistency),
+        cmocka_unit_test(test_management_secret_storage),
         cmocka_unit_test_setup_teardown(test_restore_request_exclusion,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_local_administration,
