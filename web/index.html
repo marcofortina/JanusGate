@@ -1799,6 +1799,12 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                   is enabled. Applying changes creates an automatic
                   pre-restore checkpoint.
                 </p>
+                <p id="full-restore-warning" hidden>
+                  A full restore replaces users, sessions, API tokens, TOTP,
+                  and client-certificate mappings. This browser session may
+                  end before the final job result can be retrieved. Prefer
+                  the local console and <code>janusgatectl</code> for recovery.
+                </p>
               </div>
               <form id="restore-form">
                 <label id="restore-passphrase-row">

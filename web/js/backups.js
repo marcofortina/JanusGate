@@ -124,6 +124,7 @@ function selectRestore(backup) {
   byId("restore-selection").textContent =
     `Backup ${backup.id} · ${backup.kind} · ` +
     `${formatTimestamp(backup.created_at)}`;
+  byId("full-restore-warning").hidden = backup.kind !== "full";
   byId("restore-passphrase-row").hidden = !backup.encrypted;
   byId("restore-apply").disabled = true;
   byId("restore-result").textContent = "";
@@ -208,7 +209,11 @@ async function applyRestore() {
   if (!await confirmAction(
     "Restore appliance backup",
     `Apply backup ${selectedBackup.id}? JanusGate creates an automatic ` +
-      "checkpoint before changing persistent state.",
+      "checkpoint before changing persistent state." +
+      (selectedBackup.kind === "full"
+        ? " A full restore can end this browser session before the final " +
+          "job result is available; retain local console access."
+        : ""),
     "Restore backup",
   )) {
     return;
