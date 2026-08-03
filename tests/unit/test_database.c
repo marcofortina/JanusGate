@@ -467,6 +467,16 @@ static void test_initial_migration(void **state)
     assert_true(
         column_exists(inspection, "management_operations", "requested_action"));
     assert_true(table_exists(inspection, "policy_sync_state"));
+    assert_true(table_exists(inspection, "policy_configuration"));
+    assert_true(table_exists(inspection, "policy_scope_modes"));
+    assert_true(column_exists(inspection, "policy_groups", "enforcement"));
+    assert_true(column_exists(inspection, "blocklist_sources", "enforcement"));
+    assert_true(column_exists(inspection, "domain_rules", "enforcement"));
+    assert_true(column_exists(inspection, "destination_rules", "enforcement"));
+    assert_text_value(inspection,
+                      "SELECT enforcement FROM policy_configuration WHERE "
+                      "id=1;",
+                      "enforce");
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -945,6 +955,12 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "network_configuration", "revision"));
     assert_true(table_exists(inspection, "logging_configuration"));
     assert_true(column_exists(inspection, "logging_configuration", "revision"));
+    assert_true(table_exists(inspection, "policy_configuration"));
+    assert_true(table_exists(inspection, "policy_scope_modes"));
+    assert_true(column_exists(inspection, "policy_groups", "enforcement"));
+    assert_true(column_exists(inspection, "blocklist_sources", "enforcement"));
+    assert_true(column_exists(inspection, "domain_rules", "enforcement"));
+    assert_true(column_exists(inspection, "destination_rules", "enforcement"));
     assert_true(table_exists(inspection, "totp_credentials"));
     assert_true(table_exists(inspection, "recovery_codes"));
     assert_true(table_exists(inspection, "mtls_mappings"));
@@ -1512,6 +1528,13 @@ static void test_network_configuration_migration(void **state)
         "INSERT INTO system_settings(key,value,updated_at) "
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
+        "DROP TABLE policy_scope_modes;"
+        "DROP TABLE policy_configuration;"
+        "ALTER TABLE destination_rules DROP COLUMN enforcement;"
+        "ALTER TABLE domain_rules DROP COLUMN enforcement;"
+        "ALTER TABLE blocklist_sources DROP COLUMN enforcement;"
+        "ALTER TABLE policy_groups DROP COLUMN revision;"
+        "ALTER TABLE policy_groups DROP COLUMN enforcement;"
         "DROP TABLE management_operations;"
         "DROP TABLE policy_sync_state;"
         "DROP TABLE logging_configuration;"

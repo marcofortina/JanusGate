@@ -739,6 +739,59 @@ static const char *const migration_15[] = {
     migration_15_operation_provenance,
 };
 
+/** Add persistent observe-only policy controls at every supported level. */
+static const char migration_16_policy_enforcement[] =
+    "CREATE TABLE policy_configuration ("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "enforcement TEXT NOT NULL CHECK(enforcement IN ('enforce','observe')),"
+    "revision INTEGER NOT NULL CHECK(revision>0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=0)"
+    ") STRICT;"
+    "INSERT INTO policy_configuration(id,enforcement,revision,updated_at)"
+    " VALUES(1,'enforce',1,unixepoch());"
+    "ALTER TABLE policy_groups ADD COLUMN enforcement TEXT NOT NULL "
+    "DEFAULT 'enforce' CHECK(enforcement IN ('enforce','observe'));"
+    "ALTER TABLE policy_groups ADD COLUMN revision INTEGER NOT NULL "
+    "DEFAULT 1 CHECK(revision>0);"
+    "ALTER TABLE blocklist_sources ADD COLUMN enforcement TEXT NOT NULL "
+    "DEFAULT 'enforce' CHECK(enforcement IN ('enforce','observe'));"
+    "ALTER TABLE domain_rules ADD COLUMN enforcement TEXT NOT NULL "
+    "DEFAULT 'enforce' CHECK(enforcement IN ('enforce','observe'));"
+    "ALTER TABLE destination_rules ADD COLUMN enforcement TEXT NOT NULL "
+    "DEFAULT 'enforce' CHECK(enforcement IN ('enforce','observe'));"
+    "CREATE TABLE policy_scope_modes ("
+    "id INTEGER PRIMARY KEY,"
+    "name TEXT NOT NULL UNIQUE CHECK(length(name) BETWEEN 1 AND 128),"
+    "enforcement TEXT NOT NULL CHECK(enforcement IN ('enforce','observe')),"
+    "scope_type TEXT NOT NULL "
+    "CHECK(scope_type IN ('mac','ipv4','ipv6','vlan')),"
+    "scope_value BLOB,"
+    "prefix_length INTEGER,"
+    "vlan_id INTEGER,"
+    "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),"
+    "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),"
+    "created_at INTEGER NOT NULL CHECK(created_at>=0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=created_at),"
+    "CHECK((scope_type='mac' AND length(scope_value)=6 AND "
+    "prefix_length IS NULL AND vlan_id IS NULL) OR "
+    "(scope_type='ipv4' AND length(scope_value)=4 AND "
+    "prefix_length BETWEEN 0 AND 32 AND vlan_id IS NULL) OR "
+    "(scope_type='ipv6' AND length(scope_value)=16 AND "
+    "prefix_length BETWEEN 0 AND 128 AND vlan_id IS NULL) OR "
+    "(scope_type='vlan' AND scope_value IS NULL AND "
+    "prefix_length IS NULL AND vlan_id BETWEEN 0 AND 4094))"
+    ") STRICT;"
+    "CREATE INDEX policy_scope_modes_enabled_idx ON policy_scope_modes(id) "
+    "WHERE enabled=1 AND enforcement='observe';"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(16,unixepoch());"
+    "PRAGMA user_version=16;";
+
+/** Ordered statement groups composing schema version sixteen. */
+static const char *const migration_16[] = {
+    migration_16_policy_enforcement,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -756,6 +809,7 @@ static const struct database_migration migrations[] = {
     {13U, migration_13, sizeof(migration_13) / sizeof(migration_13[0])},
     {14U, migration_14, sizeof(migration_14) / sizeof(migration_14[0])},
     {15U, migration_15, sizeof(migration_15) / sizeof(migration_15[0])},
+    {16U, migration_16, sizeof(migration_16) / sizeof(migration_16[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
