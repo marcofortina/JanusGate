@@ -91,11 +91,28 @@ static int evaluate_destination(const struct jg_packet_view *packet,
                                     &result->destination_policy) != 0) {
         return -EINVAL;
     }
+    result->policy_path = JG_POLICY_STATS_NETWORK_DESTINATION;
+    result->client = *client;
     if (result->destination_policy.effect == JG_POLICY_BLOCK) {
         result->verdict = JG_NFQUEUE_DROP;
         result->reason = JG_DATAPLANE_POLICY_BLOCK;
     }
     return 0;
+}
+
+/** @brief Retain the DNS question represented by one policy result. */
+static void retain_dns_question(const struct jg_dns_message *dns,
+                                struct jg_dataplane_result *result)
+{
+    if (result->question_index < dns->question_count) {
+        const struct jg_dns_question *question =
+            &dns->questions[result->question_index];
+
+        (void)memcpy(result->inspected_domain, question->name,
+                     strlen(question->name) + 1U);
+        result->query_type = question->type;
+        result->policy_path = JG_POLICY_STATS_DNS;
+    }
 }
 
 /** @brief Evaluate every normalized question in one parsed DNS query. */
@@ -148,11 +165,20 @@ static int evaluate_dns_message(const struct jg_packet_view *packet,
         build_client(packet, &client) != 0) {
         return -EINVAL;
     }
+    if (evaluate_destination(packet, &client, snapshot, result) != 0) {
+        return -EINVAL;
+    }
+    if (result->reason == JG_DATAPLANE_POLICY_BLOCK) {
+        return 0;
+    }
     result->dns_result = jg_dns_parse_query(message, message_size, &dns);
     if (result->dns_result != JG_DNS_OK) {
         return 0;
     }
     evaluation_result = evaluate_dns(&dns, &client, snapshot, result);
+    if (evaluation_result == 0) {
+        retain_dns_question(&dns, result);
+    }
     return evaluation_result == 0 ? 0 : -EINVAL;
 }
 
@@ -222,6 +248,9 @@ int jg_dataplane_evaluate(const uint8_t *frame,
         return 0;
     }
     evaluation_result = evaluate_dns(&dns, &client, snapshot, result);
+    if (evaluation_result == 0) {
+        retain_dns_question(&dns, result);
+    }
     return evaluation_result == 0 ? 0 : -EINVAL;
 }
 
@@ -332,6 +361,12 @@ int jg_dataplane_evaluate_visible_sni(const struct jg_packet_view *packet,
     }
     result->packet = packet_copy;
     result->packet_result = JG_PACKET_OK;
+    if (evaluate_destination(&packet_copy, &client, snapshot, result) != 0) {
+        return -EINVAL;
+    }
+    if (result->reason == JG_DATAPLANE_POLICY_BLOCK) {
+        return 0;
+    }
     match_result = jg_policy_match_visible_sni(snapshot, server_name, &client,
                                                &result->policy);
     if (match_result != 0) {
@@ -343,5 +378,8 @@ int jg_dataplane_evaluate_visible_sni(const struct jg_packet_view *packet,
     result->reason = result->policy.effect == JG_POLICY_BLOCK
                          ? JG_DATAPLANE_POLICY_BLOCK
                          : JG_DATAPLANE_POLICY_ALLOW;
+    result->policy_path = JG_POLICY_STATS_TLS_SNI;
+    (void)memcpy(result->inspected_domain, server_name,
+                 strlen(server_name) + 1U);
     return 0;
 }

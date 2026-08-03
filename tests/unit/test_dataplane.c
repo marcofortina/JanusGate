@@ -94,6 +94,13 @@ static void test_udp_dns_policy(void **state)
     assert_int_equal(result.reason, JG_DATAPLANE_POLICY_BLOCK);
     assert_int_equal(result.question_index, 0U);
     assert_int_equal(result.policy.rule_id, 17U);
+    assert_int_equal(result.policy_path, JG_POLICY_STATS_DNS);
+    assert_string_equal(result.inspected_domain, "blocked.test");
+    assert_int_equal(result.query_type, 1U);
+    assert_true(result.client.has_mac);
+    assert_memory_equal(result.client.mac, blocked_query + 6U, 6U);
+    assert_int_equal(result.client.address_family, JG_POLICY_ADDRESS_IPV4);
+    assert_memory_equal(result.client.address, blocked_query + 26U, 4U);
 
     (void)memcpy(frame, blocked_query, sizeof(frame));
     (void)memcpy(frame + 55U, "allowed", 7U);
@@ -104,6 +111,7 @@ static void test_udp_dns_policy(void **state)
     assert_int_equal(result.reason, JG_DATAPLANE_POLICY_ALLOW);
     assert_int_equal(result.policy.effect, JG_POLICY_ALLOW);
     assert_false(result.policy.matched);
+    assert_string_equal(result.inspected_domain, "allowed.test");
 
     assert_int_equal(jg_dataplane_evaluate(frame, sizeof(frame) - 1U, NULL,
                                            snapshot, &result),
@@ -136,6 +144,7 @@ static void test_multiple_questions(void **state)
     assert_int_equal(result.reason, JG_DATAPLANE_POLICY_BLOCK);
     assert_int_equal(result.question_index, 1U);
     assert_int_equal(result.policy.rule_id, 17U);
+    assert_string_equal(result.inspected_domain, "blocked.test");
     jg_policy_snapshot_destroy(snapshot);
 }
 
@@ -156,6 +165,7 @@ static void test_deferred_and_pass(void **state)
         0);
     assert_int_equal(result.verdict, JG_NFQUEUE_ACCEPT);
     assert_int_equal(result.reason, JG_DATAPLANE_PASS);
+    assert_int_equal(result.policy_path, 0);
 
     (void)memcpy(frame, blocked_query, sizeof(frame));
     frame[20U] = 0x20U;
@@ -164,6 +174,7 @@ static void test_deferred_and_pass(void **state)
         0);
     assert_int_equal(result.verdict, JG_NFQUEUE_ACCEPT);
     assert_int_equal(result.reason, JG_DATAPLANE_FRAGMENT_PENDING);
+    assert_int_equal(result.policy_path, JG_POLICY_STATS_NETWORK_DESTINATION);
     jg_policy_snapshot_destroy(snapshot);
 }
 
@@ -191,12 +202,16 @@ static void test_visible_sni_policy(void **state)
     assert_int_equal(result.verdict, JG_NFQUEUE_DROP);
     assert_int_equal(result.reason, JG_DATAPLANE_POLICY_BLOCK);
     assert_int_equal(result.policy.rule_id, 23U);
+    assert_int_equal(result.policy_path, JG_POLICY_STATS_TLS_SNI);
+    assert_string_equal(result.inspected_domain, "api.resolver.example");
+    assert_int_equal(result.query_type, 0U);
 
     assert_int_equal(jg_dataplane_evaluate_visible_sni(
                          &packet, "allowed.example", snapshot, &result),
                      0);
     assert_int_equal(result.verdict, JG_NFQUEUE_ACCEPT);
     assert_int_equal(result.reason, JG_DATAPLANE_POLICY_ALLOW);
+    assert_string_equal(result.inspected_domain, "allowed.example");
 
     packet.destination_port = 53U;
     assert_int_equal(jg_dataplane_evaluate_visible_sni(
@@ -226,6 +241,8 @@ static void test_destination_policy(void **state)
     assert_true(result.destination_policy.matched);
     assert_int_equal(result.destination_policy.rule_id, 31U);
     assert_false(result.policy.matched);
+    assert_int_equal(result.policy_path, JG_POLICY_STATS_NETWORK_DESTINATION);
+    assert_string_equal(result.inspected_domain, "");
     jg_policy_snapshot_destroy(snapshot);
 }
 

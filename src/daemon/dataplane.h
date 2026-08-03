@@ -11,10 +11,12 @@
 #define JANUSGATE_DAEMON_DATAPLANE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "janusgate/dns.h"
 #include "janusgate/packet.h"
 #include "janusgate/policy.h"
+#include "janusgate/policy_stats.h"
 #include "nfqueue.h"
 
 /**
@@ -54,6 +56,14 @@ struct jg_dataplane_result {
     struct jg_packet_view packet;
     /** Index of the question producing @ref policy, or SIZE_MAX. */
     size_t question_index;
+    /** Inspection path selected for a complete policy decision, or zero. */
+    enum jg_policy_stats_path policy_path;
+    /** Client identity used for policy matching. */
+    struct jg_policy_client client;
+    /** Selected DNS question or visible SNI, empty for destination policy. */
+    char inspected_domain[JG_DOMAIN_NAME_MAX + 1U];
+    /** Selected DNS query type, or zero outside DNS inspection. */
+    uint16_t query_type;
     /** Domain-policy explanation, borrowing immutable snapshot storage. */
     struct jg_policy_match policy;
     /** Destination-policy explanation, borrowing immutable snapshot storage. */
