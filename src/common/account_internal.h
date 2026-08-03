@@ -21,6 +21,12 @@
 /** @brief Validate one conservative ASCII local username. */
 bool jg_account_username_valid(const char *username);
 
+/** @brief Convert one persistent role identifier to its public value. */
+enum jg_access_role jg_account_role_from_id(sqlite3_int64 role_id);
+
+/** @brief Validate one assignable fixed backend role. */
+bool jg_account_role_valid(enum jg_access_role role);
+
 /** @brief Load the role union and enabled TOTP state for one user. */
 int jg_account_load_identity_authorization(sqlite3 *handle,
                                            uint64_t user_id,

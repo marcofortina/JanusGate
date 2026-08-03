@@ -124,6 +124,7 @@ add_library(
   janusgate-common STATIC
   src/common/access.c
   src/common/account.c
+  src/common/account_mtls.c
   src/common/account_session.c
   src/common/account_token.c
   src/common/audit.c
