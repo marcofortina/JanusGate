@@ -19,6 +19,7 @@
 #include <sodium.h>
 
 #include "cli_internal.h"
+#include "janusgate/policy_stats.h"
 
 /** @brief Map one CLI policy kind to its API collection and array field. */
 static int policy_collection(const char *kind,
@@ -180,6 +181,78 @@ static int run_policy_mode(const struct cli_options *options,
                                          "/api/v1/policies/mode", body);
     }
     json_decref(current);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Read or replace detailed policy-statistics retention. */
+static int run_policy_statistics(const struct cli_options *options,
+                                 const char *token,
+                                 const char *file)
+{
+    static const char path[] = "/api/v1/policies/statistics";
+    json_t *current = NULL;
+    json_t *body = NULL;
+    json_t *revision = NULL;
+    int result = 0;
+
+    if (file == NULL) {
+        result = jg_cli_fetch_api_object(options, token, path, NULL, &current);
+        if (result == CLI_EXIT_SUCCESS) {
+            result = jg_cli_present_object(options, current);
+        }
+        json_decref(current);
+        return result;
+    }
+    body = jg_cli_read_json_object(file, &result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: policy-statistics document: %s\n",
+                      strerror(-result));
+        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
+                                                        : CLI_EXIT_FAILURE;
+    }
+    result = jg_cli_fetch_api_object(options, token, path, NULL, &current);
+    revision = json_object_get(current, "revision");
+    if (result == CLI_EXIT_SUCCESS &&
+        (!json_is_integer(revision) ||
+         json_object_set(body, "revision", revision) != 0)) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_send_api_request(options, token, "policy statistics",
+                                         "PUT", path, body);
+    }
+    json_decref(current);
+    json_decref(body);
+    return result;
+}
+
+/** @brief Preview or run one bounded detailed-statistics cleanup batch. */
+static int run_policy_cleanup(const struct cli_options *options,
+                              const char *token,
+                              bool preview)
+{
+    json_t *body = json_object();
+    int result = CLI_EXIT_SUCCESS;
+
+    if (!preview && !jg_cli_destructive_operation_confirmed(
+                        options, "Remove expired policy-statistics detail")) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (body == NULL ||
+        json_object_set_new(body, "preview", json_boolean(preview)) != 0 ||
+        (!preview &&
+         json_object_set_new(body, "batch_size",
+                             json_integer(JG_POLICY_STATS_CLEANUP_BATCH_MAX)) !=
+             0)) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_send_api_request(
+            options, token,
+            preview ? "policy cleanup preview" : "policy cleanup", "POST",
+            "/api/v1/policies/statistics/cleanup", body);
+    }
     json_decref(body);
     return result;
 }
@@ -385,6 +458,12 @@ int jg_cli_run_policy_command(const struct cli_options *options,
         result = run_policy_list(options, token);
     } else if (strcmp(argv[1], "mode") == 0) {
         result = run_policy_mode(options, token, argc == 3 ? argv[2] : NULL);
+    } else if (strcmp(argv[1], "statistics") == 0) {
+        result =
+            run_policy_statistics(options, token, argc == 3 ? argv[2] : NULL);
+    } else if (strcmp(argv[1], "cleanup") == 0) {
+        result =
+            run_policy_cleanup(options, token, strcmp(argv[2], "preview") == 0);
     } else if (strcmp(argv[1], "show") == 0) {
         result = run_policy_show(options, token, argv[2], argv[3]);
     } else if (strcmp(argv[1], "analyze") == 0) {

@@ -1288,6 +1288,8 @@ static bool management_path_known(const char *path)
         "/api/v1/policies/mode",
         "/api/v1/policies/scopes",
         "/api/v1/policies/simulate",
+        "/api/v1/policies/statistics",
+        "/api/v1/policies/statistics/cleanup",
         "/api/v1/service/restart",
         "/api/v1/sources",
         "/api/v1/status",
@@ -1525,6 +1527,15 @@ static int dispatch_request(struct jg_management *management,
         return handle_policy_scope_mode(management, request, remote,
                                         scope_mode_id, now, output, output_size,
                                         written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/statistics") == 0) {
+        return handle_policy_statistics(management, request, remote, now,
+                                        output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/statistics/cleanup") == 0 &&
+        post) {
+        return handle_policy_statistics_cleanup(
+            management, request, remote, now, output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/policies/destinations") == 0 &&
         strcmp(request->method, "GET") == 0) {

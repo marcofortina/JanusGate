@@ -211,6 +211,7 @@ add_library(
   src/daemon/management_policy.c
   src/daemon/management_policy_analysis.c
   src/daemon/management_policy_modes.c
+  src/daemon/management_policy_statistics.c
   src/daemon/management_recovery.c
   src/daemon/management_system.c
   src/daemon/netd_client.c

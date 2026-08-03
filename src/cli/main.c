@@ -64,6 +64,8 @@ static void print_usage(FILE *output)
                   "       janusgatectl [OPTIONS] network rollback\n"
                   "       janusgatectl [OPTIONS] policy list\n"
                   "       janusgatectl [OPTIONS] policy mode [FILE]\n"
+                  "       janusgatectl [OPTIONS] policy statistics [FILE]\n"
+                  "       janusgatectl [OPTIONS] policy cleanup preview|run\n"
                   "       janusgatectl [OPTIONS] policy show KIND ID\n"
                   "       janusgatectl [OPTIONS] policy analyze KIND ID\n"
                   "       janusgatectl [OPTIONS] policy add KIND FILE\n"
@@ -996,8 +998,13 @@ static int run_command(const struct cli_options *options,
     }
     if (argc >= 2 && strcmp(argv[0], "policy") == 0 &&
         ((argc == 2 &&
-          (strcmp(argv[1], "list") == 0 || strcmp(argv[1], "mode") == 0)) ||
-         (argc == 3 && strcmp(argv[1], "mode") == 0) ||
+          (strcmp(argv[1], "list") == 0 || strcmp(argv[1], "mode") == 0 ||
+           strcmp(argv[1], "statistics") == 0)) ||
+         (argc == 3 &&
+          (strcmp(argv[1], "mode") == 0 || strcmp(argv[1], "statistics") == 0 ||
+           (strcmp(argv[1], "cleanup") == 0 &&
+            (strcmp(argv[2], "preview") == 0 ||
+             strcmp(argv[2], "run") == 0)))) ||
          (argc == 3 && (strcmp(argv[1], "explain") == 0 ||
                         strcmp(argv[1], "simulate") == 0)) ||
          (argc == 4 &&

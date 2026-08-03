@@ -799,6 +799,24 @@ int handle_policy_rule_analysis(struct jg_management *management,
                                 size_t output_size,
                                 size_t *written);
 
+/** @brief Return or replace detailed policy-statistics retention. */
+int handle_policy_statistics(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written);
+
+/** @brief Preview or execute one detailed-statistics cleanup batch. */
+int handle_policy_statistics_cleanup(struct jg_management *management,
+                                     const struct management_request *request,
+                                     const struct remote_address *remote,
+                                     uint64_t now,
+                                     uint8_t *output,
+                                     size_t output_size,
+                                     size_t *written);
+
 /** @brief Return one authenticated stable page of blocklist sources. */
 int handle_blocklist_sources_list(struct jg_management *management,
                                   const struct management_request *request,

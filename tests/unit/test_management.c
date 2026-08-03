@@ -635,6 +635,130 @@ static void test_policy_analysis_api(void **state)
     json_decref(response);
 }
 
+/** @brief Verify retention configuration and incremental manual cleanup. */
+static void test_policy_statistics_api(void **state)
+{
+    static const char get_request[] =
+        "{\"request_id\":\"statistics-get\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/policies/statistics\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char update_request[] =
+        "{\"request_id\":\"statistics-update\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/policies/statistics\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":1,"
+        "\"retention_enabled\":false,\"retention_months\":6}}";
+    static const char stale_request[] =
+        "{\"request_id\":\"statistics-stale\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/policies/statistics\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":1,"
+        "\"retention_enabled\":true,\"retention_months\":12}}";
+    static const char preview_request[] =
+        "{\"request_id\":\"statistics-preview\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/policies/statistics/cleanup\","
+        "\"host\":\"localhost\",\"remote_address\":\"127.0.0.1\","
+        "\"body\":{\"preview\":true}}";
+    static const char cleanup_request[] =
+        "{\"request_id\":\"statistics-cleanup\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/policies/statistics/cleanup\","
+        "\"host\":\"localhost\",\"remote_address\":\"127.0.0.1\","
+        "\"body\":{\"preview\":false,\"batch_size\":1}}";
+    static const char invalid_request[] =
+        "{\"request_id\":\"statistics-invalid\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/policies/statistics/cleanup\","
+        "\"host\":\"localhost\",\"remote_address\":\"127.0.0.1\","
+        "\"body\":{\"preview\":true,\"batch_size\":1}}";
+    struct management_fixture *fixture = *state;
+    struct jg_policy_traffic_sample traffic = {
+        .occurred_at = 3600U,
+        .path = JG_POLICY_STATS_DNS,
+        .matched = true,
+        .would_block = true,
+    };
+    struct jg_policy_rule_sample rule = {
+        .occurred_at = 3600U,
+        .dimension = JG_POLICY_STATS_DOMAIN,
+        .rule_id = 1U,
+        .path = JG_POLICY_STATS_DNS,
+        .domain = "expired.example",
+        .query_type = 1U,
+        .decision = true,
+        .would_block = true,
+    };
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *lifetime = NULL;
+
+    assert_int_equal(jg_database_record_policy_stats(fixture->database,
+                                                     &traffic, 1U, &rule, 1U),
+                     0);
+    response = process_local_request(fixture, get_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "retention_enabled")));
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "retention_months")), 12);
+    lifetime = json_object_get(body, "lifetime");
+    assert_int_equal(
+        json_integer_value(json_object_get(lifetime, "request_count")), 1);
+    json_decref(response);
+
+    response = process_local_request(fixture, update_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_false(json_is_true(json_object_get(body, "retention_enabled")));
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 2);
+    json_decref(response);
+    response = process_local_request(fixture, stale_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     409);
+    json_decref(response);
+
+    response = process_local_request(fixture, preview_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "preview")));
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "eligible_impact_rows")), 1);
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "eligible_traffic_rows")), 1);
+    assert_true(json_is_true(json_object_get(body, "lifetime_preserved")));
+    json_decref(response);
+
+    response = process_local_request(fixture, cleanup_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "deleted_impact_rows")), 1);
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "deleted_traffic_rows")), 0);
+    assert_false(json_is_true(json_object_get(body, "complete")));
+    json_decref(response);
+    response = process_local_request(fixture, cleanup_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(
+        json_integer_value(json_object_get(body, "deleted_traffic_rows")), 1);
+    assert_true(json_is_true(json_object_get(body, "complete")));
+    json_decref(response);
+
+    response = process_local_request(fixture, get_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    lifetime = json_object_get(json_object_get(response, "body"), "lifetime");
+    assert_int_equal(
+        json_integer_value(json_object_get(lifetime, "request_count")), 1);
+    json_decref(response);
+    response = process_local_request(fixture, invalid_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+}
+
 /** @brief Wait for one accepted API job and return its final envelope. */
 static json_t *wait_for_job(struct management_fixture *fixture,
                             uint64_t job_id,
@@ -4446,6 +4570,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_policy_sync_health,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_policy_analysis_api,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_policy_statistics_api,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_mtls_api, setup_management,
                                         teardown_management),

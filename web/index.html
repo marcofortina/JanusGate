@@ -872,6 +872,62 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
             </section>
 
             <section class="panel policy-section"
+                     aria-labelledby="policy-statistics-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="policy-statistics-title">Statistics retention</h3>
+                  <p>
+                    Retain hourly impact detail for analysis while preserving
+                    lifetime counters indefinitely.
+                  </p>
+                </div>
+              </div>
+              <form id="policy-statistics-form">
+                <fieldset class="plain-fieldset"
+                          id="policy-statistics-fieldset">
+                  <legend class="visually-hidden">
+                    Policy-statistics retention
+                  </legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Detail retention (months)
+                      <input name="retention_months" type="number"
+                             min="1" max="120" required>
+                    </label>
+                    <label class="check-label">
+                      <input name="retention_enabled" type="checkbox">
+                      Scheduled cleanup enabled
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button class="primary-action"
+                            id="policy-statistics-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Save retention
+                    </button>
+                    <button id="policy-statistics-preview"
+                            data-busy-label="Checking…" type="button">
+                      Preview cleanup
+                    </button>
+                    <button class="danger-button"
+                            id="policy-statistics-cleanup"
+                            data-busy-label="Cleaning…" type="button">
+                      Remove expired detail
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <div class="result-banner" id="policy-statistics-summary">
+                Statistics retention is loading.
+              </div>
+              <div class="result-banner"
+                   id="policy-statistics-cleanup-summary">
+                Preview cleanup to inspect expired detail.
+              </div>
+              <pre id="policy-statistics-result">No cleanup has been run.</pre>
+            </section>
+
+            <section class="panel policy-section"
                      aria-labelledby="simulation-title">
               <div class="section-heading">
                 <div>

@@ -30,6 +30,7 @@ let editingDestination = null;
 let globalMode = null;
 let policyGroups = [];
 let scopeModes = [];
+let policyStatistics = null;
 let editingGroup = null;
 let editingScopeMode = null;
 let writable = true;
@@ -213,6 +214,128 @@ async function analyzeRule(kind, rule) {
   } catch (error) {
     showError(byId("policies-error"), errorMessage(error));
   }
+}
+
+/**
+ * Render configured retention and lifetime counters.
+ */
+function renderPolicyStatistics() {
+  const form = byId("policy-statistics-form");
+  const lifetime = policyStatistics.lifetime;
+
+  form.elements.retention_enabled.checked =
+    policyStatistics.retention_enabled;
+  form.elements.retention_months.value = policyStatistics.retention_months;
+  byId("policy-statistics-summary").textContent = [
+    policyStatistics.retention_enabled
+      ? "Scheduled cleanup enabled"
+      : "Scheduled cleanup disabled",
+    `${formatNumber(policyStatistics.retention_months)} months of detail`,
+    `${formatNumber(lifetime.request_count)} lifetime requests`,
+    `${formatNumber(lifetime.would_block_count)} lifetime would-blocks`,
+    `last cleanup ${formatTimestamp(policyStatistics.last_cleanup_at)}`,
+  ].join(" · ");
+}
+
+/**
+ * Fetch policy-statistics retention and lifetime counters.
+ */
+async function fetchPolicyStatistics() {
+  policyStatistics = await api("/api/v1/policies/statistics");
+  renderPolicyStatistics();
+}
+
+/**
+ * Replace detailed-statistics retention at its current revision.
+ */
+async function submitPolicyStatistics(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+
+  await withBusyButton(byId("policy-statistics-submit"), async () => {
+    try {
+      policyStatistics = await api("/api/v1/policies/statistics", {
+        method: "PUT",
+        body: {
+          revision: policyStatistics.revision,
+          retention_enabled: form.elements.retention_enabled.checked,
+          retention_months: Number(form.elements.retention_months.value),
+        },
+      });
+      renderPolicyStatistics();
+      announce("Policy-statistics retention was updated.", "success");
+    } catch (error) {
+      showError(byId("policies-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Present one cleanup preview or completed batch.
+ */
+function renderStatisticsCleanup(result) {
+  const eligible = result.eligible_impact_rows +
+    result.eligible_traffic_rows;
+  const deleted = result.deleted_impact_rows + result.deleted_traffic_rows;
+
+  byId("policy-statistics-cleanup-summary").textContent = result.preview
+    ? `${formatNumber(eligible)} expired detail rows are eligible before ` +
+      `${formatTimestamp(result.cutoff_at)}. Lifetime counters are preserved.`
+    : `${formatNumber(deleted)} detail rows removed · ` +
+      `${result.complete ? "cleanup complete" : "more rows remain"} · ` +
+      "lifetime counters preserved.";
+  renderJson(byId("policy-statistics-result"), result);
+}
+
+/**
+ * Preview expired policy-statistics detail without changing it.
+ */
+async function previewStatisticsCleanup() {
+  await withBusyButton(byId("policy-statistics-preview"), async () => {
+    try {
+      const result = await api("/api/v1/policies/statistics/cleanup", {
+        method: "POST",
+        body: { preview: true },
+      });
+
+      renderStatisticsCleanup(result);
+    } catch (error) {
+      showError(byId("policies-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Remove one bounded batch of expired detail after confirmation.
+ */
+async function runStatisticsCleanup() {
+  if (!await confirmAction(
+    "Remove expired statistics detail?",
+    "Only expired hourly detail is removed. Lifetime counters and policy " +
+      "rules are preserved.",
+    "Remove expired detail",
+  )) {
+    return;
+  }
+  await withBusyButton(byId("policy-statistics-cleanup"), async () => {
+    try {
+      const result = await api("/api/v1/policies/statistics/cleanup", {
+        method: "POST",
+        body: { preview: false, batch_size: 10000 },
+      });
+
+      renderStatisticsCleanup(result);
+      await fetchPolicyStatistics();
+      announce(
+        result.complete
+          ? "Expired policy-statistics detail was removed."
+          : "One cleanup batch was removed; more expired detail remains.",
+        "success",
+      );
+    } catch (error) {
+      showError(byId("policies-error"), errorMessage(error));
+    }
+  });
 }
 
 /**
@@ -967,6 +1090,7 @@ export async function load(user) {
   byId("policy-mode-fieldset").disabled = readOnly;
   byId("policy-group-fieldset").disabled = readOnly;
   byId("policy-scope-fieldset").disabled = readOnly;
+  byId("policy-statistics-fieldset").disabled = readOnly;
   byId("domain-rule-fieldset").disabled = readOnly;
   byId("destination-rule-fieldset").disabled = readOnly;
   byId("policy-read-only").hidden = !readOnly;
@@ -974,6 +1098,7 @@ export async function load(user) {
   try {
     await Promise.all([
       fetchPolicyModes(),
+      fetchPolicyStatistics(),
       fetchRules("domain"),
       fetchRules("destination"),
     ]);
@@ -993,6 +1118,16 @@ export function initialize() {
   byId("policy-mode-form").addEventListener("submit", submitGlobalMode);
   byId("policy-group-form").addEventListener("submit", submitPolicyGroup);
   byId("policy-scope-form").addEventListener("submit", submitScopeMode);
+  byId("policy-statistics-form").addEventListener(
+    "submit",
+    submitPolicyStatistics,
+  );
+  byId("policy-statistics-preview").addEventListener("click", () => {
+    void previewStatisticsCleanup();
+  });
+  byId("policy-statistics-cleanup").addEventListener("click", () => {
+    void runStatisticsCleanup();
+  });
   byId("domain-rule-form").addEventListener("submit", submitDomain);
   byId("domain-rule-form").elements.action.addEventListener("change", () => {
     updateRuleEnforcement(

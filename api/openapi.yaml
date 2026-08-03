@@ -472,6 +472,51 @@ paths:
           $ref: '#/components/responses/JsonSuccess'
         default:
           $ref: '#/components/responses/JsonError'
+  /policies/statistics:
+    get:
+      tags: [Policy]
+      operationId: getPolicyStatistics
+      summary: Read policy-statistics retention and lifetime traffic counters
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    put:
+      tags: [Policy]
+      operationId: updatePolicyStatistics
+      summary: Replace detailed-statistics retention at its current revision
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyStatisticsUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/statistics/cleanup:
+    post:
+      tags: [Policy]
+      operationId: cleanupPolicyStatistics
+      summary: Preview or remove one bounded batch of expired detail
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyStatisticsCleanup'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
   /policies/mode:
     get:
       tags: [Policy]
@@ -1953,6 +1998,37 @@ components:
         transport:
           type: string
           enum: [tcp, udp]
+    PolicyStatisticsUpdate:
+      type: object
+      additionalProperties: false
+      required: [revision, retention_enabled, retention_months]
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        retention_enabled:
+          type: boolean
+        retention_months:
+          type: integer
+          minimum: 1
+          maximum: 120
+    PolicyStatisticsCleanup:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [preview]
+          properties:
+            preview:
+              const: true
+        - type: object
+          additionalProperties: false
+          required: [preview, batch_size]
+          properties:
+            preview:
+              const: false
+            batch_size:
+              type: integer
+              minimum: 1
+              maximum: 10000
     PolicyModeUpdate:
       type: object
       additionalProperties: false
