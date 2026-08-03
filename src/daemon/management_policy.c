@@ -106,6 +106,20 @@ static const char *policy_effect_name(enum jg_policy_effect effect)
     }
 }
 
+/** @brief Return the stable external name for one enforcement mode. */
+static const char *policy_enforcement_name(
+    enum jg_policy_enforcement enforcement)
+{
+    switch (enforcement) {
+    case JG_POLICY_ENFORCE:
+        return "enforce";
+    case JG_POLICY_OBSERVE:
+        return "observe";
+    default:
+        return NULL;
+    }
+}
+
 /** @brief Return the stable external name for one policy source. */
 static const char *policy_source_name(enum jg_policy_source source)
 {
@@ -634,23 +648,72 @@ static const char *policy_dimension_name(
     }
 }
 
+/** @brief Serialize the rule that supplies one effective dimension verdict. */
+static json_t *policy_simulation_enforcing_json(
+    const struct jg_policy_simulation_match *match,
+    enum jg_policy_match_dimension dimension)
+{
+    const char *effect = policy_effect_name(match->effect);
+    const char *source = policy_source_name(match->enforcing_source);
+    const char *dimension_name = policy_dimension_name(dimension);
+    json_t *body = NULL;
+
+    if (!match->enforcing_matched) {
+        return json_null();
+    }
+    body = json_object();
+    if (effect == NULL || source == NULL || dimension_name == NULL ||
+        body == NULL ||
+        json_object_set_new(body, "dimension", json_string(dimension_name)) !=
+            0 ||
+        json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(
+            body, "rule_id",
+            json_integer((json_int_t)match->enforcing_rule_id)) != 0 ||
+        json_object_set_new(body, "source", json_string(source)) != 0 ||
+        json_object_set_new(body, "domain",
+                            match->enforcing_domain[0U] == '\0'
+                                ? json_null()
+                                : json_string(match->enforcing_domain)) != 0 ||
+        json_object_set_new(body, "attribution",
+                            match->enforcing_attribution[0U] == '\0'
+                                ? json_null()
+                                : json_string(match->enforcing_attribution)) !=
+            0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
 /** @brief Convert one self-contained simulated rule match to JSON. */
 static json_t *policy_simulation_match_json(
     const struct jg_policy_simulation_match *match,
     enum jg_policy_match_dimension dimension)
 {
     const char *effect = policy_effect_name(match->effect);
+    const char *configured_effect =
+        policy_effect_name(match->configured_effect);
+    const char *enforcement = policy_enforcement_name(match->enforcement);
     const char *source = policy_source_name(match->source);
     const char *dimension_name = policy_dimension_name(dimension);
     json_t *body = json_object();
+    json_t *enforcing_rule = policy_simulation_enforcing_json(match, dimension);
 
-    if (effect == NULL || source == NULL || dimension_name == NULL ||
-        body == NULL ||
+    if (effect == NULL || configured_effect == NULL || enforcement == NULL ||
+        source == NULL || dimension_name == NULL || body == NULL ||
+        enforcing_rule == NULL ||
         json_object_set_new(body, "dimension", json_string(dimension_name)) !=
             0 ||
         json_object_set_new(body, "matched", json_boolean(match->matched)) !=
             0 ||
         json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(body, "configured_action",
+                            json_string(configured_effect)) != 0 ||
+        json_object_set_new(body, "enforcement", json_string(enforcement)) !=
+            0 ||
+        json_object_set_new(body, "would_have_blocked",
+                            json_boolean(match->would_have_blocked)) != 0 ||
         json_object_set_new(body, "rule_id",
                             match->matched
                                 ? json_integer((json_int_t)match->rule_id)
@@ -663,11 +726,105 @@ static json_t *policy_simulation_match_json(
         json_object_set_new(body, "attribution",
                             match->attribution[0U] == '\0'
                                 ? json_null()
-                                : json_string(match->attribution)) != 0) {
+                                : json_string(match->attribution)) != 0 ||
+        json_object_set(body, "enforcing_rule", enforcing_rule) != 0) {
+        json_decref(enforcing_rule);
         json_decref(body);
         return NULL;
     }
+    json_decref(enforcing_rule);
     return body;
+}
+
+/** @brief Append one stable, human-readable policy explanation step. */
+static int append_policy_explanation(json_t *steps, const char *text)
+{
+    return json_array_append_new(steps, json_string(text)) == 0 ? 0 : -ENOMEM;
+}
+
+/** @brief Describe the configured and effective winners of one simulation. */
+static int build_policy_explanation(
+    const struct jg_policy_simulation *simulation,
+    json_t *steps)
+{
+    const struct jg_policy_simulation_match *selected_match = NULL;
+    const struct jg_policy_simulation_match *effective_match = NULL;
+    const char *selected_dimension =
+        policy_dimension_name(simulation->selected);
+    const char *effective_dimension =
+        policy_dimension_name(simulation->effective_selected);
+    const char *configured_effect =
+        policy_effect_name(simulation->configured_effect);
+    const char *effect = policy_effect_name(simulation->effect);
+    char text[768U];
+    int written = 0;
+
+    if (selected_dimension == NULL || effective_dimension == NULL ||
+        configured_effect == NULL || effect == NULL) {
+        return -EINVAL;
+    }
+    if (simulation->selected == JG_POLICY_MATCH_DOMAIN) {
+        selected_match = &simulation->domain;
+    } else if (simulation->selected == JG_POLICY_MATCH_DESTINATION) {
+        selected_match = &simulation->destination;
+    }
+    if (simulation->effective_selected == JG_POLICY_MATCH_DOMAIN) {
+        effective_match = &simulation->domain;
+    } else if (simulation->effective_selected == JG_POLICY_MATCH_DESTINATION) {
+        effective_match = &simulation->destination;
+    }
+    if (selected_match == NULL) {
+        if (append_policy_explanation(steps, "No configured rule matched.") !=
+            0) {
+            return -ENOMEM;
+        }
+    } else {
+        written = snprintf(text, sizeof(text),
+                           "Rule %llu (%s) selected %s in the %s policy.",
+                           (unsigned long long)selected_match->rule_id,
+                           selected_match->attribution[0U] == '\0'
+                               ? policy_source_name(selected_match->source)
+                               : selected_match->attribution,
+                           configured_effect, selected_dimension);
+        if (written <= 0 || (size_t)written >= sizeof(text) ||
+            append_policy_explanation(steps, text) != 0) {
+            return -ENOMEM;
+        }
+        if (simulation->would_have_blocked) {
+            written = snprintf(
+                text, sizeof(text),
+                "Rule %llu is observe-only; its block is not enforced.",
+                (unsigned long long)selected_match->rule_id);
+            if (written <= 0 || (size_t)written >= sizeof(text) ||
+                append_policy_explanation(steps, text) != 0) {
+                return -ENOMEM;
+            }
+        }
+    }
+    if (effective_match != NULL && effective_match->enforcing_matched) {
+        written = snprintf(
+            text, sizeof(text),
+            "Rule %llu (%s) supplies the effective %s action in the %s "
+            "policy.",
+            (unsigned long long)effective_match->enforcing_rule_id,
+            effective_match->enforcing_attribution[0U] == '\0'
+                ? policy_source_name(effective_match->enforcing_source)
+                : effective_match->enforcing_attribution,
+            effect, effective_dimension);
+        if (written <= 0 || (size_t)written >= sizeof(text) ||
+            append_policy_explanation(steps, text) != 0) {
+            return -ENOMEM;
+        }
+    } else if (append_policy_explanation(
+                   steps,
+                   "No enforced rule blocks the request; the default action "
+                   "is allow.") != 0) {
+        return -ENOMEM;
+    }
+    written = snprintf(text, sizeof(text), "Effective action: %s.", effect);
+    return written > 0 && (size_t)written < sizeof(text)
+               ? append_policy_explanation(steps, text)
+               : -ENOMEM;
 }
 
 /** @brief Serialize one complete policy simulation explanation. */
@@ -675,9 +832,14 @@ static json_t *policy_simulation_json(
     const struct jg_policy_simulation *simulation)
 {
     const char *effect = policy_effect_name(simulation->effect);
+    const char *configured_effect =
+        policy_effect_name(simulation->configured_effect);
     const char *target = policy_target_name(simulation->target);
     const char *selected = policy_dimension_name(simulation->selected);
+    const char *effective_selected =
+        policy_dimension_name(simulation->effective_selected);
     const struct jg_policy_simulation_match *selected_match = NULL;
+    const struct jg_policy_simulation_match *effective_match = NULL;
     json_t *body = json_object();
     json_t *domain = policy_simulation_match_json(&simulation->domain,
                                                   JG_POLICY_MATCH_DOMAIN);
@@ -687,8 +849,10 @@ static json_t *policy_simulation_json(
                                            JG_POLICY_MATCH_DESTINATION)
             : json_null();
     json_t *matching_rule = NULL;
+    json_t *effective_rule = NULL;
     json_t *path = json_array();
     json_t *sources = json_array();
+    json_t *explanation = json_array();
     int result = 0;
 
     if (simulation->selected == JG_POLICY_MATCH_DOMAIN) {
@@ -696,15 +860,28 @@ static json_t *policy_simulation_json(
     } else if (simulation->selected == JG_POLICY_MATCH_DESTINATION) {
         selected_match = &simulation->destination;
     }
+    if (simulation->effective_selected == JG_POLICY_MATCH_DOMAIN) {
+        effective_match = &simulation->domain;
+    } else if (simulation->effective_selected == JG_POLICY_MATCH_DESTINATION) {
+        effective_match = &simulation->destination;
+    }
     matching_rule = selected_match == NULL
                         ? json_null()
                         : policy_simulation_match_json(selected_match,
                                                        simulation->selected);
-    if (effect == NULL || target == NULL || selected == NULL || body == NULL ||
+    effective_rule = effective_match == NULL
+                         ? json_null()
+                         : policy_simulation_enforcing_json(
+                               effective_match, simulation->effective_selected);
+    if (effect == NULL || configured_effect == NULL || target == NULL ||
+        selected == NULL || effective_selected == NULL || body == NULL ||
         domain == NULL || destination == NULL || matching_rule == NULL ||
-        path == NULL || sources == NULL ||
-        simulation->generation > (uint64_t)INT64_MAX) {
+        effective_rule == NULL || path == NULL || sources == NULL ||
+        explanation == NULL || simulation->generation > (uint64_t)INT64_MAX) {
         result = -ENOMEM;
+    }
+    if (result == 0) {
+        result = build_policy_explanation(simulation, explanation);
     }
     if (result == 0 && simulation->destination_evaluated &&
         json_array_append_new(path, json_string("destination")) != 0) {
@@ -738,22 +915,33 @@ static json_t *policy_simulation_json(
                              json_string(simulation->normalized_domain)) != 0 ||
          json_object_set_new(body, "target", json_string(target)) != 0 ||
          json_object_set_new(body, "action", json_string(effect)) != 0 ||
+         json_object_set_new(body, "configured_action",
+                             json_string(configured_effect)) != 0 ||
+         json_object_set_new(body, "would_have_blocked",
+                             json_boolean(simulation->would_have_blocked)) !=
+             0 ||
          json_object_set_new(body, "selected", json_string(selected)) != 0 ||
+         json_object_set_new(body, "effective_selected",
+                             json_string(effective_selected)) != 0 ||
          json_object_set_new(
              body, "policy_generation",
              json_integer((json_int_t)simulation->generation)) != 0 ||
          json_object_set(body, "domain_match", domain) != 0 ||
          json_object_set(body, "destination_match", destination) != 0 ||
          json_object_set(body, "matching_rule", matching_rule) != 0 ||
+         json_object_set(body, "effective_rule", effective_rule) != 0 ||
          json_object_set(body, "precedence_path", path) != 0 ||
-         json_object_set(body, "sources", sources) != 0)) {
+         json_object_set(body, "sources", sources) != 0 ||
+         json_object_set(body, "explanation", explanation) != 0)) {
         result = -ENOMEM;
     }
     json_decref(domain);
     json_decref(destination);
     json_decref(matching_rule);
+    json_decref(effective_rule);
     json_decref(path);
     json_decref(sources);
+    json_decref(explanation);
     if (result != 0) {
         json_decref(body);
         return NULL;

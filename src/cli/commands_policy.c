@@ -242,22 +242,22 @@ static int run_policy_remove(const struct cli_options *options,
     return result;
 }
 
-/** @brief Simulate one policy decision from a JSON document. */
-static int run_policy_simulation(const struct cli_options *options,
-                                 const char *token,
-                                 const char *file)
+/** @brief Explain one policy decision from a JSON document. */
+static int run_policy_explanation(const struct cli_options *options,
+                                  const char *token,
+                                  const char *file)
 {
     json_t *body = NULL;
     int result = 0;
 
     body = jg_cli_read_json_object(file, &result);
     if (body == NULL) {
-        (void)fprintf(stderr, "janusgatectl: simulation document: %s\n",
+        (void)fprintf(stderr, "janusgatectl: policy query document: %s\n",
                       strerror(-result));
         return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
                                                         : CLI_EXIT_FAILURE;
     }
-    result = jg_cli_send_api_request(options, token, "policy simulate", "POST",
+    result = jg_cli_send_api_request(options, token, "policy explain", "POST",
                                      "/api/v1/policies/simulate", body);
     json_decref(body);
     return result;
@@ -287,7 +287,7 @@ int jg_cli_run_policy_command(const struct cli_options *options,
     } else if (strcmp(argv[1], "remove") == 0) {
         result = run_policy_remove(options, token, argv[2], argv[3]);
     } else {
-        result = run_policy_simulation(options, token, argv[2]);
+        result = run_policy_explanation(options, token, argv[2]);
     }
     sodium_memzero(token, sizeof(token));
     return result;

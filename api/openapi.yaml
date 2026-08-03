@@ -448,7 +448,7 @@ paths:
     post:
       tags: [Policy]
       operationId: simulatePolicy
-      summary: Explain the current policy decision without changing state
+      summary: Explain the configured and effective policy decision
       requestBody:
         required: true
         content:

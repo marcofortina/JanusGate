@@ -167,8 +167,10 @@ Replace one revision-bound policy record.
 .BI "policy remove " "kind id"
 Remove one policy record after retrieving its current revision.
 .TP
-.BI "policy simulate " file
-Explain a policy decision without changing state.
+.BI "policy explain " file
+Explain a policy decision without changing state. The compatible
+.B policy simulate
+spelling is also accepted.
 .TP
 .BI "domain block " domain
 Create a global DNS block rule for

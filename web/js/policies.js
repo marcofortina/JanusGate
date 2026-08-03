@@ -506,9 +506,13 @@ async function simulatePolicy(event) {
         body,
       });
       renderJson(byId("simulation-result"), result);
-      byId("simulation-summary").textContent =
-        `${displayValue(result.action, "No action")} · generation ` +
-        `${displayValue(result.policy_generation)}`;
+      const configured = displayValue(result.configured_action, "No action");
+      const effective = displayValue(result.action, "No action");
+      byId("simulation-summary").textContent = result.would_have_blocked
+        ? `Would block · effective ${effective} · generation ` +
+          `${displayValue(result.policy_generation)}`
+        : `${configured} · effective ${effective} · generation ` +
+          `${displayValue(result.policy_generation)}`;
     } catch (error) {
       showError(byId("policies-error"), errorMessage(error));
     }

@@ -53,8 +53,9 @@ output and explicit high-impact operations.
 - `network apply FILE` or `network set FILE` starts a transactional change.
   Complete it with `network confirm`, or use `network rollback`.
 - `policy add KIND FILE`, `policy update KIND ID FILE`, and
-  `policy remove KIND ID` manage typed rules; `policy simulate FILE` evaluates
-  a proposed query without changing state.
+  `policy remove KIND ID` manage typed rules; `policy explain FILE` evaluates
+  and explains a proposed query without changing state. The older
+  `policy simulate FILE` spelling remains available.
 - `domain block DOMAIN`, `domain allow DOMAIN`, and `domain remove ID` are
   concise domain-rule operations.
 - `blocklist import SOURCE FILE` imports a local list.

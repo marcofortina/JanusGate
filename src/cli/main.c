@@ -68,6 +68,7 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] policy add KIND FILE\n"
         "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
         "       janusgatectl [OPTIONS] policy remove KIND ID\n"
+        "       janusgatectl [OPTIONS] policy explain FILE\n"
         "       janusgatectl [OPTIONS] policy simulate FILE\n"
         "       janusgatectl [OPTIONS] domain block DOMAIN\n"
         "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
@@ -992,7 +993,8 @@ static int run_command(const struct cli_options *options,
     }
     if (argc >= 2 && strcmp(argv[0], "policy") == 0 &&
         ((argc == 2 && strcmp(argv[1], "list") == 0) ||
-         (argc == 3 && strcmp(argv[1], "simulate") == 0) ||
+         (argc == 3 && (strcmp(argv[1], "explain") == 0 ||
+                        strcmp(argv[1], "simulate") == 0)) ||
          (argc == 4 &&
           (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "add") == 0 ||
            strcmp(argv[1], "remove") == 0)) ||
