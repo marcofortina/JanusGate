@@ -34,6 +34,8 @@ static void test_render_snapshot(void **state)
     stats.dataplane.dns_refused = 9U;
     stats.tcp_streams.messages = 7U;
     stats.output.errors = 3U;
+    stats.policy_stats.submitted = 34U;
+    stats.policy_stats.dropped = 5U;
     assert_int_equal(
         jg_metrics_render(&stats, output, sizeof(output), &written), 0);
     assert_int_equal(written, strlen(output));
@@ -50,6 +52,9 @@ static void test_render_snapshot(void **state)
     assert_non_null(strstr(output, "janusgate_dns_block_refused_total 9\n"));
     assert_non_null(strstr(output, "janusgate_tcp_stream_messages_total 7\n"));
     assert_non_null(strstr(output, "janusgate_packet_output_errors_total 3\n"));
+    assert_non_null(
+        strstr(output, "janusgate_policy_stats_submitted_total 34\n"));
+    assert_non_null(strstr(output, "janusgate_policy_stats_dropped_total 5\n"));
 }
 
 /** @brief Verify exact sizing and the no-partial-output contract. */

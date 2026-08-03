@@ -13,7 +13,7 @@
 #include "janusgate/checked.h"
 
 /** Number of stable metrics emitted from one runtime snapshot. */
-#define METRIC_COUNT 39U
+#define METRIC_COUNT 46U
 
 /** Stable metadata for one numeric Prometheus metric. */
 struct metric_descriptor {
@@ -102,6 +102,20 @@ static const struct metric_descriptor metrics[METRIC_COUNT] = {
      "NXDOMAIN responses sent for blocked UDP DNS queries."},
     {"janusgate_dns_block_sinkhole_total", "counter",
      "Sinkhole responses sent for blocked UDP DNS queries."},
+    {"janusgate_policy_stats_submitted_total", "counter",
+     "Policy decisions accepted by the statistics collector."},
+    {"janusgate_policy_stats_dropped_total", "counter",
+     "Policy decisions discarded without delaying traffic."},
+    {"janusgate_policy_stats_recorded_requests_total", "counter",
+     "Policy request samples committed to persistent statistics."},
+    {"janusgate_policy_stats_recorded_rules_total", "counter",
+     "Policy rule samples committed to persistent statistics."},
+    {"janusgate_policy_stats_write_failures_total", "counter",
+     "Failed policy-statistics write batches."},
+    {"janusgate_policy_stats_cleanup_batches_total", "counter",
+     "Completed automatic policy-statistics cleanup batches."},
+    {"janusgate_policy_stats_cleanup_failures_total", "counter",
+     "Failed automatic policy-statistics cleanup attempts."},
 };
 
 _Static_assert(sizeof(metrics) / sizeof(metrics[0]) == METRIC_COUNT,
@@ -150,6 +164,13 @@ static void collect_values(const struct jg_daemon_runtime_stats *stats,
     values[36U] = stats->dataplane.dns_refused;
     values[37U] = stats->dataplane.dns_nxdomain;
     values[38U] = stats->dataplane.dns_sinkholed;
+    values[39U] = stats->policy_stats.submitted;
+    values[40U] = stats->policy_stats.dropped;
+    values[41U] = stats->policy_stats.recorded_requests;
+    values[42U] = stats->policy_stats.recorded_rules;
+    values[43U] = stats->policy_stats.write_failures;
+    values[44U] = stats->policy_stats.cleanup_batches;
+    values[45U] = stats->policy_stats.cleanup_failures;
 }
 
 /** @brief Measure one complete Prometheus metric record. */

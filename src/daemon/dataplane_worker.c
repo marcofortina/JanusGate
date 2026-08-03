@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <time.h>
 
@@ -25,6 +26,7 @@
 #include "janusgate/checked.h"
 #include "janusgate/logging.h"
 #include "janusgate/tls_client_hello.h"
+#include "policy_stats_collector.h"
 
 /** Independently updated counters for one data-plane worker. */
 struct atomic_dataplane_stats {
@@ -47,6 +49,7 @@ struct atomic_dataplane_stats {
 /** Complete per-queue data-plane context. */
 struct jg_dataplane_worker {
     struct jg_policy_store *store;
+    struct jg_policy_stats_collector *policy_stats;
     struct jg_fragment_tracker *fragments;
     struct jg_tcp_stream_tracker *streams;
     struct jg_tcp_stream_tracker *tls_streams;
@@ -225,6 +228,100 @@ static int monotonic_milliseconds(uint64_t *milliseconds)
     return 0;
 }
 
+/** @brief Append one selected or shadowed rule to a bounded event. */
+static void append_stats_rule(struct jg_policy_stats_event *event,
+                              enum jg_policy_stats_dimension dimension,
+                              uint64_t rule_id,
+                              enum jg_policy_effect effect,
+                              bool decision,
+                              bool enforced)
+{
+    struct jg_policy_stats_event_rule *rule = &event->rules[event->rule_count];
+
+    *rule = (struct jg_policy_stats_event_rule){
+        .dimension = dimension,
+        .rule_id = rule_id,
+        .decision = decision,
+        .would_block = effect == JG_POLICY_BLOCK,
+        .enforced_block = enforced && effect == JG_POLICY_BLOCK,
+        .allow_decision = enforced && effect == JG_POLICY_ALLOW,
+        .shadowed = !decision,
+    };
+    ++event->rule_count;
+}
+
+/** @brief Retain selected and distinct enforcing domain rules. */
+static void append_domain_stats(struct jg_policy_stats_event *event,
+                                const struct jg_policy_match *match)
+{
+    const bool same_rule =
+        match->enforcing_matched && match->enforcing_rule_id == match->rule_id;
+
+    if (!match->matched) {
+        return;
+    }
+    append_stats_rule(event, JG_POLICY_STATS_DOMAIN, match->rule_id,
+                      match->configured_effect, true, same_rule);
+    if (match->enforcing_matched && !same_rule) {
+        append_stats_rule(event, JG_POLICY_STATS_DOMAIN,
+                          match->enforcing_rule_id, match->effect, false, true);
+    }
+}
+
+/** @brief Retain selected and distinct enforcing destination rules. */
+static void append_destination_stats(
+    struct jg_policy_stats_event *event,
+    const struct jg_policy_destination_match *match)
+{
+    const bool same_rule =
+        match->enforcing_matched && match->enforcing_rule_id == match->rule_id;
+
+    if (!match->matched) {
+        return;
+    }
+    append_stats_rule(event, JG_POLICY_STATS_DESTINATION, match->rule_id,
+                      match->configured_effect, true, same_rule);
+    if (match->enforcing_matched && !same_rule) {
+        append_stats_rule(event, JG_POLICY_STATS_DESTINATION,
+                          match->enforcing_rule_id, match->effect, false, true);
+    }
+}
+
+/** @brief Submit one complete policy decision without delaying its verdict. */
+static void submit_policy_stats(struct jg_dataplane_worker *worker,
+                                const struct jg_dataplane_result *result)
+{
+    struct jg_policy_stats_event event = {0};
+    time_t occurred_at = 0;
+    size_t index = 0U;
+
+    if (worker->policy_stats == NULL || result->policy_path == 0 ||
+        result->reason == JG_DATAPLANE_MALFORMED ||
+        result->reason == JG_DATAPLANE_FRAGMENT_PENDING ||
+        result->reason == JG_DATAPLANE_STREAM_PENDING) {
+        return;
+    }
+    occurred_at = time(NULL);
+    if (occurred_at < 0) {
+        return;
+    }
+    event.occurred_at = (uint64_t)occurred_at;
+    event.path = result->policy_path;
+    event.client = result->client;
+    event.query_type = result->query_type;
+    (void)memcpy(event.domain, result->inspected_domain,
+                 strlen(result->inspected_domain) + 1U);
+    append_domain_stats(&event, &result->policy);
+    append_destination_stats(&event, &result->destination_policy);
+    event.matched = event.rule_count != 0U;
+    for (index = 0U; index < event.rule_count; ++index) {
+        event.would_block = event.would_block || event.rules[index].would_block;
+        event.enforced_block =
+            event.enforced_block || event.rules[index].enforced_block;
+    }
+    (void)jg_policy_stats_collector_submit(worker->policy_stats, &event);
+}
+
 /** @brief Send the configured response for one blocked complete UDP query. */
 static int respond_blocked_udp(struct jg_dataplane_worker *worker,
                                const struct jg_dataplane_result *result,
@@ -370,6 +467,8 @@ static int process_stream(struct jg_dataplane_worker *worker,
             if (operation_result != 0) {
                 return operation_result;
             }
+            submit_policy_stats(worker, result);
+            result->policy_path = 0;
             if (result->verdict == JG_NFQUEUE_DROP) {
                 return reset_blocked_stream(worker, worker->streams, result,
                                             now_ms);
@@ -651,6 +750,18 @@ int jg_dataplane_worker_set_dns_response(
     return result == 0 ? 0 : -result;
 }
 
+/** @brief Attach one process-wide non-blocking statistics collector. */
+int jg_dataplane_worker_set_policy_stats(
+    struct jg_dataplane_worker *worker,
+    struct jg_policy_stats_collector *collector)
+{
+    if (worker == NULL || collector == NULL) {
+        return -EINVAL;
+    }
+    worker->policy_stats = collector;
+    return 0;
+}
+
 /** @brief Classify one queued packet through a protected policy snapshot. */
 enum jg_nfqueue_verdict jg_dataplane_worker_process(
     const struct jg_nfqueue_packet *packet,
@@ -702,6 +813,7 @@ enum jg_nfqueue_verdict jg_dataplane_worker_process(
     if (result.policy.domain != NULL) {
         (void)snprintf(domain, sizeof(domain), "%s", result.policy.domain);
     }
+    submit_policy_stats(worker, &result);
     jg_policy_store_release(worker->store, worker->reader_index);
     if (evaluation_result != 0) {
         increment(&worker->stats.internal_errors);

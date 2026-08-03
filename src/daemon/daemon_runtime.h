@@ -21,6 +21,7 @@
 #include "management.h"
 #include "nfqueue.h"
 #include "packet_output.h"
+#include "policy_stats_collector.h"
 
 /** Default persistent database used by the production daemon. */
 #define JG_DAEMON_DATABASE_PATH "/var/lib/janusgate/janusgate.db"
@@ -75,6 +76,8 @@ struct jg_daemon_runtime_stats {
     struct jg_tcp_stream_stats tcp_streams;
     /** Aggregate raw frame output counters. */
     struct jg_packet_output_stats output;
+    /** Asynchronous policy-statistics collector health. */
+    struct jg_policy_stats_collector_stats policy_stats;
 };
 
 /**

@@ -83,6 +83,7 @@ struct jg_dataplane_stats {
 
 /** Opaque per-queue data-plane context. */
 struct jg_dataplane_worker;
+struct jg_policy_stats_collector;
 
 /**
  * @brief Create one worker bound to an exclusive policy-reader slot.
@@ -147,6 +148,21 @@ int jg_dataplane_worker_set_dns_response(
     const struct jg_dns_response_config *config,
     jg_dataplane_frame_sender sender,
     void *context);
+
+/**
+ * @brief Attach the shared non-blocking policy-statistics collector.
+ *
+ * @param[in,out] worker Data-plane worker to configure.
+ * @param[in,out] collector Process-wide collector outliving the worker.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ *
+ * @thread_safety Configure the worker before its queue thread starts.
+ */
+int jg_dataplane_worker_set_policy_stats(
+    struct jg_dataplane_worker *worker,
+    struct jg_policy_stats_collector *collector);
 
 /**
  * @brief Process one NFQUEUE packet against the current policy snapshot.

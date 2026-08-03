@@ -25,6 +25,7 @@
 #include "nfqueue.h"
 #include "nfqueue_group.h"
 #include "packet_output.h"
+#include "policy_stats_collector.h"
 #include "policy_store.h"
 
 /** Complete ownership tree for one packet runtime. */
@@ -32,6 +33,7 @@ struct jg_daemon_runtime {
     struct jg_database *database;
     struct jg_management *management;
     struct jg_policy_store *policies;
+    struct jg_policy_stats_collector *policy_stats;
     struct jg_dataplane_worker *workers[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_packet_output *outputs[JG_NETWORK_QUEUE_COUNT_MAX];
     struct jg_nfqueue_group *queues;
@@ -279,6 +281,10 @@ static int create_workers(struct jg_daemon_runtime *runtime,
                 runtime->workers[index], dns_response,
                 jg_packet_output_send_client_frame, runtime->outputs[index]);
         }
+        if (result == 0) {
+            result = jg_dataplane_worker_set_policy_stats(
+                runtime->workers[index], runtime->policy_stats);
+        }
     }
     return result;
 }
@@ -414,6 +420,11 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
         result = jg_logging_configure(&logging.config);
     }
     if (result == 0) {
+        result = jg_policy_stats_collector_create(started->database,
+                                                  JG_POLICY_STATS_QUEUE_DEFAULT,
+                                                  &started->policy_stats);
+    }
+    if (result == 0) {
         result = jg_management_create(
             started->database, config->totp_key_path, config->certificate_path,
             config->client_ca_path, config->backup_directory, started,
@@ -479,7 +490,26 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
 /** @brief Start every packet worker in one prepared runtime. */
 int jg_daemon_runtime_start(struct jg_daemon_runtime *runtime)
 {
-    return runtime == NULL ? -EINVAL : jg_nfqueue_group_start(runtime->queues);
+    bool collector_started = false;
+    int result = 0;
+
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    result = jg_policy_stats_collector_start(runtime->policy_stats);
+    if (result == 0) {
+        collector_started = true;
+        result = jg_nfqueue_group_start(runtime->queues);
+    }
+    if (result != 0 && collector_started) {
+        const int stop_result =
+            jg_policy_stats_collector_request_stop(runtime->policy_stats);
+
+        if (stop_result == 0) {
+            (void)jg_policy_stats_collector_join(runtime->policy_stats);
+        }
+    }
+    return result;
 }
 
 /** @brief Request a non-blocking stop from every queue worker. */
@@ -498,7 +528,22 @@ int jg_daemon_runtime_wait(struct jg_daemon_runtime *runtime)
 /** @brief Stop and join every queue worker. */
 int jg_daemon_runtime_join(struct jg_daemon_runtime *runtime)
 {
-    return runtime == NULL ? -EINVAL : jg_nfqueue_group_join(runtime->queues);
+    int result = 0;
+    int collector_result = 0;
+
+    if (runtime == NULL) {
+        return -EINVAL;
+    }
+    result = jg_nfqueue_group_join(runtime->queues);
+    collector_result =
+        jg_policy_stats_collector_request_stop(runtime->policy_stats);
+    if (collector_result == 0) {
+        collector_result =
+            jg_policy_stats_collector_join(runtime->policy_stats);
+    } else if (collector_result == -ECANCELED) {
+        collector_result = 0;
+    }
+    return result != 0 ? result : collector_result;
 }
 
 /** @brief Publish policy read through one caller-selected DB connection. */
@@ -784,6 +829,10 @@ int jg_daemon_runtime_get_stats(const struct jg_daemon_runtime *runtime,
         result = aggregate_worker(runtime, index, &aggregate);
     }
     if (result == 0) {
+        result = jg_policy_stats_collector_get_stats(runtime->policy_stats,
+                                                     &aggregate.policy_stats);
+    }
+    if (result == 0) {
         *stats = aggregate;
     }
     return result;
@@ -837,6 +886,7 @@ void jg_daemon_runtime_destroy(struct jg_daemon_runtime *runtime)
     }
     jg_management_destroy(runtime->management);
     jg_nfqueue_group_destroy(runtime->queues);
+    jg_policy_stats_collector_destroy(runtime->policy_stats);
     for (index = 0U; index < runtime->worker_count; ++index) {
         jg_packet_output_close(runtime->outputs[index]);
         jg_dataplane_worker_destroy(runtime->workers[index]);

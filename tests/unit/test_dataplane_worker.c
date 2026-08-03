@@ -2,6 +2,8 @@
  * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -9,11 +11,16 @@
 #include <string.h>
 
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include <cmocka.h>
 
 #include "dataplane_worker.h"
+#include "janusgate/database.h"
 #include "janusgate/policy.h"
+#include "policy_stats_collector.h"
 #include "policy_store.h"
 
 int jg_test_dataplane_worker(void);
@@ -123,6 +130,61 @@ static struct jg_policy_store *build_blocking_store(void)
     assert_int_equal(jg_policy_snapshot_build(&rule, 1U, 1U, &snapshot), 0);
     assert_int_equal(jg_policy_store_create(snapshot, 1U, &store), 0);
     return store;
+}
+
+/** @brief Build one policy store observing the fragmented test query. */
+static struct jg_policy_store *build_observing_store(void)
+{
+    const struct jg_policy_rule_input rule = {
+        .id = 18U,
+        .domain = "blocked.test",
+        .effect = JG_POLICY_BLOCK,
+        .enforcement = JG_POLICY_OBSERVE,
+        .source = JG_POLICY_SOURCE_EXPLICIT,
+        .scope = {.type = JG_POLICY_SCOPE_GLOBAL},
+        .attribution = "unit test",
+    };
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_store *store = NULL;
+
+    assert_int_equal(jg_policy_snapshot_build(&rule, 1U, 1U, &snapshot), 0);
+    assert_int_equal(jg_policy_store_create(snapshot, 1U, &store), 0);
+    return store;
+}
+
+/** @brief Create one private temporary database path. */
+static void make_database_path(char *directory,
+                               size_t directory_size,
+                               char *path,
+                               size_t path_size)
+{
+    const char template[] = "/tmp/janusgate-worker-stats-XXXXXX";
+    int written = 0;
+
+    (void)snprintf(directory, directory_size, "%s", template);
+    assert_non_null(mkdtemp(directory));
+    written = snprintf(path, path_size, "%s/janusgate.db", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < path_size);
+}
+
+/** @brief Remove one test database and its SQLite side files. */
+static void remove_database(const char *directory, const char *path)
+{
+    static const char *const suffixes[] = {"-wal", "-shm", ".lkg", ".recovery"};
+    char auxiliary[560U];
+    size_t index = 0U;
+
+    for (index = 0U; index < sizeof(suffixes) / sizeof(suffixes[0U]); ++index) {
+        const int written = snprintf(auxiliary, sizeof(auxiliary), "%s%s", path,
+                                     suffixes[index]);
+
+        if (written > 0 && (size_t)written < sizeof(auxiliary)) {
+            (void)unlink(auxiliary);
+        }
+    }
+    (void)unlink(path);
+    (void)rmdir(directory);
 }
 
 /** @brief Build one policy store blocking the visible test SNI. */
@@ -557,6 +619,77 @@ static void test_unavailable_sni(void **state)
     jg_policy_store_destroy(store);
 }
 
+/** @brief Verify worker decisions reach persistent observe-only statistics. */
+static void test_policy_statistics(void **state)
+{
+    uint8_t frame[sizeof(fragmented_query) + 34U];
+    char directory[64U];
+    char path[512U];
+    struct jg_nfqueue_packet packet = {
+        .queue_number = 100U,
+        .ingress_index = 2U,
+        .data = frame,
+    };
+    struct jg_policy_store *store = build_observing_store();
+    struct jg_policy_stats_collector *collector = NULL;
+    struct jg_dataplane_worker *worker = NULL;
+    struct jg_database *database = NULL;
+    struct jg_policy_stats_collector_stats collector_stats;
+    struct jg_policy_traffic_stats traffic;
+    struct jg_policy_rule_stats rule;
+    size_t count = 0U;
+    bool has_more = false;
+    size_t attempt = 0U;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_policy_stats_collector_create(database, 8U, &collector),
+                     0);
+    assert_int_equal(jg_policy_stats_collector_start(collector), 0);
+    assert_int_equal(
+        jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);
+    assert_int_equal(jg_dataplane_worker_set_policy_stats(worker, collector),
+                     0);
+    packet.size = build_fragment(frame, sizeof(frame), 0U,
+                                 sizeof(fragmented_query), false);
+    for (attempt = 0U; attempt < 32U; ++attempt) {
+        assert_int_equal(jg_dataplane_worker_process(&packet, worker),
+                         JG_NFQUEUE_ACCEPT);
+    }
+    assert_int_equal(jg_policy_stats_collector_request_stop(collector), 0);
+    assert_int_equal(jg_policy_stats_collector_join(collector), 0);
+    assert_int_equal(
+        jg_policy_stats_collector_get_stats(collector, &collector_stats), 0);
+    assert_true(collector_stats.submitted > 0U);
+    assert_int_equal(collector_stats.write_failures, 0U);
+    assert_int_equal(collector_stats.recorded_requests,
+                     collector_stats.submitted);
+    assert_int_equal(jg_database_load_policy_traffic_stats(database, &traffic),
+                     0);
+    assert_int_equal(traffic.request_count, collector_stats.submitted);
+    assert_int_equal(traffic.matched_count, traffic.request_count);
+    assert_int_equal(traffic.would_block_count, traffic.request_count);
+    assert_int_equal(traffic.enforced_block_count, 0U);
+    assert_int_equal(
+        jg_database_list_policy_rule_stats(database, JG_POLICY_STATS_DOMAIN, 0U,
+                                           1U, &rule, &count, &has_more),
+        0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(rule.rule_id, 18U);
+    assert_int_equal(rule.match_count, collector_stats.submitted);
+    assert_int_equal(rule.decision_count, rule.match_count);
+    assert_int_equal(rule.would_block_count, rule.match_count);
+    assert_int_equal(rule.enforced_block_count, 0U);
+
+    jg_dataplane_worker_destroy(worker);
+    jg_policy_stats_collector_destroy(collector);
+    jg_policy_store_destroy(store);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify invalid limits, reader slots, and packet arguments. */
 static void test_arguments(void **state)
 {
@@ -609,6 +742,9 @@ static void test_arguments(void **state)
                      -EINVAL);
     assert_int_equal(
         jg_dataplane_worker_set_dns_response(NULL, NULL, NULL, NULL), -EINVAL);
+    assert_int_equal(jg_dataplane_worker_set_policy_stats(NULL, NULL), -EINVAL);
+    assert_int_equal(jg_dataplane_worker_set_policy_stats(worker, NULL),
+                     -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_stats(NULL, NULL), -EINVAL);
     assert_int_equal(jg_dataplane_worker_get_fragment_stats(NULL, NULL),
                      -EINVAL);
@@ -629,6 +765,7 @@ int jg_test_dataplane_worker(void)
         cmocka_unit_test(test_tcp_dns),
         cmocka_unit_test(test_tls_sni),
         cmocka_unit_test(test_unavailable_sni),
+        cmocka_unit_test(test_policy_statistics),
         cmocka_unit_test(test_arguments),
     };
 
