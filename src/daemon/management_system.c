@@ -760,6 +760,63 @@ int handle_health(struct jg_management *management,
     return encode_response(200, body, NULL, output, output_size, written);
 }
 
+/** @brief Copy one consistent-enough lock-free management metrics snapshot. */
+static void collect_management_metrics(const struct jg_management *management,
+                                       struct jg_management_metrics *metrics)
+{
+    *metrics = (struct jg_management_metrics){0};
+    metrics->authentication_failures_total =
+        atomic_load_explicit(&management->health->authentication_failures_total,
+                             memory_order_acquire);
+    for (size_t index = 0U; index < JG_ALERT_TYPE_COUNT; ++index) {
+        metrics->alert_open_by_type[index] =
+            atomic_load_explicit(&management->health->alert_open_by_type[index],
+                                 memory_order_acquire);
+    }
+    metrics->alert_incidents_retained = atomic_load_explicit(
+        &management->health->alert_incidents_retained, memory_order_acquire);
+    metrics->alert_resolutions_retained = atomic_load_explicit(
+        &management->health->alert_resolutions_retained, memory_order_acquire);
+    metrics->alert_deliveries_pending = atomic_load_explicit(
+        &management->health->alert_deliveries_pending, memory_order_acquire);
+    metrics->alert_deliveries_succeeded = atomic_load_explicit(
+        &management->health->alert_deliveries_succeeded, memory_order_acquire);
+    metrics->alert_deliveries_failed = atomic_load_explicit(
+        &management->health->alert_deliveries_failed, memory_order_acquire);
+    metrics->alert_last_evaluation_at = atomic_load_explicit(
+        &management->health->alert_last_evaluation_at, memory_order_acquire);
+    metrics->certificate_expiry_timestamp =
+        atomic_load_explicit(&management->health->certificate_expiry_timestamp,
+                             memory_order_acquire);
+    metrics->blocklist_sources_unhealthy = atomic_load_explicit(
+        &management->health->blocklist_sources_unhealthy, memory_order_acquire);
+    metrics->blocklist_sources_stale = atomic_load_explicit(
+        &management->health->blocklist_sources_stale, memory_order_acquire);
+    metrics->filesystem_minimum_available_bytes = atomic_load_explicit(
+        &management->health->filesystem_minimum_available_bytes,
+        memory_order_acquire);
+    metrics->filesystem_minimum_available_basis_points = atomic_load_explicit(
+        &management->health->filesystem_minimum_available_basis_points,
+        memory_order_acquire);
+    metrics->alert_evaluation_successful =
+        atomic_load_explicit(&management->health->alert_evaluation_successful,
+                             memory_order_acquire)
+            ? 1U
+            : 0U;
+    metrics->audit_valid =
+        atomic_load_explicit(&management->health->audit_valid,
+                             memory_order_acquire)
+            ? 1U
+            : 0U;
+    metrics->policy_synchronized =
+        atomic_load_explicit(&management->health->policy_synchronized,
+                             memory_order_acquire)
+            ? 1U
+            : 0U;
+    metrics->management_degraded =
+        management_degraded_reasons(management) != 0U ? 1U : 0U;
+}
+
 /** @brief Return authenticated Prometheus text for the current runtime. */
 int handle_metrics(struct jg_management *management,
                    const struct management_request *request,
@@ -773,6 +830,7 @@ int handle_metrics(struct jg_management *management,
         "text/plain; version=0.0.4; charset=utf-8";
     struct authenticated_actor actor;
     struct jg_daemon_runtime_stats stats;
+    struct jg_management_metrics management_metrics;
     char placeholder = '\0';
     char *metrics = NULL;
     size_t metrics_size = 0U;
@@ -794,7 +852,9 @@ int handle_metrics(struct jg_management *management,
                              "Runtime metrics are temporarily unavailable.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_metrics_render(&stats, &placeholder, 0U, &metrics_size);
+    collect_management_metrics(management, &management_metrics);
+    result = jg_metrics_render(&stats, &management_metrics, &placeholder, 0U,
+                               &metrics_size);
     if (result != -ENOSPC || metrics_size == 0U ||
         metrics_size >= JG_IPC_MAX_BODY_SIZE / 2U) {
         return respond_error(500, "metrics_failure",
@@ -805,8 +865,8 @@ int handle_metrics(struct jg_management *management,
     if (metrics == NULL) {
         return -ENOMEM;
     }
-    result =
-        jg_metrics_render(&stats, metrics, metrics_size + 1U, &metrics_size);
+    result = jg_metrics_render(&stats, &management_metrics, metrics,
+                               metrics_size + 1U, &metrics_size);
     if (result == 0) {
         result = encode_text_response(200, content_type, metrics, metrics_size,
                                       output, output_size, written);

@@ -14,6 +14,7 @@ import {
   rememberCsrf,
 } from "./api.js";
 import * as access from "./access.js";
+import * as alerts from "./alerts.js";
 import * as blocklists from "./blocklists.js";
 import * as backups from "./backups.js";
 import * as certificates from "./certificates.js";
@@ -35,6 +36,7 @@ const pages = new Map([
   ["policies", policies],
   ["blocklists", blocklists],
   ["events", events],
+  ["alerts", alerts],
   ["access", access],
   ["certificates", certificates],
   ["backups", backups],

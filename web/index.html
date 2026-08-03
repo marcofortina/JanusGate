@@ -129,6 +129,7 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
           <a href="#policies" data-page-link="policies">Policies</a>
           <a href="#blocklists" data-page-link="blocklists">Blocklists</a>
           <a href="#events" data-page-link="events">Events</a>
+          <a href="#alerts" data-page-link="alerts">Alerts</a>
           <a href="#access" data-page-link="access">Users and access</a>
           <a href="#certificates"
              data-page-link="certificates">Certificates</a>
@@ -1347,6 +1348,236 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
               <summary>Selected event details</summary>
               <pre id="event-details">Select Details on an event or audit record.</pre>
             </details>
+          </section>
+
+          <section class="page" id="page-alerts" data-page
+                   tabindex="-1" hidden>
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">NATIVE INCIDENT MANAGEMENT</p>
+                <h2>Alerts</h2>
+                <p>
+                  Review persistent appliance conditions and deliver signed,
+                  deduplicated transitions to an HTTPS webhook.
+                </p>
+              </div>
+              <button id="alerts-refresh" data-busy-label="Refreshing…"
+                      type="button">Refresh</button>
+            </header>
+            <div class="error-summary" id="alerts-error"
+                 role="alert" hidden></div>
+            <section class="summary-strip" aria-label="Native alerting state">
+              <div>
+                <span>Evaluation</span>
+                <strong id="alerts-evaluation-state">—</strong>
+              </div>
+              <div>
+                <span>Interval</span>
+                <strong id="alerts-evaluation-interval">—</strong>
+              </div>
+              <div>
+                <span>Webhook</span>
+                <strong id="alerts-webhook-state">—</strong>
+              </div>
+              <div>
+                <span>Loaded incidents</span>
+                <strong id="alerts-loaded-count">—</strong>
+              </div>
+            </section>
+
+            <section class="panel policy-section"
+                     aria-labelledby="alert-incidents-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="alert-incidents-title">Incidents</h3>
+                  <p>
+                    Open and resolved conditions are retained newest first;
+                    repeated evaluations do not create duplicate incidents.
+                  </p>
+                </div>
+              </div>
+              <form id="alert-filter-form">
+                <div class="filter-row">
+                  <label>
+                    State
+                    <select name="alert_state">
+                      <option value="">All states</option>
+                      <option value="open">Open</option>
+                      <option value="resolved">Resolved</option>
+                    </select>
+                  </label>
+                  <label>
+                    Type
+                    <select name="alert_type">
+                      <option value="">All types</option>
+                      <option value="appliance_degraded">Appliance degraded</option>
+                      <option value="policy_unsynchronized">Policy unsynchronized</option>
+                      <option value="audit_unverifiable">Audit unverifiable</option>
+                      <option value="certificate_expiring">Certificate expiring</option>
+                      <option value="source_unhealthy">Source unhealthy</option>
+                      <option value="filesystem_low_space">Filesystem low space</option>
+                      <option value="queue_drops">Queue drops</option>
+                      <option value="authentication_failures">Authentication failures</option>
+                    </select>
+                  </label>
+                  <button class="primary-action" id="alert-filter-submit"
+                          data-busy-label="Filtering…" type="submit">
+                    Apply filters
+                  </button>
+                </div>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Opened</th>
+                      <th scope="col">Severity</th>
+                      <th scope="col">Type</th>
+                      <th scope="col">Resource</th>
+                      <th scope="col">Summary</th>
+                      <th scope="col">State</th>
+                      <th scope="col">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody id="alert-incident-list"></tbody>
+                </table>
+              </div>
+              <div class="button-row table-footer">
+                <button id="alert-load-more" type="button" hidden>
+                  Load older incidents
+                </button>
+              </div>
+            </section>
+
+            <details class="panel technical-details">
+              <summary>Selected incident details</summary>
+              <pre id="alert-details">Select Details on an incident.</pre>
+            </details>
+
+            <section class="notice" id="alerts-read-only" hidden>
+              <h3>Read-only access</h3>
+              <p>
+                Only administrators can change alert thresholds or webhook
+                credentials. Current configuration remains visible.
+              </p>
+            </section>
+            <form class="panel form-panel" id="alert-configuration-form">
+              <div class="section-heading">
+                <div>
+                  <h3>Evaluation thresholds</h3>
+                  <p>
+                    Changes are revision-checked and evaluated immediately.
+                    Existing incidents resolve normally when a condition clears.
+                  </p>
+                </div>
+              </div>
+              <fieldset class="plain-fieldset" id="alert-configuration-fieldset">
+                <legend class="visually-hidden">Native alert thresholds</legend>
+                <div class="check-grid">
+                  <label class="check-label">
+                    <input name="alert_enabled" type="checkbox">
+                    Enable native condition evaluation
+                  </label>
+                </div>
+                <div class="form-grid three-columns">
+                  <label>
+                    Evaluation interval (seconds)
+                    <input name="evaluation_interval_seconds" type="number"
+                           min="30" max="3600" required>
+                  </label>
+                  <label>
+                    Certificate warning (days)
+                    <input name="certificate_warning_days" type="number"
+                           min="1" max="365" required>
+                  </label>
+                  <label>
+                    Source failure threshold
+                    <input name="source_failure_threshold" type="number"
+                           min="1" max="100" required>
+                  </label>
+                  <label>
+                    Source stale grace (seconds)
+                    <input name="source_stale_seconds" type="number"
+                           min="300" max="2592000" required>
+                  </label>
+                  <label>
+                    Filesystem minimum free (%)
+                    <input name="filesystem_minimum_percent" type="number"
+                           min="1" max="50" required>
+                  </label>
+                  <label>
+                    Filesystem minimum free (bytes)
+                    <input name="filesystem_minimum_bytes" type="number"
+                           min="0" max="1099511627776" required>
+                  </label>
+                  <label>
+                    Queue observation window (seconds)
+                    <input name="queue_window_seconds" type="number"
+                           min="60" max="3600" required>
+                  </label>
+                  <label>
+                    Queue failure threshold
+                    <input name="queue_drop_threshold" type="number"
+                           min="1" max="1000000000" required>
+                  </label>
+                  <label>
+                    Authentication window (seconds)
+                    <input name="authentication_window_seconds" type="number"
+                           min="60" max="3600" required>
+                  </label>
+                  <label>
+                    Authentication failure threshold
+                    <input name="authentication_failure_threshold" type="number"
+                           min="1" max="1000000000" required>
+                  </label>
+                </div>
+                <div class="section-heading compact-heading">
+                  <div>
+                    <h3>Signed HTTPS webhook</h3>
+                    <p>
+                      A private or self-hosted CA bundle is supported. The HMAC
+                      secret is encrypted at rest and displayed only on rotation.
+                    </p>
+                  </div>
+                </div>
+                <div class="check-grid">
+                  <label class="check-label">
+                    <input name="webhook_enabled" type="checkbox">
+                    Deliver incident transitions
+                  </label>
+                </div>
+                <div class="form-grid">
+                  <label class="span-two">
+                    HTTPS webhook URL
+                    <input name="webhook_url" type="url" maxlength="2048"
+                           placeholder="https://alerts.example.net/janusgate">
+                  </label>
+                  <label>
+                    Timeout (seconds)
+                    <input name="webhook_timeout_seconds" type="number"
+                           min="1" max="30" required>
+                  </label>
+                  <label class="span-two">
+                    Optional private CA bundle (PEM)
+                    <textarea name="webhook_ca_pem" rows="8" maxlength="65536"
+                              spellcheck="false"></textarea>
+                  </label>
+                </div>
+                <p class="field-hint" id="alert-secret-state">—</p>
+                <div class="button-row form-actions">
+                  <button id="alert-webhook-secret" type="button">
+                    Rotate HMAC secret
+                  </button>
+                  <button id="alert-webhook-test" type="button">
+                    Send test notification
+                  </button>
+                  <button class="primary-action" id="alert-configuration-save"
+                          data-busy-label="Saving…" type="submit">
+                    Save alert configuration
+                  </button>
+                </div>
+              </fieldset>
+            </form>
           </section>
 
           <section class="page" id="page-access" data-page
