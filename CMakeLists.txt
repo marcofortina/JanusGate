@@ -129,6 +129,7 @@ add_library(
   src/common/account_token.c
   src/common/account_totp.c
   src/common/alert_configuration.c
+  src/common/alert_incident.c
   src/common/audit.c
   src/common/auth.c
   src/common/backup.c

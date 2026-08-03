@@ -189,6 +189,126 @@ static void test_alert_secret(void **state)
     jg_alert_configuration_clear(&configuration);
 }
 
+/** @brief Verify deduplicated incident state and transition delivery. */
+static void test_alert_incident_lifecycle(void **state)
+{
+    struct alert_fixture *fixture = *state;
+    const struct jg_alert_condition condition = {
+        .type = JG_ALERT_TYPE_CERTIFICATE_EXPIRING,
+        .resource = "management",
+        .severity = JG_ALERT_SEVERITY_WARNING,
+        .summary = "The management certificate is nearing expiry.",
+        .details = "{\"remaining_days\":10}",
+    };
+    struct jg_alert_incident incident;
+    struct jg_alert_incident records[2U];
+    struct jg_alert_filter filter = {0};
+    struct jg_alert_delivery delivery;
+    struct jg_alert_storage_metrics metrics;
+    enum jg_alert_transition transition = JG_ALERT_TRANSITION_NONE;
+    size_t count = 0U;
+    bool has_more = false;
+
+    assert_int_equal(jg_database_alert_reconcile(fixture->database, &condition,
+                                                 true, true, 100U, &incident,
+                                                 &transition),
+                     0);
+    assert_int_equal(transition, JG_ALERT_TRANSITION_OPEN);
+    assert_int_equal(incident.state, JG_ALERT_STATE_OPEN);
+    assert_int_equal(incident.occurrences, 1U);
+    assert_string_equal(incident.details, "{\"remaining_days\":10}");
+    assert_int_equal(jg_database_alert_reconcile(fixture->database, &condition,
+                                                 true, true, 101U, &incident,
+                                                 &transition),
+                     0);
+    assert_int_equal(transition, JG_ALERT_TRANSITION_NONE);
+    assert_int_equal(incident.updated_at, 100U);
+    assert_int_equal(jg_database_alert_list(fixture->database, &filter, records,
+                                            2U, &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(records[0U].id, incident.id);
+
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 100U, &delivery), 0);
+    assert_non_null(strstr(delivery.payload, "\"event\":\"alert.opened\""));
+    assert_int_equal(jg_database_alert_delivery_complete(
+                         fixture->database, delivery.id, false, 100U,
+                         "Endpoint unavailable"),
+                     0);
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 129U, &delivery),
+        -ENOENT);
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 130U, &delivery), 0);
+    assert_int_equal(delivery.attempts, 1U);
+    assert_int_equal(jg_database_alert_delivery_complete(
+                         fixture->database, delivery.id, true, 130U, NULL),
+                     0);
+
+    assert_int_equal(jg_database_alert_reconcile(fixture->database, &condition,
+                                                 false, true, 200U, &incident,
+                                                 &transition),
+                     0);
+    assert_int_equal(transition, JG_ALERT_TRANSITION_RESOLVED);
+    assert_int_equal(incident.state, JG_ALERT_STATE_RESOLVED);
+    assert_int_equal(incident.resolved_at, 200U);
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 200U, &delivery), 0);
+    assert_int_equal(jg_database_alert_delivery_complete(
+                         fixture->database, delivery.id, true, 200U, NULL),
+                     0);
+    assert_int_equal(
+        jg_database_alert_storage_metrics(fixture->database, &metrics), 0);
+    assert_int_equal(metrics.opened_total, 1U);
+    assert_int_equal(metrics.resolved_total, 1U);
+    assert_int_equal(metrics.deliveries_succeeded, 2U);
+    assert_int_equal(metrics.deliveries_pending, 0U);
+
+    assert_int_equal(jg_database_alert_reconcile(fixture->database, &condition,
+                                                 true, false, 300U, &incident,
+                                                 &transition),
+                     0);
+    assert_int_equal(transition, JG_ALERT_TRANSITION_OPEN);
+    assert_int_equal(incident.occurrences, 2U);
+    filter.state = JG_ALERT_STATE_OPEN;
+    assert_int_equal(jg_database_alert_list(fixture->database, &filter, records,
+                                            2U, &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(records[0U].occurrences, 2U);
+}
+
+/** @brief Verify distinct event notifications and input validation. */
+static void test_alert_events(void **state)
+{
+    struct alert_fixture *fixture = *state;
+    struct jg_alert_delivery delivery;
+    uint64_t identifier = 0U;
+
+    assert_int_equal(jg_database_alert_event_enqueue(
+                         fixture->database, "backup.restored",
+                         JG_ALERT_SEVERITY_WARNING, "A backup was restored.",
+                         "{\"backup_id\":7}", 400U, &identifier),
+                     0);
+    assert_true(identifier > 0U);
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 400U, &delivery), 0);
+    assert_int_equal(delivery.id, identifier);
+    assert_non_null(strstr(delivery.payload, "\"event\":\"backup.restored\""));
+    assert_int_equal(jg_database_alert_delivery_complete(fixture->database,
+                                                         delivery.id, false,
+                                                         400U, "line\nbreak"),
+                     -EINVAL);
+    assert_int_equal(
+        jg_database_alert_event_enqueue(fixture->database, "Invalid Event",
+                                        JG_ALERT_SEVERITY_WARNING,
+                                        "Invalid event.", "{}", 401U, NULL),
+        -EINVAL);
+    assert_int_equal(jg_database_alert_prune(fixture->database), 0);
+}
+
 /** @brief Run alert storage tests. */
 int jg_test_alert(void)
 {
@@ -196,6 +316,10 @@ int jg_test_alert(void)
         cmocka_unit_test_setup_teardown(test_alert_configuration, setup_alert,
                                         teardown_alert),
         cmocka_unit_test_setup_teardown(test_alert_secret, setup_alert,
+                                        teardown_alert),
+        cmocka_unit_test_setup_teardown(test_alert_incident_lifecycle,
+                                        setup_alert, teardown_alert),
+        cmocka_unit_test_setup_teardown(test_alert_events, setup_alert,
                                         teardown_alert),
     };
 

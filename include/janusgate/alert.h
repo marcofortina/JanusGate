@@ -43,8 +43,187 @@
 /** Largest periodic alert evaluation interval. */
 #define JG_ALERT_EVALUATION_INTERVAL_MAX 3600U
 
+/** Number of fixed alert types exposed as bounded metric labels. */
+#define JG_ALERT_TYPE_COUNT 8U
+
+/** Largest alert resource identity excluding its terminator. */
+#define JG_ALERT_RESOURCE_MAX 128U
+
+/** Largest human-readable alert summary excluding its terminator. */
+#define JG_ALERT_SUMMARY_MAX 512U
+
+/** Largest canonical alert detail object excluding its terminator. */
+#define JG_ALERT_DETAILS_MAX 4096U
+
+/** Largest incident page returned by one query. */
+#define JG_ALERT_PAGE_MAX 100U
+
+/** Largest stable notification event code excluding its terminator. */
+#define JG_ALERT_EVENT_CODE_MAX 128U
+
+/** Largest canonical webhook payload excluding its terminator. */
+#define JG_ALERT_PAYLOAD_MAX 8192U
+
+/** Largest retained webhook delivery error excluding its terminator. */
+#define JG_ALERT_DELIVERY_ERROR_MAX 512U
+
 /** Opaque database connection declared by database.h. */
 struct jg_database;
+
+/**
+ * @brief Fixed native condition types.
+ */
+enum jg_alert_type {
+    /** Invalid type and list-filter wildcard. */
+    JG_ALERT_TYPE_ANY = 0,
+    /** Management consistency is degraded. */
+    JG_ALERT_TYPE_APPLIANCE_DEGRADED = 1,
+    /** Desired and applied policy revisions differ. */
+    JG_ALERT_TYPE_POLICY_UNSYNCHRONIZED = 2,
+    /** Audit-chain verification failed. */
+    JG_ALERT_TYPE_AUDIT_UNVERIFIABLE = 3,
+    /** An appliance certificate approaches expiry. */
+    JG_ALERT_TYPE_CERTIFICATE_EXPIRING = 4,
+    /** An enabled blocklist source is unhealthy or stale. */
+    JG_ALERT_TYPE_SOURCE_UNHEALTHY = 5,
+    /** A JanusGate filesystem has insufficient free space. */
+    JG_ALERT_TYPE_FILESYSTEM_LOW_SPACE = 6,
+    /** Packet queues dropped traffic during one observation window. */
+    JG_ALERT_TYPE_QUEUE_DROPS = 7,
+    /** Authentication failures crossed the configured threshold. */
+    JG_ALERT_TYPE_AUTHENTICATION_FAILURES = 8
+};
+
+/**
+ * @brief Native alert severity.
+ */
+enum jg_alert_severity {
+    /** Recoverable condition needing attention. */
+    JG_ALERT_SEVERITY_WARNING = 1,
+    /** Failed subsystem operation. */
+    JG_ALERT_SEVERITY_ERROR = 2,
+    /** Enforcement or integrity failure. */
+    JG_ALERT_SEVERITY_CRITICAL = 3
+};
+
+/**
+ * @brief Persistent incident lifecycle state.
+ */
+enum jg_alert_state {
+    /** List-filter wildcard; invalid for a stored incident. */
+    JG_ALERT_STATE_ANY = 0,
+    /** Condition is currently present. */
+    JG_ALERT_STATE_OPEN = 1,
+    /** Condition is no longer present. */
+    JG_ALERT_STATE_RESOLVED = 2
+};
+
+/**
+ * @brief Result of reconciling one evaluated condition.
+ */
+enum jg_alert_transition {
+    /** No persistent state transition occurred. */
+    JG_ALERT_TRANSITION_NONE = 0,
+    /** A new incident was opened. */
+    JG_ALERT_TRANSITION_OPEN = 1,
+    /** An existing incident was resolved. */
+    JG_ALERT_TRANSITION_RESOLVED = 2
+};
+
+/**
+ * @brief Evaluated native alert content.
+ */
+struct jg_alert_condition {
+    /** Fixed condition type. */
+    enum jg_alert_type type;
+    /** Stable bounded resource identity. */
+    const char *resource;
+    /** Current condition severity. */
+    enum jg_alert_severity severity;
+    /** Human-readable administrative summary. */
+    const char *summary;
+    /** JSON object canonicalized before persistence. */
+    const char *details;
+};
+
+/**
+ * @brief Self-contained immutable incident record.
+ */
+struct jg_alert_incident {
+    /** Persistent positive incident identifier. */
+    uint64_t id;
+    /** Fixed native condition type. */
+    enum jg_alert_type type;
+    /** Stable resource identity. */
+    char resource[JG_ALERT_RESOURCE_MAX + 1U];
+    /** Incident severity. */
+    enum jg_alert_severity severity;
+    /** Current lifecycle state. */
+    enum jg_alert_state state;
+    /** Human-readable summary. */
+    char summary[JG_ALERT_SUMMARY_MAX + 1U];
+    /** Canonical JSON detail object. */
+    char details[JG_ALERT_DETAILS_MAX + 1U];
+    /** Unix timestamp at which the incident opened. */
+    uint64_t opened_at;
+    /** Unix timestamp of the last material update. */
+    uint64_t updated_at;
+    /** Unix timestamp at resolution, or zero while open. */
+    uint64_t resolved_at;
+    /** Number of times the same condition key has opened. */
+    uint64_t occurrences;
+};
+
+/**
+ * @brief Stable filters for a newest-first incident page.
+ */
+struct jg_alert_filter {
+    /** Exclusive descending identifier cursor, or zero for the newest page. */
+    uint64_t before_id;
+    /** Exact state or @ref JG_ALERT_STATE_ANY. */
+    enum jg_alert_state state;
+    /** Exact type or @ref JG_ALERT_TYPE_ANY. */
+    enum jg_alert_type type;
+};
+
+/**
+ * @brief One due webhook delivery copied from the durable outbox.
+ */
+struct jg_alert_delivery {
+    /** Persistent positive outbox identifier. */
+    uint64_t id;
+    /** Canonical webhook JSON body. */
+    char payload[JG_ALERT_PAYLOAD_MAX + 1U];
+    /** Number of prior failed delivery attempts. */
+    uint32_t attempts;
+};
+
+/**
+ * @brief Bounded monitoring aggregates derived from alert storage.
+ */
+struct jg_alert_storage_metrics {
+    /** Open incidents indexed by enum value minus one. */
+    uint64_t open_by_type[JG_ALERT_TYPE_COUNT];
+    /** Total incident-opening transitions retained. */
+    uint64_t opened_total;
+    /** Total incident-resolution transitions retained. */
+    uint64_t resolved_total;
+    /** Pending webhook deliveries. */
+    uint64_t deliveries_pending;
+    /** Successfully delivered webhook notifications retained. */
+    uint64_t deliveries_succeeded;
+    /** Permanently abandoned webhook notifications retained. */
+    uint64_t deliveries_failed;
+};
+
+/** @brief Return the stable persistent name for one alert type. */
+JG_PUBLIC const char *jg_alert_type_name(enum jg_alert_type type);
+
+/** @brief Return the stable persistent name for one alert severity. */
+JG_PUBLIC const char *jg_alert_severity_name(enum jg_alert_severity severity);
+
+/** @brief Return the stable persistent name for one alert state. */
+JG_PUBLIC const char *jg_alert_state_name(enum jg_alert_state state);
 
 /**
  * @brief Borrowed replacement values for native alerting.
@@ -225,5 +404,138 @@ JG_PUBLIC int jg_database_alert_webhook_secret_load(
     struct jg_database *database,
     const uint8_t protection_key[JG_ALERT_WEBHOOK_SECRET_SIZE],
     uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE]);
+
+/**
+ * @brief Reconcile one evaluated condition with persistent incident state.
+ *
+ * Repeated active evaluations are deduplicated. Only an opening, resolution,
+ * or material content change writes storage. Opening and resolution enqueue a
+ * webhook notification atomically when delivery is enabled.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] condition Complete evaluated condition content.
+ * @param[in] active Whether the condition is currently present.
+ * @param[in] notify Whether a state transition enters the webhook outbox.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] incident Receives the current or changed incident; zero when an
+ * absent condition had no open incident.
+ * @param[out] transition Receives the resulting lifecycle transition.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid content or arguments.
+ * @return -EILSEQ for invalid UTF-8 or persistent data.
+ * @return A negative allocation or SQLite error otherwise.
+ */
+JG_PUBLIC int jg_database_alert_reconcile(
+    struct jg_database *database,
+    const struct jg_alert_condition *condition,
+    bool active,
+    bool notify,
+    uint64_t now,
+    struct jg_alert_incident *incident,
+    enum jg_alert_transition *transition);
+
+/**
+ * @brief List one stable newest-first page of alert incidents.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] filter Stable cursor and optional exact filters.
+ * @param[out] incidents Array with room for at least @p capacity records.
+ * @param[in] capacity Requested count from one through @ref JG_ALERT_PAGE_MAX.
+ * @param[out] count Number of records written.
+ * @param[out] has_more Whether another matching record follows the page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or filters.
+ * @return -EILSEQ for invalid persistent data.
+ * @return A negative SQLite error otherwise.
+ */
+JG_PUBLIC int jg_database_alert_list(struct jg_database *database,
+                                     const struct jg_alert_filter *filter,
+                                     struct jg_alert_incident *incidents,
+                                     size_t capacity,
+                                     size_t *count,
+                                     bool *has_more);
+
+/**
+ * @brief Enqueue one bounded operational notification event.
+ *
+ * Events are distinct from persistent condition incidents and therefore have
+ * no artificial open or resolved state.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] event_code Stable lowercase event identifier.
+ * @param[in] severity Event severity.
+ * @param[in] summary Human-readable event summary.
+ * @param[in] details JSON object canonicalized before persistence.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] delivery_id Receives the positive outbox identifier; null
+ * discards it.
+ *
+ * @return 0 on success or a negative validation, allocation, or SQLite error.
+ */
+JG_PUBLIC int jg_database_alert_event_enqueue(struct jg_database *database,
+                                              const char *event_code,
+                                              enum jg_alert_severity severity,
+                                              const char *summary,
+                                              const char *details,
+                                              uint64_t now,
+                                              uint64_t *delivery_id);
+
+/**
+ * @brief Load the oldest due pending webhook delivery.
+ *
+ * @return 0 when one delivery was loaded.
+ * @return -ENOENT when no pending delivery is currently due.
+ * @return A negative validation or SQLite error otherwise.
+ */
+JG_PUBLIC int jg_database_alert_delivery_next(
+    struct jg_database *database,
+    uint64_t now,
+    struct jg_alert_delivery *delivery);
+
+/**
+ * @brief Complete one webhook delivery attempt.
+ *
+ * Successful attempts become delivered. Failures use bounded exponential
+ * backoff and become permanently abandoned after ten attempts.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] delivery_id Positive outbox identifier.
+ * @param[in] delivered Whether the remote endpoint accepted the payload.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[in] error Administrative-safe failure text when not delivered.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when the pending identifier no longer exists.
+ * @return A negative validation or SQLite error otherwise.
+ */
+JG_PUBLIC int jg_database_alert_delivery_complete(struct jg_database *database,
+                                                  uint64_t delivery_id,
+                                                  bool delivered,
+                                                  uint64_t now,
+                                                  const char *error);
+
+/**
+ * @brief Collect bounded incident and delivery aggregates for monitoring.
+ *
+ * @param[in,out] database Open database.
+ * @param[out] metrics Receives a complete snapshot.
+ *
+ * @return 0 on success or a negative validation or SQLite error.
+ */
+JG_PUBLIC int jg_database_alert_storage_metrics(
+    struct jg_database *database,
+    struct jg_alert_storage_metrics *metrics);
+
+/**
+ * @brief Prune terminal alert history beyond fixed retention bounds.
+ *
+ * All open incidents and pending deliveries are retained. The newest 10,000
+ * resolved incidents and newest 1,000 terminal deliveries are retained.
+ *
+ * @return 0 on success or a negative validation or SQLite error.
+ */
+JG_PUBLIC int jg_database_alert_prune(struct jg_database *database);
 
 #endif
