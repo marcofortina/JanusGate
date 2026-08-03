@@ -37,7 +37,8 @@ output and explicit high-impact operations.
 - `status`, `health`, and `stats` report appliance, service, policy, and metric
   state.
 - `network show` reports the active network document.
-- `policy list` and `policy show KIND ID` inspect domain or destination rules.
+- `policy list` and `policy show KIND ID` inspect enforcement, groups, scopes,
+  and rules. `KIND` is `domain`, `destination`, `group`, or `scope`.
 - `blocklist list`, `blocklist export`, and `source list` inspect list state.
 - `events [QUERY]` and `audit [QUERY]` accept a bounded query string;
   `audit verify` validates the chain.
@@ -56,6 +57,8 @@ output and explicit high-impact operations.
   `policy remove KIND ID` manage typed rules; `policy explain FILE` evaluates
   and explains a proposed query without changing state. The older
   `policy simulate FILE` spelling remains available.
+- `policy mode` reads global enforcement; `policy mode FILE` replaces it after
+  automatically reading the current revision.
 - `domain block DOMAIN`, `domain allow DOMAIN`, and `domain remove ID` are
   concise domain-rule operations.
 - `blocklist import SOURCE FILE` imports a local list.

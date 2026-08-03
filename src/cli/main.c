@@ -64,6 +64,7 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] network confirm\n"
         "       janusgatectl [OPTIONS] network rollback\n"
         "       janusgatectl [OPTIONS] policy list\n"
+        "       janusgatectl [OPTIONS] policy mode [FILE]\n"
         "       janusgatectl [OPTIONS] policy show KIND ID\n"
         "       janusgatectl [OPTIONS] policy add KIND FILE\n"
         "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
@@ -992,7 +993,9 @@ static int run_command(const struct cli_options *options,
         return jg_cli_run_network_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "policy") == 0 &&
-        ((argc == 2 && strcmp(argv[1], "list") == 0) ||
+        ((argc == 2 &&
+          (strcmp(argv[1], "list") == 0 || strcmp(argv[1], "mode") == 0)) ||
+         (argc == 3 && strcmp(argv[1], "mode") == 0) ||
          (argc == 3 && (strcmp(argv[1], "explain") == 0 ||
                         strcmp(argv[1], "simulate") == 0)) ||
          (argc == 4 &&

@@ -454,6 +454,162 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
               </p>
             </section>
             <section class="panel policy-section"
+                     aria-labelledby="policy-modes-title">
+              <div class="section-heading">
+                <div>
+                  <h3 id="policy-modes-title">Observe-only policy modes</h3>
+                  <p>
+                    Preview blocking policy globally, by rule group, or for a
+                    client, network, or VLAN without changing the allow verdict.
+                  </p>
+                </div>
+              </div>
+              <form class="inline-editor" id="policy-mode-form">
+                <fieldset class="plain-fieldset" id="policy-mode-fieldset">
+                  <legend>Global mode</legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Enforcement
+                      <select name="global_enforcement" required>
+                        <option value="enforce">Enforce</option>
+                        <option value="observe">Observe only</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button class="primary-action" id="policy-mode-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Save global mode
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <form class="inline-editor" id="policy-group-form">
+                <h4 id="policy-group-form-title">Add rule group</h4>
+                <fieldset class="plain-fieldset" id="policy-group-fieldset">
+                  <legend class="visually-hidden">Policy group values</legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Name
+                      <input name="group_name" type="text" maxlength="128"
+                             required>
+                    </label>
+                    <label>
+                      Enforcement
+                      <select name="group_enforcement" required>
+                        <option value="enforce">Enforce</option>
+                        <option value="observe">Observe only</option>
+                      </select>
+                    </label>
+                    <label class="span-two">
+                      Description
+                      <input name="group_description" type="text"
+                             maxlength="512">
+                    </label>
+                  </div>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="group_enabled" type="checkbox">
+                      Group enabled
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="policy-group-cancel" type="button" hidden>
+                      Cancel edit
+                    </button>
+                    <button class="primary-action" id="policy-group-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Add group
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Group</th>
+                      <th scope="col">Mode</th>
+                      <th scope="col">Rules</th>
+                      <th scope="col">State</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="policy-group-list"></tbody>
+                </table>
+              </div>
+              <form class="inline-editor" id="policy-scope-form">
+                <h4 id="policy-scope-form-title">Add client or VLAN mode</h4>
+                <fieldset class="plain-fieldset" id="policy-scope-fieldset">
+                  <legend class="visually-hidden">Policy scope values</legend>
+                  <div class="form-grid three-columns">
+                    <label>
+                      Name
+                      <input name="mode_name" type="text" maxlength="128"
+                             required>
+                    </label>
+                    <label>
+                      Enforcement
+                      <select name="mode_enforcement" required>
+                        <option value="observe">Observe only</option>
+                        <option value="enforce">Enforce</option>
+                      </select>
+                    </label>
+                    <label>
+                      Client scope
+                      <select name="mode_scope_type" required>
+                        <option value="ipv4">IPv4 network</option>
+                        <option value="ipv6">IPv6 network</option>
+                        <option value="mac">MAC address</option>
+                        <option value="vlan">VLAN</option>
+                      </select>
+                    </label>
+                    <label>
+                      Scope value
+                      <input name="mode_scope_value" type="text"
+                             maxlength="45" required>
+                    </label>
+                    <label>
+                      Scope prefix length
+                      <input name="mode_scope_prefix" type="number"
+                             min="0" max="128" required>
+                    </label>
+                  </div>
+                  <div class="check-grid">
+                    <label class="check-label">
+                      <input name="mode_enabled" type="checkbox">
+                      Selector enabled
+                    </label>
+                  </div>
+                  <div class="button-row form-actions">
+                    <button id="policy-scope-cancel" type="button" hidden>
+                      Cancel edit
+                    </button>
+                    <button class="primary-action" id="policy-scope-submit"
+                            data-busy-label="Saving…" type="submit">
+                      Add selector
+                    </button>
+                  </div>
+                </fieldset>
+              </form>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">ID</th>
+                      <th scope="col">Selector</th>
+                      <th scope="col">Scope</th>
+                      <th scope="col">Mode</th>
+                      <th scope="col">State</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="policy-scope-list"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="panel policy-section"
                      aria-labelledby="domain-rules-title">
               <div class="section-heading">
                 <div>
@@ -486,6 +642,12 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       <select name="domain_enforcement" required>
                         <option value="enforce">Enforce</option>
                         <option value="observe">Observe only</option>
+                      </select>
+                    </label>
+                    <label>
+                      Rule group
+                      <select name="domain_group_id">
+                        <option value="">No group</option>
                       </select>
                     </label>
                     <label>
@@ -597,6 +759,12 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       <select name="destination_enforcement" required>
                         <option value="enforce">Enforce</option>
                         <option value="observe">Observe only</option>
+                      </select>
+                    </label>
+                    <label>
+                      Rule group
+                      <select name="destination_group_id">
+                        <option value="">No group</option>
                       </select>
                     </label>
                     <label>

@@ -35,6 +35,16 @@ static int policy_collection(const char *kind,
         *array_name = "destination_rules";
         return 0;
     }
+    if (strcmp(kind, "group") == 0) {
+        *path = "/api/v1/policies/groups";
+        *array_name = "groups";
+        return 0;
+    }
+    if (strcmp(kind, "scope") == 0) {
+        *path = "/api/v1/policies/scopes";
+        *array_name = "scope_modes";
+        return 0;
+    }
     return -EINVAL;
 }
 
@@ -85,6 +95,9 @@ static int run_policy_list(const struct cli_options *options, const char *token)
 {
     json_t *domains = NULL;
     json_t *destinations = NULL;
+    json_t *mode = NULL;
+    json_t *groups = NULL;
+    json_t *scopes = NULL;
     json_t *body = NULL;
     int result = jg_cli_fetch_api_object(options, token, "/api/v1/domains",
                                          NULL, &domains);
@@ -95,18 +108,79 @@ static int run_policy_list(const struct cli_options *options, const char *token)
                                          &destinations);
     }
     if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_fetch_api_object(options, token,
+                                         "/api/v1/policies/mode", NULL, &mode);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_fetch_api_object(
+            options, token, "/api/v1/policies/groups", NULL, &groups);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_fetch_api_object(
+            options, token, "/api/v1/policies/scopes", NULL, &scopes);
+    }
+    if (result == CLI_EXIT_SUCCESS) {
         body = json_object();
         if (body == NULL ||
             json_object_set(body, "domain_rules", domains) != 0 ||
-            json_object_set(body, "destination_rules", destinations) != 0) {
+            json_object_set(body, "destination_rules", destinations) != 0 ||
+            json_object_set(body, "mode", mode) != 0 ||
+            json_object_set(body, "groups", groups) != 0 ||
+            json_object_set(body, "scope_modes", scopes) != 0) {
             result = CLI_EXIT_FAILURE;
         } else {
             result = jg_cli_present_object(options, body);
         }
     }
     json_decref(body);
+    json_decref(scopes);
+    json_decref(groups);
+    json_decref(mode);
     json_decref(destinations);
     json_decref(domains);
+    return result;
+}
+
+/** @brief Read or replace snapshot-wide enforcement. */
+static int run_policy_mode(const struct cli_options *options,
+                           const char *token,
+                           const char *file)
+{
+    json_t *current = NULL;
+    json_t *body = NULL;
+    json_t *revision = NULL;
+    int result = 0;
+
+    if (file == NULL) {
+        result = jg_cli_fetch_api_object(
+            options, token, "/api/v1/policies/mode", NULL, &current);
+        if (result == CLI_EXIT_SUCCESS) {
+            result = jg_cli_present_object(options, current);
+        }
+        json_decref(current);
+        return result;
+    }
+    body = jg_cli_read_json_object(file, &result);
+    if (body == NULL) {
+        (void)fprintf(stderr, "janusgatectl: policy-mode document: %s\n",
+                      strerror(-result));
+        return result == -EINVAL || result == -EMSGSIZE ? CLI_EXIT_USAGE
+                                                        : CLI_EXIT_FAILURE;
+    }
+    result = jg_cli_fetch_api_object(options, token, "/api/v1/policies/mode",
+                                     NULL, &current);
+    revision = json_object_get(current, "revision");
+    if (result == CLI_EXIT_SUCCESS &&
+        (!json_is_integer(revision) ||
+         json_object_set(body, "revision", revision) != 0)) {
+        result = CLI_EXIT_FAILURE;
+    }
+    if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_send_api_request(options, token, "policy mode", "PUT",
+                                         "/api/v1/policies/mode", body);
+    }
+    json_decref(current);
+    json_decref(body);
     return result;
 }
 
@@ -274,8 +348,10 @@ int jg_cli_run_policy_command(const struct cli_options *options,
     if (result != CLI_EXIT_SUCCESS) {
         return result;
     }
-    if (argc == 2) {
+    if (argc == 2 && strcmp(argv[1], "list") == 0) {
         result = run_policy_list(options, token);
+    } else if (strcmp(argv[1], "mode") == 0) {
+        result = run_policy_mode(options, token, argc == 3 ? argv[2] : NULL);
     } else if (strcmp(argv[1], "show") == 0) {
         result = run_policy_show(options, token, argv[2], argv[3]);
     } else if (strcmp(argv[1], "add") == 0) {

@@ -25,6 +25,11 @@ let domainCursor = null;
 let destinationCursor = null;
 let editingDomain = null;
 let editingDestination = null;
+let globalMode = null;
+let policyGroups = [];
+let scopeModes = [];
+let editingGroup = null;
+let editingScopeMode = null;
 let writable = true;
 
 /**
@@ -111,6 +116,28 @@ function updateRuleEnforcement(form, actionName, enforcementName) {
     enforcement.value = "enforce";
   }
   enforcement.disabled = !blocking;
+}
+
+/**
+ * Refresh rule-group selectors while preserving their current values.
+ */
+function renderGroupSelectors() {
+  for (const prefix of ["domain", "destination"]) {
+    const selector = byId(`${prefix}-rule-form`).elements[`${prefix}_group_id`];
+    const selected = selector.value;
+    const ungrouped = document.createElement("option");
+
+    ungrouped.value = "";
+    ungrouped.textContent = "No group";
+    selector.replaceChildren(ungrouped, ...policyGroups.map((group) => {
+      const option = document.createElement("option");
+
+      option.value = String(group.id);
+      option.textContent = `${group.name} · ${group.enforcement}`;
+      return option;
+    }));
+    selector.value = selected;
+  }
 }
 
 /**
@@ -243,6 +270,7 @@ function resetDomainForm() {
   editingDomain = null;
   form.reset();
   form.elements.domain_scope_type.value = "global";
+  form.elements.domain_group_id.value = "";
   form.elements.domain_enabled.checked = true;
   form.elements.include_subdomains.checked = true;
   byId("domain-form-title").textContent = "Add domain rule";
@@ -262,6 +290,7 @@ function editDomain(rule) {
   form.elements.domain.value = rule.domain;
   form.elements.action.value = rule.action;
   form.elements.domain_enforcement.value = rule.enforcement;
+  form.elements.domain_group_id.value = rule.group_id ?? "";
   form.elements.target.value = rule.target;
   form.elements.include_subdomains.checked = rule.include_subdomains;
   form.elements.attribution.value = rule.attribution;
@@ -285,6 +314,9 @@ async function submitDomain(event) {
     domain: String(form.elements.domain.value),
     action: String(form.elements.action.value),
     enforcement: String(form.elements.domain_enforcement.value),
+    group_id: form.elements.domain_group_id.value === ""
+      ? null
+      : Number(form.elements.domain_group_id.value),
     target: String(form.elements.target.value),
     include_subdomains: form.elements.include_subdomains.checked,
     scope: scopeFromForm(form, "domain"),
@@ -353,6 +385,7 @@ function resetDestinationForm() {
   editingDestination = null;
   form.reset();
   form.elements.destination_scope_type.value = "global";
+  form.elements.destination_group_id.value = "";
   form.elements.destination_enabled.checked = true;
   byId("destination-form-title").textContent = "Add destination rule";
   byId("destination-submit").textContent = "Add rule";
@@ -374,6 +407,7 @@ function editDestination(rule) {
   editingDestination = rule;
   form.elements.destination_action.value = rule.action;
   form.elements.destination_enforcement.value = rule.enforcement;
+  form.elements.destination_group_id.value = rule.group_id ?? "";
   form.elements.transport.value = rule.transport;
   form.elements.address.value = rule.address ?? "";
   form.elements.prefix_length.value = rule.prefix_length ?? "";
@@ -422,6 +456,9 @@ async function submitDestination(event) {
   const body = {
     action: String(form.elements.destination_action.value),
     enforcement: String(form.elements.destination_enforcement.value),
+    group_id: form.elements.destination_group_id.value === ""
+      ? null
+      : Number(form.elements.destination_group_id.value),
     transport: String(form.elements.transport.value),
     address: address.length === 0 ? null : address,
     prefix_length: address.length === 0
@@ -484,6 +521,314 @@ async function removeDestination(rule) {
       : "The destination rule was removed; publication is pending.",
     result.published ? "success" : "warning");
     await fetchRules("destination");
+  } catch (error) {
+    showError(byId("policies-error"), errorMessage(error));
+  }
+}
+
+/**
+ * Render policy groups and their current inherited mode.
+ */
+function renderPolicyGroups() {
+  const body = byId("policy-group-list");
+
+  if (policyGroups.length === 0) {
+    showEmptyTable(body, 6, "No policy groups are configured.");
+    renderGroupSelectors();
+    return;
+  }
+  body.replaceChildren(...policyGroups.map((group) => {
+    const row = document.createElement("tr");
+    const actions = document.createElement("td");
+
+    actions.className = "table-actions";
+    if (writable) {
+      actions.append(
+        actionButton("Edit", () => editPolicyGroup(group)),
+        actionButton("Remove", () => {
+          void removePolicyGroup(group);
+        }, true),
+      );
+    } else {
+      actions.textContent = "Read only";
+    }
+    row.append(
+      tableCell(group.id),
+      tableCell(group.description.length === 0
+        ? group.name
+        : `${group.name} · ${group.description}`),
+      tableCell(group.enforcement),
+      tableCell(group.domain_rule_count + group.destination_rule_count),
+      tableCell(group.enabled ? "Enabled" : "Disabled"),
+      actions,
+    );
+    return row;
+  }));
+  renderGroupSelectors();
+}
+
+/**
+ * Render client, network, and VLAN policy modes.
+ */
+function renderScopeModes() {
+  const body = byId("policy-scope-list");
+
+  if (scopeModes.length === 0) {
+    showEmptyTable(body, 6, "No client or VLAN modes are configured.");
+    return;
+  }
+  body.replaceChildren(...scopeModes.map((mode) => {
+    const row = document.createElement("tr");
+    const actions = document.createElement("td");
+
+    actions.className = "table-actions";
+    if (writable) {
+      actions.append(
+        actionButton("Edit", () => editScopeMode(mode)),
+        actionButton("Remove", () => {
+          void removeScopeMode(mode);
+        }, true),
+      );
+    } else {
+      actions.textContent = "Read only";
+    }
+    row.append(
+      tableCell(mode.id),
+      tableCell(mode.name),
+      tableCell(scopeText(mode.scope)),
+      tableCell(mode.enforcement),
+      tableCell(mode.enabled ? "Enabled" : "Disabled"),
+      actions,
+    );
+    return row;
+  }));
+}
+
+/**
+ * Load global, group, and client-scoped enforcement state.
+ */
+async function fetchPolicyModes() {
+  const [mode, groups, scopes] = await Promise.all([
+    api("/api/v1/policies/mode"),
+    api("/api/v1/policies/groups?limit=100"),
+    api("/api/v1/policies/scopes?limit=100"),
+  ]);
+
+  globalMode = mode;
+  policyGroups = groups.groups;
+  scopeModes = scopes.scope_modes;
+  byId("policy-mode-form").elements.global_enforcement.value =
+    mode.enforcement;
+  renderPolicyGroups();
+  renderScopeModes();
+}
+
+/**
+ * Replace snapshot-wide enforcement at the loaded revision.
+ */
+async function submitGlobalMode(event) {
+  event.preventDefault();
+  if (globalMode === null) {
+    return;
+  }
+  await withBusyButton(byId("policy-mode-submit"), async () => {
+    try {
+      const result = await api("/api/v1/policies/mode", {
+        method: "PUT",
+        body: {
+          revision: globalMode.revision,
+          enforcement: String(
+            event.currentTarget.elements.global_enforcement.value,
+          ),
+        },
+      });
+
+      globalMode = result;
+      announce("Global policy mode was updated.", "success");
+    } catch (error) {
+      showError(byId("policies-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Reset the policy-group editor to create mode.
+ */
+function resetPolicyGroupForm() {
+  const form = byId("policy-group-form");
+
+  editingGroup = null;
+  form.reset();
+  form.elements.group_enforcement.value = "enforce";
+  form.elements.group_enabled.checked = true;
+  byId("policy-group-form-title").textContent = "Add rule group";
+  byId("policy-group-submit").textContent = "Add group";
+  byId("policy-group-cancel").hidden = true;
+}
+
+/**
+ * Populate the policy-group editor.
+ */
+function editPolicyGroup(group) {
+  const form = byId("policy-group-form");
+
+  editingGroup = group;
+  form.elements.group_name.value = group.name;
+  form.elements.group_description.value = group.description;
+  form.elements.group_enforcement.value = group.enforcement;
+  form.elements.group_enabled.checked = group.enabled;
+  byId("policy-group-form-title").textContent = `Edit group ${group.id}`;
+  byId("policy-group-submit").textContent = "Save group";
+  byId("policy-group-cancel").hidden = false;
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/**
+ * Create or replace one policy group.
+ */
+async function submitPolicyGroup(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const updating = editingGroup !== null;
+  const body = {
+    name: String(form.elements.group_name.value),
+    description: String(form.elements.group_description.value),
+    enforcement: String(form.elements.group_enforcement.value),
+    enabled: form.elements.group_enabled.checked,
+  };
+
+  if (updating) {
+    body.revision = editingGroup.revision;
+  }
+  await withBusyButton(byId("policy-group-submit"), async () => {
+    try {
+      await api(
+        updating
+          ? `/api/v1/policies/groups/${editingGroup.id}`
+          : "/api/v1/policies/groups",
+        { method: updating ? "PATCH" : "POST", body },
+      );
+      resetPolicyGroupForm();
+      await fetchPolicyModes();
+      announce("Policy group was saved.", "success");
+    } catch (error) {
+      showError(byId("policies-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Remove one group after warning about assigned rules.
+ */
+async function removePolicyGroup(group) {
+  const assigned = group.domain_rule_count + group.destination_rule_count;
+
+  if (!await confirmAction(
+    "Remove policy group",
+    `Remove ${group.name} and its ${assigned} assigned rules?`,
+    "Remove group",
+  )) {
+    return;
+  }
+  try {
+    await api(`/api/v1/policies/groups/${group.id}`, {
+      method: "DELETE",
+      body: { revision: group.revision },
+    });
+    await Promise.all([fetchPolicyModes(), fetchRules("domain"),
+      fetchRules("destination")]);
+    announce("Policy group and assigned rules were removed.", "success");
+  } catch (error) {
+    showError(byId("policies-error"), errorMessage(error));
+  }
+}
+
+/**
+ * Reset the client-scope editor to create mode.
+ */
+function resetScopeModeForm() {
+  const form = byId("policy-scope-form");
+
+  editingScopeMode = null;
+  form.reset();
+  form.elements.mode_enforcement.value = "observe";
+  form.elements.mode_scope_type.value = "ipv4";
+  form.elements.mode_enabled.checked = true;
+  byId("policy-scope-form-title").textContent = "Add client or VLAN mode";
+  byId("policy-scope-submit").textContent = "Add selector";
+  byId("policy-scope-cancel").hidden = true;
+  updateScopeFields(form, "mode");
+}
+
+/**
+ * Populate the client-scope editor.
+ */
+function editScopeMode(mode) {
+  const form = byId("policy-scope-form");
+
+  editingScopeMode = mode;
+  form.elements.mode_name.value = mode.name;
+  form.elements.mode_enforcement.value = mode.enforcement;
+  form.elements.mode_enabled.checked = mode.enabled;
+  populateScope(form, "mode", mode.scope);
+  byId("policy-scope-form-title").textContent = `Edit selector ${mode.id}`;
+  byId("policy-scope-submit").textContent = "Save selector";
+  byId("policy-scope-cancel").hidden = false;
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/**
+ * Create or replace one client-scoped policy mode.
+ */
+async function submitScopeMode(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const updating = editingScopeMode !== null;
+  const body = {
+    name: String(form.elements.mode_name.value),
+    enforcement: String(form.elements.mode_enforcement.value),
+    scope: scopeFromForm(form, "mode"),
+    enabled: form.elements.mode_enabled.checked,
+  };
+
+  if (updating) {
+    body.revision = editingScopeMode.revision;
+  }
+  await withBusyButton(byId("policy-scope-submit"), async () => {
+    try {
+      await api(
+        updating
+          ? `/api/v1/policies/scopes/${editingScopeMode.id}`
+          : "/api/v1/policies/scopes",
+        { method: updating ? "PATCH" : "POST", body },
+      );
+      resetScopeModeForm();
+      await fetchPolicyModes();
+      announce("Client-scoped policy mode was saved.", "success");
+    } catch (error) {
+      showError(byId("policies-error"), errorMessage(error));
+    }
+  });
+}
+
+/**
+ * Remove one client-scoped policy mode.
+ */
+async function removeScopeMode(mode) {
+  if (!await confirmAction(
+    "Remove client policy mode",
+    `Remove ${mode.name}?`,
+    "Remove selector",
+  )) {
+    return;
+  }
+  try {
+    await api(`/api/v1/policies/scopes/${mode.id}`, {
+      method: "DELETE",
+      body: { revision: mode.revision },
+    });
+    await fetchPolicyModes();
+    announce("Client-scoped policy mode was removed.", "success");
   } catch (error) {
     showError(byId("policies-error"), errorMessage(error));
   }
@@ -555,12 +900,19 @@ export async function load(user) {
   const readOnly = user.role === "auditor";
 
   writable = !readOnly;
+  byId("policy-mode-fieldset").disabled = readOnly;
+  byId("policy-group-fieldset").disabled = readOnly;
+  byId("policy-scope-fieldset").disabled = readOnly;
   byId("domain-rule-fieldset").disabled = readOnly;
   byId("destination-rule-fieldset").disabled = readOnly;
   byId("policy-read-only").hidden = !readOnly;
   showError(byId("policies-error"), "");
   try {
-    await Promise.all([fetchRules("domain"), fetchRules("destination")]);
+    await Promise.all([
+      fetchPolicyModes(),
+      fetchRules("domain"),
+      fetchRules("destination"),
+    ]);
   } catch (error) {
     showError(byId("policies-error"), errorMessage(error));
   }
@@ -574,6 +926,9 @@ export function initialize() {
     return;
   }
   initialized = true;
+  byId("policy-mode-form").addEventListener("submit", submitGlobalMode);
+  byId("policy-group-form").addEventListener("submit", submitPolicyGroup);
+  byId("policy-scope-form").addEventListener("submit", submitScopeMode);
   byId("domain-rule-form").addEventListener("submit", submitDomain);
   byId("domain-rule-form").elements.action.addEventListener("change", () => {
     updateRuleEnforcement(
@@ -602,6 +957,14 @@ export function initialize() {
     "click",
     resetDestinationForm,
   );
+  byId("policy-group-cancel").addEventListener(
+    "click",
+    resetPolicyGroupForm,
+  );
+  byId("policy-scope-cancel").addEventListener(
+    "click",
+    resetScopeModeForm,
+  );
   byId("domain-load-more").addEventListener("click", () => {
     void fetchRules("domain", true);
   });
@@ -615,6 +978,14 @@ export function initialize() {
       updateScopeFields(form, prefix);
     });
   }
+  byId("policy-scope-form").elements.mode_scope_type.addEventListener(
+    "change",
+    () => {
+      updateScopeFields(byId("policy-scope-form"), "mode");
+    },
+  );
   resetDomainForm();
   resetDestinationForm();
+  resetPolicyGroupForm();
+  resetScopeModeForm();
 }

@@ -145,14 +145,22 @@ Restore the pending network checkpoint after reading its current revision.
 .SH POLICY COMMANDS
 .TP
 .B policy list
-List domain and destination policy records.
+List global enforcement, groups, client scopes, and policy records.
+.TP
+.BI "policy mode " [file]
+Read snapshot-wide enforcement, or replace it from a JSON document after
+automatically retrieving the current revision.
 .TP
 .BI "policy show " "kind id"
 Display one
 .B domain
 or
 .B destination
-record.
+record, policy
+.B group
+or client
+.B scope
+mode.
 .TP
 .BI "policy add " "kind file"
 Create a
