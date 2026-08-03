@@ -390,10 +390,18 @@ bool fields_allowed(json_t *object,
                     const char *const *fields,
                     size_t field_count);
 
+/** @brief Return a bounded string length or one past the maximum. */
+size_t bounded_length(const char *text, size_t maximum);
+
 /** @brief Read one required nonempty string from an object. */
 const char *required_string(const json_t *object,
                             const char *name,
                             size_t minimum,
+                            size_t maximum);
+
+/** @brief Read one optional bounded JSON string field. */
+const char *optional_string(const json_t *object,
+                            const char *name,
                             size_t maximum);
 
 /** @brief Read one required Boolean from an object. */
@@ -409,6 +417,21 @@ bool required_unsigned(const json_t *object,
                        const char *name,
                        uint64_t maximum,
                        uint64_t *value);
+
+/** @brief Decode one ASCII hexadecimal digit. */
+int hexadecimal_value(char character, uint8_t *value);
+
+/** @brief Decode one required nullable 32-byte hexadecimal field. */
+bool required_optional_digest(const json_t *object,
+                              const char *name,
+                              uint8_t digest[32U],
+                              bool *present);
+
+/** @brief Parse an exact numeric IPv4 or IPv6 remote address. */
+int parse_remote_address(const char *text, struct remote_address *remote);
+
+/** @brief Add a timestamp or JSON null to one response object. */
+int set_optional_timestamp(json_t *object, const char *name, uint64_t value);
 
 /** @brief Read one required string or explicit null from an object. */
 bool required_nullable_string(const json_t *object,
@@ -430,6 +453,11 @@ int encode_response(int status,
                     uint8_t *output,
                     size_t output_size,
                     size_t *written);
+
+/** @brief Create one consistent API error body. */
+json_t *error_body(const char *code,
+                   const char *message,
+                   const char *request_id);
 
 /** @brief Return one bounded stable API error envelope. */
 int respond_error(int status,
@@ -453,6 +481,167 @@ int respond_job_submission_error(int result,
                                  uint8_t *output,
                                  size_t output_size,
                                  size_t *written);
+
+/** @brief Execute one authenticated remote-source refresh job. */
+int execute_source_refresh_job(struct jg_management *management,
+                               const struct management_job *job,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Execute one authenticated local blocklist import job. */
+int execute_blocklist_import_job(struct jg_management *management,
+                                 const struct management_job *job,
+                                 uint8_t *output,
+                                 size_t output_size,
+                                 size_t *written);
+
+/** @brief Process and audit every enabled remote source currently due. */
+int update_due_blocklists_now(struct jg_management *management,
+                              uint64_t now,
+                              size_t *attempts);
+
+/** @brief Simulate one authenticated decision on the active policy snapshot. */
+int handle_policy_simulation(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written);
+
+/** @brief Return one authenticated stable page of blocklist sources. */
+int handle_blocklist_sources_list(struct jg_management *management,
+                                  const struct management_request *request,
+                                  const struct remote_address *remote,
+                                  uint64_t now,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  size_t *written);
+
+/** @brief Create one blocklist source through an authorized API request. */
+int handle_blocklist_source_create(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
+
+/** @brief Replace one blocklist source through an authorized API request. */
+int handle_blocklist_source_update(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t source_id,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
+
+/** @brief Delete one blocklist source through an authorized API request. */
+int handle_blocklist_source_delete(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t source_id,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
+
+/** @brief Refresh one remote blocklist source through an authorized request. */
+int handle_blocklist_source_refresh(struct jg_management *management,
+                                    const struct management_request *request,
+                                    const struct remote_address *remote,
+                                    uint64_t source_id,
+                                    uint64_t now,
+                                    uint8_t *output,
+                                    size_t output_size,
+                                    size_t *written);
+
+/** @brief Queue one uploaded blocklist for an authorized local source. */
+int handle_blocklist_import(struct jg_management *management,
+                            const struct management_request *request,
+                            const struct remote_address *remote,
+                            uint64_t now,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *written);
+
+/** @brief Return one authenticated stable page of domain rules. */
+int handle_domain_rules_list(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written);
+
+/** @brief Return one authenticated stable page of destination rules. */
+int handle_destination_rules_list(struct jg_management *management,
+                                  const struct management_request *request,
+                                  const struct remote_address *remote,
+                                  uint64_t now,
+                                  uint8_t *output,
+                                  size_t output_size,
+                                  size_t *written);
+
+/** @brief Create one explicit domain rule and publish a new snapshot. */
+int handle_domain_rule_create(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Update one explicit domain rule and publish a new snapshot. */
+int handle_domain_rule_update(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t rule_id,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Delete one explicit domain rule and publish a new snapshot. */
+int handle_domain_rule_delete(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t rule_id,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Create one explicit destination rule and publish a snapshot. */
+int handle_destination_rule_create(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
+
+/** @brief Update one explicit destination rule and publish a snapshot. */
+int handle_destination_rule_update(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t rule_id,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
+
+/** @brief Delete one explicit destination rule and publish a snapshot. */
+int handle_destination_rule_delete(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t rule_id,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
 
 /** @brief Return the persistent audit kind for one authenticated actor. */
 enum jg_audit_actor_type actor_audit_type(

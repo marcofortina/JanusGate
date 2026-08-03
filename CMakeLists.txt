@@ -191,6 +191,7 @@ add_library(
   src/daemon/management_jobs.c
   src/daemon/management_logging.c
   src/daemon/management_network.c
+  src/daemon/management_policy.c
   src/daemon/management_recovery.c
   src/daemon/netd_client.c
   ${janusgate_nfqueue_source}
