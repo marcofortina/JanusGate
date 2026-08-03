@@ -203,6 +203,7 @@ add_library(
   src/daemon/dns_response.c
   src/daemon/fragment.c
   src/daemon/management.c
+  src/daemon/management_alert_api.c
   src/daemon/management_alerts.c
   src/daemon/management_backup.c
   src/daemon/management_blocklist.c
@@ -277,6 +278,7 @@ janusgate_apply_compiler_options(janusgate-cli-core)
 add_executable(
   janusgatectl
   src/cli/commands_appliance.c
+  src/cli/commands_alerting.c
   src/cli/commands_identity.c
   src/cli/commands_policy.c
   src/cli/main.c)

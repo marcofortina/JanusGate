@@ -182,6 +182,11 @@ int jg_cli_run_logging_command(const struct cli_options *options,
                                int argc,
                                char **argv);
 
+/** @brief Inspect and configure native alerting and webhook delivery. */
+int jg_cli_run_alert_command(const struct cli_options *options,
+                             int argc,
+                             char **argv);
+
 /** @brief Create, verify, and store one sanitized diagnostic archive. */
 int jg_cli_run_diagnostics_create(const struct cli_options *options);
 

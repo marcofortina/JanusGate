@@ -1234,6 +1234,10 @@ static bool management_path_known(const char *path)
     static const char *const exact_paths[] = {
         "/api/v1/audit",
         "/api/v1/audit/verify",
+        "/api/v1/alerts",
+        "/api/v1/alerts/configuration",
+        "/api/v1/alerts/webhook/secret",
+        "/api/v1/alerts/webhook/test",
         "/api/v1/auth/bootstrap",
         "/api/v1/auth/login",
         "/api/v1/auth/logout",
@@ -1381,6 +1385,25 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_metrics(management, request, remote, now, output,
                               output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/alerts") == 0 &&
+        strcmp(request->method, "GET") == 0) {
+        return handle_alerts_list(management, request, remote, now, output,
+                                  output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/alerts/configuration") == 0 &&
+        (strcmp(request->method, "GET") == 0 ||
+         strcmp(request->method, "PUT") == 0)) {
+        return handle_alert_configuration(management, request, remote, now,
+                                          output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/alerts/webhook/secret") == 0 && post) {
+        return handle_alert_webhook_secret(management, request, remote, now,
+                                           output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/alerts/webhook/test") == 0 && post) {
+        return handle_alert_webhook_test(management, request, remote, now,
+                                         output, output_size, written);
     }
     if (strcmp(request->path, "/api/v1/config/validate") == 0 && post) {
         return handle_configuration(management, request, remote, now, false,

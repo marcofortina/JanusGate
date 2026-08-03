@@ -86,6 +86,11 @@ static void print_usage(FILE *output)
                   "       janusgatectl [OPTIONS] source enable ID\n"
                   "       janusgatectl [OPTIONS] source disable ID\n"
                   "       janusgatectl [OPTIONS] events [QUERY]\n"
+                  "       janusgatectl [OPTIONS] alert list [QUERY]\n"
+                  "       janusgatectl [OPTIONS] alert configuration show\n"
+                  "       janusgatectl [OPTIONS] alert configuration set FILE\n"
+                  "       janusgatectl [OPTIONS] alert webhook rotate\n"
+                  "       janusgatectl [OPTIONS] alert webhook test\n"
                   "       janusgatectl [OPTIONS] audit [QUERY]\n"
                   "       janusgatectl [OPTIONS] audit verify\n");
     (void)fprintf(
@@ -1038,6 +1043,17 @@ static int run_command(const struct cli_options *options,
     if ((argc == 1 || argc == 2) &&
         (strcmp(argv[0], "events") == 0 || strcmp(argv[0], "audit") == 0)) {
         return jg_cli_run_record_command(options, argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[0], "alert") == 0 &&
+        ((strcmp(argv[1], "list") == 0 && (argc == 2 || argc == 3)) ||
+         (argc == 3 && ((strcmp(argv[1], "configuration") == 0 &&
+                         strcmp(argv[2], "show") == 0) ||
+                        (strcmp(argv[1], "webhook") == 0 &&
+                         (strcmp(argv[2], "rotate") == 0 ||
+                          strcmp(argv[2], "test") == 0)))) ||
+         (argc == 4 && strcmp(argv[1], "configuration") == 0 &&
+          strcmp(argv[2], "set") == 0))) {
+        return jg_cli_run_alert_command(options, argc, argv);
     }
     if (argc >= 2 && strcmp(argv[0], "user") == 0 &&
         ((argc == 2 && strcmp(argv[1], "list") == 0) ||

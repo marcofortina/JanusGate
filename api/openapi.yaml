@@ -32,6 +32,7 @@ tags:
   - name: Sources
   - name: Jobs
   - name: Events
+  - name: Alerts
   - name: Access
   - name: Certificates
   - name: Remote access
@@ -218,6 +219,87 @@ paths:
             text/plain:
               schema:
                 type: string
+        default:
+          $ref: '#/components/responses/JsonError'
+  /alerts:
+    get:
+      tags: [Alerts]
+      operationId: listAlerts
+      summary: List persistent native alert incidents newest first
+      parameters:
+        - $ref: '#/components/parameters/BeforeId'
+        - $ref: '#/components/parameters/Limit'
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [open, resolved]
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/AlertType'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /alerts/configuration:
+    get:
+      tags: [Alerts]
+      operationId: getAlertConfiguration
+      summary: Return native alert thresholds and webhook state
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    put:
+      tags: [Alerts]
+      operationId: updateAlertConfiguration
+      summary: Replace native alert thresholds and webhook state
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertConfigurationUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /alerts/webhook/secret:
+    post:
+      tags: [Alerts]
+      operationId: rotateAlertWebhookSecret
+      summary: Rotate and return the webhook HMAC secret exactly once
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /alerts/webhook/test:
+    post:
+      tags: [Alerts]
+      operationId: testAlertWebhook
+      summary: Enqueue one signed webhook test notification
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        $ref: '#/components/requestBodies/EmptyObject'
+      responses:
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
         default:
           $ref: '#/components/responses/JsonError'
   /config/validate:
@@ -1401,6 +1483,12 @@ components:
       schema:
         type: integer
         minimum: 0
+    BeforeId:
+      name: before_id
+      in: query
+      schema:
+        type: integer
+        minimum: 0
     Limit:
       name: limit
       in: query
@@ -1732,6 +1820,99 @@ components:
           maxItems: 16
           items:
             $ref: '#/components/schemas/LoggingOverride'
+    AlertType:
+      type: string
+      enum:
+        - appliance_degraded
+        - policy_unsynchronized
+        - audit_unverifiable
+        - certificate_expiring
+        - source_unhealthy
+        - filesystem_low_space
+        - queue_drops
+        - authentication_failures
+    AlertConfigurationUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - revision
+        - enabled
+        - evaluation_interval_seconds
+        - certificate_warning_days
+        - source_failure_threshold
+        - source_stale_seconds
+        - filesystem_minimum_percent
+        - filesystem_minimum_bytes
+        - queue_window_seconds
+        - queue_drop_threshold
+        - authentication_window_seconds
+        - authentication_failure_threshold
+        - webhook_enabled
+        - webhook_url
+        - webhook_ca_pem
+        - webhook_timeout_seconds
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        enabled:
+          type: boolean
+        evaluation_interval_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+        certificate_warning_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+        source_failure_threshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        source_stale_seconds:
+          type: integer
+          minimum: 300
+          maximum: 2592000
+        filesystem_minimum_percent:
+          type: integer
+          minimum: 1
+          maximum: 50
+        filesystem_minimum_bytes:
+          type: integer
+          minimum: 0
+          maximum: 1099511627776
+        queue_window_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+        queue_drop_threshold:
+          type: integer
+          minimum: 1
+          maximum: 1000000000
+        authentication_window_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+        authentication_failure_threshold:
+          type: integer
+          minimum: 1
+          maximum: 1000000000
+        webhook_enabled:
+          type: boolean
+        webhook_url:
+          type: [string, 'null']
+          format: uri
+          maxLength: 2048
+          pattern: '^https://'
+        webhook_ca_pem:
+          type: [string, 'null']
+          maxLength: 65536
+          description: >-
+            Optional CA-only PEM bundle. Private and self-hosted authorities
+            are supported.
+        webhook_timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 30
     LoggingOverride:
       type: object
       additionalProperties: false

@@ -408,6 +408,42 @@ void management_alerts_wake(struct management_alerts *alerts);
 /** @brief Count one rejected credential or authenticated transport. */
 void management_alert_authentication_failed(struct jg_management *management);
 
+/** @brief Return one filtered page of native alert incidents. */
+int handle_alerts_list(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Return or replace native alert configuration. */
+int handle_alert_configuration(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Rotate and return the webhook secret exactly once. */
+int handle_alert_webhook_secret(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                uint64_t now,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written);
+
+/** @brief Enqueue one authenticated webhook test notification. */
+int handle_alert_webhook_test(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
 /** @brief Queue one prepared authenticated slow operation. */
 int submit_management_job(struct jg_management *management,
                           const struct management_request *request,

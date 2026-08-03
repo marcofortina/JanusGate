@@ -32,6 +32,7 @@
 #include <sqlite3.h>
 
 #include "janusgate/account.h"
+#include "janusgate/alert.h"
 #include "janusgate/audit.h"
 #include "janusgate/backup.h"
 #include "janusgate/certificate.h"
@@ -4682,6 +4683,118 @@ static void test_event_api(void **state)
     json_decref(response);
 }
 
+/** @brief Verify alert configuration, secret rotation, test, and filtering. */
+static void test_alert_api(void **state)
+{
+    static const char get_configuration[] =
+        "{\"request_id\":\"alerts-configuration-get\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/alerts/configuration\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char rotate_secret[] =
+        "{\"request_id\":\"alerts-secret-rotate\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/alerts/webhook/secret\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":1}}";
+    static const char update_configuration[] =
+        "{\"request_id\":\"alerts-configuration-update\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/alerts/configuration\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":2,"
+        "\"enabled\":true,\"evaluation_interval_seconds\":120,"
+        "\"certificate_warning_days\":21,\"source_failure_threshold\":4,"
+        "\"source_stale_seconds\":7200,\"filesystem_minimum_percent\":12,"
+        "\"filesystem_minimum_bytes\":536870912,"
+        "\"queue_window_seconds\":600,\"queue_drop_threshold\":2,"
+        "\"authentication_window_seconds\":600,"
+        "\"authentication_failure_threshold\":10,"
+        "\"webhook_enabled\":true,"
+        "\"webhook_url\":\"https://alerts.example.test/janusgate\","
+        "\"webhook_ca_pem\":null,\"webhook_timeout_seconds\":15}}";
+    static const char test_webhook[] =
+        "{\"request_id\":\"alerts-webhook-test\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/alerts/webhook/test\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char list_alerts[] =
+        "{\"request_id\":\"alerts-list\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/alerts\","
+        "\"query\":\"limit=1&state=open&type=appliance_degraded\","
+        "\"host\":\"localhost\",\"remote_address\":\"127.0.0.1\","
+        "\"body\":{}}";
+    const struct jg_alert_condition condition = {
+        .type = JG_ALERT_TYPE_APPLIANCE_DEGRADED,
+        .resource = "appliance",
+        .severity = JG_ALERT_SEVERITY_CRITICAL,
+        .summary = "Management consistency is degraded.",
+        .details = "{\"reasons\":1}",
+    };
+    struct management_fixture *fixture = *state;
+    struct jg_alert_incident incident;
+    enum jg_alert_transition transition = JG_ALERT_TRANSITION_NONE;
+    json_t *response = process_local_request(fixture, get_configuration);
+    json_t *body = NULL;
+    json_t *item = NULL;
+    const char *secret = NULL;
+
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 1);
+    assert_true(json_is_true(json_object_get(body, "enabled")));
+    assert_false(
+        json_is_true(json_object_get(body, "webhook_secret_configured")));
+    json_decref(response);
+
+    response = process_local_request(fixture, rotate_secret);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    secret = json_string_value(json_object_get(body, "webhook_secret"));
+    assert_non_null(secret);
+    assert_int_equal(strlen(secret), JG_ALERT_WEBHOOK_SECRET_TEXT_SIZE - 1U);
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 2);
+    assert_true(
+        json_is_true(json_object_get(body, "webhook_secret_configured")));
+    json_decref(response);
+
+    response = process_local_request(fixture, update_configuration);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 3);
+    assert_int_equal(json_integer_value(
+                         json_object_get(body, "evaluation_interval_seconds")),
+                     120);
+    assert_true(json_is_true(json_object_get(body, "webhook_enabled")));
+    json_decref(response);
+
+    response = process_local_request(fixture, test_webhook);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     202);
+    body = json_object_get(response, "body");
+    assert_true(json_integer_value(json_object_get(body, "delivery_id")) > 0);
+    assert_string_equal(json_string_value(json_object_get(body, "state")),
+                        "pending");
+    json_decref(response);
+
+    assert_int_equal(jg_database_alert_reconcile(fixture->database, &condition,
+                                                 true, false, 100U, &incident,
+                                                 &transition),
+                     0);
+    assert_int_equal(transition, JG_ALERT_TRANSITION_OPEN);
+    response = process_local_request(fixture, list_alerts);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "count")), 1);
+    assert_string_equal(json_string_value(json_object_get(body, "state")),
+                        "open");
+    item = json_array_get(json_object_get(body, "alerts"), 0U);
+    assert_string_equal(json_string_value(json_object_get(item, "type")),
+                        "appliance_degraded");
+    assert_int_equal(json_integer_value(json_object_get(
+                         json_object_get(item, "details"), "reasons")),
+                     1);
+    json_decref(response);
+}
+
 /** @brief Verify malformed, cross-origin, and routing requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -5054,6 +5167,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_scheduled_source_update,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_event_api, setup_management,
+                                        teardown_management),
+        cmocka_unit_test_setup_teardown(test_alert_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
