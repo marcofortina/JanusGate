@@ -28,13 +28,14 @@ _janusgatectl()
     local command_index=0
     local index=1
     local position=0
+    local action=
     local subcommand=
     local options="--socket --endpoint --token-file --passphrase-file
         --client-cert --client-key --ca-file --timeout --json --quiet
         --verbose --yes --include-private-key --help --version"
     local commands="status health stats network policy domain blocklist source
-        events audit user token certificate backup diagnostics logging config
-        service system ping"
+        events alert audit user token certificate mtls backup diagnostics
+        logging config service system ping"
 
     COMPREPLY=()
     if ((COMP_CWORD > 0)); then
@@ -81,6 +82,9 @@ _janusgatectl()
     if ((position > 1)); then
         subcommand=${COMP_WORDS[command_index + 1]}
     fi
+    if ((position > 2)); then
+        action=${COMP_WORDS[command_index + 2]}
+    fi
     case "${command}" in
         network)
             if ((position == 1)); then
@@ -95,12 +99,21 @@ _janusgatectl()
         policy)
             if ((position == 1)); then
                 _janusgatectl_values \
-                    "list show add update remove simulate reload" "${current}"
+                    "list mode statistics cleanup show analyze add update remove
+                    explain simulate reload" "${current}"
             elif ((position == 2)) &&
                 [[ ${subcommand} == show || ${subcommand} == add ||
                     ${subcommand} == update || ${subcommand} == remove ]]; then
+                _janusgatectl_values \
+                    "domain destination group scope" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == analyze ]]; then
                 _janusgatectl_values "domain destination" "${current}"
-            elif ((position == 2)) && [[ ${subcommand} == simulate ]]; then
+            elif ((position == 2)) && [[ ${subcommand} == cleanup ]]; then
+                _janusgatectl_values "preview run" "${current}"
+            elif ((position == 2)) &&
+                [[ ${subcommand} == mode || ${subcommand} == statistics ||
+                    ${subcommand} == explain ||
+                    ${subcommand} == simulate ]]; then
                 _janusgatectl_files "${current}"
             elif ((position == 3)) && [[ ${subcommand} == add ]]; then
                 _janusgatectl_files "${current}"
@@ -135,6 +148,18 @@ _janusgatectl()
                 _janusgatectl_values "verify" "${current}"
             fi
             ;;
+        alert)
+            if ((position == 1)); then
+                _janusgatectl_values "list configuration webhook" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == configuration ]]; then
+                _janusgatectl_values "show set" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == webhook ]]; then
+                _janusgatectl_values "rotate test" "${current}"
+            elif ((position == 3)) && [[ ${subcommand} == configuration ]] &&
+                [[ ${action} == set ]]; then
+                _janusgatectl_files "${current}"
+            fi
+            ;;
         user)
             if ((position == 1)); then
                 _janusgatectl_values \
@@ -159,6 +184,27 @@ _janusgatectl()
             elif ((position == 2)) &&
                 [[ ${subcommand} == install || ${subcommand} == csr ]]; then
                 _janusgatectl_files "${current}"
+            fi
+            ;;
+        mtls)
+            if ((position == 1)); then
+                _janusgatectl_values "ca mapping" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == ca ]]; then
+                _janusgatectl_values "show install remove" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == mapping ]]; then
+                _janusgatectl_values "list add revoke" "${current}"
+            elif ((position == 3)) &&
+                { [[ ${subcommand} == ca && ${action} == install ]] ||
+                    [[ ${subcommand} == mapping && ${action} == add ]]; }; then
+                _janusgatectl_files "${current}"
+            elif ((position == 4)) && [[ ${subcommand} == mapping ]] &&
+                [[ ${action} == add ]]; then
+                _janusgatectl_values "user role" "${current}"
+            elif ((position == 5)) && [[ ${subcommand} == mapping ]] &&
+                [[ ${action} == add ]] &&
+                [[ ${COMP_WORDS[command_index + 4]} == role ]]; then
+                _janusgatectl_values \
+                    "administrator operator auditor" "${current}"
             fi
             ;;
         backup)

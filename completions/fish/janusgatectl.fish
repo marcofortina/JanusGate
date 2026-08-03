@@ -5,8 +5,8 @@
 function __janusgatectl_needs_command
     not __fish_seen_subcommand_from \
         status health stats network policy domain blocklist source events \
-        audit user token certificate backup diagnostics logging config service \
-        system ping
+        alert audit user token certificate mtls backup diagnostics logging \
+        config service system ping
 end
 
 # Test whether one command family still needs its immediate subcommand.
@@ -68,6 +68,8 @@ complete --command janusgatectl --condition __janusgatectl_needs_command \
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments events --description 'List operational events'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
+    --arguments alert --description 'Manage native incidents and notifications'
+complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments audit --description 'List or verify audit records'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments user --description 'Manage local users'
@@ -75,6 +77,8 @@ complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments token --description 'Manage API tokens'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments certificate --description 'Manage the server identity'
+complete --command janusgatectl --condition __janusgatectl_needs_command \
+    --arguments mtls --description 'Manage remote client trust'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments backup --description 'Manage backup archives'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
@@ -94,8 +98,8 @@ complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand network show validate apply set confirm rollback' \
     --arguments 'show validate apply set confirm rollback'
 complete --command janusgatectl \
-    --condition '__janusgatectl_needs_subcommand policy list show add update remove simulate reload' \
-    --arguments 'list show add update remove simulate reload'
+    --condition '__janusgatectl_needs_subcommand policy list mode statistics cleanup show analyze add update remove explain simulate reload' \
+    --arguments 'list mode statistics cleanup show analyze add update remove explain simulate reload'
 complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand domain block allow remove' \
     --arguments 'block allow remove'
@@ -108,6 +112,9 @@ complete --command janusgatectl \
 complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand audit verify' --arguments verify
 complete --command janusgatectl \
+    --condition '__janusgatectl_needs_subcommand alert list configuration webhook' \
+    --arguments 'list configuration webhook'
+complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand user list add update disable password totp' \
     --arguments 'list add update disable password totp'
 complete --command janusgatectl \
@@ -116,6 +123,9 @@ complete --command janusgatectl \
 complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand certificate show install csr' \
     --arguments 'show install csr'
+complete --command janusgatectl \
+    --condition '__janusgatectl_needs_subcommand mtls ca mapping' \
+    --arguments 'ca mapping'
 complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand backup create inspect export import restore' \
     --arguments 'create inspect export import restore'
@@ -139,8 +149,32 @@ complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from backup; and __fish_seen_subcommand_from create' \
     --arguments 'configuration full'
 complete --command janusgatectl \
-    --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from show add update remove' \
+    --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from show add update remove; and not __fish_seen_subcommand_from domain destination group scope' \
+    --arguments 'domain destination group scope'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from analyze; and not __fish_seen_subcommand_from domain destination' \
     --arguments 'domain destination'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from cleanup; and not __fish_seen_subcommand_from preview run' \
+    --arguments 'preview run'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from alert; and __fish_seen_subcommand_from configuration; and not __fish_seen_subcommand_from show set' \
+    --arguments 'show set'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from alert; and __fish_seen_subcommand_from webhook; and not __fish_seen_subcommand_from rotate test' \
+    --arguments 'rotate test'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from mtls; and __fish_seen_subcommand_from ca; and not __fish_seen_subcommand_from show install remove' \
+    --arguments 'show install remove'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from mtls; and __fish_seen_subcommand_from mapping; and not __fish_seen_subcommand_from list add revoke' \
+    --arguments 'list add revoke'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from mtls; and __fish_seen_subcommand_from mapping; and __fish_seen_subcommand_from add; and not __fish_seen_subcommand_from user role; and test (commandline -opc)[-1] != add' \
+    --arguments 'user role'
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from mtls; and __fish_seen_subcommand_from mapping; and __fish_seen_subcommand_from add; and __fish_seen_subcommand_from role; and not __fish_seen_subcommand_from administrator operator auditor; and test (commandline -opc)[-1] = role' \
+    --arguments 'administrator operator auditor'
 
 complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from network; and __fish_seen_subcommand_from validate apply set' \
@@ -149,7 +183,16 @@ complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from logging; and __fish_seen_subcommand_from set' \
     --force-files
 complete --command janusgatectl \
-    --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from add update simulate' \
+    --condition '__fish_seen_subcommand_from policy; and __fish_seen_subcommand_from mode statistics add update explain simulate' \
+    --force-files
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from alert; and __fish_seen_subcommand_from configuration; and __fish_seen_subcommand_from set' \
+    --force-files
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from mtls; and __fish_seen_subcommand_from ca; and __fish_seen_subcommand_from install' \
+    --force-files
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from mtls; and __fish_seen_subcommand_from mapping; and __fish_seen_subcommand_from add; and not __fish_seen_subcommand_from user role; and test (commandline -opc)[-1] = add' \
     --force-files
 complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from blocklist; and __fish_seen_subcommand_from import' \

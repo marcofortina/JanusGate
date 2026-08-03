@@ -36,10 +36,12 @@ case ${state} in
       'blocklist:import or export blocklists'
       'source:manage blocklist sources'
       'events:list operational events'
+      'alert:manage native incidents and notifications'
       'audit:list or verify audit records'
       'user:manage local users'
       'token:manage API tokens'
       'certificate:manage the server identity'
+      'mtls:manage remote client trust'
       'backup:manage backup archives'
       'diagnostics:create a diagnostic archive'
       'logging:manage operational logging'
@@ -61,11 +63,16 @@ case ${state} in
         ;;
       policy)
         if (( ${#line} == 1 )); then
-          _values 'policy command' list show add update remove simulate reload
+          _values 'policy command' list mode statistics cleanup show analyze \
+            add update remove explain simulate reload
         elif [[ ${line[2]} == (show|add|update|remove) ]] &&
           (( ${#line} == 2 )); then
+          _values 'policy kind' domain destination group scope
+        elif [[ ${line[2]} == analyze && ${#line} == 2 ]]; then
           _values 'policy kind' domain destination
-        elif [[ ${line[2]} == simulate ]] ||
+        elif [[ ${line[2]} == cleanup && ${#line} == 2 ]]; then
+          _values 'cleanup operation' preview run
+        elif [[ ${line[2]} == (mode|statistics|explain|simulate) ]] ||
           [[ ${line[2]} == add && ${#line} -ge 3 ]] ||
           [[ ${line[2]} == update && ${#line} -ge 4 ]]; then
           _files
@@ -92,6 +99,17 @@ case ${state} in
       audit)
         _values 'audit command' verify
         ;;
+      alert)
+        if (( ${#line} == 1 )); then
+          _values 'alert command' list configuration webhook
+        elif [[ ${line[2]} == configuration && ${#line} == 2 ]]; then
+          _values 'configuration command' show set
+        elif [[ ${line[2]} == webhook && ${#line} == 2 ]]; then
+          _values 'webhook command' rotate test
+        elif [[ ${line[2]} == configuration && ${line[3]} == set ]]; then
+          _files
+        fi
+        ;;
       user)
         if (( ${#line} == 1 )); then
           _values 'user command' list add update disable password totp
@@ -112,6 +130,24 @@ case ${state} in
           _values 'certificate command' show install csr
         elif [[ ${line[2]} == (install|csr) ]]; then
           _files
+        fi
+        ;;
+      mtls)
+        if (( ${#line} == 1 )); then
+          _values 'mTLS resource' ca mapping
+        elif [[ ${line[2]} == ca && ${#line} == 2 ]]; then
+          _values 'CA command' show install remove
+        elif [[ ${line[2]} == mapping && ${#line} == 2 ]]; then
+          _values 'mapping command' list add revoke
+        elif [[ ${line[2]} == ca && ${line[3]} == install ]] ||
+          [[ ${line[2]} == mapping && ${line[3]} == add && ${#line} == 3 ]]; then
+          _files
+        elif [[ ${line[2]} == mapping && ${line[3]} == add &&
+          ${#line} == 4 ]]; then
+          _values 'mapping owner' user role
+        elif [[ ${line[2]} == mapping && ${line[3]} == add &&
+          ${line[5]} == role ]]; then
+          _values 'role' administrator operator auditor
         fi
         ;;
       backup)
