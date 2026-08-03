@@ -225,13 +225,14 @@ static json_t *policy_scope_json(const struct jg_policy_scope *scope)
 static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
 {
     const char *effect = policy_effect_name(rule->effect);
+    const char *enforcement = policy_enforcement_name(rule->enforcement);
     const char *source = policy_source_name(rule->source);
     const char *target = policy_target_name(rule->target);
     json_t *body = json_object();
     json_t *scope = policy_scope_json(&rule->scope);
 
-    if (effect == NULL || source == NULL || target == NULL || body == NULL ||
-        scope == NULL ||
+    if (effect == NULL || enforcement == NULL || source == NULL ||
+        target == NULL || body == NULL || scope == NULL ||
         json_object_set_new(body, "id", json_integer((json_int_t)rule->id)) !=
             0 ||
         json_object_set_new(body, "revision",
@@ -242,6 +243,8 @@ static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
         json_object_set_new(body, "include_subdomains",
                             json_boolean(rule->include_subdomains)) != 0 ||
         json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(body, "enforcement", json_string(enforcement)) !=
+            0 ||
         json_object_set_new(body, "source", json_string(source)) != 0 ||
         json_object_set_new(body, "target", json_string(target)) != 0 ||
         json_object_set_new(body, "attribution",
@@ -280,6 +283,7 @@ static json_t *destination_rule_json(
 {
     char address[INET6_ADDRSTRLEN];
     const char *effect = policy_effect_name(rule->effect);
+    const char *enforcement = policy_enforcement_name(rule->enforcement);
     const char *source = policy_source_name(rule->source);
     const char *transport = policy_transport_name(rule->transport);
     json_t *body = json_object();
@@ -295,8 +299,8 @@ static json_t *destination_rule_json(
             result = -EINVAL;
         }
     }
-    if (result != 0 || effect == NULL || source == NULL || transport == NULL ||
-        body == NULL || scope == NULL ||
+    if (result != 0 || effect == NULL || enforcement == NULL ||
+        source == NULL || transport == NULL || body == NULL || scope == NULL ||
         json_object_set_new(body, "id", json_integer((json_int_t)rule->id)) !=
             0 ||
         json_object_set_new(body, "revision",
@@ -304,6 +308,8 @@ static json_t *destination_rule_json(
         json_object_set_new(body, "updated_at",
                             json_integer((json_int_t)rule->updated_at)) != 0 ||
         json_object_set_new(body, "action", json_string(effect)) != 0 ||
+        json_object_set_new(body, "enforcement", json_string(enforcement)) !=
+            0 ||
         json_object_set_new(body, "source", json_string(source)) != 0 ||
         json_object_set_new(body, "transport", json_string(transport)) != 0 ||
         json_object_set_new(body, "address",
@@ -360,6 +366,24 @@ static bool parse_policy_effect(const char *text, enum jg_policy_effect *effect)
     }
     if (strcmp(text, "block") == 0) {
         *effect = JG_POLICY_BLOCK;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Parse one external policy enforcement mode. */
+static bool parse_policy_enforcement(const char *text,
+                                     enum jg_policy_enforcement *enforcement)
+{
+    if (text == NULL || enforcement == NULL) {
+        return false;
+    }
+    if (text[0U] == '\0' || strcmp(text, "enforce") == 0) {
+        *enforcement = JG_POLICY_ENFORCE;
+        return true;
+    }
+    if (strcmp(text, "observe") == 0) {
+        *enforcement = JG_POLICY_OBSERVE;
         return true;
     }
     return false;
@@ -457,17 +481,19 @@ static int parse_domain_rule_request(json_t *body,
 {
     static const char *const create_fields[] = {
         "domain", "include_subdomains", "action",  "target",
-        "scope",  "attribution",        "enabled",
+        "scope",  "attribution",        "enabled", "enforcement",
     };
     static const char *const update_fields[] = {
-        "revision", "domain", "include_subdomains", "action",
-        "target",   "scope",  "attribution",        "enabled",
+        "revision",    "domain",  "include_subdomains",
+        "action",      "target",  "scope",
+        "attribution", "enabled", "enforcement",
     };
     const char *domain = required_string(body, "domain", 1U, 1024U);
     const char *action = required_string(body, "action", 5U, 5U);
     const char *target = required_string(body, "target", 3U, 7U);
     const char *attribution =
         required_string(body, "attribution", 1U, JG_POLICY_ATTRIBUTION_MAX);
+    const char *enforcement = optional_string(body, "enforcement", 7U);
     json_t *scope = json_object_get(body, "scope");
     int result = 0;
 
@@ -480,11 +506,12 @@ static int parse_domain_rule_request(json_t *body,
          !fields_allowed(body, create_fields,
                          sizeof(create_fields) / sizeof(create_fields[0U]))) ||
         domain == NULL || action == NULL || target == NULL ||
-        attribution == NULL ||
+        attribution == NULL || enforcement == NULL ||
         !required_boolean(body, "include_subdomains",
                           &rule->include_subdomains) ||
         !required_boolean(body, "enabled", enabled) ||
         !parse_policy_effect(action, &rule->effect) ||
+        !parse_policy_enforcement(enforcement, &rule->enforcement) ||
         !parse_policy_target(target, &rule->target)) {
         return -EINVAL;
     }
@@ -533,17 +560,18 @@ static int parse_destination_rule_request(
     uint64_t *revision)
 {
     static const char *const create_fields[] = {
-        "action", "transport", "address",     "prefix_length",
-        "port",   "scope",     "attribution", "enabled",
+        "action", "transport",   "address", "prefix_length", "port",
+        "scope",  "attribution", "enabled", "enforcement",
     };
     static const char *const update_fields[] = {
         "revision", "action", "transport",   "address", "prefix_length",
-        "port",     "scope",  "attribution", "enabled",
+        "port",     "scope",  "attribution", "enabled", "enforcement",
     };
     const char *action = required_string(body, "action", 5U, 5U);
     const char *transport = required_string(body, "transport", 3U, 3U);
     const char *attribution =
         required_string(body, "attribution", 1U, JG_POLICY_ATTRIBUTION_MAX);
+    const char *enforcement = optional_string(body, "enforcement", 7U);
     json_t *address_value = json_object_get(body, "address");
     json_t *prefix_value = json_object_get(body, "prefix_length");
     json_t *port_value = json_object_get(body, "port");
@@ -565,9 +593,10 @@ static int parse_destination_rule_request(
          !fields_allowed(body, create_fields,
                          sizeof(create_fields) / sizeof(create_fields[0U]))) ||
         action == NULL || transport == NULL || attribution == NULL ||
-        address_value == NULL || prefix_value == NULL || port_value == NULL ||
-        !required_boolean(body, "enabled", enabled) ||
+        enforcement == NULL || address_value == NULL || prefix_value == NULL ||
+        port_value == NULL || !required_boolean(body, "enabled", enabled) ||
         !parse_policy_effect(action, &rule->effect) ||
+        !parse_policy_enforcement(enforcement, &rule->enforcement) ||
         !parse_policy_transport_selector(transport, &rule->transport)) {
         return -EINVAL;
     }

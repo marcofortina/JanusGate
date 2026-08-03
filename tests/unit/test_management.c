@@ -951,6 +951,7 @@ static void test_browser_authentication(void **state)
     domain_rules[0U].domain = "Blocked.Example.";
     domain_rules[0U].include_subdomains = true;
     domain_rules[0U].effect = JG_POLICY_BLOCK;
+    domain_rules[0U].enforcement = JG_POLICY_OBSERVE;
     domain_rules[0U].source = JG_POLICY_SOURCE_EXPLICIT;
     domain_rules[0U].scope.type = JG_POLICY_SCOPE_GLOBAL;
     domain_rules[0U].attribution = "management test";
@@ -968,6 +969,7 @@ static void test_browser_authentication(void **state)
     (void)memset(destination_rules, 0, sizeof(destination_rules));
     destination_rules[0U].id = 5U;
     destination_rules[0U].effect = JG_POLICY_BLOCK;
+    destination_rules[0U].enforcement = JG_POLICY_OBSERVE;
     destination_rules[0U].source = JG_POLICY_SOURCE_EXPLICIT;
     destination_rules[0U].transport = JG_POLICY_TRANSPORT_ANY;
     destination_rules[0U].has_port = true;
@@ -1038,6 +1040,8 @@ static void test_browser_authentication(void **state)
     assert_string_equal(json_string_value(json_object_get(value, "domain")),
                         "blocked.example");
     assert_true(json_is_true(json_object_get(value, "include_subdomains")));
+    assert_string_equal(
+        json_string_value(json_object_get(value, "enforcement")), "observe");
     json_decref(response);
 
     written = snprintf(
@@ -1080,6 +1084,8 @@ static void test_browser_authentication(void **state)
     assert_int_equal(json_integer_value(json_object_get(value, "id")), 5);
     assert_int_equal(json_integer_value(json_object_get(value, "port")), 853);
     assert_true(json_is_null(json_object_get(value, "address")));
+    assert_string_equal(
+        json_string_value(json_object_get(value, "enforcement")), "observe");
     json_decref(response);
 
     written = snprintf(

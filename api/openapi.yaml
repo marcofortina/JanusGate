@@ -1594,7 +1594,8 @@ components:
     DomainRuleFields:
       type: object
       required:
-        [domain, action, target, include_subdomains, scope, attribution, enabled]
+        [domain, action, target, include_subdomains, scope, attribution, enabled,
+         enforcement]
       properties:
         domain:
           type: string
@@ -1603,6 +1604,9 @@ components:
         action:
           type: string
           enum: [allow, block]
+        enforcement:
+          type: string
+          enum: [enforce, observe]
         target:
           type: string
           enum: [dns, tls_sni]
@@ -1633,11 +1637,14 @@ components:
       type: object
       required:
         [action, transport, address, prefix_length, port, scope, attribution,
-         enabled]
+         enabled, enforcement]
       properties:
         action:
           type: string
           enum: [allow, block]
+        enforcement:
+          type: string
+          enum: [enforce, observe]
         transport:
           type: string
           enum: [any, tcp, udp]
@@ -1737,6 +1744,7 @@ components:
         - name
         - format
         - mode
+        - enforcement
         - url
         - signature_url
         - enabled
@@ -1761,6 +1769,9 @@ components:
         mode:
           type: string
           enum: [strict, tolerant]
+        enforcement:
+          type: string
+          enum: [enforce, observe]
         url:
           type: [string, 'null']
           format: uri

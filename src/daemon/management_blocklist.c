@@ -83,6 +83,14 @@ static const char *blocklist_health_name(
     }
 }
 
+/** @brief Return the stable external name for one enforcement mode. */
+static const char *enforcement_name(enum jg_policy_enforcement enforcement)
+{
+    return enforcement == JG_POLICY_ENFORCE
+               ? "enforce"
+               : (enforcement == JG_POLICY_OBSERVE ? "observe" : NULL);
+}
+
 /** @brief Encode one optional fixed-size digest as lowercase hexadecimal. */
 static json_t *optional_digest_json(const uint8_t *digest,
                                     size_t digest_size,
@@ -107,6 +115,7 @@ static json_t *blocklist_source_json(
     const char *format = blocklist_format_name(source->format);
     const char *mode = blocklist_mode_name(source->mode);
     const char *health = blocklist_health_name(source->health);
+    const char *enforcement = enforcement_name(source->enforcement);
     json_t *body = json_object();
     json_t *sha256_pin = optional_digest_json(
         source->sha256_pin, sizeof(source->sha256_pin), source->has_sha256_pin);
@@ -118,8 +127,9 @@ static json_t *blocklist_source_json(
         source->has_active_checksum);
     int result = 0;
 
-    if (format == NULL || mode == NULL || health == NULL || body == NULL ||
-        sha256_pin == NULL || public_key == NULL || active_checksum == NULL) {
+    if (format == NULL || mode == NULL || health == NULL ||
+        enforcement == NULL || body == NULL || sha256_pin == NULL ||
+        public_key == NULL || active_checksum == NULL) {
         result = -ENOMEM;
     }
     if (result == 0 &&
@@ -144,6 +154,8 @@ static json_t *blocklist_source_json(
                                  : json_string(source->signature_url)) != 0 ||
          json_object_set_new(body, "format", json_string(format)) != 0 ||
          json_object_set_new(body, "mode", json_string(mode)) != 0 ||
+         json_object_set_new(body, "enforcement", json_string(enforcement)) !=
+             0 ||
          json_object_set_new(body, "enabled", json_boolean(source->enabled)) !=
              0 ||
          json_object_set_new(
@@ -252,6 +264,24 @@ static bool parse_blocklist_mode(const char *text, enum jg_blocklist_mode *mode)
     return true;
 }
 
+/** @brief Parse one optional source enforcement mode. */
+static bool parse_source_enforcement(const char *text,
+                                     enum jg_policy_enforcement *enforcement)
+{
+    if (text == NULL || enforcement == NULL) {
+        return false;
+    }
+    if (text[0U] == '\0' || strcmp(text, "enforce") == 0) {
+        *enforcement = JG_POLICY_ENFORCE;
+        return true;
+    }
+    if (strcmp(text, "observe") == 0) {
+        *enforcement = JG_POLICY_OBSERVE;
+        return true;
+    }
+    return false;
+}
+
 /** @brief Parse one complete create or replacement source request. */
 static int parse_blocklist_source_request(
     json_t *body,
@@ -266,6 +296,7 @@ static int parse_blocklist_source_request(
         "signature_url",
         "format",
         "mode",
+        "enforcement",
         "enabled",
         "update_interval_seconds",
         "max_download_bytes",
@@ -280,6 +311,7 @@ static int parse_blocklist_source_request(
     };
     const char *format = NULL;
     const char *mode = NULL;
+    const char *enforcement = NULL;
     uint64_t update_interval = 0U;
     uint64_t max_download = 0U;
     uint64_t max_decompressed = 0U;
@@ -295,6 +327,7 @@ static int parse_blocklist_source_request(
         required_string(body, "name", 1U, JG_DATABASE_BLOCKLIST_NAME_MAX);
     format = required_string(body, "format", 3U, 8U);
     mode = required_string(body, "mode", 6U, 8U);
+    enforcement = optional_string(body, "enforcement", 7U);
     if (!fields_allowed(body, fields, sizeof(fields) / sizeof(fields[0U])) ||
         config->name == NULL ||
         !required_nullable_string(body, "url", JG_DATABASE_BLOCKLIST_URL_MAX,
@@ -304,6 +337,7 @@ static int parse_blocklist_source_request(
                                   &config->signature_url) ||
         !parse_blocklist_format(format, &config->format) ||
         !parse_blocklist_mode(mode, &config->mode) ||
+        !parse_source_enforcement(enforcement, &config->enforcement) ||
         !required_boolean(body, "enabled", &config->enabled) ||
         !required_unsigned(body, "update_interval_seconds", (uint64_t)INT64_MAX,
                            &update_interval) ||

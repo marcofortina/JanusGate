@@ -101,6 +101,19 @@ function scopeText(scope) {
 }
 
 /**
+ * Keep observe-only available only for blocking rules.
+ */
+function updateRuleEnforcement(form, actionName, enforcementName) {
+  const enforcement = form.elements[enforcementName];
+  const blocking = form.elements[actionName].value === "block";
+
+  if (!blocking) {
+    enforcement.value = "enforce";
+  }
+  enforcement.disabled = !blocking;
+}
+
+/**
  * Create one compact row-action button.
  */
 function actionButton(label, action, danger = false) {
@@ -142,7 +155,7 @@ function renderDomains() {
       tableCell(rule.id),
       tableCell(rule.domain),
       tableCell(rule.include_subdomains ? "Suffix" : "Exact"),
-      tableCell(`${rule.action} · ${rule.target}`),
+      tableCell(`${rule.action} · ${rule.target} · ${rule.enforcement}`),
       tableCell(scopeText(rule.scope)),
       tableCell(rule.attribution),
       tableCell(rule.enabled ? "Enabled" : "Disabled"),
@@ -186,7 +199,7 @@ function renderDestinations() {
       tableCell(rule.id),
       tableCell(destination),
       tableCell(rule.transport),
-      tableCell(rule.action),
+      tableCell(`${rule.action} · ${rule.enforcement}`),
       tableCell(scopeText(rule.scope)),
       tableCell(rule.attribution),
       tableCell(rule.enabled ? "Enabled" : "Disabled"),
@@ -236,6 +249,7 @@ function resetDomainForm() {
   byId("domain-submit").textContent = "Add rule";
   byId("domain-cancel").hidden = true;
   updateScopeFields(form, "domain");
+  updateRuleEnforcement(form, "action", "domain_enforcement");
 }
 
 /**
@@ -247,11 +261,13 @@ function editDomain(rule) {
   editingDomain = rule;
   form.elements.domain.value = rule.domain;
   form.elements.action.value = rule.action;
+  form.elements.domain_enforcement.value = rule.enforcement;
   form.elements.target.value = rule.target;
   form.elements.include_subdomains.checked = rule.include_subdomains;
   form.elements.attribution.value = rule.attribution;
   form.elements.domain_enabled.checked = rule.enabled;
   populateScope(form, "domain", rule.scope);
+  updateRuleEnforcement(form, "action", "domain_enforcement");
   byId("domain-form-title").textContent = `Edit domain rule ${rule.id}`;
   byId("domain-submit").textContent = "Save rule";
   byId("domain-cancel").hidden = false;
@@ -268,6 +284,7 @@ async function submitDomain(event) {
   const body = {
     domain: String(form.elements.domain.value),
     action: String(form.elements.action.value),
+    enforcement: String(form.elements.domain_enforcement.value),
     target: String(form.elements.target.value),
     include_subdomains: form.elements.include_subdomains.checked,
     scope: scopeFromForm(form, "domain"),
@@ -341,6 +358,11 @@ function resetDestinationForm() {
   byId("destination-submit").textContent = "Add rule";
   byId("destination-cancel").hidden = true;
   updateScopeFields(form, "destination");
+  updateRuleEnforcement(
+    form,
+    "destination_action",
+    "destination_enforcement",
+  );
 }
 
 /**
@@ -351,6 +373,7 @@ function editDestination(rule) {
 
   editingDestination = rule;
   form.elements.destination_action.value = rule.action;
+  form.elements.destination_enforcement.value = rule.enforcement;
   form.elements.transport.value = rule.transport;
   form.elements.address.value = rule.address ?? "";
   form.elements.prefix_length.value = rule.prefix_length ?? "";
@@ -358,6 +381,11 @@ function editDestination(rule) {
   form.elements.destination_attribution.value = rule.attribution;
   form.elements.destination_enabled.checked = rule.enabled;
   populateScope(form, "destination", rule.scope);
+  updateRuleEnforcement(
+    form,
+    "destination_action",
+    "destination_enforcement",
+  );
   byId("destination-form-title").textContent =
     `Edit destination rule ${rule.id}`;
   byId("destination-submit").textContent = "Save rule";
@@ -393,6 +421,7 @@ async function submitDestination(event) {
   }
   const body = {
     action: String(form.elements.destination_action.value),
+    enforcement: String(form.elements.destination_enforcement.value),
     transport: String(form.elements.transport.value),
     address: address.length === 0 ? null : address,
     prefix_length: address.length === 0
@@ -546,9 +575,26 @@ export function initialize() {
   }
   initialized = true;
   byId("domain-rule-form").addEventListener("submit", submitDomain);
+  byId("domain-rule-form").elements.action.addEventListener("change", () => {
+    updateRuleEnforcement(
+      byId("domain-rule-form"),
+      "action",
+      "domain_enforcement",
+    );
+  });
   byId("destination-rule-form").addEventListener(
     "submit",
     submitDestination,
+  );
+  byId("destination-rule-form").elements.destination_action.addEventListener(
+    "change",
+    () => {
+      updateRuleEnforcement(
+        byId("destination-rule-form"),
+        "destination_action",
+        "destination_enforcement",
+      );
+    },
   );
   byId("policy-simulation-form").addEventListener("submit", simulatePolicy);
   byId("domain-cancel").addEventListener("click", resetDomainForm);

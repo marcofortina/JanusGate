@@ -24,6 +24,7 @@ const sourceFields = [
   "name",
   "format",
   "mode",
+  "enforcement",
   "url",
   "signature_url",
   "enabled",
@@ -78,6 +79,7 @@ function sourceFromForm() {
     name: String(form.elements.source_name.value),
     format: String(form.elements.source_format.value),
     mode: String(form.elements.source_mode.value),
+    enforcement: String(form.elements.source_enforcement.value),
     url: nullableText(form.elements.source_url.value),
     signature_url: nullableText(form.elements.signature_url.value),
     enabled: form.elements.source_enabled.checked,
@@ -112,6 +114,7 @@ function resetSourceForm() {
   form.reset();
   form.elements.source_format.value = "domain";
   form.elements.source_mode.value = "strict";
+  form.elements.source_enforcement.value = "enforce";
   form.elements.source_enabled.checked = true;
   form.elements.update_interval_seconds.value = "3600";
   form.elements.max_download_bytes.value = "10485760";

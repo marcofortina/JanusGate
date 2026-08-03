@@ -482,6 +482,13 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       </select>
                     </label>
                     <label>
+                      Enforcement
+                      <select name="domain_enforcement" required>
+                        <option value="enforce">Enforce</option>
+                        <option value="observe">Observe only</option>
+                      </select>
+                    </label>
+                    <label>
                       Inspection target
                       <select name="target" required>
                         <option value="dns">Classic DNS</option>
@@ -583,6 +590,13 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       <select name="destination_action" required>
                         <option value="block">Block</option>
                         <option value="allow">Allow</option>
+                      </select>
+                    </label>
+                    <label>
+                      Enforcement
+                      <select name="destination_enforcement" required>
+                        <option value="enforce">Enforce</option>
+                        <option value="observe">Observe only</option>
                       </select>
                     </label>
                     <label>
@@ -809,6 +823,13 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       <select name="source_mode" required>
                         <option value="strict">Strict</option>
                         <option value="tolerant">Tolerant</option>
+                      </select>
+                    </label>
+                    <label>
+                      Enforcement
+                      <select name="source_enforcement" required>
+                        <option value="enforce">Enforce</option>
+                        <option value="observe">Observe only</option>
                       </select>
                     </label>
                     <label class="span-two">
