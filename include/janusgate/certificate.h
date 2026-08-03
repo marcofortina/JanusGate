@@ -177,6 +177,29 @@ JG_PUBLIC int jg_certificate_trust_store_inspect_file(
     size_t *authority_count);
 
 /**
+ * @brief Export one securely installed client trust store.
+ *
+ * The complete PEM is validated before it is returned. Release the owned
+ * buffer with @ref jg_certificate_pem_clear.
+ *
+ * @param[in] path Absolute regular-file path.
+ * @param[out] pem Receives the owned PEM bytes followed by a null terminator.
+ * @param[out] pem_size Receives the exact PEM byte count.
+ *
+ * @return 0 on success.
+ * @return -ENOENT when no trust store is installed.
+ * @return -EACCES unless the file is securely owned and permissioned.
+ * @return Another result from jg_certificate_trust_store_inspect().
+ *
+ * @thread_safety This function is reentrant.
+ *
+ * @side_effects Allocates @p pem on success.
+ */
+JG_PUBLIC int jg_certificate_trust_store_export_file(const char *path,
+                                                     char **pem,
+                                                     size_t *pem_size);
+
+/**
  * @brief Validate a client certificate against the installed trust store.
  *
  * The first certificate is treated as the client leaf. Optional following

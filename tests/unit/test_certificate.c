@@ -609,12 +609,14 @@ static void test_client_trust_store(void **state)
     char copy[256U];
     char *authority = NULL;
     char *duplicate = NULL;
+    char *exported = NULL;
     char *client = NULL;
     char *client_chain = NULL;
     char *server_client = NULL;
     char *trailing = NULL;
     size_t authority_size = 0U;
     size_t client_size = 0U;
+    size_t exported_size = 0U;
     size_t server_client_size = 0U;
     size_t authority_count = 0U;
     EVP_PKEY *authority_key = NULL;
@@ -679,6 +681,14 @@ static void test_client_trust_store(void **state)
                          path, authorities, 2U, &authority_count),
                      0);
     assert_int_equal(authority_count, 1U);
+    assert_int_equal(
+        jg_certificate_trust_store_export_file(path, &exported, &exported_size),
+        0);
+    assert_int_equal(exported_size, authority_size);
+    assert_memory_equal(exported, authority, authority_size);
+    jg_certificate_pem_clear(exported, exported_size);
+    exported = NULL;
+    exported_size = 0U;
     assert_int_equal(jg_certificate_trust_store_copy(path, copy), 0);
     assert_int_equal(jg_certificate_trust_store_inspect_file(
                          copy, authorities, 2U, &authority_count),

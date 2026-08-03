@@ -860,6 +860,44 @@ int jg_certificate_trust_store_inspect_file(
     return result;
 }
 
+/** @brief Export one validated securely installed client trust store. */
+int jg_certificate_trust_store_export_file(const char *path,
+                                           char **pem,
+                                           size_t *pem_size)
+{
+    struct jg_certificate_info *authorities = NULL;
+    uint8_t *data = NULL;
+    size_t authority_count = 0U;
+    int result = 0;
+
+    if (pem == NULL || pem_size == NULL) {
+        return -EINVAL;
+    }
+    *pem = NULL;
+    *pem_size = 0U;
+    authorities = calloc(JG_CERTIFICATE_AUTHORITY_MAX, sizeof(*authorities));
+    if (authorities == NULL) {
+        return -ENOMEM;
+    }
+    result = read_secure_file(path, &data, pem_size);
+    if (result == 0) {
+        result = jg_certificate_trust_store_inspect(
+            (const char *)data, *pem_size, authorities,
+            JG_CERTIFICATE_AUTHORITY_MAX, &authority_count);
+    }
+    if (result == 0) {
+        *pem = (char *)data;
+        data = NULL;
+    }
+    if (data != NULL) {
+        sodium_memzero(data, *pem_size);
+        free(data);
+        *pem_size = 0U;
+    }
+    free(authorities);
+    return result;
+}
+
 /** @brief Verify one parsed client chain against parsed trust anchors. */
 static int verify_client_chain(STACK_OF(X509) * certificates,
                                STACK_OF(X509) * authorities,
