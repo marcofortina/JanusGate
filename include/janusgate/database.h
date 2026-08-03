@@ -32,6 +32,7 @@
 #include "janusgate/logging.h"
 #include "janusgate/network.h"
 #include "janusgate/policy.h"
+#include "janusgate/policy_stats.h"
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */

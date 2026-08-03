@@ -143,6 +143,8 @@ add_library(
   src/common/database_policy.c
   src/common/database_policy_group.c
   src/common/database_policy_mode.c
+  src/common/database_policy_retention.c
+  src/common/database_policy_stats.c
   src/common/diagnostic.c
   src/common/dns.c
   src/common/dns_policy.c
@@ -328,6 +330,7 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/network.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/packet.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/policy.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/policy_stats.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/process_security.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/tls_client_hello.h"
         "${CMAKE_CURRENT_BINARY_DIR}/include/janusgate/version.h"

@@ -1409,6 +1409,211 @@ static void test_policy_groups(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify policy-statistic aggregation and bounded detail cleanup. */
+static void test_policy_statistics(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_policy_traffic_sample traffic[2U] = {
+        {
+            .occurred_at = 3600U,
+            .path = JG_POLICY_STATS_DNS,
+            .matched = true,
+            .would_block = true,
+        },
+        {
+            .occurred_at = 5184000U,
+            .path = JG_POLICY_STATS_DNS,
+            .matched = true,
+            .would_block = true,
+            .enforced_block = true,
+        },
+    };
+    struct jg_policy_rule_sample rules[4U] = {
+        {
+            .occurred_at = 3600U,
+            .dimension = JG_POLICY_STATS_DOMAIN,
+            .rule_id = 10U,
+            .path = JG_POLICY_STATS_DNS,
+            .domain = "blocked.example",
+            .query_type = 1U,
+            .decision = true,
+            .would_block = true,
+        },
+        {
+            .occurred_at = 5184000U,
+            .dimension = JG_POLICY_STATS_DOMAIN,
+            .rule_id = 10U,
+            .path = JG_POLICY_STATS_DNS,
+            .domain = "blocked.example",
+            .query_type = 1U,
+            .decision = true,
+            .would_block = true,
+            .enforced_block = true,
+        },
+        {
+            .occurred_at = 5184000U,
+            .dimension = JG_POLICY_STATS_DOMAIN,
+            .rule_id = 11U,
+            .path = JG_POLICY_STATS_DNS,
+            .domain = "allowed.example",
+            .query_type = 28U,
+            .decision = true,
+            .allow_decision = true,
+        },
+        {
+            .occurred_at = 5184000U,
+            .dimension = JG_POLICY_STATS_DESTINATION,
+            .rule_id = 20U,
+            .path = JG_POLICY_STATS_NETWORK_DESTINATION,
+            .domain = "",
+            .would_block = true,
+            .shadowed = true,
+        },
+    };
+    struct jg_policy_rule_sample invalid_rule;
+    struct jg_policy_traffic_sample invalid_traffic;
+    struct jg_policy_stats_config config;
+    struct jg_policy_traffic_stats traffic_stats;
+    struct jg_policy_rule_stats rule_stats[2U];
+    struct jg_policy_stats_cleanup_report report;
+    struct jg_database *database = NULL;
+    size_t count = 0U;
+    bool has_more = false;
+
+    (void)state;
+    rules[0U].client.has_mac = true;
+    rules[0U].client.mac[0U] = 0x02U;
+    rules[0U].client.address_family = JG_POLICY_ADDRESS_IPV4;
+    rules[0U].client.address[0U] = 192U;
+    rules[0U].client.address[1U] = 0U;
+    rules[0U].client.address[2U] = 2U;
+    rules[0U].client.address[3U] = 10U;
+    rules[0U].client.has_vlan = true;
+    rules[0U].client.vlan_id = 30U;
+    rules[1U].client = rules[0U].client;
+    rules[2U].client = rules[0U].client;
+    rules[3U].client = rules[0U].client;
+
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_database_load_policy_traffic_stats(database, &traffic_stats),
+        -ENOENT);
+    assert_int_equal(jg_database_load_policy_stats_config(database, &config),
+                     0);
+    assert_true(config.retention_enabled);
+    assert_int_equal(config.retention_months,
+                     JG_POLICY_STATS_RETENTION_DEFAULT);
+    assert_int_equal(config.revision, 1U);
+    assert_int_equal(jg_database_update_policy_stats_config(database, true, 1U,
+                                                            config.revision,
+                                                            7000000U, &config),
+                     0);
+    assert_int_equal(config.retention_months, 1U);
+    assert_int_equal(config.revision, 2U);
+    assert_int_equal(config.updated_at, 7000000U);
+    assert_int_equal(jg_database_update_policy_stats_config(
+                         database, true, 1U, 1U, 7000001U, &config),
+                     -EAGAIN);
+    assert_int_equal(jg_database_update_policy_stats_config(
+                         database, true, 0U, 2U, 7000001U, &config),
+                     -EINVAL);
+
+    assert_int_equal(
+        jg_database_record_policy_stats(database, traffic, 2U, rules, 4U), 0);
+    assert_int_equal(
+        jg_database_load_policy_traffic_stats(database, &traffic_stats), 0);
+    assert_int_equal(traffic_stats.request_count, 2U);
+    assert_int_equal(traffic_stats.matched_count, 2U);
+    assert_int_equal(traffic_stats.would_block_count, 2U);
+    assert_int_equal(traffic_stats.enforced_block_count, 1U);
+    assert_int_equal(traffic_stats.first_request_at, 3600U);
+    assert_int_equal(traffic_stats.last_request_at, 5184000U);
+    assert_int_equal(
+        jg_database_list_policy_rule_stats(database, JG_POLICY_STATS_DOMAIN, 0U,
+                                           2U, rule_stats, &count, &has_more),
+        0);
+    assert_int_equal(count, 2U);
+    assert_false(has_more);
+    assert_int_equal(rule_stats[0U].rule_id, 10U);
+    assert_int_equal(rule_stats[0U].match_count, 2U);
+    assert_int_equal(rule_stats[0U].decision_count, 2U);
+    assert_int_equal(rule_stats[0U].would_block_count, 2U);
+    assert_int_equal(rule_stats[0U].enforced_block_count, 1U);
+    assert_int_equal(rule_stats[0U].allow_decision_count, 0U);
+    assert_int_equal(rule_stats[0U].shadowed_count, 0U);
+    assert_int_equal(rule_stats[0U].first_hit_at, 3600U);
+    assert_int_equal(rule_stats[0U].last_hit_at, 5184000U);
+    assert_int_equal(rule_stats[1U].rule_id, 11U);
+    assert_int_equal(rule_stats[1U].match_count, 1U);
+    assert_int_equal(rule_stats[1U].allow_decision_count, 1U);
+    assert_int_equal(jg_database_list_policy_rule_stats(
+                         database, JG_POLICY_STATS_DESTINATION, 0U, 1U,
+                         rule_stats, &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(rule_stats[0U].rule_id, 20U);
+    assert_int_equal(rule_stats[0U].decision_count, 0U);
+    assert_int_equal(rule_stats[0U].shadowed_count, 1U);
+
+    invalid_traffic = traffic[1U];
+    invalid_traffic.would_block = false;
+    assert_int_equal(jg_database_record_policy_stats(database, &invalid_traffic,
+                                                     1U, NULL, 0U),
+                     -EINVAL);
+    invalid_rule = rules[0U];
+    invalid_rule.shadowed = true;
+    assert_int_equal(
+        jg_database_record_policy_stats(database, NULL, 0U, &invalid_rule, 1U),
+        -EINVAL);
+    assert_int_equal(
+        jg_database_record_policy_stats(database, NULL, 0U, NULL, 0U), -EINVAL);
+
+    assert_int_equal(
+        jg_database_preview_policy_stats_cleanup(database, 7776000U, &report),
+        0);
+    assert_int_equal(report.cutoff_at, 5097600U);
+    assert_int_equal(report.impact_rows, 1U);
+    assert_int_equal(report.traffic_rows, 1U);
+    assert_false(report.complete);
+    assert_int_equal(
+        jg_database_cleanup_policy_stats(database, 7776000U, 1U, &report), 0);
+    assert_int_equal(report.deleted_impact_rows, 1U);
+    assert_int_equal(report.deleted_traffic_rows, 0U);
+    assert_false(report.complete);
+    assert_int_equal(row_count(database->handle, "policy_impact_buckets"), 3U);
+    assert_int_equal(row_count(database->handle, "policy_traffic_buckets"), 2U);
+    assert_int_equal(
+        jg_database_cleanup_policy_stats(database, 7776000U, 1U, &report), 0);
+    assert_int_equal(report.deleted_impact_rows, 0U);
+    assert_int_equal(report.deleted_traffic_rows, 1U);
+    assert_true(report.complete);
+    assert_int_equal(row_count(database->handle, "policy_impact_buckets"), 3U);
+    assert_int_equal(row_count(database->handle, "policy_traffic_buckets"), 1U);
+    assert_int_equal(jg_database_load_policy_stats_config(database, &config),
+                     0);
+    assert_int_equal(config.last_cleanup_at, 7776000U);
+    assert_int_equal(
+        jg_database_load_policy_traffic_stats(database, &traffic_stats), 0);
+    assert_int_equal(traffic_stats.request_count, 2U);
+    assert_int_equal(
+        jg_database_list_policy_rule_stats(database, JG_POLICY_STATS_DOMAIN, 0U,
+                                           2U, rule_stats, &count, &has_more),
+        0);
+    assert_int_equal(rule_stats[0U].match_count, 2U);
+
+    assert_int_equal(
+        jg_database_cleanup_policy_stats(database, 7776000U, 0U, &report),
+        -EINVAL);
+    assert_int_equal(jg_database_list_policy_rule_stats(
+                         database, (enum jg_policy_stats_dimension)99, 0U, 1U,
+                         rule_stats, &count, &has_more),
+                     -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify atomic policy replacement and immutable snapshot loading. */
 static void test_policy_round_trip(void **state)
 {
@@ -2461,6 +2666,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_modes),
         cmocka_unit_test(test_policy_groups),
+        cmocka_unit_test(test_policy_statistics),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),
