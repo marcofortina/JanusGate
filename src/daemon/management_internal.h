@@ -404,6 +404,12 @@ bool required_identifier(const json_t *object,
                          const char *name,
                          uint64_t *value);
 
+/** @brief Read one required bounded nonnegative integer. */
+bool required_unsigned(const json_t *object,
+                       const char *name,
+                       uint64_t maximum,
+                       uint64_t *value);
+
 /** @brief Read one required string or explicit null from an object. */
 bool required_nullable_string(const json_t *object,
                               const char *name,
@@ -470,6 +476,36 @@ int respond_actor_error(int result,
                         uint8_t *output,
                         size_t output_size,
                         size_t *written);
+
+/** @brief Add one nonnegative runtime counter to a JSON object. */
+int set_counter(json_t *object, const char *name, uint64_t value);
+
+/** @brief Return persistent logging configuration and runtime counters. */
+int handle_logging_get(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Persist, audit, and activate logging configuration. */
+int handle_logging_update(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written);
+
+/** @brief Return the bounded in-memory diagnostic trace window. */
+int handle_logging_traces(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written);
 
 /** @brief Reconcile shared health with persistent policy publication state. */
 void refresh_policy_sync_health(struct jg_management *management);
