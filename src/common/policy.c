@@ -22,6 +22,7 @@ struct build_rule {
     char *attribution;
     bool include_subdomains;
     enum jg_policy_effect effect;
+    enum jg_policy_enforcement enforcement;
     enum jg_policy_source source;
     enum jg_policy_domain_target target;
     struct jg_policy_scope scope;
@@ -32,6 +33,7 @@ struct build_destination_rule {
     uint64_t id;
     char *attribution;
     enum jg_policy_effect effect;
+    enum jg_policy_enforcement enforcement;
     enum jg_policy_source source;
     enum jg_policy_transport transport;
     bool has_address;
@@ -51,6 +53,7 @@ struct stored_rule {
     uint8_t priority;
     bool include_subdomains;
     enum jg_policy_effect effect;
+    enum jg_policy_enforcement enforcement;
     enum jg_policy_source source;
     enum jg_policy_domain_target target;
     struct jg_policy_scope scope;
@@ -62,6 +65,7 @@ struct stored_destination_rule {
     uint32_t attribution_offset;
     uint8_t priority;
     enum jg_policy_effect effect;
+    enum jg_policy_enforcement enforcement;
     enum jg_policy_source source;
     enum jg_policy_transport transport;
     bool has_address;
@@ -143,10 +147,19 @@ static bool effect_source_valid(enum jg_policy_effect effect,
     }
 }
 
+/** @brief Validate whether one action can use the requested enforcement. */
+static bool enforcement_valid(enum jg_policy_effect effect,
+                              enum jg_policy_enforcement enforcement)
+{
+    return enforcement == JG_POLICY_ENFORCE ||
+           (enforcement == JG_POLICY_OBSERVE && effect == JG_POLICY_BLOCK);
+}
+
 /** @brief Validate a domain rule class and matching target. */
 static bool rule_class_valid(const struct jg_policy_rule_input *rule)
 {
-    if (!effect_source_valid(rule->effect, rule->source)) {
+    if (!effect_source_valid(rule->effect, rule->source) ||
+        !enforcement_valid(rule->effect, rule->enforcement)) {
         return false;
     }
     if (rule->target != JG_POLICY_DOMAIN_DNS &&
@@ -339,6 +352,9 @@ static int build_rule_compare(const void *left_value, const void *right_value)
     if (left->effect != right->effect) {
         return left->effect < right->effect ? -1 : 1;
     }
+    if (left->enforcement != right->enforcement) {
+        return left->enforcement < right->enforcement ? -1 : 1;
+    }
     result = scope_compare(&left->scope, &right->scope);
     if (result != 0) {
         return result;
@@ -364,6 +380,7 @@ static bool build_rule_same_content(const struct build_rule *left,
            left->include_subdomains == right->include_subdomains &&
            left->target == right->target && left->source == right->source &&
            left->effect == right->effect &&
+           left->enforcement == right->enforcement &&
            scope_compare(&left->scope, &right->scope) == 0 &&
            strcmp(left->attribution, right->attribution) == 0;
 }
@@ -453,6 +470,7 @@ static int prepare_rules(const struct jg_policy_rule_input *input,
         cursor += source_size;
         build[index].include_subdomains = input[index].include_subdomains;
         build[index].effect = input[index].effect;
+        build[index].enforcement = input[index].enforcement;
         build[index].source = input[index].source;
         build[index].target = input[index].target;
         (void)scope_normalize(&input[index].scope, &build[index].scope);
@@ -499,6 +517,9 @@ static int destination_rule_compare(const void *left_value,
     if (left->effect != right->effect) {
         return left->effect < right->effect ? -1 : 1;
     }
+    if (left->enforcement != right->enforcement) {
+        return left->enforcement < right->enforcement ? -1 : 1;
+    }
     result = scope_compare(&left->scope, &right->scope);
     if (result != 0) {
         return result;
@@ -525,6 +546,7 @@ static bool destination_rule_same_content(
            left->has_port == right->has_port && left->port == right->port &&
            left->transport == right->transport &&
            left->source == right->source && left->effect == right->effect &&
+           left->enforcement == right->enforcement &&
            scope_compare(&left->scope, &right->scope) == 0 &&
            strcmp(left->attribution, right->attribution) == 0;
 }
@@ -563,6 +585,7 @@ static int prepare_destination_rules(
 
         if (input[index].id == 0U ||
             !effect_source_valid(input[index].effect, input[index].source) ||
+            !enforcement_valid(input[index].effect, input[index].enforcement) ||
             (input[index].transport != JG_POLICY_TRANSPORT_ANY &&
              input[index].transport != JG_POLICY_TRANSPORT_TCP &&
              input[index].transport != JG_POLICY_TRANSPORT_UDP) ||
@@ -594,6 +617,7 @@ static int prepare_destination_rules(
 
         build[index].id = input[index].id;
         build[index].effect = input[index].effect;
+        build[index].enforcement = input[index].enforcement;
         build[index].source = input[index].source;
         build[index].transport = input[index].transport;
         build[index].has_port = input[index].has_port;
@@ -735,7 +759,7 @@ static void checksum_scope(crypto_hash_sha256_state *state,
 /** Compute the canonical digest independently of random table placement. */
 static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
 {
-    static const uint8_t format[] = "JanusGate policy snapshot 3";
+    static const uint8_t format[] = "JanusGate policy snapshot 4";
     crypto_hash_sha256_state state;
     size_t index = 0U;
 
@@ -747,6 +771,7 @@ static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
         const struct stored_rule *rule = &snapshot->rules[index];
         const uint8_t include_subdomains = rule->include_subdomains ? 1U : 0U;
         const uint8_t effect = (uint8_t)rule->effect;
+        const uint8_t enforcement = (uint8_t)rule->enforcement;
         const uint8_t source = (uint8_t)rule->source;
         const uint8_t target = (uint8_t)rule->target;
 
@@ -754,6 +779,7 @@ static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
         checksum_string(&state, snapshot->strings + rule->domain_offset);
         (void)crypto_hash_sha256_update(&state, &include_subdomains, 1U);
         (void)crypto_hash_sha256_update(&state, &effect, 1U);
+        (void)crypto_hash_sha256_update(&state, &enforcement, 1U);
         (void)crypto_hash_sha256_update(&state, &source, 1U);
         (void)crypto_hash_sha256_update(&state, &target, 1U);
         checksum_scope(&state, &rule->scope);
@@ -763,6 +789,7 @@ static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
         const struct stored_destination_rule *rule =
             &snapshot->destination_rules[index];
         const uint8_t effect = (uint8_t)rule->effect;
+        const uint8_t enforcement = (uint8_t)rule->enforcement;
         const uint8_t source = (uint8_t)rule->source;
         const uint8_t transport = (uint8_t)rule->transport;
         const uint8_t has_address = rule->has_address ? 1U : 0U;
@@ -773,6 +800,7 @@ static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
 
         checksum_u64(&state, rule->id);
         (void)crypto_hash_sha256_update(&state, &effect, 1U);
+        (void)crypto_hash_sha256_update(&state, &enforcement, 1U);
         (void)crypto_hash_sha256_update(&state, &source, 1U);
         (void)crypto_hash_sha256_update(&state, &transport, 1U);
         (void)crypto_hash_sha256_update(&state, &has_address, 1U);
@@ -852,6 +880,7 @@ static int snapshot_populate(struct jg_policy_snapshot *snapshot,
             rules[index].effect, rules[index].source, rules[index].scope.type);
         stored->include_subdomains = rules[index].include_subdomains;
         stored->effect = rules[index].effect;
+        stored->enforcement = rules[index].enforcement;
         stored->source = rules[index].source;
         stored->target = rules[index].target;
         stored->scope = rules[index].scope;
@@ -952,6 +981,7 @@ static int snapshot_populate_destinations(
         stored->priority = policy_priority(
             rules[index].effect, rules[index].source, rules[index].scope.type);
         stored->effect = rules[index].effect;
+        stored->enforcement = rules[index].enforcement;
         stored->source = rules[index].source;
         stored->transport = rules[index].transport;
         stored->has_address = rules[index].has_address;
@@ -1170,23 +1200,34 @@ static bool scope_matches(const struct jg_policy_scope *scope,
     }
 }
 
+/** @brief Decide whether a rule outranks another rule in the same group. */
+static bool domain_rule_precedes(const struct stored_rule *candidate,
+                                 const struct stored_rule *current)
+{
+    return current == NULL || candidate->priority > current->priority ||
+           (candidate->priority == current->priority &&
+            candidate->id < current->id);
+}
+
 /**
- * @brief Select the highest-priority eligible rule in one domain group.
+ * @brief Select theoretical and enforcing winners in one domain group.
  *
  * Equal-precedence rules are resolved by their stable identifier.
  */
-static const struct stored_rule *match_slot(
-    const struct jg_policy_snapshot *snapshot,
-    const struct policy_slot *slot,
-    const struct jg_policy_client *client,
-    bool exact_domain,
-    enum jg_policy_domain_target target)
+static void match_slot(const struct jg_policy_snapshot *snapshot,
+                       const struct policy_slot *slot,
+                       const struct jg_policy_client *client,
+                       bool exact_domain,
+                       enum jg_policy_domain_target target,
+                       const struct stored_rule **selected,
+                       const struct stored_rule **enforcing)
 {
-    const struct stored_rule *best = NULL;
     size_t index = 0U;
 
+    *selected = NULL;
+    *enforcing = NULL;
     if (slot == NULL) {
-        return NULL;
+        return;
     }
     for (index = 0U; index < (size_t)slot->rule_count; ++index) {
         const struct stored_rule *rule =
@@ -1197,12 +1238,14 @@ static const struct stored_rule *match_slot(
             !scope_matches(&rule->scope, client)) {
             continue;
         }
-        if (best == NULL || rule->priority > best->priority ||
-            (rule->priority == best->priority && rule->id < best->id)) {
-            best = rule;
+        if (domain_rule_precedes(rule, *selected)) {
+            *selected = rule;
+        }
+        if (rule->enforcement == JG_POLICY_ENFORCE &&
+            domain_rule_precedes(rule, *enforcing)) {
+            *enforcing = rule;
         }
     }
-    return best;
 }
 
 /** @brief Match one normalized domain in a selected protocol context. */
@@ -1212,7 +1255,8 @@ static int match_domain_target(const struct jg_policy_snapshot *snapshot,
                                enum jg_policy_domain_target target,
                                struct jg_policy_match *match)
 {
-    const struct stored_rule *best = NULL;
+    const struct stored_rule *selected = NULL;
+    const struct stored_rule *enforcing = NULL;
     const char *candidate = domain;
     bool exact_domain = true;
 
@@ -1223,28 +1267,50 @@ static int match_domain_target(const struct jg_policy_snapshot *snapshot,
 
     (void)memset(match, 0, sizeof(*match));
     match->effect = JG_POLICY_ALLOW;
+    match->configured_effect = JG_POLICY_ALLOW;
+    match->enforcement = JG_POLICY_ENFORCE;
     while (candidate != NULL) {
         const struct policy_slot *slot = find_slot(snapshot, candidate);
-        const struct stored_rule *current =
-            match_slot(snapshot, slot, client, exact_domain, target);
+        const struct stored_rule *current_selected = NULL;
+        const struct stored_rule *current_enforcing = NULL;
         const char *separator = NULL;
 
-        if (current != NULL &&
-            (best == NULL || current->priority > best->priority)) {
-            best = current;
+        match_slot(snapshot, slot, client, exact_domain, target,
+                   &current_selected, &current_enforcing);
+        if (current_selected != NULL &&
+            (selected == NULL ||
+             current_selected->priority > selected->priority)) {
+            selected = current_selected;
+        }
+        if (current_enforcing != NULL &&
+            (enforcing == NULL ||
+             current_enforcing->priority > enforcing->priority)) {
+            enforcing = current_enforcing;
         }
         separator = strchr(candidate, '.');
         candidate = separator == NULL ? NULL : separator + 1;
         exact_domain = false;
     }
 
-    if (best != NULL) {
-        match->effect = best->effect;
+    if (selected != NULL) {
+        match->configured_effect = selected->effect;
+        match->enforcement = selected->enforcement;
+        match->would_have_blocked = selected->effect == JG_POLICY_BLOCK &&
+                                    selected->enforcement == JG_POLICY_OBSERVE;
         match->matched = true;
-        match->rule_id = best->id;
-        match->source = best->source;
-        match->domain = snapshot->strings + best->domain_offset;
-        match->attribution = snapshot->strings + best->attribution_offset;
+        match->rule_id = selected->id;
+        match->source = selected->source;
+        match->domain = snapshot->strings + selected->domain_offset;
+        match->attribution = snapshot->strings + selected->attribution_offset;
+    }
+    if (enforcing != NULL) {
+        match->effect = enforcing->effect;
+        match->enforcing_matched = true;
+        match->enforcing_rule_id = enforcing->id;
+        match->enforcing_source = enforcing->source;
+        match->enforcing_domain = snapshot->strings + enforcing->domain_offset;
+        match->enforcing_attribution =
+            snapshot->strings + enforcing->attribution_offset;
     }
     return 0;
 }
@@ -1320,13 +1386,32 @@ static uint16_t destination_rule_specificity(
     return specificity;
 }
 
+/** @brief Decide whether one matching destination rule outranks another. */
+static bool destination_rule_precedes(
+    const struct stored_destination_rule *candidate,
+    const struct stored_destination_rule *current)
+{
+    const uint16_t candidate_specificity =
+        destination_rule_specificity(candidate);
+    const uint16_t current_specificity =
+        current == NULL ? 0U : destination_rule_specificity(current);
+
+    return current == NULL || candidate->priority > current->priority ||
+           (candidate->priority == current->priority &&
+            candidate_specificity > current_specificity) ||
+           (candidate->priority == current->priority &&
+            candidate_specificity == current_specificity &&
+            candidate->id < current->id);
+}
+
 /** @brief Match immutable destination rules using policy precedence. */
 int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
                                 const struct jg_policy_destination *destination,
                                 const struct jg_policy_client *client,
                                 struct jg_policy_destination_match *match)
 {
-    const struct stored_destination_rule *best = NULL;
+    const struct stored_destination_rule *selected = NULL;
+    const struct stored_destination_rule *enforcing = NULL;
     size_t index = 0U;
 
     if (snapshot == NULL || !destination_valid(destination) ||
@@ -1335,6 +1420,8 @@ int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
     }
     (void)memset(match, 0, sizeof(*match));
     match->effect = JG_POLICY_ALLOW;
+    match->configured_effect = JG_POLICY_ALLOW;
+    match->enforcement = JG_POLICY_ENFORCE;
     for (index = 0U; index < snapshot->info.destination_rule_count; ++index) {
         const struct stored_destination_rule *current =
             &snapshot->destination_rules[index];
@@ -1342,24 +1429,32 @@ int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
         if (!destination_rule_matches(current, destination, client)) {
             continue;
         }
-        if (best == NULL || current->priority > best->priority ||
-            (current->priority == best->priority &&
-             destination_rule_specificity(current) >
-                 destination_rule_specificity(best)) ||
-            (current->priority == best->priority &&
-             destination_rule_specificity(current) ==
-                 destination_rule_specificity(best) &&
-             current->id < best->id)) {
-            best = current;
+        if (destination_rule_precedes(current, selected)) {
+            selected = current;
+        }
+        if (current->enforcement == JG_POLICY_ENFORCE &&
+            destination_rule_precedes(current, enforcing)) {
+            enforcing = current;
         }
     }
-    if (best != NULL) {
-        match->effect = best->effect;
+    if (selected != NULL) {
+        match->configured_effect = selected->effect;
+        match->enforcement = selected->enforcement;
+        match->would_have_blocked = selected->effect == JG_POLICY_BLOCK &&
+                                    selected->enforcement == JG_POLICY_OBSERVE;
         match->matched = true;
-        match->rule_id = best->id;
-        match->source = best->source;
+        match->rule_id = selected->id;
+        match->source = selected->source;
         match->attribution =
-            snapshot->destination_strings + best->attribution_offset;
+            snapshot->destination_strings + selected->attribution_offset;
+    }
+    if (enforcing != NULL) {
+        match->effect = enforcing->effect;
+        match->enforcing_matched = true;
+        match->enforcing_rule_id = enforcing->id;
+        match->enforcing_source = enforcing->source;
+        match->enforcing_attribution =
+            snapshot->destination_strings + enforcing->attribution_offset;
     }
     return 0;
 }
@@ -1384,6 +1479,9 @@ static void copy_domain_simulation(
     struct jg_policy_simulation_match *simulation)
 {
     simulation->effect = match->effect;
+    simulation->configured_effect = match->configured_effect;
+    simulation->enforcement = match->enforcement;
+    simulation->would_have_blocked = match->would_have_blocked;
     simulation->matched = match->matched;
     simulation->rule_id = match->rule_id;
     simulation->source = match->source;
@@ -1391,6 +1489,15 @@ static void copy_domain_simulation(
                          match->domain);
     copy_simulation_text(simulation->attribution,
                          sizeof(simulation->attribution), match->attribution);
+    simulation->enforcing_matched = match->enforcing_matched;
+    simulation->enforcing_rule_id = match->enforcing_rule_id;
+    simulation->enforcing_source = match->enforcing_source;
+    copy_simulation_text(simulation->enforcing_domain,
+                         sizeof(simulation->enforcing_domain),
+                         match->enforcing_domain);
+    copy_simulation_text(simulation->enforcing_attribution,
+                         sizeof(simulation->enforcing_attribution),
+                         match->enforcing_attribution);
 }
 
 /** @brief Copy one borrowed destination match into self-contained storage. */
@@ -1399,11 +1506,20 @@ static void copy_destination_simulation(
     struct jg_policy_simulation_match *simulation)
 {
     simulation->effect = match->effect;
+    simulation->configured_effect = match->configured_effect;
+    simulation->enforcement = match->enforcement;
+    simulation->would_have_blocked = match->would_have_blocked;
     simulation->matched = match->matched;
     simulation->rule_id = match->rule_id;
     simulation->source = match->source;
     copy_simulation_text(simulation->attribution,
                          sizeof(simulation->attribution), match->attribution);
+    simulation->enforcing_matched = match->enforcing_matched;
+    simulation->enforcing_rule_id = match->enforcing_rule_id;
+    simulation->enforcing_source = match->enforcing_source;
+    copy_simulation_text(simulation->enforcing_attribution,
+                         sizeof(simulation->enforcing_attribution),
+                         match->enforcing_attribution);
 }
 
 /** @brief Simulate destination and domain policy through production matchers.
@@ -1418,6 +1534,7 @@ int jg_policy_simulate(const struct jg_policy_snapshot *snapshot,
     struct jg_policy_snapshot_info info;
     struct jg_policy_destination_match destination_match;
     struct jg_policy_match domain_match;
+    bool theoretical_selected = false;
     int result = 0;
 
     if (simulation == NULL) {
@@ -1431,8 +1548,11 @@ int jg_policy_simulate(const struct jg_policy_snapshot *snapshot,
     }
     simulation->target = target;
     simulation->effect = JG_POLICY_ALLOW;
+    simulation->configured_effect = JG_POLICY_ALLOW;
     simulation->domain.effect = JG_POLICY_ALLOW;
+    simulation->domain.configured_effect = JG_POLICY_ALLOW;
     simulation->destination.effect = JG_POLICY_ALLOW;
+    simulation->destination.configured_effect = JG_POLICY_ALLOW;
     result = jg_domain_normalize(domain, simulation->normalized_domain,
                                  sizeof(simulation->normalized_domain));
     if (result == 0) {
@@ -1449,9 +1569,22 @@ int jg_policy_simulate(const struct jg_policy_snapshot *snapshot,
             copy_destination_simulation(&destination_match,
                                         &simulation->destination);
         }
+        if (result == 0 && destination_match.matched &&
+            destination_match.configured_effect == JG_POLICY_BLOCK) {
+            simulation->configured_effect = JG_POLICY_BLOCK;
+            simulation->would_have_blocked =
+                destination_match.would_have_blocked;
+            simulation->selected = JG_POLICY_MATCH_DESTINATION;
+            theoretical_selected = true;
+        }
         if (result == 0 && destination_match.effect == JG_POLICY_BLOCK) {
             simulation->effect = JG_POLICY_BLOCK;
-            simulation->selected = JG_POLICY_MATCH_DESTINATION;
+            simulation->effective_selected = JG_POLICY_MATCH_DESTINATION;
+            if (!theoretical_selected) {
+                simulation->configured_effect =
+                    destination_match.configured_effect;
+                simulation->selected = JG_POLICY_MATCH_DESTINATION;
+            }
             return 0;
         }
     }
@@ -1465,10 +1598,22 @@ int jg_policy_simulate(const struct jg_policy_snapshot *snapshot,
     if (result == 0) {
         copy_domain_simulation(&domain_match, &simulation->domain);
         simulation->effect = domain_match.effect;
-        if (domain_match.matched) {
+        if (!theoretical_selected && domain_match.matched) {
             simulation->selected = JG_POLICY_MATCH_DOMAIN;
-        } else if (simulation->destination.matched) {
+            simulation->configured_effect = domain_match.configured_effect;
+            simulation->would_have_blocked = domain_match.would_have_blocked;
+        } else if (!theoretical_selected && simulation->destination.matched) {
             simulation->selected = JG_POLICY_MATCH_DESTINATION;
+            simulation->configured_effect =
+                simulation->destination.configured_effect;
+            simulation->would_have_blocked =
+                simulation->destination.would_have_blocked;
+        }
+        if (domain_match.enforcing_matched) {
+            simulation->effective_selected = JG_POLICY_MATCH_DOMAIN;
+        } else if (simulation->destination.enforcing_matched) {
+            simulation->effect = simulation->destination.effect;
+            simulation->effective_selected = JG_POLICY_MATCH_DESTINATION;
         }
     }
     if (result != 0) {

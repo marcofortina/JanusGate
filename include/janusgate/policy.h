@@ -45,6 +45,16 @@ enum jg_policy_effect {
 };
 
 /**
+ * @brief Enforcement mode attached to a blocking policy rule.
+ */
+enum jg_policy_enforcement {
+    /** Apply the configured action. */
+    JG_POLICY_ENFORCE = 0,
+    /** Evaluate and report the rule without applying its block. */
+    JG_POLICY_OBSERVE = 1
+};
+
+/**
  * @brief Origin and precedence class of a policy rule.
  */
 enum jg_policy_source {
@@ -158,6 +168,8 @@ struct jg_policy_rule_input {
     bool include_subdomains;
     /** Allow or block action. */
     enum jg_policy_effect effect;
+    /** Enforce or observe; allow rules must always be enforced. */
+    enum jg_policy_enforcement enforcement;
     /** Rule origin and precedence class. */
     enum jg_policy_source source;
     /** DNS or visible TLS-SNI matching context. */
@@ -176,6 +188,8 @@ struct jg_policy_destination_rule_input {
     uint64_t id;
     /** Allow or block action. */
     enum jg_policy_effect effect;
+    /** Enforce or observe; allow rules must always be enforced. */
+    enum jg_policy_enforcement enforcement;
     /** Rule origin and precedence class. */
     enum jg_policy_source source;
     /** Any, TCP, or UDP transport selector. */
@@ -235,9 +249,15 @@ struct jg_policy_snapshot_info {
  * remain valid until that snapshot is destroyed.
  */
 struct jg_policy_match {
-    /** Final policy action. */
+    /** Effective policy action applied to traffic. */
     enum jg_policy_effect effect;
-    /** Whether a rule, rather than the default policy, selected the action. */
+    /** Action configured on the selected rule. */
+    enum jg_policy_effect configured_effect;
+    /** Enforcement mode of the selected rule. */
+    enum jg_policy_enforcement enforcement;
+    /** Whether the selected observed rule would block if enforced. */
+    bool would_have_blocked;
+    /** Whether a rule, rather than default policy, won theoretical matching. */
     bool matched;
     /** Matching rule identifier, or zero for the default action. */
     uint64_t rule_id;
@@ -247,6 +267,17 @@ struct jg_policy_match {
     const char *domain;
     /** Matching rule attribution, or null for the default action. */
     const char *attribution;
+    /** Whether an enforced rule, rather than default policy, set @ref effect.
+     */
+    bool enforcing_matched;
+    /** Enforcing rule identifier, or zero for the default action. */
+    uint64_t enforcing_rule_id;
+    /** Enforcing rule origin, or JG_POLICY_SOURCE_DEFAULT. */
+    enum jg_policy_source enforcing_source;
+    /** Enforcing normalized rule domain, or null for default policy. */
+    const char *enforcing_domain;
+    /** Enforcing rule attribution, or null for default policy. */
+    const char *enforcing_attribution;
 };
 
 /**
@@ -256,9 +287,15 @@ struct jg_policy_match {
  * that snapshot is destroyed.
  */
 struct jg_policy_destination_match {
-    /** Final policy action. */
+    /** Effective policy action applied to traffic. */
     enum jg_policy_effect effect;
-    /** Whether a rule, rather than default policy, selected the action. */
+    /** Action configured on the selected rule. */
+    enum jg_policy_effect configured_effect;
+    /** Enforcement mode of the selected rule. */
+    enum jg_policy_enforcement enforcement;
+    /** Whether the selected observed rule would block if enforced. */
+    bool would_have_blocked;
+    /** Whether a rule, rather than default policy, won theoretical matching. */
     bool matched;
     /** Matching rule identifier, or zero for default policy. */
     uint64_t rule_id;
@@ -266,6 +303,15 @@ struct jg_policy_destination_match {
     enum jg_policy_source source;
     /** Matching rule attribution, or null for default policy. */
     const char *attribution;
+    /** Whether an enforced rule, rather than default policy, set @ref effect.
+     */
+    bool enforcing_matched;
+    /** Enforcing rule identifier, or zero for the default action. */
+    uint64_t enforcing_rule_id;
+    /** Enforcing rule origin, or JG_POLICY_SOURCE_DEFAULT. */
+    enum jg_policy_source enforcing_source;
+    /** Enforcing rule attribution, or null for default policy. */
+    const char *enforcing_attribution;
 };
 
 /**
@@ -284,8 +330,14 @@ enum jg_policy_match_dimension {
  * @brief Self-contained rule explanation returned by policy simulation.
  */
 struct jg_policy_simulation_match {
-    /** Allow or block action selected by this policy dimension. */
+    /** Effective allow or block action selected by this policy dimension. */
     enum jg_policy_effect effect;
+    /** Action configured on the theoretically selected rule. */
+    enum jg_policy_effect configured_effect;
+    /** Enforcement mode of the theoretically selected rule. */
+    enum jg_policy_enforcement enforcement;
+    /** Whether the theoretically selected rule would block if enforced. */
+    bool would_have_blocked;
     /** Whether a configured rule matched. */
     bool matched;
     /** Matching stable rule identifier, or zero for the default. */
@@ -296,6 +348,17 @@ struct jg_policy_simulation_match {
     char domain[JG_DOMAIN_NAME_MAX + 1U];
     /** Matching rule attribution, empty for the default result. */
     char attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
+    /** Whether an enforced rule selected @ref effect. */
+    bool enforcing_matched;
+    /** Enforcing rule identifier, or zero for default policy. */
+    uint64_t enforcing_rule_id;
+    /** Enforcing rule origin, or JG_POLICY_SOURCE_DEFAULT. */
+    enum jg_policy_source enforcing_source;
+    /** Enforcing normalized domain, empty for destination or default results.
+     */
+    char enforcing_domain[JG_DOMAIN_NAME_MAX + 1U];
+    /** Enforcing rule attribution, empty for default policy. */
+    char enforcing_attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
 };
 
 /**
@@ -306,10 +369,16 @@ struct jg_policy_simulation {
     uint64_t generation;
     /** DNS or visible-SNI domain context. */
     enum jg_policy_domain_target target;
-    /** Final simulated action after destination and domain evaluation. */
+    /** Effective simulated action after destination and domain evaluation. */
     enum jg_policy_effect effect;
-    /** Policy dimension explaining @ref effect. */
+    /** Configured action selected before observe-only handling. */
+    enum jg_policy_effect configured_effect;
+    /** Whether the configured decision would block if enforced. */
+    bool would_have_blocked;
+    /** Policy dimension explaining @ref configured_effect. */
     enum jg_policy_match_dimension selected;
+    /** Policy dimension explaining @ref effect. */
+    enum jg_policy_match_dimension effective_selected;
     /** Canonical IDNA2008 A-label input domain. */
     char normalized_domain[JG_DOMAIN_NAME_MAX + 1U];
     /** Domain or visible-SNI rule evaluation. */

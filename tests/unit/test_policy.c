@@ -360,6 +360,103 @@ static void test_destination_policy(void **state)
     assert_null(snapshot);
 }
 
+/** @brief Verify observed rules report impact without changing enforcement. */
+static void test_observe_only_policy(void **state)
+{
+    struct jg_policy_rule_input rules[4U];
+    struct jg_policy_rule_input invalid;
+    struct jg_policy_destination_rule_input destination_rule;
+    struct jg_policy_destination destination = {
+        .transport = JG_POLICY_TRANSPORT_TCP,
+        .address_family = JG_POLICY_ADDRESS_IPV4,
+        .address = {203U, 0U, 113U, 10U},
+        .port = 443U,
+    };
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_policy_match match;
+    struct jg_policy_destination_match destination_match;
+    struct jg_policy_simulation simulation;
+
+    (void)state;
+    rules[0] = make_rule(40U, "example.org", true, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_BLOCKLIST);
+    rules[1] = make_rule(10U, "preview.example.org", false, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_EXPLICIT);
+    rules[1].enforcement = JG_POLICY_OBSERVE;
+    rules[2] = make_rule(20U, "preview.test", true, JG_POLICY_BLOCK,
+                         JG_POLICY_SOURCE_EXPLICIT);
+    rules[2].enforcement = JG_POLICY_OBSERVE;
+    rules[3] = make_rule(30U, "safe.preview.test", false, JG_POLICY_ALLOW,
+                         JG_POLICY_SOURCE_EXPLICIT);
+
+    destination_rule =
+        make_destination_rule(50U, JG_POLICY_BLOCK, JG_POLICY_SOURCE_EXPLICIT);
+    destination_rule.enforcement = JG_POLICY_OBSERVE;
+    destination_rule.has_address = true;
+    destination_rule.address_family = JG_POLICY_ADDRESS_IPV4;
+    destination_rule.address[0U] = 203U;
+    destination_rule.address[1U] = 0U;
+    destination_rule.address[2U] = 113U;
+    destination_rule.prefix_length = 24U;
+
+    assert_int_equal(jg_policy_snapshot_build_complete(
+                         rules, 4U, &destination_rule, 1U, 9U, &snapshot),
+                     0);
+
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "preview.example.org", NULL, &match),
+        0);
+    assert_true(match.matched);
+    assert_int_equal(match.rule_id, 10U);
+    assert_int_equal(match.configured_effect, JG_POLICY_BLOCK);
+    assert_int_equal(match.enforcement, JG_POLICY_OBSERVE);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_true(match.enforcing_matched);
+    assert_int_equal(match.enforcing_rule_id, 40U);
+
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "host.preview.test", NULL, &match), 0);
+    assert_int_equal(match.rule_id, 20U);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_false(match.enforcing_matched);
+
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "safe.preview.test", NULL, &match), 0);
+    assert_int_equal(match.rule_id, 30U);
+    assert_false(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(match.enforcing_rule_id, 30U);
+
+    assert_int_equal(jg_policy_match_destination(snapshot, &destination, NULL,
+                                                 &destination_match),
+                     0);
+    assert_int_equal(destination_match.rule_id, 50U);
+    assert_true(destination_match.would_have_blocked);
+    assert_int_equal(destination_match.effect, JG_POLICY_ALLOW);
+    assert_false(destination_match.enforcing_matched);
+
+    assert_int_equal(jg_policy_simulate(snapshot, JG_POLICY_DOMAIN_DNS,
+                                        "host.preview.test", NULL, &destination,
+                                        &simulation),
+                     0);
+    assert_int_equal(simulation.configured_effect, JG_POLICY_BLOCK);
+    assert_int_equal(simulation.effect, JG_POLICY_ALLOW);
+    assert_true(simulation.would_have_blocked);
+    assert_int_equal(simulation.selected, JG_POLICY_MATCH_DESTINATION);
+    assert_int_equal(simulation.effective_selected, JG_POLICY_MATCH_DEFAULT);
+
+    jg_policy_snapshot_destroy(snapshot);
+    invalid = make_rule(60U, "invalid.test", false, JG_POLICY_ALLOW,
+                        JG_POLICY_SOURCE_EXPLICIT);
+    invalid.enforcement = JG_POLICY_OBSERVE;
+    snapshot = NULL;
+    assert_int_equal(jg_policy_snapshot_build(&invalid, 1U, 1U, &snapshot),
+                     -EINVAL);
+    assert_null(snapshot);
+}
+
 /** @brief Verify simulation mirrors destination-first production matching. */
 static void test_policy_simulation(void **state)
 {
@@ -476,6 +573,7 @@ int jg_test_policy(void)
         cmocka_unit_test(test_empty_snapshot_and_invalid_rules),
         cmocka_unit_test(test_domain_target_isolation),
         cmocka_unit_test(test_destination_policy),
+        cmocka_unit_test(test_observe_only_policy),
         cmocka_unit_test(test_policy_simulation),
     };
 
