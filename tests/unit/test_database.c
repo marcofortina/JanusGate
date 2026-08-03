@@ -485,6 +485,9 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "policy_configuration"));
     assert_true(table_exists(inspection, "policy_scope_modes"));
     assert_true(table_exists(inspection, "policy_statistics_configuration"));
+    assert_true(table_exists(inspection, "alert_configuration"));
+    assert_true(table_exists(inspection, "alert_incidents"));
+    assert_true(table_exists(inspection, "alert_outbox"));
     assert_true(table_exists(inspection, "policy_rule_stats"));
     assert_true(table_exists(inspection, "policy_traffic_stats"));
     assert_true(table_exists(inspection, "policy_impact_buckets"));
@@ -2298,6 +2301,9 @@ static void test_network_configuration_migration(void **state)
         "INSERT INTO system_settings(key,value,updated_at) "
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
+        "DROP TABLE alert_outbox;"
+        "DROP TABLE alert_incidents;"
+        "DROP TABLE alert_configuration;"
         "DROP TABLE policy_traffic_buckets;"
         "DROP TABLE policy_impact_buckets;"
         "DROP TABLE policy_traffic_stats;"

@@ -49,6 +49,12 @@ static const char scrub_sensitive_data[] = "DELETE FROM web_sessions;"
                                            "DELETE FROM policy_traffic_stats;"
                                            "DELETE FROM policy_impact_buckets;"
                                            "DELETE FROM policy_traffic_buckets;"
+                                           "DELETE FROM alert_incidents;"
+                                           "DELETE FROM alert_outbox;"
+                                           "UPDATE alert_configuration SET "
+                                           "webhook_enabled=0,"
+                                           "webhook_secret_ciphertext=NULL,"
+                                           "webhook_secret_nonce=NULL;"
                                            "DELETE FROM backup_metadata;"
                                            "DELETE FROM management_operations;";
 
@@ -68,6 +74,8 @@ static const char preserve_sensitive_data[] =
     "DELETE FROM main.policy_traffic_stats;"
     "DELETE FROM main.policy_impact_buckets;"
     "DELETE FROM main.policy_traffic_buckets;"
+    "DELETE FROM main.alert_incidents;"
+    "DELETE FROM main.alert_outbox;"
     "DELETE FROM main.backup_metadata;"
     "DELETE FROM main.management_operations;"
     "INSERT INTO main.users SELECT * FROM retained.users;"
@@ -90,6 +98,21 @@ static const char preserve_sensitive_data[] =
     "SELECT * FROM retained.policy_impact_buckets;"
     "INSERT INTO main.policy_traffic_buckets "
     "SELECT * FROM retained.policy_traffic_buckets;"
+    "INSERT INTO main.alert_incidents SELECT * FROM retained.alert_incidents;"
+    "INSERT INTO main.alert_outbox SELECT * FROM retained.alert_outbox;"
+    "UPDATE main.alert_configuration SET "
+    "webhook_enabled=(SELECT webhook_enabled FROM "
+    "retained.alert_configuration WHERE id=1),"
+    "webhook_url=(SELECT webhook_url FROM retained.alert_configuration "
+    "WHERE id=1),"
+    "webhook_ca_pem=(SELECT webhook_ca_pem FROM "
+    "retained.alert_configuration WHERE id=1),"
+    "webhook_timeout_seconds=(SELECT webhook_timeout_seconds FROM "
+    "retained.alert_configuration WHERE id=1),"
+    "webhook_secret_ciphertext=(SELECT webhook_secret_ciphertext FROM "
+    "retained.alert_configuration WHERE id=1),"
+    "webhook_secret_nonce=(SELECT webhook_secret_nonce FROM "
+    "retained.alert_configuration WHERE id=1);"
     "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;"
     "INSERT INTO main.management_operations "
     "SELECT * FROM retained.management_operations;";
@@ -100,12 +123,16 @@ static const char preserve_restore_history_data[] =
     "DELETE FROM main.operational_events;"
     "DELETE FROM main.backup_metadata;"
     "DELETE FROM main.management_operations;"
+    "DELETE FROM main.alert_incidents;"
+    "DELETE FROM main.alert_outbox;"
     "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
     "INSERT INTO main.operational_events "
     "SELECT * FROM retained.operational_events;"
     "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;"
     "INSERT INTO main.management_operations "
-    "SELECT * FROM retained.management_operations;";
+    "SELECT * FROM retained.management_operations;"
+    "INSERT INTO main.alert_incidents SELECT * FROM retained.alert_incidents;"
+    "INSERT INTO main.alert_outbox SELECT * FROM retained.alert_outbox;";
 
 /** Foundation tables for schema version one. */
 static const char migration_1_foundation[] =
@@ -899,6 +926,121 @@ static const char *const migration_17[] = {
     migration_17_policy_statistics,
 };
 
+/** Add persistent alert configuration, incidents, and delivery outbox. */
+static const char migration_18_configuration[] =
+    "CREATE TABLE alert_configuration("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),"
+    "evaluation_interval_seconds INTEGER NOT NULL "
+    "CHECK(evaluation_interval_seconds BETWEEN 30 AND 3600),"
+    "certificate_warning_days INTEGER NOT NULL "
+    "CHECK(certificate_warning_days BETWEEN 1 AND 365),"
+    "source_failure_threshold INTEGER NOT NULL "
+    "CHECK(source_failure_threshold BETWEEN 1 AND 100),"
+    "source_stale_seconds INTEGER NOT NULL "
+    "CHECK(source_stale_seconds BETWEEN 300 AND 2592000),"
+    "filesystem_minimum_percent INTEGER NOT NULL "
+    "CHECK(filesystem_minimum_percent BETWEEN 1 AND 50),"
+    "filesystem_minimum_bytes INTEGER NOT NULL "
+    "CHECK(filesystem_minimum_bytes BETWEEN 0 AND 1099511627776),"
+    "queue_window_seconds INTEGER NOT NULL "
+    "CHECK(queue_window_seconds BETWEEN 60 AND 3600),"
+    "queue_drop_threshold INTEGER NOT NULL "
+    "CHECK(queue_drop_threshold BETWEEN 1 AND 1000000000),"
+    "authentication_window_seconds INTEGER NOT NULL "
+    "CHECK(authentication_window_seconds BETWEEN 60 AND 3600),"
+    "authentication_failure_threshold INTEGER NOT NULL "
+    "CHECK(authentication_failure_threshold BETWEEN 1 AND 1000000000),"
+    "webhook_enabled INTEGER NOT NULL CHECK(webhook_enabled IN (0,1)),"
+    "webhook_url TEXT CHECK(webhook_url IS NULL OR "
+    "length(webhook_url) BETWEEN 1 AND 2048),"
+    "webhook_ca_pem TEXT CHECK(webhook_ca_pem IS NULL OR "
+    "length(webhook_ca_pem) BETWEEN 1 AND 65536),"
+    "webhook_timeout_seconds INTEGER NOT NULL "
+    "CHECK(webhook_timeout_seconds BETWEEN 1 AND 30),"
+    "webhook_secret_ciphertext BLOB CHECK(webhook_secret_ciphertext IS NULL "
+    "OR length(webhook_secret_ciphertext)=48),"
+    "webhook_secret_nonce BLOB CHECK(webhook_secret_nonce IS NULL OR "
+    "length(webhook_secret_nonce)=24),"
+    "revision INTEGER NOT NULL CHECK(revision>0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=0),"
+    "CHECK((webhook_secret_ciphertext IS NULL)="
+    "(webhook_secret_nonce IS NULL)),"
+    "CHECK(webhook_enabled=0 OR (webhook_url IS NOT NULL AND "
+    "webhook_secret_ciphertext IS NOT NULL))"
+    ") STRICT;"
+    "INSERT INTO alert_configuration("
+    "id,enabled,evaluation_interval_seconds,certificate_warning_days,"
+    "source_failure_threshold,source_stale_seconds,"
+    "filesystem_minimum_percent,filesystem_minimum_bytes,"
+    "queue_window_seconds,queue_drop_threshold,"
+    "authentication_window_seconds,authentication_failure_threshold,"
+    "webhook_enabled,webhook_timeout_seconds,revision,updated_at"
+    ") VALUES(1,1,60,30,3,3600,10,268435456,300,1,300,20,0,10,1,"
+    "unixepoch());";
+
+/** Persistent incident state for schema version eighteen. */
+static const char migration_18_incidents[] =
+    "CREATE TABLE alert_incidents("
+    "id INTEGER PRIMARY KEY,"
+    "alert_key TEXT NOT NULL CHECK(length(alert_key) BETWEEN 1 AND 160),"
+    "type TEXT NOT NULL CHECK(type IN "
+    "('appliance_degraded','policy_unsynchronized','audit_unverifiable',"
+    "'certificate_expiring','source_unhealthy','filesystem_low_space',"
+    "'queue_drops','authentication_failures')),"
+    "resource TEXT NOT NULL CHECK(length(resource) BETWEEN 1 AND 128),"
+    "severity TEXT NOT NULL CHECK(severity IN "
+    "('warning','error','critical')),"
+    "state TEXT NOT NULL CHECK(state IN ('open','resolved')),"
+    "summary TEXT NOT NULL CHECK(length(summary) BETWEEN 1 AND 512),"
+    "details TEXT NOT NULL CHECK(length(details) BETWEEN 2 AND 4096),"
+    "opened_at INTEGER NOT NULL CHECK(opened_at>=0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=opened_at),"
+    "resolved_at INTEGER CHECK(resolved_at IS NULL OR "
+    "resolved_at>=opened_at),"
+    "occurrences INTEGER NOT NULL DEFAULT 1 CHECK(occurrences>0)"
+    ") STRICT;"
+    "CREATE UNIQUE INDEX alert_incidents_open_key_idx ON "
+    "alert_incidents(alert_key) WHERE state='open';"
+    "CREATE INDEX alert_incidents_state_time_idx ON "
+    "alert_incidents(state,updated_at DESC,id DESC);";
+
+/** Bounded asynchronous delivery queue for schema version eighteen. */
+static const char migration_18_outbox[] =
+    "CREATE TABLE alert_outbox("
+    "id INTEGER PRIMARY KEY,"
+    "incident_id INTEGER REFERENCES alert_incidents(id) ON DELETE SET NULL,"
+    "kind TEXT NOT NULL CHECK(kind IN ('incident','event')),"
+    "event_code TEXT NOT NULL CHECK(length(event_code) BETWEEN 1 AND 128),"
+    "transition TEXT NOT NULL CHECK(transition IN "
+    "('open','resolved','event')),"
+    "payload TEXT NOT NULL CHECK(length(payload) BETWEEN 2 AND 8192),"
+    "status TEXT NOT NULL CHECK(status IN "
+    "('pending','delivered','abandoned')),"
+    "created_at INTEGER NOT NULL CHECK(created_at>=0),"
+    "next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at>=created_at),"
+    "attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 20),"
+    "delivered_at INTEGER CHECK(delivered_at IS NULL OR "
+    "delivered_at>=created_at),"
+    "last_error TEXT CHECK(last_error IS NULL OR length(last_error)<=512)"
+    ") STRICT;"
+    "CREATE INDEX alert_outbox_due_idx ON "
+    "alert_outbox(status,next_attempt_at,id);";
+
+/** Complete schema-version marker for migration eighteen. */
+static const char migration_18_version[] =
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(18,unixepoch());"
+    "PRAGMA user_version=18;";
+
+/** Ordered statement groups composing schema version eighteen. */
+static const char *const migration_18[] = {
+    migration_18_configuration,
+    migration_18_incidents,
+    migration_18_outbox,
+    migration_18_version,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -918,6 +1060,7 @@ static const struct database_migration migrations[] = {
     {15U, migration_15, sizeof(migration_15) / sizeof(migration_15[0])},
     {16U, migration_16, sizeof(migration_16) / sizeof(migration_16[0])},
     {17U, migration_17, sizeof(migration_17) / sizeof(migration_17[0])},
+    {18U, migration_18, sizeof(migration_18) / sizeof(migration_18[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
