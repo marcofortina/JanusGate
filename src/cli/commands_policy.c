@@ -205,6 +205,39 @@ static int run_policy_show(const struct cli_options *options,
     return result;
 }
 
+/** @brief Display impact and conservative findings for one policy rule. */
+static int run_policy_analysis(const struct cli_options *options,
+                               const char *token,
+                               const char *kind,
+                               const char *identifier_text)
+{
+    const char *collection = NULL;
+    const char *array_name = NULL;
+    char path[160U];
+    json_t *analysis = NULL;
+    uint64_t identifier = 0U;
+    int result = jg_cli_parse_identifier(identifier_text, &identifier);
+    int written = 0;
+
+    if (result != 0 ||
+        (strcmp(kind, "domain") != 0 && strcmp(kind, "destination") != 0) ||
+        policy_collection(kind, &collection, &array_name) != 0) {
+        return CLI_EXIT_USAGE;
+    }
+    (void)array_name;
+    written = snprintf(path, sizeof(path), "%s/%llu/analysis", collection,
+                       (unsigned long long)identifier);
+    if (written <= 0 || (size_t)written >= sizeof(path)) {
+        return CLI_EXIT_FAILURE;
+    }
+    result = jg_cli_fetch_api_object(options, token, path, NULL, &analysis);
+    if (result == CLI_EXIT_SUCCESS) {
+        result = jg_cli_present_object(options, analysis);
+    }
+    json_decref(analysis);
+    return result;
+}
+
 /** @brief Build one exact API path for a typed policy rule. */
 static int policy_rule_path(const char *kind,
                             uint64_t identifier,
@@ -354,6 +387,8 @@ int jg_cli_run_policy_command(const struct cli_options *options,
         result = run_policy_mode(options, token, argc == 3 ? argv[2] : NULL);
     } else if (strcmp(argv[1], "show") == 0) {
         result = run_policy_show(options, token, argv[2], argv[3]);
+    } else if (strcmp(argv[1], "analyze") == 0) {
+        result = run_policy_analysis(options, token, argv[2], argv[3]);
     } else if (strcmp(argv[1], "add") == 0) {
         result =
             run_policy_write(options, token, "add", argv[2], NULL, argv[3]);

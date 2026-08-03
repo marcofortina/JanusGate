@@ -52,40 +52,42 @@ enum cli_option {
 /** @brief Print the stable command synopsis. */
 static void print_usage(FILE *output)
 {
+    (void)fprintf(output,
+                  "usage: janusgatectl [OPTIONS] status\n"
+                  "       janusgatectl [OPTIONS] health\n"
+                  "       janusgatectl [OPTIONS] stats\n"
+                  "       janusgatectl [OPTIONS] network show\n"
+                  "       janusgatectl [OPTIONS] network validate FILE\n"
+                  "       janusgatectl [OPTIONS] network apply FILE\n"
+                  "       janusgatectl [OPTIONS] network set FILE\n"
+                  "       janusgatectl [OPTIONS] network confirm\n"
+                  "       janusgatectl [OPTIONS] network rollback\n"
+                  "       janusgatectl [OPTIONS] policy list\n"
+                  "       janusgatectl [OPTIONS] policy mode [FILE]\n"
+                  "       janusgatectl [OPTIONS] policy show KIND ID\n"
+                  "       janusgatectl [OPTIONS] policy analyze KIND ID\n"
+                  "       janusgatectl [OPTIONS] policy add KIND FILE\n"
+                  "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
+                  "       janusgatectl [OPTIONS] policy remove KIND ID\n"
+                  "       janusgatectl [OPTIONS] policy explain FILE\n"
+                  "       janusgatectl [OPTIONS] policy simulate FILE\n"
+                  "       janusgatectl [OPTIONS] domain block DOMAIN\n"
+                  "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
+                  "       janusgatectl [OPTIONS] domain remove ID\n"
+                  "       janusgatectl [OPTIONS] blocklist list\n"
+                  "       janusgatectl [OPTIONS] blocklist import SOURCE FILE\n"
+                  "       janusgatectl [OPTIONS] blocklist export\n"
+                  "       janusgatectl [OPTIONS] source list\n"
+                  "       janusgatectl [OPTIONS] source add FILE\n"
+                  "       janusgatectl [OPTIONS] source update ID FILE\n"
+                  "       janusgatectl [OPTIONS] source refresh ID\n"
+                  "       janusgatectl [OPTIONS] source enable ID\n"
+                  "       janusgatectl [OPTIONS] source disable ID\n"
+                  "       janusgatectl [OPTIONS] events [QUERY]\n"
+                  "       janusgatectl [OPTIONS] audit [QUERY]\n"
+                  "       janusgatectl [OPTIONS] audit verify\n");
     (void)fprintf(
         output,
-        "usage: janusgatectl [OPTIONS] status\n"
-        "       janusgatectl [OPTIONS] health\n"
-        "       janusgatectl [OPTIONS] stats\n"
-        "       janusgatectl [OPTIONS] network show\n"
-        "       janusgatectl [OPTIONS] network validate FILE\n"
-        "       janusgatectl [OPTIONS] network apply FILE\n"
-        "       janusgatectl [OPTIONS] network set FILE\n"
-        "       janusgatectl [OPTIONS] network confirm\n"
-        "       janusgatectl [OPTIONS] network rollback\n"
-        "       janusgatectl [OPTIONS] policy list\n"
-        "       janusgatectl [OPTIONS] policy mode [FILE]\n"
-        "       janusgatectl [OPTIONS] policy show KIND ID\n"
-        "       janusgatectl [OPTIONS] policy add KIND FILE\n"
-        "       janusgatectl [OPTIONS] policy update KIND ID FILE\n"
-        "       janusgatectl [OPTIONS] policy remove KIND ID\n"
-        "       janusgatectl [OPTIONS] policy explain FILE\n"
-        "       janusgatectl [OPTIONS] policy simulate FILE\n"
-        "       janusgatectl [OPTIONS] domain block DOMAIN\n"
-        "       janusgatectl [OPTIONS] domain allow DOMAIN\n"
-        "       janusgatectl [OPTIONS] domain remove ID\n"
-        "       janusgatectl [OPTIONS] blocklist list\n"
-        "       janusgatectl [OPTIONS] blocklist import SOURCE FILE\n"
-        "       janusgatectl [OPTIONS] blocklist export\n"
-        "       janusgatectl [OPTIONS] source list\n"
-        "       janusgatectl [OPTIONS] source add FILE\n"
-        "       janusgatectl [OPTIONS] source update ID FILE\n"
-        "       janusgatectl [OPTIONS] source refresh ID\n"
-        "       janusgatectl [OPTIONS] source enable ID\n"
-        "       janusgatectl [OPTIONS] source disable ID\n"
-        "       janusgatectl [OPTIONS] events [QUERY]\n"
-        "       janusgatectl [OPTIONS] audit [QUERY]\n"
-        "       janusgatectl [OPTIONS] audit verify\n"
         "       janusgatectl [OPTIONS] user list\n"
         "       janusgatectl [OPTIONS] user add FILE\n"
         "       janusgatectl [OPTIONS] user update ID FILE\n"
@@ -999,8 +1001,8 @@ static int run_command(const struct cli_options *options,
          (argc == 3 && (strcmp(argv[1], "explain") == 0 ||
                         strcmp(argv[1], "simulate") == 0)) ||
          (argc == 4 &&
-          (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "add") == 0 ||
-           strcmp(argv[1], "remove") == 0)) ||
+          (strcmp(argv[1], "show") == 0 || strcmp(argv[1], "analyze") == 0 ||
+           strcmp(argv[1], "add") == 0 || strcmp(argv[1], "remove") == 0)) ||
          (argc == 5 && strcmp(argv[1], "update") == 0))) {
         return jg_cli_run_policy_command(options, argc, argv);
     }

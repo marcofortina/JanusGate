@@ -11,6 +11,8 @@ import {
   byId,
   confirmAction,
   displayValue,
+  formatNumber,
+  formatTimestamp,
   renderJson,
   showEmptyTable,
   showError,
@@ -154,6 +156,66 @@ function actionButton(label, action, danger = false) {
 }
 
 /**
+ * Load and present one rule's retained impact and static findings.
+ */
+async function analyzeRule(kind, rule) {
+  const domain = kind === "domain";
+  const path = domain
+    ? `/api/v1/domains/${rule.id}/analysis`
+    : `/api/v1/policies/destinations/${rule.id}/analysis`;
+
+  showError(byId("policies-error"), "");
+  try {
+    const result = await api(path);
+    const lifetime = result.lifetime;
+    const detail = result.retained_detail;
+    const findings = result.findings;
+    const relatedRules = new Set([
+      ...findings.duplicates,
+      ...findings.conflicts,
+      ...findings.shadowed_by,
+      ...findings.allow_exceptions,
+    ]).size;
+    const traffic = Number.isFinite(result.traffic_percentage)
+      ? `${result.traffic_percentage.toLocaleString(undefined, {
+        maximumFractionDigits: 2,
+      })}% of traffic`
+      : "traffic share unavailable";
+    const review = [];
+
+    if (result.possible_false_positive) {
+      review.push("observed blocks need review");
+    }
+    if (result.cleanup_candidate) {
+      review.push("never used; assisted-cleanup candidate");
+    }
+    if (findings.unreachable) {
+      review.push("currently unreachable");
+    }
+    byId("policy-impact-title").textContent =
+      `${domain ? "Domain" : "Destination"} rule ${rule.id} impact`;
+    byId("policy-impact-summary").textContent = [
+      `${formatNumber(lifetime.match_count)} matches`,
+      `${formatNumber(lifetime.would_block_count)} would block`,
+      `${formatNumber(lifetime.enforced_block_count)} enforced`,
+      `${formatNumber(detail.distinct_client_count)} clients`,
+      traffic,
+      `last used ${formatTimestamp(lifetime.last_hit_at)}`,
+      `${formatNumber(relatedRules)} related rules`,
+      ...review,
+    ].join(" · ");
+    renderJson(byId("policy-impact-result"), result);
+    byId("policy-impact-panel").hidden = false;
+    byId("policy-impact-panel").scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  } catch (error) {
+    showError(byId("policies-error"), errorMessage(error));
+  }
+}
+
+/**
  * Render all currently loaded domain rules.
  */
 function renderDomains() {
@@ -168,6 +230,9 @@ function renderDomains() {
     const actions = document.createElement("td");
 
     actions.className = "table-actions";
+    actions.append(actionButton("Impact", () => {
+      void analyzeRule("domain", rule);
+    }));
     if (writable) {
       actions.append(
         actionButton("Edit", () => editDomain(rule)),
@@ -175,8 +240,6 @@ function renderDomains() {
           void removeDomain(rule);
         }, true),
       );
-    } else {
-      actions.textContent = "Read only";
     }
     row.append(
       tableCell(rule.id),
@@ -212,6 +275,9 @@ function renderDestinations() {
         : `:${rule.port}`}`;
 
     actions.className = "table-actions";
+    actions.append(actionButton("Impact", () => {
+      void analyzeRule("destination", rule);
+    }));
     if (writable) {
       actions.append(
         actionButton("Edit", () => editDestination(rule)),
@@ -219,8 +285,6 @@ function renderDestinations() {
           void removeDestination(rule);
         }, true),
       );
-    } else {
-      actions.textContent = "Read only";
     }
     row.append(
       tableCell(rule.id),
