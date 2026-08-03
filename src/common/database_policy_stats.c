@@ -92,10 +92,9 @@ static bool rule_sample_valid(const struct jg_policy_rule_sample *sample)
         sample->occurred_at > POLICY_STATS_COUNTER_MAX ||
         path_text(sample->path) == NULL || !client_valid(&sample->client) ||
         sample->domain == NULL || sample->decision == sample->shadowed ||
-        (sample->enforced_block &&
-         (!sample->decision || !sample->would_block)) ||
-        (sample->allow_decision && (!sample->decision || sample->would_block ||
-                                    sample->enforced_block))) {
+        (sample->enforced_block && !sample->would_block) ||
+        (sample->allow_decision &&
+         (sample->would_block || sample->enforced_block))) {
         return false;
     }
     if (domain_dimension) {

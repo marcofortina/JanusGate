@@ -87,9 +87,9 @@ struct jg_policy_rule_sample {
     bool decision;
     /** Whether this rule would block when enforced. */
     bool would_block;
-    /** Whether this rule produced an effective blocking verdict. */
+    /** Whether this rule enforced a block, including behind observation. */
     bool enforced_block;
-    /** Whether this rule produced an effective allow verdict. */
+    /** Whether this rule enforced allow, including behind observation. */
     bool allow_decision;
     /** Whether a higher-precedence matching rule superseded this rule. */
     bool shadowed;
@@ -137,9 +137,9 @@ struct jg_policy_rule_stats {
     uint64_t decision_count;
     /** Matching blocks in either enforcement mode. */
     uint64_t would_block_count;
-    /** Matching blocks that were applied. */
+    /** Matching blocks that were enforced, including shadowed rules. */
     uint64_t enforced_block_count;
-    /** Matching allow decisions that were applied. */
+    /** Matching allows that were enforced, including shadowed rules. */
     uint64_t allow_decision_count;
     /** Matches superseded by higher-precedence rules. */
     uint64_t shadowed_count;

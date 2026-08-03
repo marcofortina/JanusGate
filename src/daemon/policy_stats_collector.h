@@ -39,9 +39,9 @@ struct jg_policy_stats_event_rule {
     bool decision;
     /** Whether this rule would block when enforced. */
     bool would_block;
-    /** Whether this rule produced the effective blocking verdict. */
+    /** Whether this rule enforced a block, including behind observation. */
     bool enforced_block;
-    /** Whether this rule produced the effective allow verdict. */
+    /** Whether this rule enforced allow, including behind observation. */
     bool allow_decision;
     /** Whether a higher-precedence matching rule superseded this rule. */
     bool shadowed;

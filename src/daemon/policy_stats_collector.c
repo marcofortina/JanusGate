@@ -130,9 +130,9 @@ static bool event_rule_valid(const struct jg_policy_stats_event_rule *rule)
             rule->dimension == JG_POLICY_STATS_DESTINATION) &&
            rule->rule_id != 0U && rule->rule_id <= INT64_MAX &&
            rule->decision != rule->shadowed &&
-           (!rule->enforced_block || (rule->decision && rule->would_block)) &&
+           (!rule->enforced_block || rule->would_block) &&
            (!rule->allow_decision ||
-            (rule->decision && !rule->would_block && !rule->enforced_block));
+            (!rule->would_block && !rule->enforced_block));
 }
 
 /** @brief Validate one complete event before non-blocking submission. */

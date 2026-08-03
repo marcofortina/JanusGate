@@ -1468,6 +1468,7 @@ static void test_policy_statistics(void **state)
             .path = JG_POLICY_STATS_NETWORK_DESTINATION,
             .domain = "",
             .would_block = true,
+            .enforced_block = true,
             .shadowed = true,
         },
     };
@@ -1555,6 +1556,7 @@ static void test_policy_statistics(void **state)
     assert_int_equal(count, 1U);
     assert_int_equal(rule_stats[0U].rule_id, 20U);
     assert_int_equal(rule_stats[0U].decision_count, 0U);
+    assert_int_equal(rule_stats[0U].enforced_block_count, 1U);
     assert_int_equal(rule_stats[0U].shadowed_count, 1U);
 
     invalid_traffic = traffic[1U];
