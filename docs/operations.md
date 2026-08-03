@@ -20,10 +20,18 @@ and the selected fail-open or fail-closed mode.
 
 ## Monitoring and capacity
 
-Collect the management metrics endpoint over the dedicated network. Alert on
-queue drops, parse failures, state-limit rejections, source refresh failures,
-audit verification failure, certificate expiry, repeated authentication
-failures, low persistent storage, and service restart loops.
+Collect the authenticated management metrics endpoint over the dedicated
+network with a mapped mTLS identity and a token restricted to `metrics:read`.
+Use the shipped Prometheus scrape job and rules with Alertmanager, and import
+the Grafana dashboard. The complete setup, native incident semantics, signed
+webhook contract, and private-CA procedure are documented in
+[Monitoring and native alerting](monitoring.md).
+
+Native evaluation retains deduplicated `open` and `resolved` incidents for
+management degradation, policy synchronization, audit integrity, certificate
+expiry, source health, JanusGate filesystem headroom, queue transport failure,
+and repeated authentication failure. Review the incident detail before
+changing thresholds. Intentional packet-policy drops are not queue failures.
 
 Size queue count to available CPUs and traffic, then load-test the actual
 hardware. Keep TCP flows, per-source flows, reassembly bytes, fragments, source

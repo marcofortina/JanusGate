@@ -495,6 +495,12 @@ add_custom_target(
   VERBATIM)
 
 add_custom_target(
+  monitoring-check
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-monitoring.py"
+  VERBATIM)
+
+add_custom_target(
   man-check
   COMMAND "${CMAKE_COMMAND}" "-DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ManpageCheck.cmake"
@@ -516,6 +522,7 @@ set(janusgate_check_dependencies
     janusgate-setup
     janusgatectl
     man-check
+    monitoring-check
     openapi-check
     web-assets-check)
 if(BUILD_TESTING)
@@ -547,6 +554,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-web-assets.py"
             "${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(
+    NAME monitoring
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate-monitoring.py")
 endif()
 
 set(CPACK_PACKAGE_NAME "janusgate")

@@ -88,6 +88,27 @@ deployment operating system and are not changed by this page. Keep local
 console access and update those values together when moving the appliance to a
 different management network.
 
+## Alerts and external monitoring
+
+The **Alerts** page lists persistent incidents newest first and filters by
+state or fixed type. Selecting **Details** shows the responsible resource,
+severity, lifecycle timestamps, occurrence count, and bounded condition data.
+Operators and auditors can inspect this state; only administrators can replace
+thresholds or webhook settings.
+
+The configuration covers evaluation cadence, certificate lifetime, remote
+source failures and staleness, free space across JanusGate filesystems, queue
+transport failures, and rejected authentication attempts. Changes are
+revision checked. Native evaluation deduplicates repeated conditions and
+retains both opening and resolution; it never hides an intentional policy
+block inside the queue-failure counter.
+
+For external delivery, rotate and securely copy the one-time HMAC secret,
+configure an HTTPS receiver and optional private CA bundle, save the settings,
+then send a test. The page reports whether secret material exists but never
+reveals it again. Prometheus, Alertmanager, and Grafana setup is documented in
+[Monitoring and native alerting](monitoring.md).
+
 ## Identities and access
 
 Administrators can list, add, update, or disable users; reset passwords; remove

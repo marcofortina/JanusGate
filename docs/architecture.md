@@ -50,10 +50,11 @@ flowchart LR
 ## Processes and privilege
 
 - `janusgated` owns the policy database, immutable policy snapshots, packet
-  workers, reassembly state, audit records, metrics, backups, and the local
-  control protocol. It opens native packet resources during startup, then runs
-  as the unprivileged `janusgate` account. Linux retains only `CAP_NET_ADMIN`,
-  which the kernel requires when submitting NFQUEUE verdicts.
+  workers, reassembly state, audit records, native incidents, metrics, backups,
+  and the local control protocol. It opens native packet resources during
+  startup, then runs as the unprivileged `janusgate` account. Linux retains
+  only `CAP_NET_ADMIN`, which the kernel requires when submitting NFQUEUE
+  verdicts.
 - `janusgate-netd` is the narrow privileged helper. It validates every request
   before changing bridge roles, packet selection, or appliance power state.
 - `janusgate-web` terminates two isolated HTTPS boundaries as `janusgate-web`.
@@ -81,6 +82,13 @@ authenticated payload; private keys and full backups receive restrictive
 permissions.
 Argon2id password work completes before the short transaction that records an
 authentication result. Browser attempts are bounded by source and globally.
+
+A separate bounded management worker starts only after the packet runtime and
+policy-statistics collector are ready. It periodically samples fixed health
+conditions, reconciles deduplicated incident keys in SQLite, and publishes a
+fixed-cardinality Prometheus snapshot. Incident transitions optionally enter
+the same transaction as a durable webhook outbox item. Delivery runs outside
+request handling with bounded retries, HMAC signatures, and verified HTTPS.
 
 The data plane reports policy outcomes through a bounded asynchronous queue.
 The collector stores lifetime rule and traffic counters separately from

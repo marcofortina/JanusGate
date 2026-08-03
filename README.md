@@ -48,8 +48,9 @@ management interface is never attached to the data bridge.
   interception or QUIC SNI parsing.
 - Transactional network changes with confirmation and rollback.
 - HTTPS administration, privileged local CLI, mandatory-mTLS remote CLI,
-  roles, TOTP, tokens, CSRF protection, audit chain, metrics, portable
-  encrypted backups, and diagnostics.
+  roles, TOTP, tokens, CSRF protection, audit chain, native alerting, signed
+  HTTPS notifications, Prometheus/Grafana integration, portable encrypted
+  backups, and diagnostics.
 - Structured stderr/syslog logging with bounded, expiring, privacy-aware
   operational tracing.
 - Per-rule lifetime counters, retained client impact, conservative relationship
@@ -101,6 +102,7 @@ CLI, backup creation, and an orderly reboot.
   [dependencies](docs/dependencies.md), and [performance](docs/performance.md)
 - [Operations](docs/operations.md), [privacy](docs/privacy.md), and
   [recovery](docs/recovery.md)
+- [Monitoring and native alerting](docs/monitoring.md)
 - [Security policy](SECURITY.md) and [contribution guide](CONTRIBUTING.md)
 
 ## Support

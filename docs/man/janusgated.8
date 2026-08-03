@@ -16,6 +16,11 @@ It cooperates with
 .BR janusgate-netd (8)
 for privileged network changes and never performs those changes directly.
 .PP
+After packet workers and policy statistics are ready, a bounded management
+worker evaluates native health conditions, reconciles persistent incident
+lifecycles, publishes monitoring aggregates, and delivers optional signed
+HTTPS notifications through a durable retry queue.
+.PP
 The service is intended to run under the supplied init definition as the
 dedicated
 .B janusgate

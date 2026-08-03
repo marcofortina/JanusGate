@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+apiVersion: 1
+
+providers:
+  - name: JanusGate
+    orgId: 1
+    folder: JanusGate
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards/janusgate
+      foldersFromFilesStructure: false

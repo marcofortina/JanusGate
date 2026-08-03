@@ -247,6 +247,37 @@ Enable one source at its current revision.
 .TP
 .BI "source disable " id
 Disable one source at its current revision.
+.SH ALERT COMMANDS
+.TP
+.RI "alert list [" query ]
+List persistent native incidents newest first.
+The optional query accepts bounded
+.BR before_id ,
+.BR limit ,
+.BR state ,
+and
+.B type
+fields.
+.TP
+.B alert configuration show
+Display native thresholds, revision, and safe webhook state.
+.TP
+.BI "alert configuration set " file
+Replace the complete native alert configuration from a strict JSON document
+after automatically retrieving its current revision.
+.TP
+.B alert webhook rotate
+Generate and display a new random HMAC secret exactly once.
+Save it at the receiver before enabling or testing delivery.
+.TP
+.B alert webhook test
+Queue one signed HTTPS test event through the durable delivery path.
+.PP
+Native conditions cover management degradation, policy synchronization, audit
+verification, certificate expiry, source health, JanusGate filesystem space,
+packet-queue transport failures, and repeated authentication failures.
+Incident openings and resolutions are deduplicated and retained.
+Intentional policy drops do not count as queue failures.
 .SH EVENT AND AUDIT COMMANDS
 .TP
 .RI "events [" query ]

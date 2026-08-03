@@ -84,6 +84,9 @@ remote contract.
   retention, lifetime traffic counters, and bounded previewed cleanup.
 - `/blocklists` and `/sources/*`: local imports and remote source lifecycle.
 - `/events`, `/audit`, and `/audit/verify`: bounded operational history.
+- `/alerts`, `/alerts/configuration`, and `/alerts/webhook/*`: persistent
+  native incidents, revisioned thresholds, one-time HMAC rotation, and test
+  delivery.
 - `/users/*` and `/tokens/*`: identities, roles, TOTP removal, and API tokens.
 - `/certificates/*`: inspection, replacement, and CSR creation.
 - `/mtls/authorities` and `/mtls/mappings/*`: client trust and revocable
@@ -126,3 +129,8 @@ cmake --build --preset debug --target openapi-check
 API consumers should pin the `/api/v1` contract, tolerate added response
 fields, reject unknown enum values locally, and never record passwords,
 tokens, passphrases, cookies, TOTP seeds, or private keys.
+
+Prometheus must use the dedicated TCP 9443 listener with a mapped client
+certificate and a token restricted to `metrics:read`. The scrape example,
+Alertmanager rules, Grafana dashboard, and signed webhook receiver contract are
+in [Monitoring and native alerting](monitoring.md).

@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
+
+groups:
+  - name: janusgate.availability
+    interval: 30s
+    rules:
+      - alert: JanusGateUnavailable
+        expr: up{job="janusgate"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate metrics are unavailable on {{ $labels.instance }}"
+          description: >-
+            Prometheus has been unable to authenticate to or scrape the
+            JanusGate management endpoint for two minutes.
+
+      - alert: JanusGateAlertEvaluationFailed
+        expr: janusgate_alert_evaluation_successful{job="janusgate"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate alert evaluation failed on {{ $labels.instance }}"
+          description: >-
+            The latest native condition evaluation or notification pass did
+            not complete successfully.
+
+      - alert: JanusGateAlertEvaluationStale
+        expr: >-
+          (time() - janusgate_alert_last_evaluation_timestamp_seconds{job="janusgate"} > 600)
+          or janusgate_alert_last_evaluation_timestamp_seconds{job="janusgate"} == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate alert evaluation is stale on {{ $labels.instance }}"
+          description: >-
+            Native alert evaluation has not completed for at least ten
+            minutes. Check janusgated and persistent-storage health.
+
+  - name: janusgate.native-incidents
+    interval: 30s
+    rules:
+      - alert: JanusGateManagementDegraded
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="appliance_degraded"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate management is degraded on {{ $labels.instance }}"
+          description: >-
+            Management consistency is degraded. Inspect the native incident
+            and suspend non-recovery changes until it is resolved.
+
+      - alert: JanusGatePolicyUnsynchronized
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="policy_unsynchronized"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate policy is not synchronized on {{ $labels.instance }}"
+          description: >-
+            The desired persistent policy revision differs from the revision
+            applied by the packet-processing runtime.
+
+      - alert: JanusGateAuditUnverifiable
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="audit_unverifiable"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate audit is unverifiable on {{ $labels.instance }}"
+          description: >-
+            The append-only audit chain could not be verified. Preserve the
+            appliance state and investigate before making routine changes.
+
+      - alert: JanusGateCertificateExpiring
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="certificate_expiring"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate certificate needs attention on {{ $labels.instance }}"
+          description: >-
+            The management certificate is unavailable, expired, or inside the
+            configured native warning interval.
+
+      - alert: JanusGateSourceUnhealthy
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="source_unhealthy"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A JanusGate source is unhealthy on {{ $labels.instance }}"
+          description: >-
+            An enabled remote source exceeded its failure threshold or its
+            last successful refresh is stale.
+
+      - alert: JanusGateFilesystemLowSpace
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="filesystem_low_space"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate storage is low on {{ $labels.instance }}"
+          description: >-
+            At least one filesystem used by JanusGate crossed the configured
+            percentage or absolute free-space threshold.
+
+      - alert: JanusGateQueueFailures
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="queue_drops"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JanusGate queue failures detected on {{ $labels.instance }}"
+          description: >-
+            NFQUEUE or divert transport failures crossed the configured fixed
+            window threshold. Intentional policy drops are not counted.
+
+      - alert: JanusGateAuthenticationFailures
+        expr: >-
+          janusgate_alerts_open{job="janusgate",type="authentication_failures"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Repeated JanusGate authentication failures on {{ $labels.instance }}"
+          description: >-
+            Rejected management credentials crossed the configured fixed
+            window threshold.
+
+  - name: janusgate.delivery-and-statistics
+    interval: 30s
+    rules:
+      - alert: JanusGateWebhookDeliveriesAbandoned
+        expr: >-
+          janusgate_alert_deliveries_failed_retained{job="janusgate"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate webhook deliveries were abandoned on {{ $labels.instance }}"
+          description: >-
+            One or more notifications exhausted their bounded retries. Check
+            webhook trust, reachability, signature handling, and receiver logs.
+
+      - alert: JanusGatePolicyStatisticsWriteFailures
+        expr: >-
+          increase(janusgate_policy_stats_write_failures_total{job="janusgate"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate policy statistics writes failed on {{ $labels.instance }}"
+          description: >-
+            At least one detailed policy-statistics batch failed during the
+            last ten minutes; enforcement remains independent of statistics.
+
+      - alert: JanusGatePolicyStatisticsDropped
+        expr: >-
+          increase(janusgate_policy_stats_dropped_total{job="janusgate"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate policy statistics samples were dropped on {{ $labels.instance }}"
+          description: >-
+            The bounded asynchronous statistics collector discarded samples
+            during the last ten minutes. Check sustained appliance load.

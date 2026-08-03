@@ -61,6 +61,13 @@ metadata, but always remove trace detail objects. Stderr capture and syslog
 forwarding may retain records longer than the in-memory window; their access,
 transport, rotation, and deletion are the deployer's responsibility.
 
+Native incident details contain operational resource names and bounded health
+evidence but no credential values. Signed webhook payloads copy those details
+to an external receiver. Protect the receiver, set its retention explicitly,
+and treat the one-time HMAC secret as authentication material. Prometheus
+metrics use fixed labels and aggregate counters; they do not expose domain,
+client, username, or token labels.
+
 Do not place passwords, API tokens, session cookies, TOTP seeds, backup
 passphrases, private keys, or complete request bodies in logs. A portable full
 backup contains the encrypted identity database and its TOTP protection key;

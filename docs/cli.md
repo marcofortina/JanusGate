@@ -47,6 +47,8 @@ output and explicit high-impact operations.
 - `blocklist list`, `blocklist export`, and `source list` inspect list state.
 - `events [QUERY]` and `audit [QUERY]` accept a bounded query string;
   `audit verify` validates the chain.
+- `alert list [QUERY]` lists persistent incidents; `alert configuration show`
+  displays native thresholds and safe webhook state.
 - `user list`, `token list`, `certificate show`, `mtls ca show`, and
   `mtls mapping list` inspect access and TLS state.
 - `backup inspect ID` reports a stored backup without restoring it.
@@ -114,6 +116,42 @@ pass a document such as this to `policy statistics FILE`:
 
 Scheduled and manual cleanup remove only expired hourly impact detail.
 Lifetime rule and traffic aggregates are preserved.
+
+## Native alerting
+
+`alert list` accepts the API query fields `before_id`, `limit`, `state`, and
+`type`. For example, `alert list 'state=open&limit=50'` returns the newest open
+incidents. `alert configuration set FILE` automatically reads the current
+revision and replaces the complete strict document.
+
+The default configuration is equivalent to:
+
+```json
+{
+  "enabled": true,
+  "evaluation_interval_seconds": 60,
+  "certificate_warning_days": 30,
+  "source_failure_threshold": 3,
+  "source_stale_seconds": 3600,
+  "filesystem_minimum_percent": 10,
+  "filesystem_minimum_bytes": 268435456,
+  "queue_window_seconds": 300,
+  "queue_drop_threshold": 1,
+  "authentication_window_seconds": 300,
+  "authentication_failure_threshold": 20,
+  "webhook_enabled": false,
+  "webhook_url": null,
+  "webhook_ca_pem": null,
+  "webhook_timeout_seconds": 10
+}
+```
+
+Run `alert webhook rotate` before enabling delivery and save the returned HMAC
+secret immediately; it is never displayed again. `alert webhook test` queues
+one signed test through the same durable outbox and retry path used by real
+transitions. Private and home-lab webhook authorities are accepted through
+`webhook_ca_pem`. Receiver verification and Prometheus/Grafana integration are
+documented in [Monitoring and native alerting](monitoring.md).
 
 ## Identities, certificates, and recovery data
 
