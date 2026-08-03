@@ -482,6 +482,159 @@ static void synchronize_policy(struct management_fixture *fixture)
     jg_management_refresh_policy_health(fixture->management);
 }
 
+/** @brief Verify authenticated rule-impact and static-analysis responses. */
+static void test_policy_analysis_api(void **state)
+{
+    static const char domain_request[] =
+        "{\"request_id\":\"domain-analysis\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/domains/1/analysis\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char unused_request[] =
+        "{\"request_id\":\"unused-analysis\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/domains/2/analysis\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char destination_request[] =
+        "{\"request_id\":\"destination-analysis\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/policies/destinations/3/analysis\","
+        "\"host\":\"localhost\",\"remote_address\":\"127.0.0.1\","
+        "\"body\":{}}";
+    static const char missing_request[] =
+        "{\"request_id\":\"missing-analysis\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/domains/999/analysis\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char invalid_request[] =
+        "{\"request_id\":\"invalid-analysis\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/domains/1/analysis\",\"query\":\"all=true\","
+        "\"host\":\"localhost\",\"remote_address\":\"127.0.0.1\","
+        "\"body\":{}}";
+    struct management_fixture *fixture = *state;
+    struct jg_policy_rule_input domain_rules[2U] = {0};
+    struct jg_policy_destination_rule_input destination_rule = {0};
+    struct jg_policy_traffic_sample traffic[2U] = {
+        {
+            .occurred_at = 3600U,
+            .path = JG_POLICY_STATS_DNS,
+            .matched = true,
+            .would_block = true,
+        },
+        {
+            .occurred_at = 3601U,
+            .path = JG_POLICY_STATS_DNS,
+        },
+    };
+    struct jg_policy_rule_sample sample = {
+        .occurred_at = 3600U,
+        .dimension = JG_POLICY_STATS_DOMAIN,
+        .rule_id = 1U,
+        .path = JG_POLICY_STATS_DNS,
+        .domain = "blocked.example.org",
+        .query_type = 1U,
+        .decision = true,
+        .would_block = true,
+    };
+    json_t *response = NULL;
+    json_t *body = NULL;
+    json_t *value = NULL;
+
+    domain_rules[0U].id = 1U;
+    domain_rules[0U].domain = "example.org";
+    domain_rules[0U].include_subdomains = true;
+    domain_rules[0U].effect = JG_POLICY_BLOCK;
+    domain_rules[0U].enforcement = JG_POLICY_OBSERVE;
+    domain_rules[0U].source = JG_POLICY_SOURCE_EXPLICIT;
+    domain_rules[0U].scope.type = JG_POLICY_SCOPE_GLOBAL;
+    domain_rules[0U].attribution = "staged domain policy";
+    domain_rules[1U].id = 2U;
+    domain_rules[1U].domain = "safe.example.org";
+    domain_rules[1U].effect = JG_POLICY_ALLOW;
+    domain_rules[1U].source = JG_POLICY_SOURCE_EXPLICIT;
+    domain_rules[1U].scope.type = JG_POLICY_SCOPE_GLOBAL;
+    domain_rules[1U].attribution = "local exception";
+    destination_rule.id = 3U;
+    destination_rule.effect = JG_POLICY_BLOCK;
+    destination_rule.enforcement = JG_POLICY_OBSERVE;
+    destination_rule.source = JG_POLICY_SOURCE_EXPLICIT;
+    destination_rule.transport = JG_POLICY_TRANSPORT_ANY;
+    destination_rule.has_port = true;
+    destination_rule.port = 443U;
+    destination_rule.scope.type = JG_POLICY_SCOPE_GLOBAL;
+    destination_rule.attribution = "staged destination policy";
+    sample.client.address_family = JG_POLICY_ADDRESS_IPV4;
+    sample.client.address[0U] = 192U;
+    sample.client.address[1U] = 0U;
+    sample.client.address[2U] = 2U;
+    sample.client.address[3U] = 10U;
+    sample.client.has_mac = true;
+    sample.client.mac[0U] = 0x02U;
+    sample.client.has_vlan = true;
+    sample.client.vlan_id = 30U;
+    assert_int_equal(
+        jg_database_replace_domain_rules(fixture->database, domain_rules, 2U),
+        0);
+    assert_int_equal(jg_database_replace_destination_rules(
+                         fixture->database, &destination_rule, 1U),
+                     0);
+    assert_int_equal(jg_database_record_policy_stats(fixture->database, traffic,
+                                                     2U, &sample, 1U),
+                     0);
+
+    response = process_local_request(fixture, domain_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_string_equal(json_string_value(json_object_get(body, "dimension")),
+                        "domain");
+    assert_string_equal(
+        json_string_value(json_object_get(body, "configured_action")), "block");
+    assert_true(json_is_true(json_object_get(body, "possible_false_positive")));
+    assert_false(json_is_true(json_object_get(body, "cleanup_candidate")));
+    assert_float_equal(
+        json_real_value(json_object_get(body, "traffic_percentage")), 50.0,
+        0.001);
+    value = json_object_get(body, "lifetime");
+    assert_int_equal(json_integer_value(json_object_get(value, "match_count")),
+                     1);
+    assert_int_equal(
+        json_integer_value(json_object_get(value, "observed_block_count")), 1);
+    value = json_array_get(json_object_get(body, "clients"), 0U);
+    assert_string_equal(json_string_value(json_object_get(value, "address")),
+                        "192.0.2.10");
+    assert_int_equal(json_integer_value(json_object_get(value, "vlan")), 30);
+    value = json_object_get(body, "findings");
+    assert_int_equal(json_integer_value(json_array_get(
+                         json_object_get(value, "allow_exceptions"), 0U)),
+                     2);
+    json_decref(response);
+
+    response = process_local_request(fixture, unused_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_true(json_is_true(json_object_get(body, "cleanup_candidate")));
+    assert_string_equal(
+        json_string_value(json_object_get(body, "cleanup_reason")),
+        "never_used");
+    json_decref(response);
+
+    response = process_local_request(fixture, destination_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_string_equal(json_string_value(json_object_get(body, "dimension")),
+                        "destination");
+    assert_true(json_is_true(json_object_get(body, "cleanup_candidate")));
+    json_decref(response);
+
+    response = process_local_request(fixture, missing_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     404);
+    json_decref(response);
+    response = process_local_request(fixture, invalid_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     400);
+    json_decref(response);
+}
+
 /** @brief Wait for one accepted API job and return its final envelope. */
 static json_t *wait_for_job(struct management_fixture *fixture,
                             uint64_t job_id,
@@ -4291,6 +4444,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_cross_resource_audit_failure,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_policy_sync_health,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_policy_analysis_api,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_mtls_api, setup_management,
                                         teardown_management),

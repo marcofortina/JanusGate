@@ -788,6 +788,17 @@ int handle_policy_simulation(struct jg_management *management,
                              size_t output_size,
                              size_t *written);
 
+/** @brief Return impact and conservative findings for one policy rule. */
+int handle_policy_rule_analysis(struct jg_management *management,
+                                const struct management_request *request,
+                                const struct remote_address *remote,
+                                enum jg_policy_stats_dimension dimension,
+                                uint64_t rule_id,
+                                uint64_t now,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written);
+
 /** @brief Return one authenticated stable page of blocklist sources. */
 int handle_blocklist_sources_list(struct jg_management *management,
                                   const struct management_request *request,

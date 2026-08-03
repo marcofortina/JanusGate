@@ -444,6 +444,18 @@ paths:
           $ref: '#/components/responses/JsonSuccess'
         default:
           $ref: '#/components/responses/JsonError'
+  /policies/destinations/{ruleId}/analysis:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    get:
+      tags: [Policy]
+      operationId: analyzeDestinationRule
+      summary: Read destination-rule impact and conservative findings
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
   /policies/simulate:
     post:
       tags: [Policy]
@@ -713,6 +725,18 @@ paths:
         '200':
           $ref: '#/components/responses/JsonSuccess'
         '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /domains/{ruleId}/analysis:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    get:
+      tags: [Policy]
+      operationId: analyzeDomainRule
+      summary: Read domain-rule impact and conservative findings
+      responses:
+        '200':
           $ref: '#/components/responses/JsonSuccess'
         default:
           $ref: '#/components/responses/JsonError'

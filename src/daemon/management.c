@@ -1310,11 +1310,15 @@ static bool management_path_known(const char *path)
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/domains/", "",
                                       &identifier) ||
+           collection_path_identifier(path, "/api/v1/domains/", "/analysis",
+                                      &identifier) ||
            collection_path_identifier(path, "/api/v1/jobs/", "", &identifier) ||
            collection_path_identifier(path, "/api/v1/mtls/mappings/", "",
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/policies/destinations/",
                                       "", &identifier) ||
+           collection_path_identifier(path, "/api/v1/policies/destinations/",
+                                      "/analysis", &identifier) ||
            collection_path_identifier(path, "/api/v1/policies/groups/", "",
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/policies/scopes/", "",
@@ -1531,6 +1535,14 @@ static int dispatch_request(struct jg_management *management,
         return handle_destination_rule_create(management, request, remote, now,
                                               output, output_size, written);
     }
+    if (strcmp(request->method, "GET") == 0 &&
+        collection_path_identifier(request->path,
+                                   "/api/v1/policies/destinations/",
+                                   "/analysis", &destination_rule_id)) {
+        return handle_policy_rule_analysis(
+            management, request, remote, JG_POLICY_STATS_DESTINATION,
+            destination_rule_id, now, output, output_size, written);
+    }
     if (strcmp(request->method, "PATCH") == 0 &&
         collection_path_identifier(request->path,
                                    "/api/v1/policies/destinations/", "",
@@ -1550,6 +1562,13 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/domains") == 0 && post) {
         return handle_domain_rule_create(management, request, remote, now,
                                          output, output_size, written);
+    }
+    if (strcmp(request->method, "GET") == 0 &&
+        collection_path_identifier(request->path, "/api/v1/domains/",
+                                   "/analysis", &domain_rule_id)) {
+        return handle_policy_rule_analysis(
+            management, request, remote, JG_POLICY_STATS_DOMAIN, domain_rule_id,
+            now, output, output_size, written);
     }
     if (strcmp(request->method, "PATCH") == 0 &&
         collection_path_identifier(request->path, "/api/v1/domains/", "",
