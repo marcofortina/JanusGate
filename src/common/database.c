@@ -45,6 +45,10 @@ static const char scrub_sensitive_data[] = "DELETE FROM web_sessions;"
                                            "DELETE FROM bootstrap_credentials;"
                                            "DELETE FROM audit_events;"
                                            "DELETE FROM operational_events;"
+                                           "DELETE FROM policy_rule_stats;"
+                                           "DELETE FROM policy_traffic_stats;"
+                                           "DELETE FROM policy_impact_buckets;"
+                                           "DELETE FROM policy_traffic_buckets;"
                                            "DELETE FROM backup_metadata;"
                                            "DELETE FROM management_operations;";
 
@@ -60,6 +64,10 @@ static const char preserve_sensitive_data[] =
     "DELETE FROM main.bootstrap_credentials;"
     "DELETE FROM main.audit_events;"
     "DELETE FROM main.operational_events;"
+    "DELETE FROM main.policy_rule_stats;"
+    "DELETE FROM main.policy_traffic_stats;"
+    "DELETE FROM main.policy_impact_buckets;"
+    "DELETE FROM main.policy_traffic_buckets;"
     "DELETE FROM main.backup_metadata;"
     "DELETE FROM main.management_operations;"
     "INSERT INTO main.users SELECT * FROM retained.users;"
@@ -74,6 +82,14 @@ static const char preserve_sensitive_data[] =
     "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
     "INSERT INTO main.operational_events "
     "SELECT * FROM retained.operational_events;"
+    "INSERT INTO main.policy_rule_stats SELECT * FROM "
+    "retained.policy_rule_stats;"
+    "INSERT INTO main.policy_traffic_stats "
+    "SELECT * FROM retained.policy_traffic_stats;"
+    "INSERT INTO main.policy_impact_buckets "
+    "SELECT * FROM retained.policy_impact_buckets;"
+    "INSERT INTO main.policy_traffic_buckets "
+    "SELECT * FROM retained.policy_traffic_buckets;"
     "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;"
     "INSERT INTO main.management_operations "
     "SELECT * FROM retained.management_operations;";
@@ -792,6 +808,97 @@ static const char *const migration_16[] = {
     migration_16_policy_enforcement,
 };
 
+/** Add bounded policy-impact aggregates and configurable detail retention. */
+static const char migration_17_policy_statistics[] =
+    "CREATE TABLE policy_statistics_configuration("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "retention_enabled INTEGER NOT NULL CHECK(retention_enabled IN (0,1)),"
+    "retention_months INTEGER NOT NULL CHECK(retention_months BETWEEN 1 AND "
+    "120),"
+    "revision INTEGER NOT NULL CHECK(revision>0),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=0),"
+    "last_cleanup_at INTEGER NOT NULL DEFAULT 0 CHECK(last_cleanup_at>=0)"
+    ") STRICT;"
+    "INSERT INTO policy_statistics_configuration("
+    "id,retention_enabled,retention_months,revision,updated_at)"
+    " VALUES(1,1,12,1,unixepoch());"
+    "CREATE TABLE policy_rule_stats("
+    "dimension TEXT NOT NULL CHECK(dimension IN ('domain','destination')),"
+    "rule_id INTEGER NOT NULL CHECK(rule_id>0),"
+    "match_count INTEGER NOT NULL DEFAULT 0 CHECK(match_count>=0),"
+    "decision_count INTEGER NOT NULL DEFAULT 0 CHECK(decision_count>=0),"
+    "would_block_count INTEGER NOT NULL DEFAULT 0 CHECK(would_block_count>=0),"
+    "enforced_block_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(enforced_block_count>=0),"
+    "allow_decision_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(allow_decision_count>=0),"
+    "shadowed_count INTEGER NOT NULL DEFAULT 0 CHECK(shadowed_count>=0),"
+    "first_hit_at INTEGER NOT NULL CHECK(first_hit_at>=0),"
+    "last_hit_at INTEGER NOT NULL CHECK(last_hit_at>=first_hit_at),"
+    "PRIMARY KEY(dimension,rule_id)"
+    ") WITHOUT ROWID,STRICT;"
+    "CREATE TABLE policy_traffic_stats("
+    "id INTEGER PRIMARY KEY CHECK(id=1),"
+    "request_count INTEGER NOT NULL DEFAULT 0 CHECK(request_count>=0),"
+    "matched_count INTEGER NOT NULL DEFAULT 0 CHECK(matched_count>=0),"
+    "would_block_count INTEGER NOT NULL DEFAULT 0 CHECK(would_block_count>=0),"
+    "enforced_block_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(enforced_block_count>=0),"
+    "first_request_at INTEGER NOT NULL CHECK(first_request_at>=0),"
+    "last_request_at INTEGER NOT NULL CHECK(last_request_at>=first_request_at)"
+    ") STRICT;"
+    "CREATE TABLE policy_impact_buckets("
+    "bucket_start INTEGER NOT NULL CHECK(bucket_start>=0 AND "
+    "bucket_start%3600=0),"
+    "dimension TEXT NOT NULL CHECK(dimension IN ('domain','destination')),"
+    "rule_id INTEGER NOT NULL CHECK(rule_id>0),"
+    "path TEXT NOT NULL CHECK(path IN ('dns','tls_sni','destination')),"
+    "client_family INTEGER NOT NULL CHECK(client_family IN (0,4,6)),"
+    "client_address BLOB NOT NULL CHECK((client_family=0 AND "
+    "length(client_address)=0) OR (client_family=4 AND "
+    "length(client_address)=4) OR (client_family=6 AND "
+    "length(client_address)=16)),"
+    "client_mac BLOB NOT NULL CHECK(length(client_mac) IN (0,6)),"
+    "vlan_id INTEGER NOT NULL CHECK(vlan_id BETWEEN -1 AND 4094),"
+    "domain TEXT NOT NULL CHECK(length(domain)<=253),"
+    "query_type INTEGER NOT NULL CHECK(query_type BETWEEN 0 AND 65535),"
+    "match_count INTEGER NOT NULL DEFAULT 0 CHECK(match_count>=0),"
+    "decision_count INTEGER NOT NULL DEFAULT 0 CHECK(decision_count>=0),"
+    "would_block_count INTEGER NOT NULL DEFAULT 0 CHECK(would_block_count>=0),"
+    "enforced_block_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(enforced_block_count>=0),"
+    "allow_decision_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(allow_decision_count>=0),"
+    "shadowed_count INTEGER NOT NULL DEFAULT 0 CHECK(shadowed_count>=0),"
+    "PRIMARY KEY(bucket_start,dimension,rule_id,path,client_family,"
+    "client_address,client_mac,vlan_id,domain,query_type)"
+    ") WITHOUT ROWID,STRICT;"
+    "CREATE INDEX policy_impact_rule_time_idx ON "
+    "policy_impact_buckets(dimension,rule_id,bucket_start);"
+    "CREATE INDEX policy_impact_time_idx ON "
+    "policy_impact_buckets(bucket_start);"
+    "CREATE TABLE policy_traffic_buckets("
+    "bucket_start INTEGER NOT NULL CHECK(bucket_start>=0 AND "
+    "bucket_start%3600=0),"
+    "path TEXT NOT NULL CHECK(path IN ('dns','tls_sni','destination')),"
+    "request_count INTEGER NOT NULL DEFAULT 0 CHECK(request_count>=0),"
+    "matched_count INTEGER NOT NULL DEFAULT 0 CHECK(matched_count>=0),"
+    "would_block_count INTEGER NOT NULL DEFAULT 0 CHECK(would_block_count>=0),"
+    "enforced_block_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(enforced_block_count>=0),"
+    "PRIMARY KEY(bucket_start,path)"
+    ") WITHOUT ROWID,STRICT;"
+    "CREATE INDEX policy_traffic_time_idx ON "
+    "policy_traffic_buckets(bucket_start);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(17,unixepoch());"
+    "PRAGMA user_version=17;";
+
+/** Ordered statement groups composing schema version seventeen. */
+static const char *const migration_17[] = {
+    migration_17_policy_statistics,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -810,6 +917,7 @@ static const struct database_migration migrations[] = {
     {14U, migration_14, sizeof(migration_14) / sizeof(migration_14[0])},
     {15U, migration_15, sizeof(migration_15) / sizeof(migration_15[0])},
     {16U, migration_16, sizeof(migration_16) / sizeof(migration_16[0])},
+    {17U, migration_17, sizeof(migration_17) / sizeof(migration_17[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */

@@ -161,6 +161,21 @@ static void assert_text_value(sqlite3 *handle,
     assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
 }
 
+/** @brief Assert one trusted scalar query returns the expected integer. */
+static void assert_integer_value(sqlite3 *handle,
+                                 const char *query,
+                                 sqlite3_int64 expected)
+{
+    sqlite3_stmt *statement = NULL;
+
+    assert_int_equal(sqlite3_prepare_v2(handle, query, -1, &statement, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_step(statement), SQLITE_ROW);
+    assert_int_equal(sqlite3_column_int64(statement, 0), expected);
+    assert_int_equal(sqlite3_step(statement), SQLITE_DONE);
+    assert_int_equal(sqlite3_finalize(statement), SQLITE_OK);
+}
+
 /** @brief Find whether one byte sequence occurs inside another. */
 static bool snapshot_contains(const uint8_t *data,
                               size_t data_size,
@@ -469,6 +484,11 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "policy_sync_state"));
     assert_true(table_exists(inspection, "policy_configuration"));
     assert_true(table_exists(inspection, "policy_scope_modes"));
+    assert_true(table_exists(inspection, "policy_statistics_configuration"));
+    assert_true(table_exists(inspection, "policy_rule_stats"));
+    assert_true(table_exists(inspection, "policy_traffic_stats"));
+    assert_true(table_exists(inspection, "policy_impact_buckets"));
+    assert_true(table_exists(inspection, "policy_traffic_buckets"));
     assert_true(column_exists(inspection, "policy_groups", "enforcement"));
     assert_true(column_exists(inspection, "blocklist_sources", "enforcement"));
     assert_true(column_exists(inspection, "domain_rules", "enforcement"));
@@ -477,6 +497,16 @@ static void test_initial_migration(void **state)
                       "SELECT enforcement FROM policy_configuration WHERE "
                       "id=1;",
                       "enforce");
+    assert_integer_value(
+        inspection,
+        "SELECT retention_enabled FROM policy_statistics_configuration "
+        "WHERE id=1;",
+        1);
+    assert_integer_value(
+        inspection,
+        "SELECT retention_months FROM policy_statistics_configuration "
+        "WHERE id=1;",
+        12);
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -633,7 +663,23 @@ static void test_database_export(void **state)
         "schema_version,size_bytes) VALUES(1,10,'configuration','/backup',"
         "zeroblob(32),1,100);"
         "INSERT INTO management_operations(id,kind,state,payload,created_at)"
-        " VALUES(1,'test_operation','ready',x'0102',10);";
+        " VALUES(1,'test_operation','ready',x'0102',10);"
+        "INSERT INTO policy_rule_stats(dimension,rule_id,match_count,"
+        "decision_count,would_block_count,enforced_block_count,"
+        "allow_decision_count,shadowed_count,first_hit_at,last_hit_at)"
+        " VALUES('domain',1,3,2,1,1,1,1,10,20);"
+        "INSERT INTO policy_traffic_stats(id,request_count,matched_count,"
+        "would_block_count,enforced_block_count,first_request_at,"
+        "last_request_at) VALUES(1,4,3,1,1,10,20);"
+        "INSERT INTO policy_impact_buckets(bucket_start,dimension,rule_id,"
+        "path,client_family,client_address,client_mac,vlan_id,domain,"
+        "query_type,match_count,decision_count,would_block_count,"
+        "enforced_block_count,allow_decision_count,shadowed_count)"
+        " VALUES(0,'domain',1,'dns',4,x'c000020a',x'001122334455',7,"
+        "'example.test',1,3,2,1,1,1,1);"
+        "INSERT INTO policy_traffic_buckets(bucket_start,path,request_count,"
+        "matched_count,would_block_count,enforced_block_count)"
+        " VALUES(0,'dns',4,3,1,1);";
     static const char *const private_tables[] = {
         "users",
         "user_roles",
@@ -647,6 +693,10 @@ static void test_database_export(void **state)
         "operational_events",
         "backup_metadata",
         "management_operations",
+        "policy_rule_stats",
+        "policy_traffic_stats",
+        "policy_impact_buckets",
+        "policy_traffic_buckets",
     };
     char directory[64U];
     char path[512U];
@@ -703,7 +753,8 @@ static void test_database_export(void **state)
     assert_int_equal(
         sqlite3_exec(writer,
                      "UPDATE system_settings SET value='changed';"
-                     "UPDATE users SET password_hash='current-hash';",
+                     "UPDATE users SET password_hash='current-hash';"
+                     "UPDATE policy_rule_stats SET match_count=9;",
                      NULL, NULL, NULL),
         SQLITE_OK);
     assert_int_equal(sqlite3_close(writer), SQLITE_OK);
@@ -741,6 +792,10 @@ static void test_database_export(void **state)
     assert_text_value(snapshot, "SELECT password_hash FROM users WHERE id=1;",
                       "current-hash");
     assert_int_equal(row_count(snapshot, "management_operations"), 1);
+    assert_integer_value(snapshot,
+                         "SELECT match_count FROM policy_rule_stats WHERE "
+                         "dimension='domain' AND rule_id=1;",
+                         9);
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
     snapshot = NULL;
     jg_database_export_clear(data, data_size);
@@ -753,6 +808,7 @@ static void test_database_export(void **state)
             writer,
             "UPDATE system_settings SET value='changed-again';"
             "UPDATE users SET password_hash='replacement-hash';"
+            "UPDATE policy_rule_stats SET match_count=11;"
             "INSERT INTO backup_metadata(id,created_at,kind,path,"
             "checksum,schema_version,size_bytes) VALUES("
             "2,20,'full','backup-2.jgb',zeroblob(32),9,200);"
@@ -789,6 +845,10 @@ static void test_database_export(void **state)
     assert_int_equal(row_count(snapshot, "backup_metadata"), 2);
     assert_int_equal(row_count(snapshot, "audit_events"), 2);
     assert_int_equal(row_count(snapshot, "operational_events"), 2);
+    assert_integer_value(snapshot,
+                         "SELECT match_count FROM policy_rule_stats WHERE "
+                         "dimension='domain' AND rule_id=1;",
+                         9);
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
     jg_database_export_clear(inspection_data, inspection_data_size);
 
@@ -957,6 +1017,11 @@ static void test_version_one_migration(void **state)
     assert_true(column_exists(inspection, "logging_configuration", "revision"));
     assert_true(table_exists(inspection, "policy_configuration"));
     assert_true(table_exists(inspection, "policy_scope_modes"));
+    assert_true(table_exists(inspection, "policy_statistics_configuration"));
+    assert_true(table_exists(inspection, "policy_rule_stats"));
+    assert_true(table_exists(inspection, "policy_traffic_stats"));
+    assert_true(table_exists(inspection, "policy_impact_buckets"));
+    assert_true(table_exists(inspection, "policy_traffic_buckets"));
     assert_true(column_exists(inspection, "policy_groups", "enforcement"));
     assert_true(column_exists(inspection, "blocklist_sources", "enforcement"));
     assert_true(column_exists(inspection, "domain_rules", "enforcement"));
@@ -1829,6 +1894,11 @@ static void test_network_configuration_migration(void **state)
         "INSERT INTO system_settings(key,value,updated_at) "
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
+        "DROP TABLE policy_traffic_buckets;"
+        "DROP TABLE policy_impact_buckets;"
+        "DROP TABLE policy_traffic_stats;"
+        "DROP TABLE policy_rule_stats;"
+        "DROP TABLE policy_statistics_configuration;"
         "DROP TABLE policy_scope_modes;"
         "DROP TABLE policy_configuration;"
         "ALTER TABLE destination_rules DROP COLUMN enforcement;"
