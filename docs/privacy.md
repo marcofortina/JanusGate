@@ -15,6 +15,18 @@ mode that meets their purpose, use short retention for client-identifying
 events, and prefer aggregate counters for routine monitoring. Audit retention
 should follow the organization's accountability requirement.
 
+Policy-impact detail can contain client IP and MAC addresses, VLAN identifiers,
+domains, destinations, and selected policy paths in hourly buckets. Scheduled
+retention is enabled by default for 12 months and is configurable from 1 to 120
+months. Choose the shortest period that supports rollout review and incident
+response. Disabling scheduled cleanup stops automatic deletion; it does not
+disable collection or remove existing detail.
+
+Cleanup is previewable and incremental. It removes only expired impact detail;
+lifetime rule and traffic aggregates contain no client identifiers and remain
+available. Neither cleanup candidates nor possible-false-positive indicators
+cause automatic deletion or policy changes.
+
 The unkeyed chain detects corruption and edits that are not followed by a
 consistent recomputation. It does not prove integrity against an attacker who
 can rewrite the complete database. Deploy protected remote logging, signed

@@ -79,10 +79,23 @@ storage; private keys and full backups receive restrictive permissions.
 Argon2id password work completes before the short transaction that records an
 authentication result. Browser attempts are bounded by source and globally.
 
+The data plane reports policy outcomes through a bounded asynchronous queue.
+The collector stores lifetime rule and traffic counters separately from
+hourly client-impact detail. Lifetime aggregates are never removed by the
+statistics-retention process. Detailed IP, MAC, VLAN, domain, destination, and
+path observations follow the configured retention period and are deleted in
+bounded batches.
+
 Policy evaluation never queries SQLite per packet. `janusgated` builds a
 validated immutable snapshot, publishes it atomically to readers, and retires
 the previous generation only after active readers leave it. A failed reload
 therefore leaves the last complete policy active.
+
+Observe-only state is part of that snapshot. It can be selected globally or
+by rule, source, group, client address, client network, MAC address, or VLAN.
+An observed blocking decision retains its rule and action attribution for
+analysis but produces an effective allow verdict. Observe-only state never
+turns an allow decision into a block and has no automatic expiry.
 
 ## IPC
 

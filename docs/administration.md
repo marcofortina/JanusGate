@@ -32,6 +32,11 @@ counters, recent events, and active configuration. Policy pages provide:
 - global and scoped allow or block effects;
 - UDP DNS actions: drop, REFUSED, NXDOMAIN, or sinkhole;
 - policy simulation before activation;
+- persistent observe-only rollout globally or by rule, source, group, client,
+  network, MAC address, or VLAN;
+- rule impact with lifetime hits, retained clients, traffic percentage, and
+  conservative relationship findings;
+- configurable detailed-statistics retention with cleanup preview;
 - local blocklist import and export;
 - remote source creation, update, enable, disable, and refresh.
 
@@ -47,6 +52,28 @@ the revision published to the daemon. If publication fails, further mutations
 are suspended and the dashboard identifies the pending revision. Use **System
 > Reload configuration** to validate and retry publication; successful reload
 clears the durable inconsistency state.
+
+### Staged policy rollout
+
+Choose **Observe** when creating a prospective blocking rule, or apply
+observe-only mode to its source, policy group, the global policy, or a client,
+network, MAC, or VLAN scope. Matching traffic remains allowed while JanusGate
+records the configured action, responsible rule, affected clients, and
+would-block outcome. The setting is persistent and does not expire.
+
+After representative traffic has passed, select **Impact** on the rule. Review
+its lifetime and retained counts, traffic percentage, clients, duplicates,
+conflicts, shadowing, reachability, allow exceptions, and possible false
+positives. These findings are decision support and can conservatively omit an
+ambiguous relationship. JanusGate never edits or deletes a rule in response.
+Adjust, disable, or remove the rule, or change it to **Enforce** only after the
+observed impact is acceptable.
+
+The statistics-retention panel preserves lifetime aggregates and defaults to
+12 months of detailed hourly impact. Administrators can configure 1–120
+months, enable or disable scheduled cleanup, preview expired detail, and
+confirm removal of one bounded batch. A manual cleanup can require multiple
+batches; the result states whether deletion is complete.
 
 ## Network
 

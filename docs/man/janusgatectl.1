@@ -151,6 +151,17 @@ List global enforcement, groups, client scopes, and policy records.
 Read snapshot-wide enforcement, or replace it from a JSON document after
 automatically retrieving the current revision.
 .TP
+.BI "policy statistics " [file]
+Read detailed-statistics retention and lifetime traffic counters, or replace
+retention from a JSON document after automatically retrieving the current
+revision.
+.TP
+.BI "policy cleanup " preview|run
+Preview expired policy-impact detail or remove one bounded batch.
+Running cleanup requires interactive confirmation or
+.BR --yes .
+Lifetime aggregates are preserved.
+.TP
 .BI "policy show " "kind id"
 Display one
 .B domain
@@ -175,10 +186,24 @@ Replace one revision-bound policy record.
 .BI "policy remove " "kind id"
 Remove one policy record after retrieving its current revision.
 .TP
+.BI "policy analyze " "kind id"
+Display lifetime hits, retained client impact, traffic percentage, and
+conservative relationship findings for one
+.B domain
+or
+.B destination
+rule.
+.TP
 .BI "policy explain " file
 Explain a policy decision without changing state. The compatible
 .B policy simulate
 spelling is also accepted.
+.PP
+Blocking rules, sources, groups, client scopes, and the global policy mode can
+use persistent
+.B observe
+enforcement. An observed block is recorded as a would-block and allowed; it
+does not expire and cannot strengthen an allow decision into a block.
 .TP
 .BI "domain block " domain
 Create a global DNS block rule for

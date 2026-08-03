@@ -69,8 +69,13 @@ performed it; use the local Unix-socket CLI for full recovery restores.
 - `/status`, `/health`, `/metrics`: runtime observations.
 - `/config/*` and `/network/*`: validation, reload, transactional network
   apply, confirmation, and rollback.
-- `/policies/destinations`, `/domains`, and `/policies/simulate`: policy rules
-  and dry evaluation.
+- `/policies/destinations`, `/domains`, `/policies/groups`, `/policies/scopes`,
+  and `/policies/mode`: policy rules and persistent enforcement modes.
+- `/policies/simulate`, `/policies/destinations/{id}/analysis`, and
+  `/domains/{id}/analysis`: dry evaluation, retained impact, and conservative
+  rule relationships.
+- `/policies/statistics` and `/policies/statistics/cleanup`: detailed-impact
+  retention, lifetime traffic counters, and bounded previewed cleanup.
 - `/blocklists` and `/sources/*`: local imports and remote source lifecycle.
 - `/events`, `/audit`, and `/audit/verify`: bounded operational history.
 - `/users/*` and `/tokens/*`: identities, roles, TOTP removal, and API tokens.
@@ -82,6 +87,29 @@ performed it; use the local Unix-socket CLI for full recovery restores.
   bounded counters, and the operator trace window.
 - `/service/restart`, `/system/reboot`, and `/system/shutdown`: explicit
   lifecycle actions.
+
+## Observation and impact
+
+Blocking rules and sources accept `enforcement: observe`. Groups, client or
+VLAN scopes, and the global policy mode can apply the same persistent state to
+multiple rules. When observation applies, the response to
+`/policies/simulate` identifies the configured block, its responsible rule,
+every observation layer, `would_have_blocked: true`, and an effective allow
+verdict. Observation never changes an allow into a block and has no automatic
+expiry.
+
+Rule-analysis responses separate lifetime counters from retained hourly
+detail. Client impact is bounded, and relationship findings are deliberately
+conservative: ambiguous overlaps can be omitted. `possible_false_positive`
+means that the rule produced observed would-blocks; `cleanup_candidate` means
+that an enabled explicit rule has no recorded use. Both require operator
+review and never alter or delete a rule.
+
+Detailed statistics default to 12 months of scheduled retention and accept a
+configured range of 1–120 months. Cleanup can be previewed, then executed in
+batches of at most 10,000 rows. It removes only expired hourly rule, client,
+domain, destination, and path detail. Lifetime rule and traffic aggregates are
+preserved even when scheduled retention is disabled or manual cleanup runs.
 
 Validate the contract with:
 

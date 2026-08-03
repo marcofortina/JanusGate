@@ -39,6 +39,11 @@ output and explicit high-impact operations.
 - `network show` reports the active network document.
 - `policy list` and `policy show KIND ID` inspect enforcement, groups, scopes,
   and rules. `KIND` is `domain`, `destination`, `group`, or `scope`.
+- `policy analyze KIND ID` reports lifetime hits, retained client impact,
+  traffic percentage, and conservative duplicate, conflict, shadowing, and
+  reachability findings. Analysis supports `domain` and `destination`.
+- `policy statistics` reports detailed-statistics retention and lifetime
+  traffic counters.
 - `blocklist list`, `blocklist export`, and `source list` inspect list state.
 - `events [QUERY]` and `audit [QUERY]` accept a bounded query string;
   `audit verify` validates the chain.
@@ -59,6 +64,12 @@ output and explicit high-impact operations.
   `policy simulate FILE` spelling remains available.
 - `policy mode` reads global enforcement; `policy mode FILE` replaces it after
   automatically reading the current revision.
+- `policy statistics FILE` replaces the detailed-statistics retention setting
+  after automatically reading its current revision. The document contains
+  `retention_enabled` and `retention_months`, from 1 through 120.
+- `policy cleanup preview` reports expired detail without changing it;
+  `policy cleanup run` removes one bounded batch and requires confirmation or
+  `--yes`. Repeat the command only when its result reports `complete: false`.
 - `domain block DOMAIN`, `domain allow DOMAIN`, and `domain remove ID` are
   concise domain-rule operations.
 - `blocklist import SOURCE FILE` imports a local list.
@@ -68,6 +79,41 @@ output and explicit high-impact operations.
 Blocklist imports and remote refreshes submit bounded asynchronous jobs. The
 CLI waits for their retained results while the daemon continues serving short
 management requests.
+
+## Observe-only rollout
+
+Set `enforcement` to `observe` on a blocking domain or destination rule to
+measure its effect without blocking traffic. The same persistent mode is
+available for an entire source, a policy group, the global snapshot, or a
+client IPv4/IPv6 network, MAC address, or VLAN scope. If more than one applies,
+any observed layer weakens a blocking decision to allow; it never strengthens
+an allow decision into a block. Observe-only modes do not expire.
+
+A safe rollout is:
+
+1. Create the intended block with `enforcement: observe`.
+2. Exercise representative traffic.
+3. Run `policy analyze KIND ID` and inspect the matched clients and findings.
+4. Adjust, disable, or remove the rule, or replace its enforcement with
+   `enforce` when the impact is acceptable.
+
+The `possible_false_positive` and `cleanup_candidate` fields are review aids,
+not proof and never trigger an automatic policy change. `policy explain FILE`
+shows the configured decision, every observation layer, the effective verdict,
+and the rule responsible for a proposed request.
+
+Detailed impact defaults to 12 months of scheduled retention. To change it,
+pass a document such as this to `policy statistics FILE`:
+
+```json
+{
+  "retention_enabled": true,
+  "retention_months": 6
+}
+```
+
+Scheduled and manual cleanup remove only expired hourly impact detail.
+Lifetime rule and traffic aggregates are preserved.
 
 ## Identities, certificates, and recovery data
 

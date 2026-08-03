@@ -40,6 +40,8 @@ management interface is never attached to the data bridge.
 - UDP and TCP classic-DNS policy toward any resolver address.
 - Exact and subdomain rules, allow precedence, scopes, local lists, and bounded
   remote sources.
+- Persistent observe-only policy at global, rule, source, group, client,
+  network, and VLAN scope, with impact analysis before enforcement.
 - Drop, REFUSED, NXDOMAIN, and IPv4/IPv6 sinkhole actions for UDP DNS.
 - Bounded TCP reassembly, fragmentation handling, standard-port DoT/DoQ
   controls, known endpoint sets, and visible TLS SNI policy without TLS
@@ -50,6 +52,8 @@ management interface is never attached to the data bridge.
   diagnostics.
 - Structured stderr/syslog logging with bounded, expiring, privacy-aware
   operational tracing.
+- Per-rule lifetime counters, retained client impact, conservative relationship
+  findings, and configurable detailed-statistics cleanup.
 - Alpine 3.24 packages and VM image plus x86_64 and AArch64 Buildroot firmware.
 - Native OpenBSD 7.9 build, PF/divert packet path, rc.d services, and installer.
 - GCC/Clang, glibc/musl, sanitizer, fuzz, static-analysis, image, and
