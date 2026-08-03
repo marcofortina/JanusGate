@@ -18,11 +18,20 @@
 
 #include "janusgate/account.h"
 
+/** @brief Validate one conservative ASCII local username. */
+bool jg_account_username_valid(const char *username);
+
 /** @brief Load the role union and enabled TOTP state for one user. */
 int jg_account_load_identity_authorization(sqlite3 *handle,
                                            uint64_t user_id,
                                            uint32_t *permissions,
                                            bool *totp_enabled);
+
+/** @brief Read current user authorization and enablement. */
+int jg_account_load_user_authorization(sqlite3 *handle,
+                                       uint64_t user_id,
+                                       bool *enabled,
+                                       uint32_t *permissions);
 
 /** @brief Return the network-order byte count for a supported address. */
 size_t jg_account_address_size(enum jg_policy_address_family family);
