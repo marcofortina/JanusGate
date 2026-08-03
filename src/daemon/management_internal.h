@@ -20,6 +20,7 @@
 
 #include "daemon_runtime.h"
 #include "janusgate/account.h"
+#include "janusgate/audit.h"
 #include "janusgate/backup.h"
 #include "janusgate/ipc.h"
 #include "management.h"
@@ -349,6 +350,147 @@ int execute_management_job(struct jg_management *management,
                            struct management_job *job,
                            int authorization_result,
                            size_t *response_size);
+
+/** @brief Accept only named fields in one exact request object. */
+bool fields_allowed(json_t *object,
+                    const char *const *fields,
+                    size_t field_count);
+
+/** @brief Read one required nonempty string from an object. */
+const char *required_string(const json_t *object,
+                            const char *name,
+                            size_t minimum,
+                            size_t maximum);
+
+/** @brief Read one required Boolean from an object. */
+bool required_boolean(const json_t *object, const char *name, bool *value);
+
+/** @brief Read one required positive client-safe identifier. */
+bool required_identifier(const json_t *object,
+                         const char *name,
+                         uint64_t *value);
+
+/** @brief Read one required string or explicit null from an object. */
+bool required_nullable_string(const json_t *object,
+                              const char *name,
+                              size_t maximum,
+                              const char **value);
+
+/** @brief Parse bounded after/limit pagination parameters. */
+int parse_page_query(const char *query,
+                     const char *cursor_name,
+                     size_t maximum_limit,
+                     uint64_t *position,
+                     size_t *limit);
+
+/** @brief Encode one JSON API response envelope. */
+int encode_response(int status,
+                    json_t *body,
+                    const struct session_result *session,
+                    uint8_t *output,
+                    size_t output_size,
+                    size_t *written);
+
+/** @brief Return one bounded stable API error envelope. */
+int respond_error(int status,
+                  const char *code,
+                  const char *message,
+                  const char *request_id,
+                  uint8_t *output,
+                  size_t output_size,
+                  size_t *written);
+
+/** @brief Return one accepted slow-operation reference. */
+int respond_job_accepted(uint64_t job_id,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Return one consistent slow-operation submission error. */
+int respond_job_submission_error(int result,
+                                 const struct management_request *request,
+                                 const char *failure_message,
+                                 uint8_t *output,
+                                 size_t output_size,
+                                 size_t *written);
+
+/** @brief Return the persistent audit kind for one authenticated actor. */
+enum jg_audit_actor_type actor_audit_type(
+    const struct authenticated_actor *actor);
+
+/** @brief Return whether one actor has a persistent database identifier. */
+bool actor_has_identifier(const struct authenticated_actor *actor);
+
+/** @brief Authenticate one session, token, certificate, or local root actor. */
+int authenticate_actor(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       bool state_change,
+                       uint32_t permission,
+                       uint64_t now,
+                       struct authenticated_actor *actor);
+
+/** @brief Convert one authentication failure to its stable API response. */
+int respond_actor_error(int result,
+                        const struct management_request *request,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
+
+/** @brief Reconcile shared health with persistent policy publication state. */
+void refresh_policy_sync_health(struct jg_management *management);
+
+/** @brief Execute one authenticated backup creation job. */
+int execute_backup_create_job(struct jg_management *management,
+                              const struct management_job *job,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Execute one authenticated backup restore job. */
+int execute_backup_restore_job(struct jg_management *management,
+                               const struct management_job *job,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Return one authenticated stable page of backup metadata. */
+int handle_backups_list(struct jg_management *management,
+                        const struct management_request *request,
+                        const struct remote_address *remote,
+                        uint64_t now,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
+
+/** @brief Queue one authenticated backup creation. */
+int handle_backup_create(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Inspect one authenticated stored backup. */
+int handle_backup_inspect(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t backup_id,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written);
+
+/** @brief Queue one validated or confirmed backup restore. */
+int handle_backup_restore(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t backup_id,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written);
 
 /** @brief Build the private pending-key path paired with the server identity.
  */
