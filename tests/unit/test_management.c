@@ -3149,6 +3149,7 @@ static void test_backup_api(void **state)
     struct jg_database_backup records[4U];
     char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
     char request[2048U];
+    char transfer_path[256U];
     json_t *response = NULL;
     json_t *body = NULL;
     json_t *backup = NULL;
@@ -3162,6 +3163,10 @@ static void test_backup_api(void **state)
     int written = 0;
 
     assert_true(now > 0);
+    written = snprintf(transfer_path, sizeof(transfer_path), "%s/exported.jgb",
+                       fixture->directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(transfer_path));
     jg_auth_password_policy_default(&password_policy);
     assert_int_equal(jg_account_bootstrap_issue(fixture->database,
                                                 (uint64_t)now, 600U, bootstrap),
@@ -3301,6 +3306,63 @@ static void test_backup_api(void **state)
         json_integer_value(json_object_get(manifest, "certificate_size")) > 0);
     json_decref(response);
 
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"backup-export-remote\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups/%llu/export\","
+        "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+        "\"bearer\":\"%s\",\"body\":{\"path\":\"%s\"}}",
+        (unsigned long long)full_backup_id, token.secret, transfer_path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     404);
+    json_decref(response);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"backup-export-local\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups/%llu/export\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"path\":\"%s\"}}",
+        (unsigned long long)full_backup_id, transfer_path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    assert_int_equal(access(transfer_path, F_OK), 0);
+
+    written = snprintf(
+        request, sizeof(request),
+        "{\"request_id\":\"backup-import-remote\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/backups/import\",\"host\":\"192.168.77.1\","
+        "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+        "\"body\":{\"path\":\"%s\"}}",
+        token.secret, transfer_path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     404);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"backup-import-local\",\"method\":\"POST\","
+                 "\"path\":\"/api/v1/backups/import\",\"host\":\"localhost\","
+                 "\"remote_address\":\"127.0.0.1\",\"body\":{\"path\":\"%s\"}}",
+                 transfer_path);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_local_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     201);
+    manifest = json_object_get(json_object_get(response, "body"), "manifest");
+    assert_true(json_is_true(json_object_get(manifest, "portable")));
+    json_decref(response);
+
     written =
         snprintf(request, sizeof(request),
                  "{\"request_id\":\"backup-invalid\",\"method\":\"POST\","
@@ -3319,18 +3381,19 @@ static void test_backup_api(void **state)
     assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
                      0);
     assert_true(verification.valid);
-    assert_int_equal(verification.records_inspected, 2U);
+    assert_int_equal(verification.records_inspected, 4U);
     assert_int_equal(
         jg_database_list_backups(fixture->database, 0U,
                                  sizeof(records) / sizeof(records[0U]), records,
                                  &count, &has_more),
         0);
     assert_false(has_more);
-    assert_int_equal(count, 2U);
+    assert_int_equal(count, 3U);
     for (size_t index = 0U; index < count; ++index) {
         assert_int_equal(
             jg_backup_remove(fixture->directory, records[index].filename), 0);
     }
+    assert_int_equal(jg_backup_remove_path(transfer_path), 0);
     sodium_memzero(&other_token, sizeof(other_token));
     sodium_memzero(&token, sizeof(token));
 }

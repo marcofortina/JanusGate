@@ -163,9 +163,13 @@ _janusgatectl()
             ;;
         backup)
             if ((position == 1)); then
-                _janusgatectl_values "create inspect restore" "${current}"
+                _janusgatectl_values "create inspect export import restore" "${current}"
             elif ((position == 2)) && [[ ${subcommand} == create ]]; then
                 _janusgatectl_values "configuration full" "${current}"
+            elif ((position == 2)) && [[ ${subcommand} == import ]]; then
+                _janusgatectl_files "${current}"
+            elif ((position == 3)) && [[ ${subcommand} == export ]]; then
+                _janusgatectl_files "${current}"
             fi
             ;;
         diagnostics)

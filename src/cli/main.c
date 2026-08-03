@@ -112,6 +112,8 @@ static void print_usage(FILE *output)
         "       janusgatectl [OPTIONS] backup create configuration\n"
         "       janusgatectl [OPTIONS] backup create full\n"
         "       janusgatectl [OPTIONS] backup inspect ID\n"
+        "       janusgatectl [OPTIONS] backup export ID FILE\n"
+        "       janusgatectl [OPTIONS] backup import FILE\n"
         "       janusgatectl [OPTIONS] backup restore ID\n"
         "       janusgatectl [OPTIONS] diagnostics create\n"
         "       janusgatectl [OPTIONS] logging show\n"
@@ -1069,11 +1071,14 @@ static int run_command(const struct cli_options *options,
            (argc == 6 && strcmp(argv[2], "add") == 0))))) {
         return jg_cli_run_mtls_command(options, argc, argv);
     }
-    if (argc == 3 && strcmp(argv[0], "backup") == 0 &&
-        ((strcmp(argv[1], "create") == 0 &&
-          (strcmp(argv[2], "configuration") == 0 ||
-           strcmp(argv[2], "full") == 0)) ||
-         strcmp(argv[1], "inspect") == 0 || strcmp(argv[1], "restore") == 0)) {
+    if (strcmp(argv[0], "backup") == 0 &&
+        ((argc == 3 &&
+          ((strcmp(argv[1], "create") == 0 &&
+            (strcmp(argv[2], "configuration") == 0 ||
+             strcmp(argv[2], "full") == 0)) ||
+           strcmp(argv[1], "inspect") == 0 || strcmp(argv[1], "restore") == 0 ||
+           strcmp(argv[1], "import") == 0)) ||
+         (argc == 4 && strcmp(argv[1], "export") == 0))) {
         return jg_cli_run_backup_command(options, argc, argv);
     }
     if (argc == 2 && strcmp(argv[0], "config") == 0 &&

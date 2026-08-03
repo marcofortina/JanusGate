@@ -1215,6 +1215,7 @@ static bool management_path_known(const char *path)
         "/api/v1/auth/totp/disable",
         "/api/v1/auth/totp/provision",
         "/api/v1/backups",
+        "/api/v1/backups/import",
         "/api/v1/blocklists",
         "/api/v1/certificates",
         "/api/v1/certificates/csr",
@@ -1259,6 +1260,8 @@ static bool management_path_known(const char *path)
         }
     }
     return collection_path_identifier(path, "/api/v1/backups/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/backups/", "/export",
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/backups/", "/restore",
                                       &identifier) ||
@@ -1636,6 +1639,15 @@ static int dispatch_request(struct jg_management *management,
     if (strcmp(request->path, "/api/v1/backups") == 0 && post) {
         return handle_backup_create(management, request, remote, now, output,
                                     output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/backups/import") == 0 && post) {
+        return handle_backup_import(management, request, remote, now, output,
+                                    output_size, written);
+    }
+    if (post && collection_path_identifier(request->path, "/api/v1/backups/",
+                                           "/export", &backup_id)) {
+        return handle_backup_export(management, request, remote, backup_id, now,
+                                    output, output_size, written);
     }
     if (post && collection_path_identifier(request->path, "/api/v1/backups/",
                                            "/restore", &backup_id)) {

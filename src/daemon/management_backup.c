@@ -287,6 +287,95 @@ typedef int (*backup_creation_completion)(
     void *context,
     const struct jg_database_backup *created);
 
+/** @brief Store and transactionally record one validated backup archive. */
+static int record_backup_archive(
+    struct jg_management *management,
+    const uint8_t *archive,
+    size_t archive_size,
+    const struct jg_backup_info *info,
+    uint64_t now,
+    const struct management_operation_origin *origin,
+    backup_creation_completion completion,
+    void *context,
+    struct jg_database_backup *created)
+{
+    uint8_t suffix[8U];
+    uint8_t recovery_payload[1U + JG_BACKUP_FILENAME_MAX];
+    char suffix_text[sizeof(suffix) * 2U + 1U];
+    struct jg_database_backup metadata = {0};
+    bool journal_started = false;
+    bool transaction_started = false;
+    int result = 0;
+    int written = 0;
+
+    if (management == NULL || archive == NULL || archive_size == 0U ||
+        info == NULL || origin == NULL || created == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(created, 0, sizeof(*created));
+    randombytes_buf(suffix, sizeof(suffix));
+    if (sodium_bin2hex(suffix_text, sizeof(suffix_text), suffix,
+                       sizeof(suffix)) == NULL) {
+        result = -EIO;
+    }
+    if (result == 0) {
+        written = snprintf(metadata.filename, sizeof(metadata.filename),
+                           "backup-%llu-%s.jgb", (unsigned long long)now,
+                           suffix_text);
+        if (written <= 0 || (size_t)written >= sizeof(metadata.filename)) {
+            result = -EOVERFLOW;
+        }
+    }
+    if (result == 0) {
+        const size_t filename_size = strlen(metadata.filename);
+
+        recovery_payload[0U] = MANAGEMENT_RECOVERY_VERSION;
+        (void)memcpy(recovery_payload + 1U, metadata.filename, filename_size);
+        result = start_recovery_operation(
+            management, MANAGEMENT_OPERATION_BACKUP_CREATE, recovery_payload,
+            filename_size + 1U, 0U, false, origin, now);
+        journal_started = result == 0;
+    }
+    if (result == 0) {
+        result = jg_backup_store(management->backup_directory,
+                                 metadata.filename, archive, archive_size);
+    }
+    if (result == 0) {
+        metadata.created_at = info->created_at;
+        metadata.kind = info->kind;
+        (void)memcpy(metadata.checksum, info->checksum,
+                     sizeof(metadata.checksum));
+        metadata.schema_version = info->schema_version;
+        metadata.size_bytes = archive_size;
+        result = jg_database_transaction_begin(management->database);
+        transaction_started = result == 0;
+    }
+    if (result == 0) {
+        result =
+            jg_database_create_backup(management->database, &metadata, created);
+    }
+    if (result == 0 && completion != NULL) {
+        result = completion(context, created);
+    }
+    if (result == 0) {
+        result = jg_database_operation_clear(management->database);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+        transaction_started = result != 0;
+        journal_started = result != 0;
+    }
+    if (result != 0 && transaction_started &&
+        jg_database_transaction_rollback(management->database) != 0) {
+        result = -EIO;
+    }
+    if (result != 0 && journal_started) {
+        result = abort_recovery_operation(management, result);
+    }
+    sodium_memzero(suffix, sizeof(suffix));
+    return result;
+}
+
 /** @brief Create, store, and transactionally record one backup archive. */
 static int create_backup(struct jg_management *management,
                          enum jg_backup_kind kind,
@@ -299,9 +388,6 @@ static int create_backup(struct jg_management *management,
                          void *context,
                          struct jg_database_backup *created)
 {
-    uint8_t suffix[8U];
-    uint8_t recovery_payload[1U + JG_BACKUP_FILENAME_MAX];
-    char suffix_text[sizeof(suffix) * 2U + 1U];
     char *certificate = NULL;
     char *client_ca = NULL;
     uint8_t *database = NULL;
@@ -312,18 +398,13 @@ static int create_backup(struct jg_management *management,
     size_t archive_size = 0U;
     struct jg_backup_payload payload;
     struct jg_backup_info info;
-    struct jg_database_backup metadata;
-    bool journal_started = false;
-    bool transaction_started = false;
     int result = 0;
-    int written = 0;
 
     if (management == NULL || origin == NULL || created == NULL ||
         (kind == JG_BACKUP_CONFIGURATION && include_private_key)) {
         return -EINVAL;
     }
     (void)memset(created, 0, sizeof(*created));
-    (void)memset(&metadata, 0, sizeof(metadata));
     (void)memset(&payload, 0, sizeof(payload));
     result = jg_database_export(management->database, kind == JG_BACKUP_FULL,
                                 &database, &database_size);
@@ -361,67 +442,10 @@ static int create_backup(struct jg_management *management,
         result = jg_backup_inspect(archive, archive_size, &info);
     }
     if (result == 0) {
-        randombytes_buf(suffix, sizeof(suffix));
-        if (sodium_bin2hex(suffix_text, sizeof(suffix_text), suffix,
-                           sizeof(suffix)) == NULL) {
-            result = -EIO;
-        }
-    }
-    if (result == 0) {
-        written = snprintf(metadata.filename, sizeof(metadata.filename),
-                           "backup-%llu-%s.jgb", (unsigned long long)now,
-                           suffix_text);
-        if (written <= 0 || (size_t)written >= sizeof(metadata.filename)) {
-            result = -EOVERFLOW;
-        }
-    }
-    if (result == 0) {
-        const size_t filename_size = strlen(metadata.filename);
-
-        recovery_payload[0U] = MANAGEMENT_RECOVERY_VERSION;
-        (void)memcpy(recovery_payload + 1U, metadata.filename, filename_size);
-        result = start_recovery_operation(
-            management, MANAGEMENT_OPERATION_BACKUP_CREATE, recovery_payload,
-            filename_size + 1U, 0U, false, origin, now);
-        journal_started = result == 0;
-    }
-    if (result == 0) {
-        result = jg_backup_store(management->backup_directory,
-                                 metadata.filename, archive, archive_size);
-    }
-    if (result == 0) {
-        metadata.created_at = info.created_at;
-        metadata.kind = info.kind;
-        (void)memcpy(metadata.checksum, info.checksum,
-                     sizeof(metadata.checksum));
-        metadata.schema_version = info.schema_version;
-        metadata.size_bytes = archive_size;
-        result = jg_database_transaction_begin(management->database);
-        transaction_started = result == 0;
-    }
-    if (result == 0) {
         result =
-            jg_database_create_backup(management->database, &metadata, created);
+            record_backup_archive(management, archive, archive_size, &info, now,
+                                  origin, completion, context, created);
     }
-    if (result == 0 && completion != NULL) {
-        result = completion(context, created);
-    }
-    if (result == 0) {
-        result = jg_database_operation_clear(management->database);
-    }
-    if (result == 0) {
-        result = jg_database_transaction_commit(management->database);
-        transaction_started = result != 0;
-        journal_started = result != 0;
-    }
-    if (result != 0 && transaction_started &&
-        jg_database_transaction_rollback(management->database) != 0) {
-        result = -EIO;
-    }
-    if (result != 0 && journal_started) {
-        result = abort_recovery_operation(management, result);
-    }
-    sodium_memzero(suffix, sizeof(suffix));
     jg_backup_data_clear(archive, archive_size);
     jg_database_export_clear(database, database_size);
     jg_certificate_pem_clear(certificate, certificate_size);
@@ -471,6 +495,212 @@ static int load_backup(struct jg_management *management,
         (void)memset(info, 0, sizeof(*info));
     }
     return result;
+}
+
+/** @brief Parse one exact local backup transfer request body. */
+static const char *backup_transfer_path(
+    const struct management_request *request)
+{
+    static const char *const fields[] = {"path"};
+
+    if (request->query[0U] != '\0' || json_object_size(request->body) != 1U ||
+        !fields_allowed(request->body, fields,
+                        sizeof(fields) / sizeof(fields[0U]))) {
+        return NULL;
+    }
+    return required_string(request->body, "path", 2U, PATH_MAX - 1U);
+}
+
+/** @brief Import one private local archive into managed backup storage. */
+int handle_backup_import(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written)
+{
+    struct authenticated_actor actor;
+    struct backup_creation_audit audit;
+    struct management_operation_origin origin;
+    struct jg_backup_info info;
+    struct jg_database_backup created;
+    const char *path = NULL;
+    uint8_t *archive = NULL;
+    size_t archive_size = 0U;
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    json_t *manifest = NULL;
+    int result = 0;
+
+    if (!request->local_administrator) {
+        return respond_error(404, "not_found",
+                             "The requested API resource was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    result = authenticate_actor(management, request, remote, true,
+                                JG_ACCESS_BACKUPS_WRITE, now, &actor);
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    path = backup_transfer_path(request);
+    if (path == NULL || path[0U] != '/') {
+        return respond_error(400, "invalid_body",
+                             "An absolute private archive path is required.",
+                             request->request_id, output, output_size, written);
+    }
+    result = jg_backup_load_path(path, &archive, &archive_size);
+    if (result == 0) {
+        result = jg_backup_inspect(archive, archive_size, &info);
+    }
+    if (result != 0) {
+        jg_backup_data_clear(archive, archive_size);
+        return respond_error(
+            result == -ENOENT ? 404 : 409,
+            result == -ENOENT ? "backup_file_not_found" : "backup_invalid",
+            result == -ENOENT
+                ? "The local backup archive does not exist."
+                : "The local archive is insecure, malformed, or incompatible.",
+            request->request_id, output, output_size, written);
+    }
+    audit = (struct backup_creation_audit){
+        .management = management,
+        .request = request,
+        .remote = remote,
+        .actor = &actor,
+        .action = "backup.import",
+        .now = now,
+    };
+    origin = (struct management_operation_origin){
+        .request = request,
+        .remote = remote,
+        .actor = &actor,
+        .action = "backup.import",
+    };
+
+    result = record_backup_archive(management, archive, archive_size, &info,
+                                   now, &origin, complete_backup_creation,
+                                   &audit, &created);
+    jg_backup_data_clear(archive, archive_size);
+    if (result != 0) {
+        return respond_error(500, "backup_import_failed",
+                             "The backup archive could not be imported.",
+                             request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    backup = backup_json(&created);
+    manifest = backup_manifest_json(&info);
+    if (body == NULL || backup == NULL || manifest == NULL ||
+        json_object_set(body, "backup", backup) != 0 ||
+        json_object_set(body, "manifest", manifest) != 0) {
+        result = -ENOMEM;
+    }
+    json_decref(backup);
+    json_decref(manifest);
+    if (result != 0) {
+        json_decref(body);
+        return result;
+    }
+    return encode_response(201, body, NULL, output, output_size, written);
+}
+
+/** @brief Export one managed archive to a private local path. */
+int handle_backup_export(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t backup_id,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written)
+{
+    struct authenticated_actor actor;
+    struct jg_database_backup metadata;
+    struct jg_backup_info info;
+    const char *path = NULL;
+    uint8_t *archive = NULL;
+    size_t archive_size = 0U;
+    bool exported = false;
+    bool transaction_started = false;
+    json_t *body = NULL;
+    json_t *backup = NULL;
+    int result = 0;
+
+    if (!request->local_administrator) {
+        return respond_error(404, "not_found",
+                             "The requested API resource was not found.",
+                             request->request_id, output, output_size, written);
+    }
+    result = authenticate_actor(management, request, remote, true,
+                                JG_ACCESS_BACKUPS_WRITE, now, &actor);
+    if (result != 0) {
+        return respond_actor_error(result, request, output, output_size,
+                                   written);
+    }
+    path = backup_transfer_path(request);
+    if (path == NULL || path[0U] != '/') {
+        return respond_error(400, "invalid_body",
+                             "An absolute private archive path is required.",
+                             request->request_id, output, output_size, written);
+    }
+    result = load_backup(management, backup_id, &metadata, &archive,
+                         &archive_size, &info);
+    if (result != 0) {
+        const bool missing = result == -ENOENT && metadata.id == 0U;
+
+        return respond_error(
+            missing ? 404 : 409,
+            missing ? "backup_not_found" : "backup_invalid",
+            missing ? "The requested backup does not exist."
+                    : "The recorded backup archive is missing or invalid.",
+            request->request_id, output, output_size, written);
+    }
+    result = jg_backup_store_path(path, archive, archive_size);
+    exported = result == 0;
+    jg_backup_data_clear(archive, archive_size);
+    if (result == 0) {
+        result = jg_database_transaction_begin(management->database);
+        transaction_started = result == 0;
+    }
+    if (result == 0) {
+        result = append_backup_audit(management, request, remote, &actor,
+                                     "backup.export", &metadata, NULL, false,
+                                     NULL, now);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(management->database);
+        transaction_started = result != 0;
+    }
+    if (result != 0 && transaction_started &&
+        jg_database_transaction_rollback(management->database) != 0) {
+        result = -EIO;
+    }
+    if (result != 0 && exported) {
+        const int cleanup_result = jg_backup_remove_path(path);
+
+        if (cleanup_result != 0 && cleanup_result != -ENOENT) {
+            result = -EIO;
+        }
+    }
+    if (result != 0) {
+        return respond_error(
+            result == -EEXIST ? 409 : 500,
+            result == -EEXIST ? "backup_file_exists" : "backup_export_failed",
+            result == -EEXIST ? "The local destination already exists."
+                              : "The backup archive could not be exported.",
+            request->request_id, output, output_size, written);
+    }
+    body = json_object();
+    backup = backup_json(&metadata);
+    if (body == NULL || backup == NULL ||
+        json_object_set(body, "backup", backup) != 0) {
+        json_decref(backup);
+        json_decref(body);
+        return -ENOMEM;
+    }
+    json_decref(backup);
+    return encode_response(200, body, NULL, output, output_size, written);
 }
 
 /** @brief Validate or atomically apply one backed-up server identity. */

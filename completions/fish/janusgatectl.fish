@@ -76,7 +76,7 @@ complete --command janusgatectl --condition __janusgatectl_needs_command \
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments certificate --description 'Manage the server identity'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
-    --arguments backup --description 'Create, inspect, or restore backups'
+    --arguments backup --description 'Manage backup archives'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
     --arguments diagnostics --description 'Create a diagnostic archive'
 complete --command janusgatectl --condition __janusgatectl_needs_command \
@@ -117,8 +117,8 @@ complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand certificate show install csr' \
     --arguments 'show install csr'
 complete --command janusgatectl \
-    --condition '__janusgatectl_needs_subcommand backup create inspect restore' \
-    --arguments 'create inspect restore'
+    --condition '__janusgatectl_needs_subcommand backup create inspect export import restore' \
+    --arguments 'create inspect export import restore'
 complete --command janusgatectl \
     --condition '__janusgatectl_needs_subcommand diagnostics create' \
     --arguments create
@@ -165,4 +165,7 @@ complete --command janusgatectl \
     --force-files
 complete --command janusgatectl \
     --condition '__fish_seen_subcommand_from certificate; and __fish_seen_subcommand_from install csr' \
+    --force-files
+complete --command janusgatectl \
+    --condition '__fish_seen_subcommand_from backup; and __fish_seen_subcommand_from import export' \
     --force-files

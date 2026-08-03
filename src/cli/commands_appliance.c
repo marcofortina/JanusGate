@@ -547,18 +547,65 @@ static int run_backup_restore(const struct cli_options *options,
     return result;
 }
 
+/** @brief Import or export one archive through the privileged local socket. */
+static int run_backup_transfer(const struct cli_options *options,
+                               const char *token,
+                               char **argv)
+{
+    char endpoint[sizeof("/api/v1/backups/18446744073709551615/export")];
+    const bool importing = strcmp(argv[1], "import") == 0;
+    const char *path = importing ? argv[2] : argv[3];
+    uint64_t identifier = 0U;
+    json_t *body = NULL;
+    int result = CLI_EXIT_SUCCESS;
+
+    if (path[0U] != '/' ||
+        (!importing && jg_cli_parse_identifier(argv[2], &identifier) != 0)) {
+        return CLI_EXIT_USAGE;
+    }
+    body = json_object();
+    if (body == NULL ||
+        json_object_set_new(body, "path", json_string(path)) != 0) {
+        json_decref(body);
+        return CLI_EXIT_FAILURE;
+    }
+    if (importing) {
+        (void)snprintf(endpoint, sizeof(endpoint), "/api/v1/backups/import");
+    } else {
+        (void)snprintf(endpoint, sizeof(endpoint),
+                       "/api/v1/backups/%llu/export",
+                       (unsigned long long)identifier);
+    }
+    result = jg_cli_send_api_request(
+        options, token, importing ? "backup import" : "backup export", "POST",
+        endpoint, body);
+    json_decref(body);
+    return result;
+}
+
 /** @brief Run one recognized backup administration command. */
 int jg_cli_run_backup_command(const struct cli_options *options,
                               int argc,
                               char **argv)
 {
     char token[JG_AUTH_SECRET_TEXT_SIZE] = {0};
-    int result = load_token(options, token);
+    const bool transfer =
+        strcmp(argv[1], "import") == 0 || strcmp(argv[1], "export") == 0;
+    int result = 0;
+
+    if (transfer && options->endpoint != NULL) {
+        (void)fprintf(
+            stderr, "janusgatectl: backup import and export are local-only\n");
+        return CLI_EXIT_USAGE;
+    }
+    result = load_token(options, token);
 
     if (result != CLI_EXIT_SUCCESS) {
         return result;
     }
-    if (strcmp(argv[1], "create") == 0) {
+    if (transfer) {
+        result = run_backup_transfer(options, token, argv);
+    } else if (strcmp(argv[1], "create") == 0) {
         result = run_backup_create(options, token, argv[2]);
     } else if (strcmp(argv[1], "inspect") == 0) {
         result = run_backup_inspect(options, token, argv[2]);

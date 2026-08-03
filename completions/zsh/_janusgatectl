@@ -40,7 +40,7 @@ case ${state} in
       'user:manage local users'
       'token:manage API tokens'
       'certificate:manage the server identity'
-      'backup:create, inspect, or restore backups'
+      'backup:manage backup archives'
       'diagnostics:create a diagnostic archive'
       'logging:manage operational logging'
       'config:validate or reload configuration'
@@ -116,9 +116,12 @@ case ${state} in
         ;;
       backup)
         if (( ${#line} == 1 )); then
-          _values 'backup command' create inspect restore
+          _values 'backup command' create inspect export import restore
         elif [[ ${line[2]} == create ]]; then
           _values 'backup kind' configuration full
+        elif [[ ${line[2]} == import ]] ||
+          [[ ${line[2]} == export && ${#line} -ge 3 ]]; then
+          _files
         fi
         ;;
       diagnostics)

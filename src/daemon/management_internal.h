@@ -1232,6 +1232,25 @@ int handle_backup_create(struct jg_management *management,
                          size_t output_size,
                          size_t *written);
 
+/** @brief Import one backup archive from a private local file. */
+int handle_backup_import(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Export one backup archive to a private local file. */
+int handle_backup_export(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t backup_id,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
 /** @brief Inspect one authenticated stored backup. */
 int handle_backup_inspect(struct jg_management *management,
                           const struct management_request *request,
