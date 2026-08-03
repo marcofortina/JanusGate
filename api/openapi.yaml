@@ -1033,6 +1033,13 @@ paths:
       tags: [Backups]
       operationId: restoreBackup
       summary: Dry-run or explicitly apply a verified backup
+      description: >-
+        An applied restore waits for active management mutations, excludes new
+        mutations, and creates an audited pre-restore checkpoint. Reads and job
+        polling remain available. A full restore replaces users, sessions, API
+        tokens, TOTP credentials, and mTLS mappings, so the remote identity that
+        started it may be unable to retrieve the completed job; prefer the
+        local Unix-socket CLI for full recovery restores.
       parameters:
         - $ref: '#/components/parameters/BackupId'
         - $ref: '#/components/parameters/CsrfToken'

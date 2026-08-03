@@ -51,11 +51,17 @@ temporarily unavailable operations use `5xx`.
 `GET /health` exposes the persistent policy `desired_revision` and
 `applied_revision`. A mismatch is retained across restarts and suspends normal
 mutations. An authorized `POST /config/reload` remains available as the
-explicit validation and publication retry.
+explicit validation and publication retry. During an applied restore,
+`management.restore_in_progress` is true and
+`management.mutations_allowed` is false. New writes receive
+`503 restore_in_progress`; authenticated reads and job polling continue.
 
 Blocklist updates, backups, diagnostics, and CSR generation return a bounded
 job reference with HTTP `202`. Poll `/jobs/{id}` as the same authenticated
 actor; completed results remain available until read, or for at most one hour.
+A full restore replaces sessions, tokens, users, TOTP credentials, and mTLS
+mappings. A remote actor may consequently lose permission to poll the job that
+performed it; use the local Unix-socket CLI for full recovery restores.
 
 ## Resource groups
 

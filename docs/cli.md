@@ -80,12 +80,17 @@ management requests.
 - `backup create full` requires `--passphrase-file`; private-key inclusion also
   requires `--include-private-key`.
 - `backup restore ID` requires the matching passphrase for an encrypted
-  backup.
+  backup, performs a dry run, and creates an audited checkpoint before
+  applying changes.
 - `diagnostics create` creates a bounded diagnostic archive.
 
 CSR generation, backup creation and restore, and diagnostic archive creation
 use the same bounded job queue; the CLI waits for completion before presenting
-or saving the result.
+or saving the result. An applied restore temporarily excludes other management
+writes. Full restores replace users, sessions, tokens, TOTP credentials, and
+mTLS mappings, so a remote caller can lose authorization before reading the
+job result. Run full recovery restores through the default local socket from a
+retained console.
 
 ## Runtime operations
 

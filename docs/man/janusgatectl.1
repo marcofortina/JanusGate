@@ -316,7 +316,11 @@ Verify and display stored backup metadata.
 .TP
 .BI "backup restore " id
 Validate a backup, show the dry-run comparison, and apply it only after
-confirmation. Both phases wait for their bounded management jobs.
+confirmation. Both phases wait for their bounded management jobs. An applied
+restore excludes other management writes and creates an audited checkpoint.
+A full restore replaces users, sessions, tokens, TOTP credentials, and
+client-certificate mappings; run full recovery restores through the local
+socket because remote authorization may be replaced before the result is read.
 .SH SYSTEM COMMANDS
 .TP
 .B diagnostics create

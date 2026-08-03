@@ -44,7 +44,9 @@ small and documented.
 Create configuration backups after reviewed changes and encrypted full backups
 before upgrades. Use a unique passphrase of at least 16 characters, store it
 separately, and test restoration on an isolated appliance. Restrict private-key
-backups to cases that require them.
+backups to cases that require them. Use the local console for full restores:
+the restored identity database can invalidate the remote session, token, or
+client-certificate mapping before its job result is read.
 
 Monitor certificate expiry. Install certificate and key together; JanusGate
 checks their match before replacement. Retain a recovery copy and console

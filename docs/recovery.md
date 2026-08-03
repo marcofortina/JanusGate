@@ -39,11 +39,61 @@ than editing the database directly.
 
 ## Database recovery
 
-Stop all JanusGate services before replacing a database. Preserve the damaged
-file and its write-ahead-log companions for analysis. Restore only through the
-validated backup operation so archive paths, manifest, schema, integrity, and
-revision rules are checked. Start the daemon first, verify health and audit
-state, then start the web service.
+Never replace the live database file while JanusGate is running. Normal
+recovery uses `janusgatectl backup restore ID` while the daemon is available,
+so archive paths, manifest, schema, integrity, and revision rules are checked.
+The applied phase waits for active management writes, prevents new writes, and
+creates an audited pre-restore checkpoint. Reads and local job polling remain
+available.
+
+Run full restores from a retained local console through the default Unix
+socket. A full restore replaces users, sessions, API tokens, TOTP credentials,
+and client-certificate mappings; the remote identity that submitted the job
+may therefore be invalid before it can read the result. Only a last-resort
+manual database replacement requires stopping every JanusGate service first.
+Preserve the damaged database and its write-ahead-log companions before any
+manual work, then start the daemon first and verify health and audit state
+before starting the web service.
+
+## Management consistency recovery
+
+`health.management` reports whether writes are safe. During a normal applied
+restore, `restore_in_progress` is true and `mutations_allowed` is false; new
+writes receive `503 restore_in_progress`. This is temporary and does not mark
+the appliance degraded. A non-empty `reasons` list identifies a failure that
+requires operator attention:
+
+| Reason | Required response |
+| --- | --- |
+| `database_rollback` | Preserve state; restart and verify database integrity. |
+| `external_recovery` | Restart locally; retain files if it persists. |
+| `policy_sync` | Validate and run `janusgatectl config reload`. |
+
+Ordinary policy, identity, and configuration writes remain suspended while
+management is degraded. Authenticated reads and the explicit validation,
+diagnostic, rollback, reload, restart, reboot, and shutdown recovery paths
+remain available.
+
+Cross-resource operations retain their original actor, source, request ID, and
+requested action in the durable journal. At startup, JanusGate restores or
+discards an interrupted operation before starting the job worker, records
+`management.operation.recover` or `management.operation.discard`, and removes
+the journal and snapshots only after their audit transaction commits. Database
+checkpoints use the configured database path plus `.recovery`; certificate,
+pending-key, and client-CA snapshots use their configured path plus
+`.rollback`. Do not edit or delete these files while an operation is pending.
+
+Backup creation uses the same durable intent. Startup reconciliation removes
+only owner-private regular staging files named `.janusgate-` plus 16 lowercase
+hexadecimal characters and generated `backup-TIMESTAMP-RANDOM.jgb` archives
+that have no committed metadata. It leaves symlinks, insecure files, and
+unrecognized names untouched for manual inspection.
+
+Recovery is complete only when `health.management.reasons` is empty,
+`mutations_allowed` is true, the audit chain verifies, expected policy and
+certificate state are active, and no operation snapshot remains. Repeated
+`external_recovery` after a restart requires preserving the files and using
+local console diagnostics rather than deleting the journal.
 
 ## Certificate recovery
 
