@@ -2916,6 +2916,7 @@ static void test_backup_restore_api(void **state)
         .queue_cpu_fanout = true,
     };
     struct jg_account_api_token token;
+    struct jg_audit_record audits[JG_AUDIT_PAGE_MAX];
     struct jg_audit_verification verification;
     struct jg_database_backup records[4U];
     struct jg_network_config loaded;
@@ -2930,6 +2931,10 @@ static void test_backup_restore_api(void **state)
     uint64_t full_backup_id = 0U;
     uint64_t user_id = 0U;
     size_t count = 0U;
+    size_t audit_count = 0U;
+    size_t checkpoint_audits = 0U;
+    size_t restore_audits = 0U;
+    uint64_t audit_total = 0U;
     bool has_more = false;
     int written = 0;
 
@@ -3095,7 +3100,28 @@ static void test_backup_restore_api(void **state)
     assert_int_equal(jg_database_audit_verify(fixture->database, &verification),
                      0);
     assert_true(verification.valid);
-    assert_int_equal(verification.records_inspected, 5U);
+    assert_int_equal(verification.records_inspected, 7U);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, audits,
+                                            sizeof(audits) / sizeof(audits[0U]),
+                                            &audit_count, &audit_total),
+                     0);
+    assert_int_equal(audit_count, JG_AUDIT_PAGE_MAX);
+    assert_int_equal(audit_total, 7U);
+    for (size_t index = 0U; index < audit_count; ++index) {
+        if (strcmp(audits[index].action, "backup.checkpoint.create") == 0) {
+            checkpoint_audits += 1U;
+            assert_non_null(
+                strstr(audits[index].details, "\"restore_backup_id\":"));
+            assert_non_null(strstr(audits[index].details,
+                                   "\"restore_request_id\":\"restore-"));
+        } else if (strcmp(audits[index].action, "backup.restore") == 0) {
+            restore_audits += 1U;
+            assert_non_null(
+                strstr(audits[index].details, "\"checkpoint_id\":"));
+        }
+    }
+    assert_int_equal(checkpoint_audits, 2U);
+    assert_int_equal(restore_audits, 2U);
     assert_int_equal(
         jg_database_list_backups(fixture->database, 0U,
                                  sizeof(records) / sizeof(records[0U]), records,

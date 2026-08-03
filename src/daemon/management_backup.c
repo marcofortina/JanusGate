@@ -26,12 +26,21 @@
 #include "janusgate/backup.h"
 #include "janusgate/certificate.h"
 
+/** Optional relationship between a restore and its automatic checkpoint. */
+struct backup_audit_relationship {
+    uint64_t restore_backup_id;
+    uint64_t checkpoint_id;
+    const char *restore_request_id;
+};
+
 /** Audit context completed with newly stored backup metadata. */
 struct backup_creation_audit {
     struct jg_management *management;
     const struct management_request *request;
     const struct remote_address *remote;
     const struct authenticated_actor *actor;
+    const char *action;
+    struct backup_audit_relationship relationship;
     uint64_t now;
 };
 
@@ -165,15 +174,17 @@ static json_t *restore_report_json(
 }
 
 /** @brief Append one successful backup lifecycle event without secrets. */
-static int append_backup_audit(struct jg_management *management,
-                               const struct management_request *request,
-                               const struct remote_address *remote,
-                               const struct authenticated_actor *actor,
-                               const char *action,
-                               const struct jg_database_backup *backup,
-                               const struct jg_database_restore_report *report,
-                               bool dry_run,
-                               uint64_t now)
+static int append_backup_audit(
+    struct jg_management *management,
+    const struct management_request *request,
+    const struct remote_address *remote,
+    const struct authenticated_actor *actor,
+    const char *action,
+    const struct jg_database_backup *backup,
+    const struct jg_database_restore_report *report,
+    bool dry_run,
+    const struct backup_audit_relationship *relationship,
+    uint64_t now)
 {
     char object_id[32U];
     char source[INET6_ADDRSTRLEN];
@@ -207,6 +218,22 @@ static int append_backup_audit(struct jg_management *management,
         (json_object_set_new(details, "dry_run", json_boolean(dry_run)) != 0 ||
          json_object_set_new(details, "changes",
                              json_boolean(report->changes)) != 0)) {
+        result = -ENOMEM;
+    }
+    if (result == 0 && relationship != NULL &&
+        ((relationship->restore_backup_id != 0U &&
+          json_object_set_new(
+              details, "restore_backup_id",
+              json_integer((json_int_t)relationship->restore_backup_id)) !=
+              0) ||
+         (relationship->checkpoint_id != 0U &&
+          json_object_set_new(
+              details, "checkpoint_id",
+              json_integer((json_int_t)relationship->checkpoint_id)) != 0) ||
+         (relationship->restore_request_id != NULL &&
+          json_object_set_new(details, "restore_request_id",
+                              json_string(relationship->restore_request_id)) !=
+              0))) {
         result = -ENOMEM;
     }
     if (result == 0) {
@@ -243,8 +270,8 @@ static int complete_backup_creation(void *context,
     const struct backup_creation_audit *audit = context;
 
     return append_backup_audit(audit->management, audit->request, audit->remote,
-                               audit->actor, "backup.create", created, NULL,
-                               false, audit->now);
+                               audit->actor, audit->action, created, NULL,
+                               false, &audit->relationship, audit->now);
 }
 
 /** Completion invoked while newly stored backup metadata is transactional. */
@@ -580,6 +607,7 @@ int execute_backup_create_job(struct jg_management *management,
         .request = &request,
         .remote = &job->remote,
         .actor = &job->actor,
+        .action = "backup.create",
         .now = job->started_at,
     };
     const struct management_operation_origin operation_origin = {
@@ -766,6 +794,12 @@ int execute_backup_restore_job(struct jg_management *management,
         .actor = actor,
         .action = "backup.restore",
     };
+    const struct management_operation_origin checkpoint_origin = {
+        .request = request,
+        .remote = remote,
+        .actor = actor,
+        .action = "backup.checkpoint.create",
+    };
     struct jg_database_backup metadata;
     struct jg_database_backup checkpoint;
     struct jg_backup_info info;
@@ -793,6 +827,20 @@ int execute_backup_restore_job(struct jg_management *management,
     json_t *checkpoint_body = NULL;
     const uint64_t backup_id = job->parameters.backup_restore.backup_id;
     const uint64_t now = job->started_at;
+    struct backup_creation_audit checkpoint_audit = {
+        .management = management,
+        .request = request,
+        .remote = remote,
+        .actor = actor,
+        .action = "backup.checkpoint.create",
+        .relationship =
+            {
+                .restore_backup_id = backup_id,
+                .restore_request_id = request->request_id,
+            },
+        .now = now,
+    };
+    struct backup_audit_relationship restore_relationship = {0};
     int result = 0;
 
     (void)memset(&contents, 0, sizeof(contents));
@@ -865,10 +913,11 @@ int execute_backup_restore_job(struct jg_management *management,
     }
     changes = report.changes || certificate_changes;
     if (!dry_run && changes) {
-        result = create_backup(management, metadata.kind,
-                               metadata.kind == JG_BACKUP_FULL, passphrase,
-                               passphrase == NULL ? 0U : strlen(passphrase),
-                               now, &operation_origin, NULL, NULL, &checkpoint);
+        result = create_backup(
+            management, metadata.kind, metadata.kind == JG_BACKUP_FULL,
+            passphrase, passphrase == NULL ? 0U : strlen(passphrase), now,
+            &checkpoint_origin, complete_backup_creation, &checkpoint_audit,
+            &checkpoint);
         checkpoint_created = result == 0;
     }
     if (!dry_run && changes && result != 0) {
@@ -936,14 +985,17 @@ int execute_backup_restore_job(struct jg_management *management,
     }
     audit_report = report;
     audit_report.changes = changes;
+    restore_relationship.checkpoint_id =
+        checkpoint_created ? checkpoint.id : 0U;
     if (recovery_started) {
         result = jg_database_transaction_begin(management->database);
     }
     if (result == 0) {
-        result = append_backup_audit(management, request, remote, actor,
-                                     dry_run ? "backup.restore.dry_run"
-                                             : "backup.restore",
-                                     &metadata, &audit_report, dry_run, now);
+        result = append_backup_audit(
+            management, request, remote, actor,
+            dry_run ? "backup.restore.dry_run" : "backup.restore", &metadata,
+            &audit_report, dry_run,
+            checkpoint_created ? &restore_relationship : NULL, now);
     }
     if (recovery_started) {
         result = finish_recovery_operation(management, result);
