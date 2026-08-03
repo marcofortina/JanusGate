@@ -682,7 +682,11 @@ static bool source_network_matches(const struct api_token_record *record,
 static int touch_api_token(sqlite3 *handle, uint64_t token_id, uint64_t now)
 {
     static const char update[] =
-        "UPDATE api_tokens SET last_used_at=?1 WHERE id=?2;";
+        "UPDATE api_tokens SET last_used_at=?1 WHERE id=?2 AND "
+        "(last_used_at IS NULL OR last_used_at<=?3);";
+    const uint64_t cutoff = now >= JG_ACCOUNT_SESSION_TOUCH_INTERVAL
+                                ? now - JG_ACCOUNT_SESSION_TOUCH_INTERVAL
+                                : 0U;
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(
         handle, update, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
@@ -697,11 +701,12 @@ static int touch_api_token(sqlite3 *handle, uint64_t token_id, uint64_t now)
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
+        status = sqlite3_bind_int64(statement, 3, (sqlite3_int64)cutoff);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
         status = sqlite3_step(statement);
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
-    if (result == 0 && sqlite3_changes(handle) != 1) {
-        result = -EACCES;
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -746,7 +751,7 @@ int jg_account_token_validate(struct jg_database *database,
     }
     result = jg_auth_secret_digest(token, token_size, digest);
     if (result == 0) {
-        result = jg_database_transaction_begin(database);
+        result = jg_database_transaction_begin_read(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -771,12 +776,6 @@ int jg_account_token_validate(struct jg_database *database,
         if (role_permissions == 0U) {
             authentication_result = -EACCES;
         }
-    }
-    if (result == 0 && authentication_result == 0 &&
-        (!record.has_last_use ||
-         (record.last_used_at <= now &&
-          now - record.last_used_at >= JG_ACCOUNT_SESSION_TOUCH_INTERVAL))) {
-        result = touch_api_token(database->handle, record.token_id, now);
     }
     if (result == 0) {
         result = jg_database_transaction_commit(database);
@@ -803,6 +802,33 @@ int jg_account_token_validate(struct jg_database *database,
     sodium_memzero(digest, sizeof(digest));
     sodium_memzero(&record, sizeof(record));
     return result == 0 ? authentication_result : result;
+}
+
+/** @brief Persist bounded activity for one previously validated API token. */
+int jg_account_token_touch(struct jg_database *database,
+                           uint64_t token_id,
+                           uint64_t now)
+{
+    bool transaction_open = false;
+    int result = 0;
+
+    if (database == NULL || token_id == 0U || token_id > (uint64_t)INT64_MAX ||
+        now == 0U || now > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    result = jg_database_transaction_begin(database);
+    transaction_open = result == 0;
+    if (result == 0) {
+        result = touch_api_token(database->handle, token_id, now);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(database);
+        transaction_open = result != 0;
+    }
+    if (result != 0 && transaction_open) {
+        (void)jg_database_transaction_rollback(database);
+    }
+    return result;
 }
 
 /** @brief Reauthorize one deferred API token without retaining its secret. */

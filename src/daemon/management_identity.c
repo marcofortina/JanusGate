@@ -728,6 +728,37 @@ int handle_bootstrap(struct jg_management *management,
                          output_size, written);
 }
 
+/** @brief Persist authenticated activity without competing with a restore. */
+static int record_actor_activity(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const char *session,
+                                 uint64_t token_id,
+                                 uint64_t now)
+{
+    const bool best_effort = strcmp(request->method, "GET") == 0;
+    bool mutation_active = false;
+    int result = 0;
+
+    if (best_effort) {
+        if (management_degraded_reasons(management) != 0U ||
+            management_mutation_begin(management) != 0) {
+            return 0;
+        }
+        mutation_active = true;
+    }
+    if (session != NULL) {
+        result = jg_account_session_touch(management->database,
+                                          (const uint8_t *)session,
+                                          strlen(session), now);
+    } else {
+        result = jg_account_token_touch(management->database, token_id, now);
+    }
+    if (mutation_active) {
+        management_mutation_end(management);
+    }
+    return best_effort ? 0 : result;
+}
+
 /** @brief Authenticate the current browser session and optional CSRF value. */
 static int authenticate_session(struct jg_management *management,
                                 const struct management_request *request,
@@ -738,17 +769,23 @@ static int authenticate_session(struct jg_management *management,
 {
     const size_t session_size = strlen(request->session);
     const size_t csrf_size = strlen(request->csrf);
+    int result = 0;
 
     if (session_size != JG_AUTH_SECRET_TEXT_SIZE - 1U ||
         (require_csrf && csrf_size != JG_AUTH_SECRET_TEXT_SIZE - 1U)) {
         return -EACCES;
     }
-    return jg_account_session_validate(
+    result = jg_account_session_validate(
         management->database, (const uint8_t *)request->session, session_size,
         require_csrf ? (const uint8_t *)request->csrf : NULL,
         require_csrf ? csrf_size : 0U, require_csrf, now,
         MANAGEMENT_SESSION_INACTIVITY, remote->family, remote->address,
         identity);
+    if (result == 0) {
+        result = record_actor_activity(management, request, request->session,
+                                       0U, now);
+    }
+    return result;
 }
 
 /** @brief Change the current user's password and rotate its web session. */
@@ -959,6 +996,10 @@ int authenticate_actor(struct jg_management *management,
         if (result == 0) {
             result = token_rate_accept(management, token_id,
                                        requests_per_minute, now);
+        }
+        if (result == 0) {
+            result =
+                record_actor_activity(management, request, NULL, token_id, now);
         }
         actor->kind = AUTHENTICATED_ACTOR_TOKEN;
         actor->actor_id = token_id;

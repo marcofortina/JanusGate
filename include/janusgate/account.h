@@ -583,10 +583,10 @@ JG_PUBLIC int jg_account_session_issue(
  * @brief Validate a web session and optionally its CSRF token.
  *
  * Session validation checks user enablement, absolute lifetime, inactivity,
- * remote-address binding, and the user's current revocation epoch. Successful
- * activity is persisted at a bounded interval.
+ * remote-address binding, and the user's current revocation epoch without
+ * modifying persistent state.
  *
- * @param[in,out] database Open database.
+ * @param[in] database Open database.
  * @param[in] session Exact opaque session bytes.
  * @param[in] session_size Number of bytes in @p session.
  * @param[in] csrf Candidate CSRF bytes, or null when not required.
@@ -607,7 +607,6 @@ JG_PUBLIC int jg_account_session_issue(
  *
  * @thread_safety The caller must serialize access to @p database.
  *
- * @side_effects May advance the persistent last-seen timestamp.
  */
 JG_PUBLIC int jg_account_session_validate(
     struct jg_database *database,
@@ -621,6 +620,30 @@ JG_PUBLIC int jg_account_session_validate(
     enum jg_policy_address_family remote_family,
     const uint8_t *remote_address,
     struct jg_account_identity *identity);
+
+/**
+ * @brief Persist recent activity for one previously validated web session.
+ *
+ * Activity is advanced at most once per bounded touch interval. A session
+ * removed between validation and this best-effort update is accepted.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] session Exact opaque session bytes.
+ * @param[in] session_size Number of bytes in @p session.
+ * @param[in] now Current Unix timestamp in seconds.
+ *
+ * @return 0 on success or when no update is due.
+ * @return -EINVAL for invalid input.
+ * @return A negative errno-style digest or SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects May advance the persistent last-seen timestamp.
+ */
+JG_PUBLIC int jg_account_session_touch(struct jg_database *database,
+                                       const uint8_t *session,
+                                       size_t session_size,
+                                       uint64_t now);
 
 /**
  * @brief Reauthorize a previously authenticated session by its safe digest.
@@ -776,9 +799,9 @@ JG_PUBLIC int jg_account_token_get(struct jg_database *database,
  *
  * Role permissions and persistent token scopes are intersected on every
  * authentication. Optional source-network and expiry restrictions are
- * enforced before the token's last-use timestamp is advanced.
+ * enforced without modifying persistent state.
  *
- * @param[in,out] database Open database.
+ * @param[in] database Open database.
  * @param[in] token Opaque API-token bytes.
  * @param[in] token_size Number of bytes in @p token.
  * @param[in] now Current Unix timestamp in seconds.
@@ -796,7 +819,6 @@ JG_PUBLIC int jg_account_token_get(struct jg_database *database,
  *
  * @thread_safety The caller must serialize access to @p database.
  *
- * @side_effects May advance the persistent last-use timestamp.
  */
 JG_PUBLIC int jg_account_token_validate(
     struct jg_database *database,
@@ -808,6 +830,28 @@ JG_PUBLIC int jg_account_token_validate(
     struct jg_account_identity *identity,
     uint64_t *token_id,
     uint32_t *requests_per_minute);
+
+/**
+ * @brief Persist recent activity for one previously validated API token.
+ *
+ * Activity is advanced at most once per bounded touch interval. A token
+ * removed between validation and this best-effort update is accepted.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] token_id Persistent token identifier.
+ * @param[in] now Current Unix timestamp in seconds.
+ *
+ * @return 0 on success or when no update is due.
+ * @return -EINVAL for invalid input.
+ * @return A negative errno-style SQLite error otherwise.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects May advance the persistent last-use timestamp.
+ */
+JG_PUBLIC int jg_account_token_touch(struct jg_database *database,
+                                     uint64_t token_id,
+                                     uint64_t now);
 
 /**
  * @brief Reauthorize a previously authenticated API token by identifier.

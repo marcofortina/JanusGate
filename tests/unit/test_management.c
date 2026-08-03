@@ -433,6 +433,8 @@ static json_t *process_local_request(struct management_fixture *fixture,
 /** @brief Verify reads continue while an applied restore rejects mutations. */
 static void test_restore_request_exclusion(void **state)
 {
+    static const uint8_t password[] = "correct horse battery staple";
+    static const uint8_t remote[] = {192U, 0U, 2U, 10U};
     static const char read_request[] =
         "{\"request_id\":\"restore-read\",\"method\":\"GET\","
         "\"path\":\"/api/v1/auth/state\",\"host\":\"localhost\","
@@ -442,8 +444,75 @@ static void test_restore_request_exclusion(void **state)
         "\"path\":\"/api/v1/auth/bootstrap\",\"host\":\"localhost\","
         "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
     struct management_fixture *fixture = *state;
+    char bootstrap[JG_AUTH_SECRET_TEXT_SIZE];
+    char session_request[1024U];
+    char token_request[1024U];
+    uint8_t session_digest[JG_AUTH_SECRET_DIGEST_SIZE];
+    struct jg_account_api_token token;
+    struct jg_account_identity identity;
+    struct jg_account_identity reauthorized;
+    struct jg_account_session_tokens session;
+    struct jg_account_token_record tokens[1U];
+    struct jg_auth_password_policy password_policy;
+    const struct jg_account_token_config token_config = {
+        .name = "restore read",
+        .permissions = JG_ACCESS_STATUS_READ,
+        .requests_per_minute = 100U,
+    };
     json_t *response = NULL;
+    const time_t wall_clock = time(NULL);
+    const uint64_t issued_at =
+        (uint64_t)wall_clock - JG_ACCOUNT_SESSION_TOUCH_INTERVAL;
+    const uint64_t idle_at = issued_at + MANAGEMENT_SESSION_INACTIVITY + 1U;
+    uint64_t total = 0U;
+    uint64_t user_id = 0U;
+    size_t count = 0U;
+    int written = 0;
 
+    assert_true(wall_clock > (time_t)JG_ACCOUNT_SESSION_TOUCH_INTERVAL);
+    jg_auth_password_policy_default(&password_policy);
+    assert_int_equal(jg_account_bootstrap_issue(fixture->database, issued_at,
+                                                300U, bootstrap),
+                     0);
+    assert_int_equal(jg_account_create_initial_administrator(
+                         fixture->database, (const uint8_t *)bootstrap,
+                         strlen(bootstrap), "administrator", password,
+                         sizeof(password) - 1U, &password_policy, issued_at,
+                         &user_id),
+                     0);
+    assert_int_equal(jg_account_authenticate(fixture->database, "administrator",
+                                             password, sizeof(password) - 1U,
+                                             &password_policy, issued_at,
+                                             &identity),
+                     0);
+    assert_int_equal(
+        jg_account_session_issue(fixture->database, &identity, issued_at, 3600U,
+                                 JG_POLICY_ADDRESS_IPV4, remote, &session),
+        0);
+    assert_int_equal(jg_auth_secret_digest((const uint8_t *)session.session,
+                                           strlen(session.session),
+                                           session_digest),
+                     0);
+    assert_int_equal(jg_account_token_issue(fixture->database, user_id,
+                                            &token_config, issued_at, &token),
+                     0);
+    written =
+        snprintf(session_request, sizeof(session_request),
+                 "{\"request_id\":\"restore-session\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/auth/session\",\"host\":\"192.168.77.1\","
+                 "\"remote_address\":\"192.0.2.10\",\"session\":\"%s\","
+                 "\"body\":{}}",
+                 session.session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(session_request));
+    written = snprintf(token_request, sizeof(token_request),
+                       "{\"request_id\":\"restore-token\",\"method\":\"GET\","
+                       "\"path\":\"/api/v1/health\",\"host\":\"192.168.77.1\","
+                       "\"remote_address\":\"192.0.2.10\",\"bearer\":\"%s\","
+                       "\"body\":{}}",
+                       token.secret);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(token_request));
     assert_int_equal(management_restore_begin(fixture->management), 0);
     response = process_local_request(fixture, read_request);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
@@ -458,13 +527,52 @@ static void test_restore_request_exclusion(void **state)
             "code")),
         "restore_in_progress");
     json_decref(response);
+    response = process_request(fixture, session_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    response = process_request(fixture, token_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    assert_int_equal(jg_account_session_reauthorize(
+                         fixture->database, session_digest, idle_at,
+                         MANAGEMENT_SESSION_INACTIVITY, JG_POLICY_ADDRESS_IPV4,
+                         remote, &reauthorized),
+                     -EACCES);
+    assert_int_equal(jg_account_token_list(fixture->database, 0U, tokens, 1U,
+                                           &count, &total),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(tokens[0U].last_used_at, 0U);
     management_restore_end(fixture->management);
+    response = process_request(fixture, session_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    assert_int_equal(jg_account_session_reauthorize(
+                         fixture->database, session_digest, idle_at,
+                         MANAGEMENT_SESSION_INACTIVITY, JG_POLICY_ADDRESS_IPV4,
+                         remote, &reauthorized),
+                     0);
+    response = process_request(fixture, token_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    assert_int_equal(jg_account_token_list(fixture->database, 0U, tokens, 1U,
+                                           &count, &total),
+                     0);
+    assert_true(tokens[0U].last_used_at >= (uint64_t)wall_clock);
     response = process_local_request(fixture, mutation_request);
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      400);
     json_decref(response);
     assert_int_equal(management_restore_begin(fixture->management), 0);
     management_restore_end(fixture->management);
+    sodium_memzero(session_digest, sizeof(session_digest));
+    sodium_memzero(&token, sizeof(token));
+    sodium_memzero(&session, sizeof(session));
+    sodium_memzero(bootstrap, sizeof(bootstrap));
 }
 
 /** @brief Simulate successful runtime publication in a runtime-free fixture. */

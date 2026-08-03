@@ -331,6 +331,7 @@ static void test_web_sessions(void **state)
     char token[JG_AUTH_SECRET_TEXT_SIZE];
     uint8_t session_digest[JG_AUTH_SECRET_DIGEST_SIZE];
     struct jg_account_session_tokens session;
+    struct jg_account_session_tokens activity_session;
     struct jg_auth_password_policy password_policy;
     struct jg_account_identity identity;
     struct jg_account_identity validated;
@@ -372,6 +373,33 @@ static void test_web_sessions(void **state)
                          JG_POLICY_ADDRESS_IPV4, remote, &validated),
                      0);
     assert_int_equal(validated.user_id, identity.user_id);
+    assert_int_equal(jg_account_session_issue(database, &identity, 200U,
+                                              JG_ACCOUNT_SESSION_LIFETIME_MIN,
+                                              JG_POLICY_ADDRESS_IPV4, remote,
+                                              &activity_session),
+                     0);
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)activity_session.session,
+                         strlen(activity_session.session), NULL, 0U, false,
+                         260U, JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     0);
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)activity_session.session,
+                         strlen(activity_session.session), NULL, 0U, false,
+                         261U, JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     -EACCES);
+    assert_int_equal(jg_account_session_touch(
+                         database, (const uint8_t *)activity_session.session,
+                         strlen(activity_session.session), 260U),
+                     0);
+    assert_int_equal(jg_account_session_validate(
+                         database, (const uint8_t *)activity_session.session,
+                         strlen(activity_session.session), NULL, 0U, false,
+                         261U, JG_ACCOUNT_SESSION_INACTIVITY_MIN,
+                         JG_POLICY_ADDRESS_IPV4, remote, &validated),
+                     0);
     assert_int_equal(jg_account_session_reauthorize(
                          database, session_digest, 111U,
                          JG_ACCOUNT_SESSION_INACTIVITY_MIN,
@@ -479,6 +507,10 @@ static void test_api_tokens(void **state)
     assert_int_equal(authenticated_token_id, token.token_id);
     assert_int_equal(requests_per_minute, 120U);
     assert_int_equal(identity.permissions, config.permissions);
+    assert_int_equal(
+        jg_account_token_list(database, 0U, records, 2U, &count, &total), 0);
+    assert_int_equal(records[0U].last_used_at, 0U);
+    assert_int_equal(jg_account_token_touch(database, token.token_id, 111U), 0);
     assert_int_equal(jg_account_token_reauthorize(database, token.token_id,
                                                   111U, JG_POLICY_ADDRESS_IPV4,
                                                   remote, &identity),

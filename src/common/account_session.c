@@ -283,7 +283,11 @@ static int touch_session(sqlite3 *handle,
                          uint64_t now)
 {
     static const char update[] =
-        "UPDATE web_sessions SET last_seen_at=?1 WHERE session_hash=?2;";
+        "UPDATE web_sessions SET last_seen_at=?1 WHERE session_hash=?2 AND "
+        "last_seen_at<=?3;";
+    const uint64_t cutoff = now >= JG_ACCOUNT_SESSION_TOUCH_INTERVAL
+                                ? now - JG_ACCOUNT_SESSION_TOUCH_INTERVAL
+                                : 0U;
     sqlite3_stmt *statement = NULL;
     int status = sqlite3_prepare_v3(
         handle, update, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
@@ -299,11 +303,12 @@ static int touch_session(sqlite3 *handle,
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
+        status = sqlite3_bind_int64(statement, 3, (sqlite3_int64)cutoff);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
         status = sqlite3_step(statement);
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
-    if (result == 0 && sqlite3_changes(handle) != 1) {
-        result = -EACCES;
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -359,7 +364,7 @@ int jg_account_session_validate(struct jg_database *database,
         result = jg_auth_secret_digest(csrf, csrf_size, csrf_digest);
     }
     if (result == 0) {
-        result = jg_database_transaction_begin(database);
+        result = jg_database_transaction_begin_read(database);
         transaction_open = result == 0;
     }
     if (result == 0) {
@@ -381,10 +386,6 @@ int jg_account_session_validate(struct jg_database *database,
     if (result == 0 && authentication_result == 0) {
         result = jg_account_load_identity_authorization(
             database->handle, record.user_id, &permissions, &totp_enabled);
-    }
-    if (result == 0 && authentication_result == 0 &&
-        now - record.last_seen_at >= JG_ACCOUNT_SESSION_TOUCH_INTERVAL) {
-        result = touch_session(database->handle, session_digest, now);
     }
     if (result == 0) {
         result = jg_database_transaction_commit(database);
@@ -410,6 +411,40 @@ int jg_account_session_validate(struct jg_database *database,
     sodium_memzero(session_digest, sizeof(session_digest));
     sodium_memzero(&record, sizeof(record));
     return result == 0 ? authentication_result : result;
+}
+
+/** @brief Persist bounded activity for one previously validated session. */
+int jg_account_session_touch(struct jg_database *database,
+                             const uint8_t *session,
+                             size_t session_size,
+                             uint64_t now)
+{
+    uint8_t digest[JG_AUTH_SECRET_DIGEST_SIZE];
+    bool transaction_open = false;
+    int result = 0;
+
+    if (database == NULL || session == NULL ||
+        session_size != JG_AUTH_SECRET_TEXT_SIZE - 1U || now == 0U ||
+        now > (uint64_t)INT64_MAX) {
+        return -EINVAL;
+    }
+    result = jg_auth_secret_digest(session, session_size, digest);
+    if (result == 0) {
+        result = jg_database_transaction_begin(database);
+        transaction_open = result == 0;
+    }
+    if (result == 0) {
+        result = touch_session(database->handle, digest, now);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(database);
+        transaction_open = result != 0;
+    }
+    if (result != 0 && transaction_open) {
+        (void)jg_database_transaction_rollback(database);
+    }
+    sodium_memzero(digest, sizeof(digest));
+    return result;
 }
 
 /** @brief Reauthorize one deferred session without retaining its plaintext. */
