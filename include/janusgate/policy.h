@@ -34,6 +34,9 @@
 /** Maximum rule-attribution bytes excluding the null terminator. */
 #define JG_POLICY_ATTRIBUTION_MAX 255U
 
+/** Maximum client or VLAN observe-only scopes in one snapshot. */
+#define JG_POLICY_OBSERVED_SCOPE_LIMIT 65536U
+
 /**
  * @brief Action selected by a policy rule.
  */
@@ -157,6 +160,18 @@ struct jg_policy_client {
 };
 
 /**
+ * @brief Snapshot-wide observe-only policy controls.
+ */
+struct jg_policy_enforcement_config {
+    /** Enforcement applied to every client. */
+    enum jg_policy_enforcement global;
+    /** Client or VLAN scopes placed in observe-only mode. */
+    const struct jg_policy_scope *observed_scopes;
+    /** Number of elements in @ref observed_scopes. */
+    size_t observed_scope_count;
+};
+
+/**
  * @brief Administrator or blocklist rule supplied to the snapshot builder.
  */
 struct jg_policy_rule_input {
@@ -238,9 +253,29 @@ struct jg_policy_snapshot_info {
     size_t rule_count;
     /** Number of destination rules retained after deduplication. */
     size_t destination_rule_count;
+    /** Snapshot-wide enforcement mode. */
+    enum jg_policy_enforcement global_enforcement;
+    /** Number of canonical client or VLAN observe-only scopes. */
+    size_t observed_scope_count;
     /** Canonical SHA-256 digest independent of hash-table layout. */
     uint8_t checksum[JG_POLICY_CHECKSUM_SIZE];
 };
+
+/**
+ * @brief Validate and canonicalize one policy scope.
+ *
+ * Host bits outside an IPv4 or IPv6 prefix are cleared in @p output.
+ *
+ * @param[in] input Scope to validate.
+ * @param[out] output Receives the canonical scope.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument, invalid type, prefix, or VLAN.
+ *
+ * @thread_safety This function is reentrant.
+ */
+JG_PUBLIC int jg_policy_scope_normalize(const struct jg_policy_scope *input,
+                                        struct jg_policy_scope *output);
 
 /**
  * @brief Explanation of a domain-policy verdict.
@@ -445,6 +480,40 @@ JG_PUBLIC int jg_policy_snapshot_build_complete(
     size_t rule_count,
     const struct jg_policy_destination_rule_input *destination_rules,
     size_t destination_rule_count,
+    uint64_t generation,
+    struct jg_policy_snapshot **snapshot);
+
+/**
+ * @brief Build a complete snapshot with global and scoped enforcement.
+ *
+ * A null enforcement configuration is equivalent to global enforcement with
+ * no observed client scopes. Global scopes must use
+ * @ref jg_policy_enforcement_config.global instead of appearing in
+ * @ref jg_policy_enforcement_config.observed_scopes.
+ *
+ * @param[in] rules Domain rules, or null when @p rule_count is zero.
+ * @param[in] rule_count Number of domain rules.
+ * @param[in] destination_rules Destination rules, or null when
+ * @p destination_rule_count is zero.
+ * @param[in] destination_rule_count Number of destination rules.
+ * @param[in] enforcement Snapshot-wide enforcement controls, or null.
+ * @param[in] generation Nonzero configuration generation.
+ * @param[out] snapshot Receives the owned snapshot on success.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid rules, enforcement, scopes, or arguments.
+ * @return -EOVERFLOW when the packed representation is too large.
+ * @return -ENOMEM when allocation fails.
+ * @return -EIO when cryptographic initialization fails.
+ *
+ * @thread_safety Concurrent builds are safe.
+ */
+JG_PUBLIC int jg_policy_snapshot_build_configured(
+    const struct jg_policy_rule_input *rules,
+    size_t rule_count,
+    const struct jg_policy_destination_rule_input *destination_rules,
+    size_t destination_rule_count,
+    const struct jg_policy_enforcement_config *enforcement,
     uint64_t generation,
     struct jg_policy_snapshot **snapshot);
 

@@ -92,6 +92,7 @@ struct jg_policy_snapshot {
     char *strings;
     struct stored_destination_rule *destination_rules;
     char *destination_strings;
+    struct jg_policy_scope *observed_scopes;
     struct policy_slot *table;
     size_t table_capacity;
     uint8_t hash_key[crypto_shorthash_KEYBYTES];
@@ -176,8 +177,8 @@ static bool rule_class_valid(const struct jg_policy_rule_input *rule)
 /**
  * @brief Copy and mask a scope into its canonical representation.
  */
-static int scope_normalize(const struct jg_policy_scope *input,
-                           struct jg_policy_scope *output)
+int jg_policy_scope_normalize(const struct jg_policy_scope *input,
+                              struct jg_policy_scope *output)
 {
     size_t address_size = 0U;
     size_t complete_bytes = 0U;
@@ -425,7 +426,8 @@ static int prepare_rules(const struct jg_policy_rule_input *input,
         size_t source_size = 0U;
 
         if (input[index].id == 0U || !rule_class_valid(&input[index]) ||
-            scope_normalize(&input[index].scope, &normalized_scope) != 0 ||
+            jg_policy_scope_normalize(&input[index].scope, &normalized_scope) !=
+                0 ||
             jg_domain_normalize(input[index].domain, normalized,
                                 sizeof(normalized)) != 0 ||
             attribution_length(input[index].attribution, &source_length) != 0) {
@@ -473,7 +475,8 @@ static int prepare_rules(const struct jg_policy_rule_input *input,
         build[index].enforcement = input[index].enforcement;
         build[index].source = input[index].source;
         build[index].target = input[index].target;
-        (void)scope_normalize(&input[index].scope, &build[index].scope);
+        (void)jg_policy_scope_normalize(&input[index].scope,
+                                        &build[index].scope);
     }
 
     *prepared = build;
@@ -593,7 +596,8 @@ static int prepare_destination_rules(
             (input[index].has_port && input[index].port == 0U) ||
             (!input[index].has_port && input[index].port != 0U) ||
             destination_address_normalize(&input[index], &normalized) != 0 ||
-            scope_normalize(&input[index].scope, &normalized.scope) != 0 ||
+            jg_policy_scope_normalize(&input[index].scope, &normalized.scope) !=
+                0 ||
             attribution_length(input[index].attribution, &attribution_size) !=
                 0) {
             return -EINVAL;
@@ -627,7 +631,8 @@ static int prepare_destination_rules(
                      attribution_size);
         cursor += attribution_size;
         (void)destination_address_normalize(&input[index], &build[index]);
-        (void)scope_normalize(&input[index].scope, &build[index].scope);
+        (void)jg_policy_scope_normalize(&input[index].scope,
+                                        &build[index].scope);
     }
     *prepared = build;
     *strings = packed;
@@ -759,12 +764,19 @@ static void checksum_scope(crypto_hash_sha256_state *state,
 /** Compute the canonical digest independently of random table placement. */
 static void snapshot_checksum(struct jg_policy_snapshot *snapshot)
 {
-    static const uint8_t format[] = "JanusGate policy snapshot 4";
+    static const uint8_t format[] = "JanusGate policy snapshot 5";
     crypto_hash_sha256_state state;
+    const uint8_t global_enforcement =
+        (uint8_t)snapshot->info.global_enforcement;
     size_t index = 0U;
 
     (void)crypto_hash_sha256_init(&state);
     (void)crypto_hash_sha256_update(&state, format, sizeof(format) - 1U);
+    (void)crypto_hash_sha256_update(&state, &global_enforcement, 1U);
+    checksum_u64(&state, (uint64_t)snapshot->info.observed_scope_count);
+    for (index = 0U; index < snapshot->info.observed_scope_count; ++index) {
+        checksum_scope(&state, &snapshot->observed_scopes[index]);
+    }
     checksum_u64(&state, (uint64_t)snapshot->info.rule_count);
     checksum_u64(&state, (uint64_t)snapshot->info.destination_rule_count);
     for (index = 0U; index < snapshot->info.rule_count; ++index) {
@@ -997,6 +1009,64 @@ static int snapshot_populate_destinations(
     return 0;
 }
 
+/** @brief Compare two canonical scopes for sorting and deduplication. */
+static int scope_sort_compare(const void *left, const void *right)
+{
+    return scope_compare(left, right);
+}
+
+/** @brief Validate and copy snapshot-wide observe-only scopes. */
+static int snapshot_populate_enforcement(
+    struct jg_policy_snapshot *snapshot,
+    const struct jg_policy_enforcement_config *config)
+{
+    size_t retained = 0U;
+    size_t index = 0U;
+
+    snapshot->info.global_enforcement = JG_POLICY_ENFORCE;
+    if (config == NULL) {
+        return 0;
+    }
+    if ((config->global != JG_POLICY_ENFORCE &&
+         config->global != JG_POLICY_OBSERVE) ||
+        config->observed_scope_count > JG_POLICY_OBSERVED_SCOPE_LIMIT ||
+        (config->observed_scope_count != 0U &&
+         config->observed_scopes == NULL)) {
+        return -EINVAL;
+    }
+    snapshot->info.global_enforcement = config->global;
+    if (config->observed_scope_count == 0U) {
+        return 0;
+    }
+    snapshot->observed_scopes = calloc(config->observed_scope_count,
+                                       sizeof(*snapshot->observed_scopes));
+    if (snapshot->observed_scopes == NULL) {
+        return -ENOMEM;
+    }
+    for (index = 0U; index < config->observed_scope_count; ++index) {
+        if (config->observed_scopes[index].type == JG_POLICY_SCOPE_GLOBAL ||
+            jg_policy_scope_normalize(&config->observed_scopes[index],
+                                      &snapshot->observed_scopes[index]) != 0) {
+            return -EINVAL;
+        }
+    }
+    if (config->observed_scope_count > 1U) {
+        qsort(snapshot->observed_scopes, config->observed_scope_count,
+              sizeof(*snapshot->observed_scopes), scope_sort_compare);
+    }
+    for (index = 0U; index < config->observed_scope_count; ++index) {
+        if (retained == 0U ||
+            scope_compare(&snapshot->observed_scopes[retained - 1U],
+                          &snapshot->observed_scopes[index]) != 0) {
+            snapshot->observed_scopes[retained] =
+                snapshot->observed_scopes[index];
+            ++retained;
+        }
+    }
+    snapshot->info.observed_scope_count = retained;
+    return 0;
+}
+
 /** @brief Build a normalized, deduplicated immutable policy snapshot. */
 int jg_policy_snapshot_build(const struct jg_policy_rule_input *rules,
                              size_t rule_count,
@@ -1013,6 +1083,21 @@ int jg_policy_snapshot_build_complete(
     size_t rule_count,
     const struct jg_policy_destination_rule_input *destination_rules,
     size_t destination_rule_count,
+    uint64_t generation,
+    struct jg_policy_snapshot **snapshot)
+{
+    return jg_policy_snapshot_build_configured(
+        rules, rule_count, destination_rules, destination_rule_count, NULL,
+        generation, snapshot);
+}
+
+/** @brief Build complete policy with global and scoped enforcement. */
+int jg_policy_snapshot_build_configured(
+    const struct jg_policy_rule_input *rules,
+    size_t rule_count,
+    const struct jg_policy_destination_rule_input *destination_rules,
+    size_t destination_rule_count,
+    const struct jg_policy_enforcement_config *enforcement,
     uint64_t generation,
     struct jg_policy_snapshot **snapshot)
 {
@@ -1086,7 +1171,10 @@ int jg_policy_snapshot_build_complete(
         return -ENOMEM;
     }
     randombytes_buf(created->hash_key, sizeof(created->hash_key));
-    result = snapshot_populate(created, prepared, retained_count);
+    result = snapshot_populate_enforcement(created, enforcement);
+    if (result == 0) {
+        result = snapshot_populate(created, prepared, retained_count);
+    }
     if (result == 0) {
         result = snapshot_populate_destinations(created, prepared_destinations,
                                                 retained_destination_count);
@@ -1121,6 +1209,7 @@ void jg_policy_snapshot_destroy(struct jg_policy_snapshot *snapshot)
     }
     jg_secure_clear(snapshot->hash_key, sizeof(snapshot->hash_key));
     free(snapshot->table);
+    free(snapshot->observed_scopes);
     free(snapshot->destination_strings);
     free(snapshot->destination_rules);
     free(snapshot->strings);
@@ -1200,6 +1289,37 @@ static bool scope_matches(const struct jg_policy_scope *scope,
     }
 }
 
+/** @brief Determine whether snapshot-wide controls observe one client. */
+static bool client_is_observed(const struct jg_policy_snapshot *snapshot,
+                               const struct jg_policy_client *client)
+{
+    size_t index = 0U;
+
+    if (snapshot->info.global_enforcement == JG_POLICY_OBSERVE) {
+        return true;
+    }
+    for (index = 0U; index < snapshot->info.observed_scope_count; ++index) {
+        if (scope_matches(&snapshot->observed_scopes[index], client)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** @brief Resolve rule, global, and client enforcement for one match. */
+static enum jg_policy_enforcement effective_enforcement(
+    const struct jg_policy_snapshot *snapshot,
+    enum jg_policy_effect effect,
+    enum jg_policy_enforcement rule_enforcement,
+    const struct jg_policy_client *client)
+{
+    return effect == JG_POLICY_BLOCK &&
+                   (rule_enforcement == JG_POLICY_OBSERVE ||
+                    client_is_observed(snapshot, client))
+               ? JG_POLICY_OBSERVE
+               : JG_POLICY_ENFORCE;
+}
+
 /** @brief Decide whether a rule outranks another rule in the same group. */
 static bool domain_rule_precedes(const struct stored_rule *candidate,
                                  const struct stored_rule *current)
@@ -1241,7 +1361,8 @@ static void match_slot(const struct jg_policy_snapshot *snapshot,
         if (domain_rule_precedes(rule, *selected)) {
             *selected = rule;
         }
-        if (rule->enforcement == JG_POLICY_ENFORCE &&
+        if (effective_enforcement(snapshot, rule->effect, rule->enforcement,
+                                  client) == JG_POLICY_ENFORCE &&
             domain_rule_precedes(rule, *enforcing)) {
             *enforcing = rule;
         }
@@ -1293,10 +1414,13 @@ static int match_domain_target(const struct jg_policy_snapshot *snapshot,
     }
 
     if (selected != NULL) {
+        const enum jg_policy_enforcement enforcement = effective_enforcement(
+            snapshot, selected->effect, selected->enforcement, client);
+
         match->configured_effect = selected->effect;
-        match->enforcement = selected->enforcement;
+        match->enforcement = enforcement;
         match->would_have_blocked = selected->effect == JG_POLICY_BLOCK &&
-                                    selected->enforcement == JG_POLICY_OBSERVE;
+                                    enforcement == JG_POLICY_OBSERVE;
         match->matched = true;
         match->rule_id = selected->id;
         match->source = selected->source;
@@ -1432,16 +1556,21 @@ int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
         if (destination_rule_precedes(current, selected)) {
             selected = current;
         }
-        if (current->enforcement == JG_POLICY_ENFORCE &&
+        if (effective_enforcement(snapshot, current->effect,
+                                  current->enforcement,
+                                  client) == JG_POLICY_ENFORCE &&
             destination_rule_precedes(current, enforcing)) {
             enforcing = current;
         }
     }
     if (selected != NULL) {
+        const enum jg_policy_enforcement enforcement = effective_enforcement(
+            snapshot, selected->effect, selected->enforcement, client);
+
         match->configured_effect = selected->effect;
-        match->enforcement = selected->enforcement;
+        match->enforcement = enforcement;
         match->would_have_blocked = selected->effect == JG_POLICY_BLOCK &&
-                                    selected->enforcement == JG_POLICY_OBSERVE;
+                                    enforcement == JG_POLICY_OBSERVE;
         match->matched = true;
         match->rule_id = selected->id;
         match->source = selected->source;

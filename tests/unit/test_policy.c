@@ -372,6 +372,10 @@ static void test_observe_only_policy(void **state)
         .address = {203U, 0U, 113U, 10U},
         .port = 443U,
     };
+    struct jg_policy_scope observed_scopes[2U];
+    struct jg_policy_enforcement_config enforcement;
+    struct jg_policy_client client;
+    struct jg_policy_snapshot_info info;
     struct jg_policy_snapshot *snapshot = NULL;
     struct jg_policy_match match;
     struct jg_policy_destination_match destination_match;
@@ -448,6 +452,66 @@ static void test_observe_only_policy(void **state)
     assert_int_equal(simulation.effective_selected, JG_POLICY_MATCH_DEFAULT);
 
     jg_policy_snapshot_destroy(snapshot);
+    rules[1].enforcement = JG_POLICY_ENFORCE;
+    rules[2].enforcement = JG_POLICY_ENFORCE;
+    enforcement = (struct jg_policy_enforcement_config){
+        .global = JG_POLICY_OBSERVE,
+    };
+    snapshot = NULL;
+    assert_int_equal(
+        jg_policy_snapshot_build_configured(rules, 4U, &destination_rule, 1U,
+                                            &enforcement, 10U, &snapshot),
+        0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "preview.example.org", NULL, &match),
+        0);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
+    assert_int_equal(info.global_enforcement, JG_POLICY_OBSERVE);
+    jg_policy_snapshot_destroy(snapshot);
+
+    (void)memset(observed_scopes, 0, sizeof(observed_scopes));
+    observed_scopes[0U].type = JG_POLICY_SCOPE_VLAN;
+    observed_scopes[0U].value.vlan_id = 7U;
+    observed_scopes[1U] = observed_scopes[0U];
+    enforcement = (struct jg_policy_enforcement_config){
+        .global = JG_POLICY_ENFORCE,
+        .observed_scopes = observed_scopes,
+        .observed_scope_count = 2U,
+    };
+    snapshot = NULL;
+    assert_int_equal(
+        jg_policy_snapshot_build_configured(rules, 4U, &destination_rule, 1U,
+                                            &enforcement, 11U, &snapshot),
+        0);
+    (void)memset(&client, 0, sizeof(client));
+    client.has_vlan = true;
+    client.vlan_id = 7U;
+    assert_int_equal(jg_policy_match_domain(snapshot, "preview.example.org",
+                                            &client, &match),
+                     0);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    client.vlan_id = 8U;
+    assert_int_equal(jg_policy_match_domain(snapshot, "preview.example.org",
+                                            &client, &match),
+                     0);
+    assert_false(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
+    assert_int_equal(info.observed_scope_count, 1U);
+    jg_policy_snapshot_destroy(snapshot);
+
+    observed_scopes[0U].type = JG_POLICY_SCOPE_GLOBAL;
+    enforcement.observed_scopes = observed_scopes;
+    enforcement.observed_scope_count = 1U;
+    snapshot = NULL;
+    assert_int_equal(jg_policy_snapshot_build_configured(
+                         rules, 4U, NULL, 0U, &enforcement, 12U, &snapshot),
+                     -EINVAL);
+    assert_null(snapshot);
+
     invalid = make_rule(60U, "invalid.test", false, JG_POLICY_ALLOW,
                         JG_POLICY_SOURCE_EXPLICIT);
     invalid.enforcement = JG_POLICY_OBSERVE;
