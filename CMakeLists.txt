@@ -188,6 +188,7 @@ add_library(
   src/daemon/management.c
   src/daemon/management_backup.c
   src/daemon/management_consistency.c
+  src/daemon/management_identity.c
   src/daemon/management_jobs.c
   src/daemon/management_logging.c
   src/daemon/management_network.c

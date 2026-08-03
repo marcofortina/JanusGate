@@ -446,6 +446,12 @@ int parse_page_query(const char *query,
                      uint64_t *position,
                      size_t *limit);
 
+/** @brief Parse one bounded unsigned decimal text span. */
+int parse_decimal(const char *text,
+                  size_t size,
+                  uint64_t maximum,
+                  uint64_t *value);
+
 /** @brief Encode one JSON API response envelope. */
 int encode_response(int status,
                     json_t *body,
@@ -500,6 +506,250 @@ int execute_blocklist_import_job(struct jg_management *management,
 int update_due_blocklists_now(struct jg_management *management,
                               uint64_t now,
                               size_t *attempts);
+
+/** @brief Execute one authenticated certificate-request generation job. */
+int execute_certificate_csr_job(struct jg_management *management,
+                                const struct management_job *job,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written);
+
+/** @brief Report whether the appliance still requires initial setup. */
+int handle_authentication_state(struct jg_management *management,
+                                const struct management_request *request,
+                                uint8_t *output,
+                                size_t output_size,
+                                size_t *written);
+
+/** @brief Consume bootstrap access and create the first administrator. */
+int handle_bootstrap(struct jg_management *management,
+                     const struct management_request *request,
+                     const struct remote_address *remote,
+                     uint64_t now,
+                     uint8_t *output,
+                     size_t output_size,
+                     size_t *written);
+
+/** @brief Authenticate a password and return one browser session. */
+int handle_login(struct jg_management *management,
+                 const struct management_request *request,
+                 const struct remote_address *remote,
+                 uint64_t now,
+                 uint8_t *output,
+                 size_t output_size,
+                 size_t *written);
+
+/** @brief Change the current user's password and rotate its web session. */
+int handle_password_change(struct jg_management *management,
+                           const struct management_request *request,
+                           const struct remote_address *remote,
+                           uint64_t now,
+                           uint8_t *output,
+                           size_t output_size,
+                           size_t *written);
+
+/** @brief Return one authenticated stable page of local users. */
+int handle_users_list(struct jg_management *management,
+                      const struct management_request *request,
+                      const struct remote_address *remote,
+                      uint64_t now,
+                      uint8_t *output,
+                      size_t output_size,
+                      size_t *written);
+
+/** @brief Create one local user through an authorized API request. */
+int handle_user_create(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Replace one local user's mutable administration state. */
+int handle_user_update(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t user_id,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Reset one local user's password without echoing credential data. */
+int handle_user_password_reset(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t user_id,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Administratively remove one local user's TOTP credentials. */
+int handle_user_totp_disable(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t user_id,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written);
+
+/** @brief Return one authenticated stable page of API-token metadata. */
+int handle_tokens_list(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Issue and display one new scoped API token exactly once. */
+int handle_token_issue(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Revoke one API token idempotently and audit the action. */
+int handle_token_revoke(struct jg_management *management,
+                        const struct management_request *request,
+                        const struct remote_address *remote,
+                        uint64_t token_id,
+                        uint64_t now,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
+
+/** @brief Return current public server-certificate metadata. */
+int handle_certificate_show(struct jg_management *management,
+                            const struct management_request *request,
+                            const struct remote_address *remote,
+                            uint64_t now,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *written);
+
+/** @brief Queue one private-key and certificate-request generation. */
+int handle_certificate_csr(struct jg_management *management,
+                           const struct management_request *request,
+                           const struct remote_address *remote,
+                           uint64_t now,
+                           uint8_t *output,
+                           size_t output_size,
+                           size_t *written);
+
+/** @brief Install one validated server certificate with concurrency control. */
+int handle_certificate_install(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Return the installed client-authority trust-store state. */
+int handle_mtls_authorities_show(struct jg_management *management,
+                                 const struct management_request *request,
+                                 const struct remote_address *remote,
+                                 uint64_t now,
+                                 uint8_t *output,
+                                 size_t output_size,
+                                 size_t *written);
+
+/** @brief Validate and install a client-authority trust-store bundle. */
+int handle_mtls_authorities_install(struct jg_management *management,
+                                    const struct management_request *request,
+                                    const struct remote_address *remote,
+                                    uint64_t now,
+                                    uint8_t *output,
+                                    size_t output_size,
+                                    size_t *written);
+
+/** @brief Remove the client-authority trust store and disable remote mTLS. */
+int handle_mtls_authorities_remove(struct jg_management *management,
+                                   const struct management_request *request,
+                                   const struct remote_address *remote,
+                                   uint64_t now,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
+
+/** @brief Return one authenticated stable page of certificate mappings. */
+int handle_mtls_mappings_list(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Create a user- or role-bound client-certificate mapping. */
+int handle_mtls_mapping_create(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Revoke one client-certificate mapping idempotently. */
+int handle_mtls_mapping_revoke(struct jg_management *management,
+                               const struct management_request *request,
+                               const struct remote_address *remote,
+                               uint64_t mapping_id,
+                               uint64_t now,
+                               uint8_t *output,
+                               size_t output_size,
+                               size_t *written);
+
+/** @brief Return the current authenticated browser identity. */
+int handle_session(struct jg_management *management,
+                   const struct management_request *request,
+                   const struct remote_address *remote,
+                   uint64_t now,
+                   uint8_t *output,
+                   size_t output_size,
+                   size_t *written);
+
+/** @brief Revoke the current authenticated browser session. */
+int handle_logout(struct jg_management *management,
+                  const struct management_request *request,
+                  const struct remote_address *remote,
+                  uint64_t now,
+                  uint8_t *output,
+                  size_t output_size,
+                  size_t *written);
+
+/** @brief Begin TOTP enrollment for the authenticated user. */
+int handle_totp_provision(struct jg_management *management,
+                          const struct management_request *request,
+                          const struct remote_address *remote,
+                          uint64_t now,
+                          uint8_t *output,
+                          size_t output_size,
+                          size_t *written);
+
+/** @brief Confirm TOTP and return newly issued recovery codes once. */
+int handle_totp_confirm(struct jg_management *management,
+                        const struct management_request *request,
+                        const struct remote_address *remote,
+                        uint64_t now,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
+
+/** @brief Verify current TOTP and disable multifactor authentication. */
+int handle_totp_disable(struct jg_management *management,
+                        const struct management_request *request,
+                        const struct remote_address *remote,
+                        uint64_t now,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
 
 /** @brief Simulate one authenticated decision on the active policy snapshot. */
 int handle_policy_simulation(struct jg_management *management,
