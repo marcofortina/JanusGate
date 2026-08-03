@@ -260,6 +260,7 @@ janusgate_apply_compiler_options(janusgate-cli-core)
 
 add_executable(
   janusgatectl
+  src/cli/commands_appliance.c
   src/cli/commands_identity.c
   src/cli/commands_policy.c
   src/cli/main.c)
