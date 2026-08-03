@@ -258,7 +258,11 @@ target_link_libraries(
   PRIVATE PkgConfig::CURL PkgConfig::JANSSON)
 janusgate_apply_compiler_options(janusgate-cli-core)
 
-add_executable(janusgatectl src/cli/commands_policy.c src/cli/main.c)
+add_executable(
+  janusgatectl
+  src/cli/commands_identity.c
+  src/cli/commands_policy.c
+  src/cli/main.c)
 target_link_libraries(
   janusgatectl
   PRIVATE JanusGate::common janusgate-cli-core janusgate-control-protocol
