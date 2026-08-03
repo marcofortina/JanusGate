@@ -196,6 +196,7 @@ add_library(
   src/daemon/fragment.c
   src/daemon/management.c
   src/daemon/management_backup.c
+  src/daemon/management_blocklist.c
   src/daemon/management_certificate.c
   src/daemon/management_consistency.c
   src/daemon/management_identity.c

@@ -340,6 +340,12 @@ bool management_restore_in_progress(struct jg_management *management);
 /** @brief Parse one exact lowercase SHA-256 certificate fingerprint. */
 int parse_certificate_fingerprint(const char *text, uint8_t fingerprint[32U]);
 
+/** @brief Advance, publish, and persist one policy revision attempt. */
+int management_publish_policy_change(struct jg_management *management,
+                                     uint64_t now,
+                                     bool *published,
+                                     uint64_t *runtime_generation);
+
 /** @brief Return the stable external name for one fixed backend role. */
 const char *management_role_name(enum jg_access_role role);
 
