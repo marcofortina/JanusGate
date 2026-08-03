@@ -27,6 +27,11 @@ enum jg_access_role jg_account_role_from_id(sqlite3_int64 role_id);
 /** @brief Validate one assignable fixed backend role. */
 bool jg_account_role_valid(enum jg_access_role role);
 
+/** @brief Load one user by identifier in the administrative row shape. */
+int jg_account_load_user(sqlite3 *handle,
+                         uint64_t user_id,
+                         struct jg_account_user *user);
+
 /** @brief Load the role union and enabled TOTP state for one user. */
 int jg_account_load_identity_authorization(sqlite3 *handle,
                                            uint64_t user_id,
