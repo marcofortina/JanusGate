@@ -2642,6 +2642,10 @@ static void test_backup_creation_recovery(void **state)
     struct management_fixture *fixture = *state;
     struct jg_database_operation operation;
     struct jg_audit_record audit;
+    const struct jg_backup_payload backup_payload = {
+        .database = database_image,
+        .database_size = sizeof(database_image) - 1U,
+    };
     uint8_t payload[1U + sizeof(filename) - 1U];
     uint8_t *archive = NULL;
     size_t archive_size = 0U;
@@ -2652,11 +2656,11 @@ static void test_backup_creation_recovery(void **state)
 
     payload[0U] = MANAGEMENT_RECOVERY_VERSION;
     (void)memcpy(payload + 1U, filename, sizeof(filename) - 1U);
-    assert_int_equal(
-        jg_backup_create(JG_BACKUP_CONFIGURATION, database_image,
-                         sizeof(database_image) - 1U, NULL, 0U, NULL, 0U, 100U,
-                         JG_DATABASE_SCHEMA_VERSION, &archive, &archive_size),
-        0);
+    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, &backup_payload,
+                                      NULL, 0U, 100U,
+                                      JG_DATABASE_SCHEMA_VERSION, &archive,
+                                      &archive_size),
+                     0);
     jg_management_destroy(fixture->management);
     fixture->management = NULL;
     assert_int_equal(jg_database_operation_prepare(

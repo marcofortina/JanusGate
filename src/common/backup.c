@@ -25,11 +25,17 @@
 
 #include "janusgate/checked.h"
 
-/** Serialized backup header bytes. */
-#define BACKUP_HEADER_SIZE 144U
+/** Legacy version-one serialized header bytes. */
+#define BACKUP_V1_HEADER_SIZE 144U
 
-/** Header bytes authenticated by the archive checksum and full-backup AEAD. */
-#define BACKUP_AUTHENTICATED_HEADER_SIZE 112U
+/** Version-one header bytes preceding its checksum. */
+#define BACKUP_V1_AUTHENTICATED_HEADER_SIZE 112U
+
+/** Current serialized header bytes. */
+#define BACKUP_HEADER_SIZE 160U
+
+/** Current header bytes preceding its checksum. */
+#define BACKUP_AUTHENTICATED_HEADER_SIZE 128U
 
 /** Encrypted-payload flag. */
 #define BACKUP_FLAG_ENCRYPTED 1U
@@ -59,7 +65,16 @@ enum backup_header_offset {
     BACKUP_OFFSET_KDF_MEMORY = 64,
     BACKUP_OFFSET_SALT = 72,
     BACKUP_OFFSET_NONCE = 88,
-    BACKUP_OFFSET_CHECKSUM = 112
+    BACKUP_OFFSET_TOTP_KEY_SIZE = 112,
+    BACKUP_OFFSET_CLIENT_CA_SIZE = 120,
+    BACKUP_OFFSET_CHECKSUM = 128
+};
+
+/** Decoded physical layout for one supported archive version. */
+struct backup_layout {
+    size_t header_size;
+    size_t authenticated_header_size;
+    size_t checksum_offset;
 };
 
 /** Exact archive magic. */
@@ -308,50 +323,82 @@ static int validate_passphrase(enum jg_backup_kind kind,
     return 0;
 }
 
+/** @brief Decode the physical header layout of one supported archive. */
+static int decode_layout(const uint8_t *archive,
+                         size_t archive_size,
+                         struct backup_layout *layout)
+{
+    uint16_t version = 0U;
+    uint16_t header_size = 0U;
+
+    if (archive == NULL || layout == NULL ||
+        archive_size < BACKUP_OFFSET_HEADER_SIZE + sizeof(uint16_t)) {
+        return -EILSEQ;
+    }
+    version = read_u16(archive + BACKUP_OFFSET_VERSION);
+    header_size = read_u16(archive + BACKUP_OFFSET_HEADER_SIZE);
+    if (version == 1U && header_size == BACKUP_V1_HEADER_SIZE) {
+        layout->header_size = BACKUP_V1_HEADER_SIZE;
+        layout->authenticated_header_size = BACKUP_V1_AUTHENTICATED_HEADER_SIZE;
+        layout->checksum_offset = BACKUP_V1_AUTHENTICATED_HEADER_SIZE;
+    } else if (version == JG_BACKUP_FORMAT_VERSION &&
+               header_size == BACKUP_HEADER_SIZE) {
+        layout->header_size = BACKUP_HEADER_SIZE;
+        layout->authenticated_header_size = BACKUP_AUTHENTICATED_HEADER_SIZE;
+        layout->checksum_offset = BACKUP_OFFSET_CHECKSUM;
+    } else if (version == 1U || version == JG_BACKUP_FORMAT_VERSION) {
+        return -EILSEQ;
+    } else {
+        return -ENOTSUP;
+    }
+    return archive_size >= layout->header_size ? 0 : -EILSEQ;
+}
+
 /** @brief Compute the archive checksum without its checksum field. */
 static void compute_checksum(const uint8_t *archive,
                              size_t archive_size,
+                             const struct backup_layout *layout,
                              uint8_t checksum[crypto_hash_sha256_BYTES])
 {
     crypto_hash_sha256_state state;
 
     (void)crypto_hash_sha256_init(&state);
     (void)crypto_hash_sha256_update(&state, archive,
-                                    BACKUP_AUTHENTICATED_HEADER_SIZE);
+                                    layout->authenticated_header_size);
     (void)crypto_hash_sha256_update(
-        &state, archive + BACKUP_HEADER_SIZE,
-        (unsigned long long)(archive_size - BACKUP_HEADER_SIZE));
+        &state, archive + layout->header_size,
+        (unsigned long long)(archive_size - layout->header_size));
     (void)crypto_hash_sha256_final(&state, checksum);
 }
 
 /** @brief Validate and decode one fixed backup manifest. */
 static int parse_manifest(const uint8_t *archive,
                           size_t archive_size,
-                          struct jg_backup_info *info)
+                          struct jg_backup_info *info,
+                          struct backup_layout *layout)
 {
-    uint64_t encoded_database_size;
-    uint64_t encoded_certificate_size;
-    uint64_t encoded_payload_size;
-    uint64_t expected_plaintext_size;
-    uint64_t expected_payload_size;
-    uint64_t kdf_operations;
-    uint64_t kdf_memory;
-    uint8_t flags;
+    uint64_t encoded_database_size = 0U;
+    uint64_t encoded_certificate_size = 0U;
+    uint64_t encoded_totp_key_size = 0U;
+    uint64_t encoded_client_ca_size = 0U;
+    uint64_t encoded_payload_size = 0U;
+    uint64_t kdf_operations = 0U;
+    uint64_t kdf_memory = 0U;
+    size_t expected_plaintext_size = 0U;
+    size_t expected_payload_size = 0U;
     size_t expected_archive_size = 0U;
+    uint8_t flags = 0U;
+    int result = decode_layout(archive, archive_size, layout);
 
-    if (archive_size < BACKUP_HEADER_SIZE) {
-        return -EILSEQ;
+    if (result != 0) {
+        return result;
     }
     if (sodium_memcmp(archive + BACKUP_OFFSET_MAGIC, backup_magic,
                       sizeof(backup_magic)) != 0) {
         return -EILSEQ;
     }
     info->format_version = read_u16(archive + BACKUP_OFFSET_VERSION);
-    if (info->format_version != JG_BACKUP_FORMAT_VERSION) {
-        return -ENOTSUP;
-    }
-    if (read_u16(archive + BACKUP_OFFSET_HEADER_SIZE) != BACKUP_HEADER_SIZE ||
-        read_u16(archive + BACKUP_OFFSET_RESERVED) != 0U) {
+    if (read_u16(archive + BACKUP_OFFSET_RESERVED) != 0U) {
         return -EILSEQ;
     }
     info->compatible_version_min =
@@ -359,8 +406,9 @@ static int parse_manifest(const uint8_t *archive,
     info->compatible_version_max =
         read_u16(archive + BACKUP_OFFSET_COMPATIBLE_MAX);
     if (info->compatible_version_min == 0U ||
-        info->compatible_version_min > JG_BACKUP_FORMAT_VERSION ||
-        info->compatible_version_max < JG_BACKUP_FORMAT_VERSION) {
+        info->compatible_version_min > info->format_version ||
+        info->compatible_version_max < info->format_version ||
+        info->format_version > JG_BACKUP_FORMAT_VERSION) {
         return -ENOTSUP;
     }
     info->kind = (enum jg_backup_kind)archive[BACKUP_OFFSET_KIND];
@@ -380,25 +428,47 @@ static int parse_manifest(const uint8_t *archive,
     encoded_database_size = read_u64(archive + BACKUP_OFFSET_DATABASE_SIZE);
     encoded_certificate_size =
         read_u64(archive + BACKUP_OFFSET_CERTIFICATE_SIZE);
+    if (info->format_version >= 2U) {
+        encoded_totp_key_size = read_u64(archive + BACKUP_OFFSET_TOTP_KEY_SIZE);
+        encoded_client_ca_size =
+            read_u64(archive + BACKUP_OFFSET_CLIENT_CA_SIZE);
+    }
     encoded_payload_size = read_u64(archive + BACKUP_OFFSET_PAYLOAD_SIZE);
     if (encoded_database_size == 0U ||
         encoded_database_size > JG_BACKUP_PAYLOAD_MAX ||
         encoded_certificate_size > JG_BACKUP_PAYLOAD_MAX ||
-        encoded_database_size > UINT64_MAX - encoded_certificate_size) {
+        encoded_totp_key_size > JG_BACKUP_PAYLOAD_MAX ||
+        encoded_client_ca_size > JG_BACKUP_PAYLOAD_MAX ||
+        encoded_database_size > SIZE_MAX ||
+        encoded_certificate_size > SIZE_MAX ||
+        encoded_totp_key_size > SIZE_MAX || encoded_client_ca_size > SIZE_MAX) {
         return -EOVERFLOW;
     }
-    expected_plaintext_size = encoded_database_size + encoded_certificate_size;
-    if (expected_plaintext_size > JG_BACKUP_PAYLOAD_MAX ||
-        expected_plaintext_size > SIZE_MAX) {
+    if ((info->kind == JG_BACKUP_CONFIGURATION &&
+         (encoded_totp_key_size != 0U || encoded_client_ca_size != 0U)) ||
+        (info->kind == JG_BACKUP_FULL && info->format_version >= 2U &&
+         encoded_totp_key_size != JG_AUTH_TOTP_KEY_SIZE)) {
+        return -EILSEQ;
+    }
+    if (!jg_size_add((size_t)encoded_database_size,
+                     (size_t)encoded_certificate_size,
+                     &expected_plaintext_size) ||
+        !jg_size_add(expected_plaintext_size, (size_t)encoded_totp_key_size,
+                     &expected_plaintext_size) ||
+        !jg_size_add(expected_plaintext_size, (size_t)encoded_client_ca_size,
+                     &expected_plaintext_size) ||
+        expected_plaintext_size > JG_BACKUP_PAYLOAD_MAX) {
         return -EOVERFLOW;
     }
     expected_payload_size = expected_plaintext_size;
-    if (info->encrypted) {
-        expected_payload_size += crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    if (info->encrypted &&
+        !jg_size_add(expected_payload_size,
+                     crypto_aead_xchacha20poly1305_ietf_ABYTES,
+                     &expected_payload_size)) {
+        return -EOVERFLOW;
     }
-    if (encoded_payload_size != expected_payload_size ||
-        encoded_payload_size > SIZE_MAX ||
-        !jg_size_add(BACKUP_HEADER_SIZE, (size_t)encoded_payload_size,
+    if (encoded_payload_size != (uint64_t)expected_payload_size ||
+        !jg_size_add(layout->header_size, expected_payload_size,
                      &expected_archive_size) ||
         expected_archive_size != archive_size) {
         return -EILSEQ;
@@ -419,18 +489,20 @@ static int parse_manifest(const uint8_t *archive,
     }
     info->database_size = (size_t)encoded_database_size;
     info->certificate_size = (size_t)encoded_certificate_size;
+    info->totp_key_size = (size_t)encoded_totp_key_size;
+    info->client_ca_size = (size_t)encoded_client_ca_size;
     info->archive_size = archive_size;
-    (void)memcpy(info->checksum, archive + BACKUP_OFFSET_CHECKSUM,
+    info->portable = info->kind == JG_BACKUP_FULL &&
+                     info->format_version >= 2U &&
+                     info->totp_key_size == JG_AUTH_TOTP_KEY_SIZE;
+    (void)memcpy(info->checksum, archive + layout->checksum_offset,
                  sizeof(info->checksum));
     return 0;
 }
 
 /** @brief Create a versioned configuration or encrypted full archive. */
 int jg_backup_create(enum jg_backup_kind kind,
-                     const uint8_t *database,
-                     size_t database_size,
-                     const uint8_t *certificate,
-                     size_t certificate_size,
+                     const struct jg_backup_payload *payload,
                      const char *passphrase,
                      size_t passphrase_size,
                      uint64_t created_at,
@@ -445,21 +517,33 @@ int jg_backup_create(enum jg_backup_kind kind,
     size_t plaintext_size = 0U;
     size_t payload_size = 0U;
     size_t total_size = 0U;
+    size_t offset = 0U;
     unsigned long long encrypted_size = 0U;
     int result;
 
-    if (archive == NULL || archive_size == NULL) {
+    if (archive == NULL || archive_size == NULL || payload == NULL) {
         return -EINVAL;
     }
     *archive = NULL;
     *archive_size = 0U;
     result = validate_passphrase(kind, passphrase, passphrase_size);
-    if (result != 0 || database == NULL || database_size == 0U ||
-        (certificate == NULL) != (certificate_size == 0U) ||
+    if (result != 0 || payload->database == NULL ||
+        payload->database_size == 0U ||
+        (payload->certificate == NULL) != (payload->certificate_size == 0U) ||
+        (payload->totp_key == NULL) != (payload->totp_key_size == 0U) ||
+        (payload->client_ca == NULL) != (payload->client_ca_size == 0U) ||
+        (kind == JG_BACKUP_CONFIGURATION &&
+         (payload->totp_key_size != 0U || payload->client_ca_size != 0U)) ||
+        (kind == JG_BACKUP_FULL &&
+         payload->totp_key_size != JG_AUTH_TOTP_KEY_SIZE) ||
         schema_version == 0U) {
         return -EINVAL;
     }
-    if (!jg_size_add(database_size, certificate_size, &plaintext_size) ||
+    if (!jg_size_add(payload->database_size, payload->certificate_size,
+                     &plaintext_size) ||
+        !jg_size_add(plaintext_size, payload->totp_key_size, &plaintext_size) ||
+        !jg_size_add(plaintext_size, payload->client_ca_size,
+                     &plaintext_size) ||
         plaintext_size > JG_BACKUP_PAYLOAD_MAX) {
         return -EOVERFLOW;
     }
@@ -493,15 +577,19 @@ int jg_backup_create(enum jg_backup_kind kind,
               JG_BACKUP_FORMAT_VERSION);
     write_u64(*archive + BACKUP_OFFSET_CREATED_AT, created_at);
     write_u32(*archive + BACKUP_OFFSET_SCHEMA_VERSION, schema_version);
-    write_u64(*archive + BACKUP_OFFSET_DATABASE_SIZE, database_size);
-    write_u64(*archive + BACKUP_OFFSET_CERTIFICATE_SIZE, certificate_size);
+    write_u64(*archive + BACKUP_OFFSET_DATABASE_SIZE, payload->database_size);
+    write_u64(*archive + BACKUP_OFFSET_CERTIFICATE_SIZE,
+              payload->certificate_size);
     write_u64(*archive + BACKUP_OFFSET_PAYLOAD_SIZE, payload_size);
+    write_u64(*archive + BACKUP_OFFSET_TOTP_KEY_SIZE, payload->totp_key_size);
+    write_u64(*archive + BACKUP_OFFSET_CLIENT_CA_SIZE, payload->client_ca_size);
 
     if (kind == JG_BACKUP_CONFIGURATION) {
-        (void)memcpy(*archive + BACKUP_HEADER_SIZE, database, database_size);
-        if (certificate_size > 0U) {
-            (void)memcpy(*archive + BACKUP_HEADER_SIZE + database_size,
-                         certificate, certificate_size);
+        (void)memcpy(*archive + BACKUP_HEADER_SIZE, payload->database,
+                     payload->database_size);
+        if (payload->certificate_size > 0U) {
+            (void)memcpy(*archive + BACKUP_HEADER_SIZE + payload->database_size,
+                         payload->certificate, payload->certificate_size);
         }
     } else {
         write_u64(*archive + BACKUP_OFFSET_KDF_OPERATIONS,
@@ -516,10 +604,19 @@ int jg_backup_create(enum jg_backup_kind kind,
             result = -ENOMEM;
         }
         if (result == 0) {
-            (void)memcpy(plaintext, database, database_size);
-            if (certificate_size > 0U) {
-                (void)memcpy(plaintext + database_size, certificate,
-                             certificate_size);
+            (void)memcpy(plaintext, payload->database, payload->database_size);
+            offset = payload->database_size;
+            if (payload->certificate_size > 0U) {
+                (void)memcpy(plaintext + offset, payload->certificate,
+                             payload->certificate_size);
+                offset += payload->certificate_size;
+            }
+            (void)memcpy(plaintext + offset, payload->totp_key,
+                         payload->totp_key_size);
+            offset += payload->totp_key_size;
+            if (payload->client_ca_size > 0U) {
+                (void)memcpy(plaintext + offset, payload->client_ca,
+                             payload->client_ca_size);
             }
             if (crypto_pwhash(key, sizeof(key), passphrase,
                               (unsigned long long)passphrase_size, salt,
@@ -540,7 +637,13 @@ int jg_backup_create(enum jg_backup_kind kind,
         }
     }
     if (result == 0) {
-        compute_checksum(*archive, total_size,
+        const struct backup_layout layout = {
+            .header_size = BACKUP_HEADER_SIZE,
+            .authenticated_header_size = BACKUP_AUTHENTICATED_HEADER_SIZE,
+            .checksum_offset = BACKUP_OFFSET_CHECKSUM,
+        };
+
+        compute_checksum(*archive, total_size, &layout,
                          *archive + BACKUP_OFFSET_CHECKSUM);
         *archive_size = total_size;
     } else {
@@ -562,6 +665,7 @@ int jg_backup_inspect(const uint8_t *archive,
                       size_t archive_size,
                       struct jg_backup_info *info)
 {
+    struct backup_layout layout;
     int result;
 
     if (archive == NULL || info == NULL) {
@@ -570,12 +674,12 @@ int jg_backup_inspect(const uint8_t *archive,
     (void)memset(info, 0, sizeof(*info));
     result = initialize_crypto();
     if (result == 0) {
-        result = parse_manifest(archive, archive_size, info);
+        result = parse_manifest(archive, archive_size, info, &layout);
     }
     if (result == 0) {
         uint8_t checksum[crypto_hash_sha256_BYTES];
 
-        compute_checksum(archive, archive_size, checksum);
+        compute_checksum(archive, archive_size, &layout, checksum);
         if (sodium_memcmp(checksum, info->checksum, sizeof(checksum)) != 0) {
             result = -EBADMSG;
         }
@@ -595,6 +699,7 @@ int jg_backup_open(const uint8_t *archive,
                    struct jg_backup_contents *contents)
 {
     uint8_t key[crypto_aead_xchacha20poly1305_ietf_KEYBYTES] = {0U};
+    struct backup_layout layout;
     const uint8_t *salt = NULL;
     const uint8_t *nonce = NULL;
     size_t plaintext_size = 0U;
@@ -607,6 +712,9 @@ int jg_backup_open(const uint8_t *archive,
     (void)memset(contents, 0, sizeof(*contents));
     result = jg_backup_inspect(archive, archive_size, &contents->info);
     if (result == 0) {
+        result = decode_layout(archive, archive_size, &layout);
+    }
+    if (result == 0) {
         result = validate_passphrase(contents->info.kind, passphrase,
                                      passphrase_size);
     }
@@ -615,9 +723,18 @@ int jg_backup_open(const uint8_t *archive,
                      contents->info.certificate_size, &plaintext_size)) {
         result = -EOVERFLOW;
     }
+    if (result == 0 &&
+        (!jg_size_add(plaintext_size, contents->info.totp_key_size,
+                      &plaintext_size) ||
+         !jg_size_add(plaintext_size, contents->info.client_ca_size,
+                      &plaintext_size))) {
+        result = -EOVERFLOW;
+    }
     if (result == 0) {
         contents->database_size = contents->info.database_size;
         contents->certificate_size = contents->info.certificate_size;
+        contents->totp_key_size = contents->info.totp_key_size;
+        contents->client_ca_size = contents->info.client_ca_size;
         salt = archive + BACKUP_OFFSET_SALT;
         nonce = archive + BACKUP_OFFSET_NONCE;
         contents->database = malloc(plaintext_size);
@@ -626,7 +743,7 @@ int jg_backup_open(const uint8_t *archive,
         }
     }
     if (result == 0 && !contents->info.encrypted) {
-        (void)memcpy(contents->database, archive + BACKUP_HEADER_SIZE,
+        (void)memcpy(contents->database, archive + layout.header_size,
                      plaintext_size);
     }
     if (result == 0 && contents->info.encrypted) {
@@ -639,9 +756,9 @@ int jg_backup_open(const uint8_t *archive,
         if (result == 0 &&
             crypto_aead_xchacha20poly1305_ietf_decrypt(
                 contents->database, &decrypted_size, NULL,
-                archive + BACKUP_HEADER_SIZE,
-                (unsigned long long)(archive_size - BACKUP_HEADER_SIZE),
-                archive, BACKUP_AUTHENTICATED_HEADER_SIZE, nonce, key) != 0) {
+                archive + layout.header_size,
+                (unsigned long long)(archive_size - layout.header_size),
+                archive, layout.authenticated_header_size, nonce, key) != 0) {
             result = -EACCES;
         }
         if (result == 0 && decrypted_size != plaintext_size) {
@@ -653,6 +770,15 @@ int jg_backup_open(const uint8_t *archive,
         if (contents->certificate_size > 0U) {
             contents->certificate =
                 contents->database + contents->database_size;
+        }
+        if (contents->totp_key_size > 0U) {
+            contents->totp_key = contents->database + contents->database_size +
+                                 contents->certificate_size;
+        }
+        if (contents->client_ca_size > 0U) {
+            contents->client_ca = contents->database + contents->database_size +
+                                  contents->certificate_size +
+                                  contents->totp_key_size;
         }
     } else {
         jg_backup_contents_clear(contents);
@@ -673,7 +799,7 @@ int jg_backup_store(const char *directory,
     int result;
 
     if (!filename_valid(filename) || archive == NULL ||
-        archive_size < BACKUP_HEADER_SIZE ||
+        archive_size < BACKUP_V1_HEADER_SIZE ||
         archive_size > JG_BACKUP_PAYLOAD_MAX + BACKUP_HEADER_SIZE +
                            crypto_aead_xchacha20poly1305_ietf_ABYTES) {
         return -EINVAL;
@@ -756,7 +882,7 @@ int jg_backup_load(const char *directory,
         result = validate_archive_file(descriptor, &metadata, true);
     }
     if (result == 0 &&
-        ((uint64_t)metadata.st_size < BACKUP_HEADER_SIZE ||
+        ((uint64_t)metadata.st_size < BACKUP_V1_HEADER_SIZE ||
          (uint64_t)metadata.st_size >
              (uint64_t)JG_BACKUP_PAYLOAD_MAX + BACKUP_HEADER_SIZE +
                  crypto_aead_xchacha20poly1305_ietf_ABYTES ||
@@ -933,6 +1059,9 @@ void jg_backup_contents_clear(struct jg_backup_contents *contents)
     }
     if (contents->database != NULL &&
         jg_size_add(contents->database_size, contents->certificate_size,
+                    &plaintext_size) &&
+        jg_size_add(plaintext_size, contents->totp_key_size, &plaintext_size) &&
+        jg_size_add(plaintext_size, contents->client_ca_size,
                     &plaintext_size)) {
         sodium_memzero(contents->database, plaintext_size);
     }

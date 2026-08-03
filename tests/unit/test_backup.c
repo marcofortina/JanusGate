@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include <cmocka.h>
+#include <sodium.h>
 
 #include "janusgate/backup.h"
 
@@ -69,6 +70,72 @@ static bool contains_bytes(const uint8_t *data,
     return false;
 }
 
+/** @brief Write one test integer in network byte order. */
+static void write_test_u64(uint8_t *destination, uint64_t value)
+{
+    for (size_t index = 0U; index < sizeof(value); ++index) {
+        destination[index] =
+            (uint8_t)(value >> ((sizeof(value) - index - 1U) * 8U));
+    }
+}
+
+/** @brief Build one deterministic version-one configuration fixture. */
+static uint8_t *create_v1_archive(size_t *archive_size)
+{
+    static const uint8_t database[] = "legacy-v1";
+    static const uint8_t magic[] = {'J', 'G', 'B', 'A', 'C', 'K', 'U', 'P'};
+    const size_t header_size = 144U;
+    const size_t authenticated_size = 112U;
+    uint8_t *archive = calloc(1U, header_size + sizeof(database) - 1U);
+    crypto_hash_sha256_state checksum;
+
+    assert_non_null(archive);
+    (void)memcpy(archive, magic, sizeof(magic));
+    archive[9U] = 1U;
+    archive[10U] = (uint8_t)(header_size >> 8U);
+    archive[11U] = (uint8_t)header_size;
+    archive[12U] = JG_BACKUP_CONFIGURATION;
+    archive[15U] = 1U;
+    archive[17U] = 1U;
+    write_test_u64(archive + 20U, 1234U);
+    archive[31U] = 9U;
+    write_test_u64(archive + 32U, sizeof(database) - 1U);
+    write_test_u64(archive + 48U, sizeof(database) - 1U);
+    (void)memcpy(archive + header_size, database, sizeof(database) - 1U);
+    assert_int_equal(crypto_hash_sha256_init(&checksum), 0);
+    assert_int_equal(
+        crypto_hash_sha256_update(&checksum, archive, authenticated_size), 0);
+    assert_int_equal(crypto_hash_sha256_update(&checksum, archive + header_size,
+                                               sizeof(database) - 1U),
+                     0);
+    assert_int_equal(crypto_hash_sha256_final(&checksum, archive + 112U), 0);
+    *archive_size = header_size + sizeof(database) - 1U;
+    return archive;
+}
+
+/** @brief Verify current readers retain version-one archive compatibility. */
+static void test_version_one_compatibility(void **state)
+{
+    static const uint8_t database[] = "legacy-v1";
+    struct jg_backup_info info;
+    struct jg_backup_contents contents;
+    uint8_t *archive = NULL;
+    size_t archive_size = 0U;
+
+    (void)state;
+    archive = create_v1_archive(&archive_size);
+    assert_int_equal(jg_backup_inspect(archive, archive_size, &info), 0);
+    assert_int_equal(info.format_version, 1U);
+    assert_false(info.portable);
+    assert_int_equal(info.totp_key_size, 0U);
+    assert_int_equal(info.client_ca_size, 0U);
+    assert_int_equal(jg_backup_open(archive, archive_size, NULL, 0U, &contents),
+                     0);
+    assert_memory_equal(contents.database, database, sizeof(database) - 1U);
+    jg_backup_contents_clear(&contents);
+    jg_backup_data_clear(archive, archive_size);
+}
+
 /** @brief Verify configuration archive framing and checksum validation. */
 static void test_configuration_archive(void **state)
 {
@@ -77,14 +144,18 @@ static void test_configuration_archive(void **state)
         "-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n";
     struct jg_backup_info info;
     struct jg_backup_contents contents;
+    const struct jg_backup_payload payload = {
+        .database = database,
+        .database_size = sizeof(database) - 1U,
+        .certificate = certificate,
+        .certificate_size = sizeof(certificate) - 1U,
+    };
     uint8_t *archive = NULL;
     size_t archive_size = 0U;
 
     (void)state;
-    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, database,
-                                      sizeof(database) - 1U, certificate,
-                                      sizeof(certificate) - 1U, NULL, 0U, 1000U,
-                                      9U, &archive, &archive_size),
+    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, &payload, NULL,
+                                      0U, 1000U, 9U, &archive, &archive_size),
                      0);
     assert_non_null(archive);
     assert_true(archive_size > sizeof(database) + sizeof(certificate));
@@ -97,8 +168,11 @@ static void test_configuration_archive(void **state)
     assert_int_equal(info.created_at, 1000U);
     assert_int_equal(info.database_size, sizeof(database) - 1U);
     assert_int_equal(info.certificate_size, sizeof(certificate) - 1U);
+    assert_int_equal(info.totp_key_size, 0U);
+    assert_int_equal(info.client_ca_size, 0U);
     assert_int_equal(info.archive_size, archive_size);
     assert_false(info.encrypted);
+    assert_false(info.portable);
 
     assert_int_equal(jg_backup_open(archive, archive_size, NULL, 0U, &contents),
                      0);
@@ -118,26 +192,45 @@ static void test_encrypted_archive(void **state)
     static const uint8_t private_certificate[] =
         "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n";
     static const char passphrase[] = "minimum phrase!!";
+    static const uint8_t client_ca[] =
+        "-----BEGIN CERTIFICATE-----\nclient-ca\n-----END CERTIFICATE-----\n";
+    uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
     struct jg_backup_info info;
     struct jg_backup_contents contents;
+    struct jg_backup_payload payload = {
+        .database = database,
+        .database_size = sizeof(database) - 1U,
+        .certificate = private_certificate,
+        .certificate_size = sizeof(private_certificate) - 1U,
+        .totp_key = totp_key,
+        .totp_key_size = sizeof(totp_key),
+        .client_ca = client_ca,
+        .client_ca_size = sizeof(client_ca) - 1U,
+    };
     uint8_t *archive = NULL;
     size_t archive_size = 0U;
 
     (void)state;
+    (void)memset(totp_key, 0x5a, sizeof(totp_key));
     assert_int_equal(sizeof(passphrase) - 1U, JG_BACKUP_PASSPHRASE_MIN);
-    assert_int_equal(
-        jg_backup_create(JG_BACKUP_FULL, database, sizeof(database) - 1U,
-                         private_certificate, sizeof(private_certificate) - 1U,
-                         passphrase, sizeof(passphrase) - 1U, 2000U, 9U,
-                         &archive, &archive_size),
-        0);
+    assert_int_equal(jg_backup_create(JG_BACKUP_FULL, &payload, passphrase,
+                                      sizeof(passphrase) - 1U, 2000U, 9U,
+                                      &archive, &archive_size),
+                     0);
     assert_int_equal(jg_backup_inspect(archive, archive_size, &info), 0);
     assert_int_equal(info.kind, JG_BACKUP_FULL);
     assert_true(info.encrypted);
+    assert_true(info.portable);
+    assert_int_equal(info.totp_key_size, sizeof(totp_key));
+    assert_int_equal(info.client_ca_size, sizeof(client_ca) - 1U);
     assert_false(
         contains_bytes(archive, archive_size, database, sizeof(database) - 1U));
     assert_false(contains_bytes(archive, archive_size, private_certificate,
                                 sizeof(private_certificate) - 1U));
+    assert_false(
+        contains_bytes(archive, archive_size, totp_key, sizeof(totp_key)));
+    assert_false(contains_bytes(archive, archive_size, client_ca,
+                                sizeof(client_ca) - 1U));
     assert_int_equal(jg_backup_open(archive, archive_size, "wrong passphrase",
                                     sizeof("wrong passphrase") - 1U, &contents),
                      -EACCES);
@@ -147,6 +240,8 @@ static void test_encrypted_archive(void **state)
     assert_memory_equal(contents.database, database, sizeof(database) - 1U);
     assert_memory_equal(contents.certificate, private_certificate,
                         sizeof(private_certificate) - 1U);
+    assert_memory_equal(contents.totp_key, totp_key, sizeof(totp_key));
+    assert_memory_equal(contents.client_ca, client_ca, sizeof(client_ca) - 1U);
     jg_backup_contents_clear(&contents);
     jg_backup_data_clear(archive, archive_size);
 }
@@ -157,6 +252,11 @@ static void test_archive_rejection(void **state)
     static const uint8_t database[] = "database";
     static const char passphrase[] = "long enough passphrase";
     static const char short_passphrase[] = "minimum phrase!";
+    uint8_t totp_key[JG_AUTH_TOTP_KEY_SIZE];
+    struct jg_backup_payload payload = {
+        .database = database,
+        .database_size = sizeof(database) - 1U,
+    };
     struct jg_backup_info info;
     struct jg_backup_contents contents;
     uint8_t *archive = NULL;
@@ -164,11 +264,11 @@ static void test_archive_rejection(void **state)
     size_t archive_size = 0U;
 
     (void)state;
+    (void)memset(totp_key, 0x31, sizeof(totp_key));
     assert_int_equal(sizeof(short_passphrase) - 1U,
                      JG_BACKUP_PASSPHRASE_MIN - 1U);
-    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, database,
-                                      sizeof(database) - 1U, NULL, 0U, NULL, 0U,
-                                      1U, 9U, &archive, &archive_size),
+    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, &payload, NULL,
+                                      0U, 1U, 9U, &archive, &archive_size),
                      0);
     tampered = malloc(archive_size);
     assert_non_null(tampered);
@@ -181,7 +281,7 @@ static void test_archive_rejection(void **state)
     assert_int_equal(jg_backup_inspect(tampered, archive_size, &info), -EILSEQ);
     (void)memcpy(tampered, archive, archive_size);
     tampered[8U] = 0U;
-    tampered[9U] = 2U;
+    tampered[9U] = 3U;
     assert_int_equal(jg_backup_inspect(tampered, archive_size, &info),
                      -ENOTSUP);
     assert_int_equal(jg_backup_inspect(archive, archive_size - 1U, &info),
@@ -189,20 +289,25 @@ static void test_archive_rejection(void **state)
     free(tampered);
     jg_backup_data_clear(archive, archive_size);
 
-    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, database,
-                                      sizeof(database) - 1U, NULL, 0U,
+    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, &payload,
                                       "unexpected", sizeof("unexpected") - 1U,
                                       1U, 9U, &archive, &archive_size),
                      -EINVAL);
-    assert_int_equal(
-        jg_backup_create(JG_BACKUP_FULL, database, sizeof(database) - 1U, NULL,
-                         0U, short_passphrase, sizeof(short_passphrase) - 1U,
-                         1U, 9U, &archive, &archive_size),
-        -EINVAL);
-    assert_int_equal(jg_backup_create(JG_BACKUP_FULL, database,
-                                      sizeof(database) - 1U, NULL, 0U,
-                                      passphrase, sizeof(passphrase) - 1U, 1U,
-                                      0U, &archive, &archive_size),
+    payload.totp_key = totp_key;
+    payload.totp_key_size = sizeof(totp_key);
+    assert_int_equal(jg_backup_create(JG_BACKUP_FULL, &payload,
+                                      short_passphrase,
+                                      sizeof(short_passphrase) - 1U, 1U, 9U,
+                                      &archive, &archive_size),
+                     -EINVAL);
+    assert_int_equal(jg_backup_create(JG_BACKUP_FULL, &payload, passphrase,
+                                      sizeof(passphrase) - 1U, 1U, 0U, &archive,
+                                      &archive_size),
+                     -EINVAL);
+    payload.totp_key_size = sizeof(totp_key) - 1U;
+    assert_int_equal(jg_backup_create(JG_BACKUP_FULL, &payload, passphrase,
+                                      sizeof(passphrase) - 1U, 1U, 9U, &archive,
+                                      &archive_size),
                      -EINVAL);
     assert_int_equal(jg_backup_inspect(NULL, 0U, &info), -EINVAL);
     assert_int_equal(jg_backup_inspect(database, sizeof(database), NULL),
@@ -219,6 +324,10 @@ static void test_archive_storage(void **state)
     char directory[] = "/tmp/janusgate-backup-XXXXXX";
     char path[256U];
     char link_path[256U];
+    const struct jg_backup_payload payload = {
+        .database = database,
+        .database_size = sizeof(database) - 1U,
+    };
     uint8_t *archive = NULL;
     uint8_t *loaded = NULL;
     size_t archive_size = 0U;
@@ -227,9 +336,8 @@ static void test_archive_storage(void **state)
 
     (void)state;
     assert_non_null(mkdtemp(directory));
-    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, database,
-                                      sizeof(database) - 1U, NULL, 0U, NULL, 0U,
-                                      1U, 9U, &archive, &archive_size),
+    assert_int_equal(jg_backup_create(JG_BACKUP_CONFIGURATION, &payload, NULL,
+                                      0U, 1U, 9U, &archive, &archive_size),
                      0);
     assert_int_equal(
         jg_backup_store(directory, "backup-1.jgb", archive, archive_size), 0);
@@ -329,6 +437,7 @@ static void test_archive_reconciliation(void **state)
 int jg_test_backup(void)
 {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_version_one_compatibility),
         cmocka_unit_test(test_configuration_archive),
         cmocka_unit_test(test_encrypted_archive),
         cmocka_unit_test(test_archive_rejection),

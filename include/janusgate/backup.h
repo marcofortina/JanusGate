@@ -14,10 +14,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/auth.h"
 #include "janusgate/version.h"
 
 /** Current backup archive format version. */
-#define JG_BACKUP_FORMAT_VERSION 1U
+#define JG_BACKUP_FORMAT_VERSION 2U
 
 /** Maximum combined uncompressed backup payload. */
 #define JG_BACKUP_PAYLOAD_MAX (256U * 1024U * 1024U)
@@ -60,19 +61,45 @@ struct jg_backup_info {
     size_t database_size;
     /** Embedded certificate PEM bytes. */
     size_t certificate_size;
+    /** Embedded TOTP protection-key bytes. */
+    size_t totp_key_size;
+    /** Embedded public client trust-store PEM bytes. */
+    size_t client_ca_size;
     /** Complete archive bytes. */
     size_t archive_size;
     /** SHA-256 checksum over the manifest and stored payload. */
     uint8_t checksum[32U];
     /** Whether the stored payload uses authenticated encryption. */
     bool encrypted;
+    /** Whether a full archive carries appliance-local authentication state. */
+    bool portable;
+};
+
+/** Borrowed plaintext sections used to create one archive. */
+struct jg_backup_payload {
+    /** SQLite snapshot. */
+    const uint8_t *database;
+    /** SQLite snapshot bytes. */
+    size_t database_size;
+    /** Optional server certificate and private-key PEM. */
+    const uint8_t *certificate;
+    /** Server certificate PEM bytes. */
+    size_t certificate_size;
+    /** TOTP protection key for a portable full backup. */
+    const uint8_t *totp_key;
+    /** TOTP protection-key bytes. */
+    size_t totp_key_size;
+    /** Optional public client trust-store PEM. */
+    const uint8_t *client_ca;
+    /** Public client trust-store PEM bytes. */
+    size_t client_ca_size;
 };
 
 /**
  * @brief Opened backup contents owned as one contiguous allocation.
  *
- * @ref certificate points inside the allocation beginning at @ref database.
- * Release both views with jg_backup_contents_clear().
+ * All non-null section pointers refer into the allocation beginning at
+ * @ref database. Release every view with jg_backup_contents_clear().
  */
 struct jg_backup_contents {
     /** Validated archive manifest. */
@@ -85,6 +112,14 @@ struct jg_backup_contents {
     uint8_t *certificate;
     /** Certificate PEM bytes. */
     size_t certificate_size;
+    /** TOTP protection-key view. */
+    uint8_t *totp_key;
+    /** TOTP protection-key bytes. */
+    size_t totp_key_size;
+    /** Public client trust-store PEM view, or null when absent. */
+    uint8_t *client_ca;
+    /** Public client trust-store PEM bytes. */
+    size_t client_ca_size;
 };
 
 /**
@@ -95,10 +130,9 @@ struct jg_backup_contents {
  * XChaCha20-Poly1305. All processing occurs in memory.
  *
  * @param[in] kind Backup content class.
- * @param[in] database SQLite snapshot.
- * @param[in] database_size SQLite snapshot bytes.
- * @param[in] certificate Optional certificate PEM.
- * @param[in] certificate_size Certificate PEM bytes.
+ * @param[in] payload Borrowed plaintext archive sections. Configuration
+ * backups must omit TOTP and client trust material. Full backups require one
+ * exact TOTP protection key and may include a public client trust store.
  * @param[in] passphrase Full-backup passphrase, otherwise null.
  * @param[in] passphrase_size Passphrase bytes, otherwise zero.
  * @param[in] created_at Creation time as Unix seconds.
@@ -118,10 +152,7 @@ struct jg_backup_contents {
  * jg_backup_data_clear().
  */
 JG_PUBLIC int jg_backup_create(enum jg_backup_kind kind,
-                               const uint8_t *database,
-                               size_t database_size,
-                               const uint8_t *certificate,
-                               size_t certificate_size,
+                               const struct jg_backup_payload *payload,
                                const char *passphrase,
                                size_t passphrase_size,
                                uint64_t created_at,

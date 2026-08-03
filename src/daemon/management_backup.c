@@ -300,6 +300,7 @@ static int create_backup(struct jg_management *management,
     size_t certificate_size = 0U;
     size_t database_size = 0U;
     size_t archive_size = 0U;
+    struct jg_backup_payload payload;
     struct jg_backup_info info;
     struct jg_database_backup metadata;
     bool journal_started = false;
@@ -313,6 +314,7 @@ static int create_backup(struct jg_management *management,
     }
     (void)memset(created, 0, sizeof(*created));
     (void)memset(&metadata, 0, sizeof(metadata));
+    (void)memset(&payload, 0, sizeof(payload));
     result = jg_database_export(management->database, kind == JG_BACKUP_FULL,
                                 &database, &database_size);
     if (result == 0) {
@@ -324,10 +326,17 @@ static int create_backup(struct jg_management *management,
         }
     }
     if (result == 0) {
-        result = jg_backup_create(
-            kind, database, database_size, (const uint8_t *)certificate,
-            certificate_size, passphrase, passphrase_size, now,
-            JG_DATABASE_SCHEMA_VERSION, &archive, &archive_size);
+        payload.database = database;
+        payload.database_size = database_size;
+        payload.certificate = (const uint8_t *)certificate;
+        payload.certificate_size = certificate_size;
+        if (kind == JG_BACKUP_FULL) {
+            payload.totp_key = management->secrets->totp_key;
+            payload.totp_key_size = JG_AUTH_TOTP_KEY_SIZE;
+        }
+        result = jg_backup_create(kind, &payload, passphrase, passphrase_size,
+                                  now, JG_DATABASE_SCHEMA_VERSION, &archive,
+                                  &archive_size);
     }
     if (result == 0) {
         result = jg_backup_inspect(archive, archive_size, &info);
