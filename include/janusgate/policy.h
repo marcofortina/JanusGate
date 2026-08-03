@@ -177,6 +177,8 @@ struct jg_policy_enforcement_config {
 struct jg_policy_rule_input {
     /** Stable nonzero identifier used to explain a verdict. */
     uint64_t id;
+    /** Optional persistent policy-group identifier. */
+    uint64_t group_id;
     /** UTF-8 domain normalized by the builder using IDNA2008. */
     const char *domain;
     /** Whether descendants at DNS label boundaries also match. */
@@ -201,6 +203,8 @@ struct jg_policy_rule_input {
 struct jg_policy_destination_rule_input {
     /** Stable nonzero identifier used to explain a verdict. */
     uint64_t id;
+    /** Optional persistent policy-group identifier. */
+    uint64_t group_id;
     /** Allow or block action. */
     enum jg_policy_effect effect;
     /** Enforce or observe; allow rules must always be enforced. */

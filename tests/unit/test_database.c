@@ -1067,6 +1067,10 @@ static void test_policy_modes(void **state)
     struct jg_database_policy_scope_mode first;
     struct jg_database_policy_scope_mode second;
     struct jg_database_policy_scope_mode page[1U];
+    struct jg_policy_rule_input rule;
+    struct jg_policy_client client;
+    struct jg_policy_match match;
+    struct jg_policy_snapshot *snapshot = NULL;
     struct jg_database *database = NULL;
     uint64_t first_id = 0U;
     uint64_t first_revision = 0U;
@@ -1085,12 +1089,29 @@ static void test_policy_modes(void **state)
                      0);
     assert_int_equal(global.enforcement, JG_POLICY_OBSERVE);
     assert_int_equal(global.revision, 2U);
+    rule = make_rule(1U, "preview.example", true, JG_POLICY_BLOCK,
+                     JG_POLICY_SOURCE_EXPLICIT);
+    assert_int_equal(jg_database_replace_domain_rules(database, &rule, 1U), 0);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 1U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "host.preview.example", NULL, &match),
+        0);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
     assert_int_equal(jg_database_replace_policy_config(
-                         database, JG_POLICY_ENFORCE, 1U, &global),
+                         database, JG_POLICY_ENFORCE, global.revision, &global),
+                     0);
+    assert_int_equal(global.revision, 3U);
+    assert_int_equal(jg_database_replace_policy_config(
+                         database, JG_POLICY_OBSERVE, 2U, &global),
                      -EAGAIN);
-    assert_int_equal(jg_database_replace_policy_config(
-                         database, (enum jg_policy_enforcement)99, 2U, &global),
-                     -EINVAL);
+    assert_int_equal(
+        jg_database_replace_policy_config(
+            database, (enum jg_policy_enforcement)99, global.revision, &global),
+        -EINVAL);
 
     (void)memset(&config, 0, sizeof(config));
     config.name = "VLAN 30 preview";
@@ -1105,6 +1126,24 @@ static void test_policy_modes(void **state)
     assert_int_equal(first.enforcement, JG_POLICY_OBSERVE);
     assert_int_equal(first.scope.value.vlan_id, 30U);
     assert_true(first.enabled);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 2U, &snapshot),
+                     0);
+    (void)memset(&client, 0, sizeof(client));
+    client.has_vlan = true;
+    client.vlan_id = 30U;
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "preview.example", &client, &match),
+        0);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    client.vlan_id = 31U;
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "preview.example", &client, &match),
+        0);
+    assert_false(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
     assert_int_equal(
         jg_database_create_policy_scope_mode(database, &config, &second),
         -EEXIST);
@@ -1216,8 +1255,10 @@ static void test_policy_round_trip(void **state)
     rules[3] = make_rule(12U, "resolver.example", true, JG_POLICY_BLOCK,
                          JG_POLICY_SOURCE_EXPLICIT);
     rules[3].target = JG_POLICY_DOMAIN_TLS_SNI;
+    rules[3].enforcement = JG_POLICY_OBSERVE;
     assert_int_equal(jg_database_replace_domain_rules(database, rules, 4U), 0);
     destination_rules[0] = make_destination_rule(20U, JG_POLICY_BLOCK);
+    destination_rules[0].enforcement = JG_POLICY_OBSERVE;
     destination_rules[0].has_port = true;
     destination_rules[0].port = 853U;
     destination_rules[1] = make_destination_rule(21U, JG_POLICY_ALLOW);
@@ -1256,6 +1297,7 @@ static void test_policy_round_trip(void **state)
     assert_string_equal(domain_page[0U].domain, "example.org");
     assert_int_equal(domain_page[1U].id, 12U);
     assert_int_equal(domain_page[1U].target, JG_POLICY_DOMAIN_TLS_SNI);
+    assert_int_equal(domain_page[1U].enforcement, JG_POLICY_OBSERVE);
     assert_int_equal(jg_database_list_destination_rules(database, 0U, 1U,
                                                         destination_page,
                                                         &page_count, &has_more),
@@ -1266,6 +1308,7 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(destination_page[0U].revision, 1U);
     assert_true(destination_page[0U].has_port);
     assert_int_equal(destination_page[0U].port, 853U);
+    assert_int_equal(destination_page[0U].enforcement, JG_POLICY_OBSERVE);
     assert_int_equal(jg_database_list_destination_rules(database, 20U, 1U,
                                                         destination_page,
                                                         &page_count, &has_more),
@@ -1306,7 +1349,8 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(jg_policy_match_visible_sni(
                          snapshot, "doh.resolver.example", NULL, &match),
                      0);
-    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
     assert_int_equal(match.rule_id, 12U);
     assert_int_equal(jg_policy_match_destination(snapshot, &destination,
                                                  &client, &destination_match),
@@ -1317,7 +1361,8 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(jg_policy_match_destination(snapshot, &destination,
                                                  &client, &destination_match),
                      0);
-    assert_int_equal(destination_match.effect, JG_POLICY_BLOCK);
+    assert_true(destination_match.would_have_blocked);
+    assert_int_equal(destination_match.effect, JG_POLICY_ALLOW);
     assert_int_equal(destination_match.rule_id, 20U);
     jg_policy_snapshot_destroy(snapshot);
 
@@ -1342,6 +1387,7 @@ static void test_policy_round_trip(void **state)
     jg_policy_snapshot_destroy(snapshot);
     mutable_rule = make_rule(0U, "New.Example.", false, JG_POLICY_BLOCK,
                              JG_POLICY_SOURCE_EXPLICIT);
+    mutable_rule.enforcement = JG_POLICY_OBSERVE;
     assert_int_equal(jg_database_create_domain_rule(database, &mutable_rule,
                                                     false, &created_rule),
                      0);
@@ -1349,9 +1395,11 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(created_rule.revision, 1U);
     assert_string_equal(created_rule.domain, "new.example");
     assert_false(created_rule.enabled);
+    assert_int_equal(created_rule.enforcement, JG_POLICY_OBSERVE);
     mutable_rule.id = created_rule.id;
     mutable_rule.domain = "Updated.Example.";
     mutable_rule.include_subdomains = true;
+    mutable_rule.enforcement = JG_POLICY_ENFORCE;
     assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
                                                     true, created_rule.revision,
                                                     &updated_rule),
@@ -1361,6 +1409,7 @@ static void test_policy_round_trip(void **state)
     assert_string_equal(updated_rule.domain, "updated.example");
     assert_true(updated_rule.include_subdomains);
     assert_true(updated_rule.enabled);
+    assert_int_equal(updated_rule.enforcement, JG_POLICY_ENFORCE);
     assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
                                                     true, created_rule.revision,
                                                     &updated_rule),
@@ -1381,6 +1430,7 @@ static void test_policy_round_trip(void **state)
                                                     true, &created_rule),
                      -EINVAL);
     mutable_destination = make_destination_rule(0U, JG_POLICY_BLOCK);
+    mutable_destination.enforcement = JG_POLICY_OBSERVE;
     mutable_destination.has_address = true;
     mutable_destination.address_family = JG_POLICY_ADDRESS_IPV4;
     mutable_destination.address[0U] = 203U;
@@ -1395,11 +1445,13 @@ static void test_policy_round_trip(void **state)
     assert_true(created_destination.id > 21U);
     assert_int_equal(created_destination.revision, 1U);
     assert_false(created_destination.enabled);
+    assert_int_equal(created_destination.enforcement, JG_POLICY_OBSERVE);
     assert_true(created_destination.has_address);
     assert_int_equal(created_destination.address[3U], 0U);
     mutable_destination.id = created_destination.id;
     mutable_destination.has_port = true;
     mutable_destination.port = 443U;
+    mutable_destination.enforcement = JG_POLICY_ENFORCE;
     assert_int_equal(jg_database_update_destination_rule(
                          database, &mutable_destination, true,
                          created_destination.revision, &updated_destination),
@@ -1408,6 +1460,7 @@ static void test_policy_round_trip(void **state)
     assert_true(updated_destination.enabled);
     assert_true(updated_destination.has_port);
     assert_int_equal(updated_destination.port, 443U);
+    assert_int_equal(updated_destination.enforcement, JG_POLICY_ENFORCE);
     assert_int_equal(jg_database_update_destination_rule(
                          database, &mutable_destination, true,
                          created_destination.revision, &updated_destination),
@@ -2040,6 +2093,7 @@ static void test_blocklist_activation(void **state)
 
     (void)state;
     config.name = "Activation source";
+    config.enforcement = JG_POLICY_OBSERVE;
     config.signature_url = NULL;
     config.has_signature = false;
     config.has_sha256_pin = false;
@@ -2047,6 +2101,7 @@ static void test_blocklist_activation(void **state)
     assert_int_equal(jg_database_open(path, 1000U, &database), 0);
     assert_int_equal(
         jg_database_create_blocklist_source(database, &config, &source), 0);
+    assert_int_equal(source.enforcement, JG_POLICY_OBSERVE);
     jg_blocklist_limits_default(&limits);
     assert_int_equal(jg_blocklist_import(input, sizeof(input) - 1U,
                                          JG_BLOCKLIST_FORMAT_CATEGORY,
@@ -2116,6 +2171,22 @@ static void test_blocklist_activation(void **state)
     assert_int_equal(
         jg_policy_match_domain(snapshot, "www.alpha.example", NULL, &match), 0);
     assert_true(match.matched);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
+
+    config.enforcement = JG_POLICY_ENFORCE;
+    assert_int_equal(
+        jg_database_update_blocklist_source(database, source.id, &config,
+                                            source.revision, &updated),
+        0);
+    assert_int_equal(updated.enforcement, JG_POLICY_ENFORCE);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 51U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "www.alpha.example", NULL, &match), 0);
+    assert_false(match.would_have_blocked);
     assert_int_equal(match.effect, JG_POLICY_BLOCK);
     jg_policy_snapshot_destroy(snapshot);
     snapshot = NULL;
@@ -2123,9 +2194,9 @@ static void test_blocklist_activation(void **state)
     config.enabled = false;
     assert_int_equal(
         jg_database_update_blocklist_source(database, source.id, &config,
-                                            source.revision, &updated),
+                                            updated.revision, &updated),
         0);
-    assert_int_equal(jg_database_load_policy_snapshot(database, 51U, &snapshot),
+    assert_int_equal(jg_database_load_policy_snapshot(database, 52U, &snapshot),
                      0);
     assert_int_equal(
         jg_policy_match_domain(snapshot, "www.alpha.example", NULL, &match), 0);

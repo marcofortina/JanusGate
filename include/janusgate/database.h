@@ -253,6 +253,10 @@ struct jg_database_policy_scope_mode {
 struct jg_database_domain_rule {
     /** Stable positive rule identifier. */
     uint64_t id;
+    /** Optional persistent policy-group identifier. */
+    uint64_t group_id;
+    /** Owning blocklist source identifier, or zero for manual rules. */
+    uint64_t blocklist_source_id;
     /** Monotonic optimistic-concurrency revision. */
     uint64_t revision;
     /** Last modification time as Unix seconds. */
@@ -269,6 +273,8 @@ struct jg_database_domain_rule {
     bool enabled;
     /** Allow or block action. */
     enum jg_policy_effect effect;
+    /** Direct rule enforcement before inherited source or group policy. */
+    enum jg_policy_enforcement enforcement;
     /** Rule origin and precedence class. */
     enum jg_policy_source source;
     /** DNS or visible TLS-SNI matching context. */
@@ -283,6 +289,8 @@ struct jg_database_domain_rule {
 struct jg_database_destination_rule {
     /** Stable positive rule identifier. */
     uint64_t id;
+    /** Optional persistent policy-group identifier. */
+    uint64_t group_id;
     /** Monotonic optimistic-concurrency revision. */
     uint64_t revision;
     /** Last modification time as Unix seconds. */
@@ -291,6 +299,8 @@ struct jg_database_destination_rule {
     char attribution[JG_POLICY_ATTRIBUTION_MAX + 1U];
     /** Allow or block action. */
     enum jg_policy_effect effect;
+    /** Direct rule enforcement before inherited group policy. */
+    enum jg_policy_enforcement enforcement;
     /** Rule origin and precedence class. */
     enum jg_policy_source source;
     /** Any, TCP, or UDP transport selector. */
@@ -329,6 +339,8 @@ struct jg_database_blocklist_source_config {
     enum jg_blocklist_mode mode;
     /** Whether source entries participate in active policy. */
     bool enabled;
+    /** Enforcement inherited by every imported blocking rule. */
+    enum jg_policy_enforcement enforcement;
     /** Normal remote update interval in seconds. */
     uint64_t update_interval_seconds;
     /** Maximum compressed download bytes. */
@@ -379,6 +391,8 @@ struct jg_database_blocklist_source {
     enum jg_blocklist_mode mode;
     /** Whether source entries participate in active policy. */
     bool enabled;
+    /** Enforcement inherited by every imported blocking rule. */
+    enum jg_policy_enforcement enforcement;
     /** Normal remote update interval in seconds. */
     uint64_t update_interval_seconds;
     /** Maximum compressed download bytes. */

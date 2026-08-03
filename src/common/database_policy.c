@@ -23,6 +23,14 @@ static const char *effect_text(enum jg_policy_effect effect)
     return effect == JG_POLICY_ALLOW ? "allow" : "block";
 }
 
+/** @brief Return the persistent text representation of enforcement. */
+static const char *enforcement_text(enum jg_policy_enforcement enforcement)
+{
+    return enforcement == JG_POLICY_ENFORCE
+               ? "enforce"
+               : (enforcement == JG_POLICY_OBSERVE ? "observe" : NULL);
+}
+
 /** @brief Return the persistent text representation of a transport selector. */
 static const char *transport_text(enum jg_policy_transport transport)
 {
@@ -124,7 +132,8 @@ static int validate_domain_rules(const struct jg_policy_rule_input *rules,
         return -EINVAL;
     }
     for (index = 0U; index < rule_count; ++index) {
-        if (rules[index].id > (uint64_t)INT64_MAX) {
+        if (rules[index].id > (uint64_t)INT64_MAX ||
+            rules[index].group_id > (uint64_t)INT64_MAX) {
             return -EOVERFLOW;
         }
     }
@@ -251,6 +260,17 @@ static int bind_domain_rule(sqlite3_stmt *statement,
     } else if (result == 0) {
         result = -EINVAL;
     }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 12,
+                                   enforcement_text(rule->enforcement), -1,
+                                   SQLITE_STATIC);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0 && rule->group_id != 0U) {
+        status =
+            sqlite3_bind_int64(statement, 13, (sqlite3_int64)rule->group_id);
+        result = jg_database_sqlite_result(status);
+    }
     return result;
 }
 
@@ -262,8 +282,9 @@ int jg_database_replace_domain_rules(struct jg_database *database,
     static const char insert[] =
         "INSERT INTO domain_rules("
         "id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution,enabled,updated_at,target"
-        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,unixepoch(),?11);";
+        "prefix_length,vlan_id,attribution,enabled,updated_at,target,"
+        "enforcement,group_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,"
+        "unixepoch(),?11,?12,?13);";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     int status;
@@ -322,7 +343,8 @@ static int validate_destination_rules(
         return -EINVAL;
     }
     for (index = 0U; index < rule_count; ++index) {
-        if (rules[index].id > (uint64_t)INT64_MAX) {
+        if (rules[index].id > (uint64_t)INT64_MAX ||
+            rules[index].group_id > (uint64_t)INT64_MAX) {
             return -EOVERFLOW;
         }
     }
@@ -399,6 +421,17 @@ static int bind_destination_rule(
                                    SQLITE_TRANSIENT);
         result = jg_database_sqlite_result(status);
     }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 14,
+                                   enforcement_text(rule->enforcement), -1,
+                                   SQLITE_STATIC);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0 && rule->group_id != 0U) {
+        status =
+            sqlite3_bind_int64(statement, 15, (sqlite3_int64)rule->group_id);
+        result = jg_database_sqlite_result(status);
+    }
     return result;
 }
 
@@ -412,9 +445,9 @@ int jg_database_replace_destination_rules(
         "INSERT INTO destination_rules("
         "id,effect,source,protocol,family,address,prefix_length,port,"
         "scope_type,scope_value,scope_prefix_length,scope_vlan_id,"
-        "attribution,enabled,updated_at"
+        "attribution,enabled,updated_at,enforcement,group_id"
         ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1,"
-        "unixepoch());";
+        "unixepoch(),?14,?15);";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     int status = SQLITE_OK;
@@ -468,6 +501,21 @@ static int decode_effect(const char *text, enum jg_policy_effect *effect)
     }
     if (strcmp(text, "block") == 0) {
         *effect = JG_POLICY_BLOCK;
+        return 0;
+    }
+    return -EILSEQ;
+}
+
+/** @brief Decode a persistent policy enforcement mode. */
+static int decode_enforcement(const char *text,
+                              enum jg_policy_enforcement *enforcement)
+{
+    if (strcmp(text, "enforce") == 0) {
+        *enforcement = JG_POLICY_ENFORCE;
+        return 0;
+    }
+    if (strcmp(text, "observe") == 0) {
+        *enforcement = JG_POLICY_OBSERVE;
         return 0;
     }
     return -EILSEQ;
@@ -661,6 +709,17 @@ static int decode_domain_rule(sqlite3_stmt *statement,
     if (result == 0) {
         result = decode_target(target, &rule->target);
     }
+    if (result == 0) {
+        result = jg_database_column_required_text(statement, 11, &target,
+                                                  &text_length);
+    }
+    if (result == 0) {
+        result = decode_enforcement(target, &rule->enforcement);
+    }
+    if (result == 0) {
+        result = jg_database_column_optional_unsigned(statement, 12,
+                                                      &rule->group_id);
+    }
     if (result == 0 &&
         (!jg_range_valid(*cursor, domain_length + 1U, strings_size) ||
          !jg_range_valid(*cursor + domain_length + 1U, attribution_length + 1U,
@@ -787,6 +846,17 @@ static int decode_destination_rule(
         result = jg_database_column_required_text(statement, 12, &attribution,
                                                   &attribution_length);
     }
+    if (result == 0) {
+        result = jg_database_column_required_text(statement, 13, &scope,
+                                                  &text_length);
+    }
+    if (result == 0) {
+        result = decode_enforcement(scope, &rule->enforcement);
+    }
+    if (result == 0) {
+        result = jg_database_column_optional_unsigned(statement, 14,
+                                                      &rule->group_id);
+    }
     if (result == 0 &&
         !jg_range_valid(*cursor, attribution_length + 1U, strings_size)) {
         result = -EOVERFLOW;
@@ -846,15 +916,19 @@ static int decode_domain_record(sqlite3_stmt *statement,
     result =
         decode_domain_rule(statement, &rule, strings, sizeof(strings), &cursor);
     if (result == 0) {
-        result = decode_rule_metadata(statement, 11, 12, 13, &record->enabled,
+        result = jg_database_column_optional_unsigned(
+            statement, 13, &record->blocklist_source_id);
+    }
+    if (result == 0) {
+        result = decode_rule_metadata(statement, 14, 15, 16, &record->enabled,
                                       &record->updated_at, &record->revision);
     }
-    if (result == 0 && sqlite3_column_type(statement, 14) != SQLITE_TEXT) {
+    if (result == 0 && sqlite3_column_type(statement, 17) != SQLITE_TEXT) {
         result = -EILSEQ;
     }
     if (result == 0) {
         result = jg_database_column_optional_text(
-            statement, 14, record->category, sizeof(record->category));
+            statement, 17, record->category, sizeof(record->category));
     }
     if (result == 0 && !jg_utf8_text_valid((const uint8_t *)record->category,
                                            strlen(record->category), true)) {
@@ -862,8 +936,10 @@ static int decode_domain_record(sqlite3_stmt *statement,
     }
     if (result == 0) {
         record->id = rule.id;
+        record->group_id = rule.group_id;
         record->include_subdomains = rule.include_subdomains;
         record->effect = rule.effect;
+        record->enforcement = rule.enforcement;
         record->source = rule.source;
         record->target = rule.target;
         record->scope = rule.scope;
@@ -889,12 +965,14 @@ static int decode_destination_record(
     result = decode_destination_rule(statement, &rule, strings, sizeof(strings),
                                      &cursor);
     if (result == 0) {
-        result = decode_rule_metadata(statement, 13, 14, 15, &record->enabled,
+        result = decode_rule_metadata(statement, 15, 16, 17, &record->enabled,
                                       &record->updated_at, &record->revision);
     }
     if (result == 0) {
         record->id = rule.id;
+        record->group_id = rule.group_id;
         record->effect = rule.effect;
+        record->enforcement = rule.enforcement;
         record->source = rule.source;
         record->transport = rule.transport;
         record->has_address = rule.has_address;
@@ -920,8 +998,9 @@ int jg_database_list_domain_rules(struct jg_database *database,
 {
     static const char query[] =
         "SELECT id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution,target,enabled,updated_at,revision,"
-        "category FROM domain_rules WHERE id>?1 ORDER BY id LIMIT ?2;";
+        "prefix_length,vlan_id,attribution,target,enforcement,group_id,"
+        "blocklist_source_id,enabled,updated_at,revision,category FROM "
+        "domain_rules WHERE id>?1 ORDER BY id LIMIT ?2;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     bool more = false;
@@ -1018,8 +1097,9 @@ int jg_database_create_domain_rule(struct jg_database *database,
     static const char insert[] =
         "INSERT INTO domain_rules("
         "id,domain,match_type,effect,source,scope_type,scope_value,"
-        "prefix_length,vlan_id,attribution,enabled,updated_at,target"
-        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?12,unixepoch(),?11);";
+        "prefix_length,vlan_id,attribution,enabled,updated_at,target,"
+        "enforcement,group_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?14,"
+        "unixepoch(),?11,?12,?13);";
     struct jg_database_domain_rule record;
     sqlite3_stmt *statement = NULL;
     sqlite3_int64 identifier = 0;
@@ -1044,7 +1124,7 @@ int jg_database_create_domain_rule(struct jg_database *database,
         result = bind_domain_rule(statement, rule);
     }
     if (result == 0) {
-        status = sqlite3_bind_int(statement, 12, enabled ? 1 : 0);
+        status = sqlite3_bind_int(statement, 14, enabled ? 1 : 0);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
@@ -1089,8 +1169,9 @@ int jg_database_update_domain_rule(struct jg_database *database,
     static const char update[] =
         "UPDATE domain_rules SET domain=?2,match_type=?3,effect=?4,source=?5,"
         "scope_type=?6,scope_value=?7,prefix_length=?8,vlan_id=?9,"
-        "attribution=?10,target=?11,enabled=?12,updated_at=unixepoch(),"
-        "revision=revision+1 WHERE id=?1 AND revision=?13"
+        "attribution=?10,target=?11,enforcement=?12,group_id=?13,enabled=?14,"
+        "updated_at=unixepoch(),revision=revision+1 WHERE id=?1 AND "
+        "revision=?15"
         " AND revision<9223372036854775807;";
     struct jg_database_domain_rule record;
     sqlite3_stmt *statement = NULL;
@@ -1116,9 +1197,9 @@ int jg_database_update_domain_rule(struct jg_database *database,
         result = bind_domain_rule(statement, rule);
     }
     if (result == 0) {
-        status = sqlite3_bind_int(statement, 12, enabled ? 1 : 0);
+        status = sqlite3_bind_int(statement, 14, enabled ? 1 : 0);
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_int64(statement, 13,
+            status = sqlite3_bind_int64(statement, 15,
                                         (sqlite3_int64)expected_revision);
         }
         result = jg_database_sqlite_result(status);
@@ -1215,10 +1296,12 @@ int jg_database_list_destination_rules(
     bool *has_more)
 {
     static const char query[] =
-        "SELECT id,effect,source,protocol,family,address,prefix_length,port,"
-        "scope_type,scope_value,scope_prefix_length,scope_vlan_id,attribution,"
-        "enabled,updated_at,revision FROM destination_rules WHERE id>?1"
-        " ORDER BY id LIMIT ?2;";
+        "SELECT r.id,r.effect,r.source,r.protocol,r.family,r.address,"
+        "r.prefix_length,r.port,r.scope_type,r.scope_value,"
+        "r.scope_prefix_length,r.scope_vlan_id,r.attribution,"
+        "r.enforcement,r.group_id,r.enabled,r.updated_at,r.revision FROM "
+        "destination_rules AS r WHERE r.id>?1"
+        " ORDER BY r.id LIMIT ?2;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     bool more = false;
@@ -1318,9 +1401,9 @@ int jg_database_create_destination_rule(
         "INSERT INTO destination_rules("
         "id,effect,source,protocol,family,address,prefix_length,port,"
         "scope_type,scope_value,scope_prefix_length,scope_vlan_id,"
-        "attribution,enabled,updated_at"
-        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,"
-        "unixepoch());";
+        "attribution,enabled,updated_at,enforcement,group_id"
+        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?16,"
+        "unixepoch(),?14,?15);";
     struct jg_database_destination_rule record;
     sqlite3_stmt *statement = NULL;
     sqlite3_int64 identifier = 0;
@@ -1345,7 +1428,7 @@ int jg_database_create_destination_rule(
         result = bind_destination_rule(statement, rule);
     }
     if (result == 0) {
-        status = sqlite3_bind_int(statement, 14, enabled ? 1 : 0);
+        status = sqlite3_bind_int(statement, 16, enabled ? 1 : 0);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
@@ -1392,8 +1475,9 @@ int jg_database_update_destination_rule(
         "UPDATE destination_rules SET effect=?2,source=?3,protocol=?4,"
         "family=?5,address=?6,prefix_length=?7,port=?8,scope_type=?9,"
         "scope_value=?10,scope_prefix_length=?11,scope_vlan_id=?12,"
-        "attribution=?13,enabled=?14,updated_at=unixepoch(),"
-        "revision=revision+1 WHERE id=?1 AND revision=?15"
+        "attribution=?13,enforcement=?14,group_id=?15,enabled=?16,"
+        "updated_at=unixepoch(),revision=revision+1 WHERE id=?1 AND "
+        "revision=?17"
         " AND revision<9223372036854775807;";
     struct jg_database_destination_rule record;
     sqlite3_stmt *statement = NULL;
@@ -1419,9 +1503,9 @@ int jg_database_update_destination_rule(
         result = bind_destination_rule(statement, rule);
     }
     if (result == 0) {
-        status = sqlite3_bind_int(statement, 14, enabled ? 1 : 0);
+        status = sqlite3_bind_int(statement, 16, enabled ? 1 : 0);
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_int64(statement, 15,
+            status = sqlite3_bind_int64(statement, 17,
                                         (sqlite3_int64)expected_revision);
         }
         result = jg_database_sqlite_result(status);
@@ -1641,9 +1725,12 @@ static int read_domain_rules(sqlite3 *handle,
 {
     static const char query[] =
         "SELECT r.id,r.domain,r.match_type,r.effect,r.source,r.scope_type,"
-        "r.scope_value,r.prefix_length,r.vlan_id,r.attribution,r.target"
+        "r.scope_value,r.prefix_length,r.vlan_id,r.attribution,r.target,"
+        "CASE WHEN r.enforcement='observe' OR s.enforcement='observe' OR "
+        "g.enforcement='observe' THEN 'observe' ELSE 'enforce' END,r.group_id"
         " FROM domain_rules AS r LEFT JOIN blocklist_sources AS s"
-        " ON s.id=r.blocklist_source_id WHERE r.enabled=1"
+        " ON s.id=r.blocklist_source_id LEFT JOIN policy_groups AS g"
+        " ON g.id=r.group_id WHERE r.enabled=1"
         " AND (r.source!='blocklist' OR r.blocklist_source_id IS NULL"
         " OR s.enabled=1) ORDER BY r.id;";
     sqlite3_stmt *statement = NULL;
@@ -1692,9 +1779,13 @@ static int read_destination_rules(
     size_t strings_size)
 {
     static const char query[] =
-        "SELECT id,effect,source,protocol,family,address,prefix_length,port,"
-        "scope_type,scope_value,scope_prefix_length,scope_vlan_id,attribution "
-        "FROM destination_rules WHERE enabled=1 ORDER BY id;";
+        "SELECT r.id,r.effect,r.source,r.protocol,r.family,r.address,"
+        "r.prefix_length,r.port,r.scope_type,r.scope_value,"
+        "r.scope_prefix_length,r.scope_vlan_id,r.attribution,"
+        "CASE WHEN r.enforcement='observe' OR g.enforcement='observe' THEN "
+        "'observe' ELSE 'enforce' END,r.group_id FROM destination_rules AS r "
+        "LEFT JOIN policy_groups AS g ON g.id=r.group_id WHERE r.enabled=1 "
+        "ORDER BY r.id;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     size_t cursor = 0U;
@@ -1830,6 +1921,130 @@ static int read_encrypted_endpoints(
     return result;
 }
 
+/** @brief Read active global and client enforcement controls. */
+static int read_policy_enforcement(sqlite3 *handle,
+                                   struct jg_policy_enforcement_config *config,
+                                   struct jg_policy_scope **scopes)
+{
+    static const char global_query[] =
+        "SELECT enforcement FROM policy_configuration WHERE id=1;";
+    static const char count_query[] =
+        "SELECT count(*) FROM policy_scope_modes WHERE enabled=1 AND "
+        "enforcement='observe';";
+    static const char scope_query[] =
+        "SELECT scope_type,scope_value,prefix_length,vlan_id FROM "
+        "policy_scope_modes WHERE enabled=1 AND enforcement='observe' "
+        "ORDER BY id;";
+    sqlite3_stmt *statement = NULL;
+    const char *text = NULL;
+    size_t text_length = 0U;
+    size_t index = 0U;
+    int status = SQLITE_OK;
+    int result = 0;
+
+    if (handle == NULL || config == NULL || scopes == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(config, 0, sizeof(*config));
+    *scopes = NULL;
+    status = sqlite3_prepare_v3(handle, global_query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_ROW ? 0 : -EILSEQ;
+    }
+    if (result == 0) {
+        result =
+            jg_database_column_required_text(statement, 0, &text, &text_length);
+    }
+    if (result == 0) {
+        result = decode_enforcement(text, &config->global);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(handle, count_query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        if (status != SQLITE_ROW ||
+            sqlite3_column_type(statement, 0) != SQLITE_INTEGER) {
+            result = -EILSEQ;
+        } else {
+            const sqlite3_int64 count = sqlite3_column_int64(statement, 0);
+
+            if (count < 0 || count > JG_POLICY_OBSERVED_SCOPE_LIMIT) {
+                result = -EOVERFLOW;
+            } else {
+                config->observed_scope_count = (size_t)count;
+            }
+        }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0 && config->observed_scope_count != 0U) {
+        *scopes = calloc(config->observed_scope_count, sizeof(**scopes));
+        if (*scopes == NULL) {
+            result = -ENOMEM;
+        }
+    }
+    if (result == 0 && config->observed_scope_count != 0U) {
+        status =
+            sqlite3_prepare_v3(handle, scope_query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    while (result == 0 && statement != NULL &&
+           (status = sqlite3_step(statement)) == SQLITE_ROW) {
+        if (index >= config->observed_scope_count) {
+            result = -EILSEQ;
+            break;
+        }
+        result =
+            jg_database_column_required_text(statement, 0, &text, &text_length);
+        if (result == 0) {
+            result = decode_scope(statement, text, 1, 2, 3, &(*scopes)[index]);
+        }
+        if (result == 0) {
+            ++index;
+        }
+    }
+    if (result == 0 && statement != NULL && status != SQLITE_DONE) {
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0 && index != config->observed_scope_count) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result != 0) {
+        free(*scopes);
+        *scopes = NULL;
+        config->observed_scope_count = 0U;
+    } else {
+        config->observed_scopes = *scopes;
+    }
+    return result;
+}
+
 /** @brief Load active persistent rules into a new immutable snapshot. */
 int jg_database_load_policy_snapshot(struct jg_database *database,
                                      uint64_t generation,
@@ -1837,6 +2052,8 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
 {
     struct jg_policy_rule_input *rules = NULL;
     struct jg_policy_destination_rule_input *destination_rules = NULL;
+    struct jg_policy_enforcement_config enforcement;
+    struct jg_policy_scope *observed_scopes = NULL;
     char *strings = NULL;
     char *destination_strings = NULL;
     size_t rule_count = 0U;
@@ -1859,6 +2076,10 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
         return -EINVAL;
     }
     result = jg_database_transaction_begin_read(database);
+    if (result == 0) {
+        result = read_policy_enforcement(database->handle, &enforcement,
+                                         &observed_scopes);
+    }
     if (result == 0) {
         result = read_policy_size(database->handle, &rule_count, &strings_size);
     }
@@ -1926,10 +2147,11 @@ int jg_database_load_policy_snapshot(struct jg_database *database,
         (void)jg_database_transaction_rollback(database);
     }
     if (result == 0) {
-        result = jg_policy_snapshot_build_complete(
+        result = jg_policy_snapshot_build_configured(
             rules, rule_count, destination_rules, complete_destination_count,
-            generation, snapshot);
+            &enforcement, generation, snapshot);
     }
+    free(observed_scopes);
     free(destination_strings);
     free(destination_rules);
     free(strings);

@@ -18,6 +18,29 @@
 #include "database_internal.h"
 #include "janusgate/checked.h"
 
+/** @brief Return persistent text for one source enforcement mode. */
+static const char *enforcement_text(enum jg_policy_enforcement enforcement)
+{
+    return enforcement == JG_POLICY_ENFORCE
+               ? "enforce"
+               : (enforcement == JG_POLICY_OBSERVE ? "observe" : NULL);
+}
+
+/** @brief Decode one persistent source enforcement mode. */
+static int decode_enforcement(const char *text,
+                              enum jg_policy_enforcement *enforcement)
+{
+    if (strcmp(text, "enforce") == 0) {
+        *enforcement = JG_POLICY_ENFORCE;
+        return 0;
+    }
+    if (strcmp(text, "observe") == 0) {
+        *enforcement = JG_POLICY_OBSERVE;
+        return 0;
+    }
+    return -EILSEQ;
+}
+
 /** @brief Decode one persistent blocklist syntax name. */
 static int decode_blocklist_format(const char *text,
                                    enum jg_blocklist_format *format)
@@ -196,6 +219,13 @@ static int decode_blocklist_source(sqlite3_stmt *statement,
         result = jg_database_column_optional_text(
             statement, 30, source->last_error, sizeof(source->last_error));
     }
+    if (result == 0) {
+        result = jg_database_column_required_text(statement, 31, &text,
+                                                  &text_length);
+    }
+    if (result == 0) {
+        result = decode_enforcement(text, &source->enforcement);
+    }
     if (result == 0 &&
         (id == 0U || revision == 0U || updated_at < created_at ||
          source->name[0U] == '\0' ||
@@ -249,7 +279,7 @@ int jg_database_list_blocklist_sources(
         "st.next_attempt_at,COALESCE(st.consecutive_failures,0),"
         "st.active_checksum,COALESCE(st.active_entries,0),"
         "COALESCE(st.rejected_entries,0),COALESCE(st.health,'unknown'),"
-        "st.last_error FROM blocklist_sources AS s LEFT JOIN "
+        "st.last_error,s.enforcement FROM blocklist_sources AS s LEFT JOIN "
         "blocklist_source_status AS st ON st.source_id=s.id WHERE s.id>?1 "
         "ORDER BY s.id LIMIT ?2;";
     sqlite3_stmt *statement = NULL;
@@ -356,6 +386,7 @@ static int validate_blocklist_source_config(
     int result = 0;
 
     if (config == NULL || blocklist_format_text(config->format) == NULL ||
+        enforcement_text(config->enforcement) == NULL ||
         (config->mode != JG_BLOCKLIST_STRICT &&
          config->mode != JG_BLOCKLIST_TOLERANT) ||
         config->update_interval_seconds < 300U ||
@@ -498,6 +529,12 @@ static int bind_blocklist_source_config(
                 : sqlite3_bind_null(statement, 16);
         result = jg_database_sqlite_result(status);
     }
+    if (result == 0) {
+        status = sqlite3_bind_text(statement, 17,
+                                   enforcement_text(config->enforcement), -1,
+                                   SQLITE_STATIC);
+        result = jg_database_sqlite_result(status);
+    }
     return result;
 }
 
@@ -530,8 +567,8 @@ int jg_database_create_blocklist_source(
         "max_download_bytes,max_decompressed_bytes,connect_timeout_ms,"
         "transfer_timeout_ms,redirect_limit,retry_base_seconds,"
         "retry_max_seconds,sha256_pin,ed25519_public_key,created_at,updated_at"
-        ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,"
-        "unixepoch(),unixepoch());";
+        ",enforcement) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,"
+        "?14,?15,?16,unixepoch(),unixepoch(),?17);";
     struct jg_database_blocklist_source source;
     sqlite3_stmt *statement = NULL;
     sqlite3_int64 identifier = 0;
@@ -611,8 +648,9 @@ int jg_database_update_blocklist_source(
         "max_download_bytes=?8,max_decompressed_bytes=?9,"
         "connect_timeout_ms=?10,transfer_timeout_ms=?11,redirect_limit=?12,"
         "retry_base_seconds=?13,retry_max_seconds=?14,sha256_pin=?15,"
-        "ed25519_public_key=?16,updated_at=unixepoch(),revision=revision+1 "
-        "WHERE id=?17 AND revision=?18 AND revision<9223372036854775807;";
+        "ed25519_public_key=?16,enforcement=?17,updated_at=unixepoch(),"
+        "revision=revision+1 WHERE id=?18 AND revision=?19 "
+        "AND revision<9223372036854775807;";
     struct jg_database_blocklist_source source;
     sqlite3_stmt *statement = NULL;
     int status = SQLITE_OK;
@@ -638,9 +676,9 @@ int jg_database_update_blocklist_source(
         result = bind_blocklist_source_config(statement, config);
     }
     if (result == 0) {
-        status = sqlite3_bind_int64(statement, 17, (sqlite3_int64)source_id);
+        status = sqlite3_bind_int64(statement, 18, (sqlite3_int64)source_id);
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_int64(statement, 18,
+            status = sqlite3_bind_int64(statement, 19,
                                         (sqlite3_int64)expected_revision);
         }
         result = jg_database_sqlite_result(status);
