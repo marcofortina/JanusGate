@@ -193,6 +193,7 @@ janusgate_apply_compiler_options(janusgate-control-protocol)
 
 add_library(
   janusgate-daemon-core STATIC
+  src/daemon/alert_webhook.c
   src/daemon/blocklist_update.c
   src/daemon/control_server.c
   src/daemon/dataplane.c

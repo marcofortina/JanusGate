@@ -21,6 +21,8 @@
 #include "janusgate/alert.h"
 #include "janusgate/database.h"
 
+#include "alert_webhook.h"
+
 int jg_test_alert(void);
 
 /* Private database fixture for alert-storage tests. */
@@ -309,6 +311,33 @@ static void test_alert_events(void **state)
     assert_int_equal(jg_database_alert_prune(fixture->database), 0);
 }
 
+/** @brief Verify deterministic timestamp-bound webhook signatures. */
+static void test_alert_signature(void **state)
+{
+    uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    char first[ALERT_WEBHOOK_SIGNATURE_SIZE];
+    char second[ALERT_WEBHOOK_SIGNATURE_SIZE];
+
+    (void)state;
+    (void)memset(secret, UINT8_C(0x42), sizeof(secret));
+    assert_int_equal(
+        alert_webhook_signature(secret, 1234U, "{\"ok\":true}", 11U, first), 0);
+    assert_int_equal(
+        alert_webhook_signature(secret, 1234U, "{\"ok\":true}", 11U, second),
+        0);
+    assert_string_equal(first, second);
+    assert_string_equal(
+        first,
+        "sha256="
+        "3e2681d4c8599209bf2654aa944428283e82c45f2ff6e6a919ca3338d3d51a0c");
+    assert_int_equal(strlen(first), ALERT_WEBHOOK_SIGNATURE_SIZE - 1U);
+    assert_int_equal(
+        alert_webhook_signature(secret, 1235U, "{\"ok\":true}", 11U, second),
+        0);
+    assert_string_not_equal(first, second);
+    sodium_memzero(secret, sizeof(secret));
+}
+
 /** @brief Run alert storage tests. */
 int jg_test_alert(void)
 {
@@ -321,6 +350,7 @@ int jg_test_alert(void)
                                         setup_alert, teardown_alert),
         cmocka_unit_test_setup_teardown(test_alert_events, setup_alert,
                                         teardown_alert),
+        cmocka_unit_test(test_alert_signature),
     };
 
     return cmocka_run_group_tests_name("alert", tests, NULL, NULL);
