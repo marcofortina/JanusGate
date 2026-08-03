@@ -715,6 +715,30 @@ static const char *const migration_14[] = {
     migration_14_policy_sync,
 };
 
+/** Retain the initiating actor and request with recoverable operations. */
+static const char migration_15_operation_provenance[] =
+    "ALTER TABLE management_operations ADD COLUMN actor_type TEXT NOT NULL "
+    "DEFAULT 'system' CHECK(actor_type IN "
+    "('system','user','token','local'));"
+    "ALTER TABLE management_operations ADD COLUMN actor_id INTEGER "
+    "CHECK((actor_type IN ('user','token') AND actor_id>0) OR "
+    "(actor_type IN ('system','local') AND actor_id IS NULL));"
+    "ALTER TABLE management_operations ADD COLUMN source TEXT NOT NULL "
+    "DEFAULT 'local' CHECK(length(source) BETWEEN 1 AND 255);"
+    "ALTER TABLE management_operations ADD COLUMN request_id TEXT NOT NULL "
+    "DEFAULT '' CHECK(length(request_id)<=128);"
+    "ALTER TABLE management_operations ADD COLUMN requested_action TEXT NOT "
+    "NULL DEFAULT 'management.operation.unknown' "
+    "CHECK(length(requested_action) BETWEEN 1 AND 128);"
+    "INSERT INTO schema_migrations(version,applied_at) "
+    "VALUES(15,unixepoch());"
+    "PRAGMA user_version=15;";
+
+/** Ordered statement groups composing schema version fifteen. */
+static const char *const migration_15[] = {
+    migration_15_operation_provenance,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -731,6 +755,7 @@ static const struct database_migration migrations[] = {
     {12U, migration_12, sizeof(migration_12) / sizeof(migration_12[0])},
     {13U, migration_13, sizeof(migration_13) / sizeof(migration_13[0])},
     {14U, migration_14, sizeof(migration_14) / sizeof(migration_14[0])},
+    {15U, migration_15, sizeof(migration_15) / sizeof(migration_15[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1850,16 +1875,87 @@ static bool operation_kind_valid(const char *kind)
     return length != 0U && length <= JG_DATABASE_OPERATION_KIND_MAX;
 }
 
+/** @brief Return the persistent name of one authenticated operation actor. */
+static const char *operation_actor_name(enum jg_audit_actor_type actor)
+{
+    switch (actor) {
+    case JG_AUDIT_ACTOR_SYSTEM:
+        return "system";
+    case JG_AUDIT_ACTOR_USER:
+        return "user";
+    case JG_AUDIT_ACTOR_TOKEN:
+        return "token";
+    case JG_AUDIT_ACTOR_LOCAL:
+        return "local";
+    default:
+        return NULL;
+    }
+}
+
+/** @brief Parse one persistent authenticated operation actor name. */
+static bool operation_actor_parse(const char *name,
+                                  enum jg_audit_actor_type *actor)
+{
+    if (strcmp(name, "system") == 0) {
+        *actor = JG_AUDIT_ACTOR_SYSTEM;
+    } else if (strcmp(name, "user") == 0) {
+        *actor = JG_AUDIT_ACTOR_USER;
+    } else if (strcmp(name, "token") == 0) {
+        *actor = JG_AUDIT_ACTOR_TOKEN;
+    } else if (strcmp(name, "local") == 0) {
+        *actor = JG_AUDIT_ACTOR_LOCAL;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/** @brief Validate one bounded UTF-8 operation provenance field. */
+static bool operation_text_valid(const char *text,
+                                 size_t minimum,
+                                 size_t maximum)
+{
+    const size_t size = text == NULL ? 0U : strnlen(text, maximum + 1U);
+
+    return text != NULL && size >= minimum && size <= maximum &&
+           jg_utf8_text_valid((const uint8_t *)text, size, minimum == 0U);
+}
+
+/** @brief Validate actor and bounded text semantics for operation provenance.
+ */
+static bool operation_context_valid(
+    const struct jg_database_operation_context *context)
+{
+    const bool actor_has_identifier =
+        context != NULL && (context->actor_type == JG_AUDIT_ACTOR_USER ||
+                            context->actor_type == JG_AUDIT_ACTOR_TOKEN);
+
+    return context != NULL &&
+           operation_actor_name(context->actor_type) != NULL &&
+           context->has_actor_id == actor_has_identifier &&
+           (!context->has_actor_id ||
+            (context->actor_id > 0U &&
+             context->actor_id <= (uint64_t)INT64_MAX)) &&
+           operation_text_valid(context->source, 1U, JG_AUDIT_SOURCE_MAX) &&
+           operation_text_valid(context->request_id, 0U,
+                                JG_AUDIT_REQUEST_ID_MAX) &&
+           operation_text_valid(context->requested_action, 1U,
+                                JG_AUDIT_ACTION_MAX);
+}
+
 /** @brief Reserve the singleton durable management-operation slot. */
-int jg_database_operation_prepare(struct jg_database *database,
-                                  const char *kind,
-                                  const uint8_t *payload,
-                                  size_t payload_size,
-                                  uint64_t created_at)
+int jg_database_operation_prepare(
+    struct jg_database *database,
+    const char *kind,
+    const uint8_t *payload,
+    size_t payload_size,
+    const struct jg_database_operation_context *context,
+    uint64_t created_at)
 {
     static const char insert[] =
-        "INSERT INTO management_operations(id,kind,state,payload,created_at)"
-        " VALUES(1,?1,'preparing',?2,?3)"
+        "INSERT INTO management_operations(id,kind,state,payload,created_at,"
+        "actor_type,actor_id,source,request_id,requested_action)"
+        " VALUES(1,?1,'preparing',?2,?3,?4,?5,?6,?7,?8)"
         " ON CONFLICT(id) DO NOTHING;";
     sqlite3_stmt *statement = NULL;
     int status = SQLITE_OK;
@@ -1868,7 +1964,7 @@ int jg_database_operation_prepare(struct jg_database *database,
     if (database == NULL || !operation_kind_valid(kind) ||
         (payload == NULL && payload_size != 0U) ||
         payload_size > JG_DATABASE_OPERATION_PAYLOAD_MAX ||
-        created_at > (uint64_t)INT64_MAX) {
+        !operation_context_valid(context) || created_at > (uint64_t)INT64_MAX) {
         return -EINVAL;
     }
     status = sqlite3_prepare_v3(database->handle, insert, -1,
@@ -1886,6 +1982,29 @@ int jg_database_operation_prepare(struct jg_database *database,
         if (status == SQLITE_OK) {
             status =
                 sqlite3_bind_int64(statement, 3, (sqlite3_int64)created_at);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_text(
+                statement, 4, operation_actor_name(context->actor_type), -1,
+                SQLITE_STATIC);
+        }
+        if (status == SQLITE_OK) {
+            status = context->has_actor_id
+                         ? sqlite3_bind_int64(statement, 5,
+                                              (sqlite3_int64)context->actor_id)
+                         : sqlite3_bind_null(statement, 5);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_text(statement, 6, context->source, -1,
+                                       SQLITE_TRANSIENT);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_text(statement, 7, context->request_id, -1,
+                                       SQLITE_TRANSIENT);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_text(statement, 8, context->requested_action,
+                                       -1, SQLITE_TRANSIENT);
         }
         result = jg_database_sqlite_result(status);
     }
@@ -1928,17 +2047,26 @@ int jg_database_operation_load(struct jg_database *database,
                                struct jg_database_operation *operation)
 {
     static const char query[] =
-        "SELECT kind,state,payload,created_at FROM management_operations"
-        " WHERE id=1;";
+        "SELECT kind,state,payload,created_at,actor_type,actor_id,source,"
+        "request_id,requested_action FROM management_operations WHERE id=1;";
     struct jg_database_operation loaded;
     sqlite3_stmt *statement = NULL;
     const char *kind = NULL;
     const char *state = NULL;
+    const char *actor_name = NULL;
+    const char *source = NULL;
+    const char *request_id = NULL;
+    const char *requested_action = NULL;
     const void *payload = NULL;
     size_t kind_size = 0U;
     size_t state_size = 0U;
+    size_t actor_name_size = 0U;
+    size_t source_size = 0U;
+    size_t request_id_size = 0U;
+    size_t requested_action_size = 0U;
     int payload_size = 0;
     sqlite3_int64 created_at = 0;
+    sqlite3_int64 actor_id = 0;
     int status = SQLITE_OK;
     int result = 0;
 
@@ -1987,6 +2115,41 @@ int jg_database_operation_load(struct jg_database *database,
         }
     }
     if (result == 0) {
+        result = required_text(statement, 4, &actor_name, &actor_name_size);
+    }
+    if (result == 0) {
+        result = required_text(statement, 6, &source, &source_size);
+    }
+    if (result == 0) {
+        result = required_text(statement, 7, &request_id, &request_id_size);
+    }
+    if (result == 0) {
+        result = required_text(statement, 8, &requested_action,
+                               &requested_action_size);
+    }
+    if (result == 0) {
+        const bool has_actor_id =
+            sqlite3_column_type(statement, 5) == SQLITE_INTEGER;
+
+        actor_id = sqlite3_column_int64(statement, 5);
+        loaded.has_actor_id = has_actor_id;
+        if (!operation_actor_parse(actor_name, &loaded.actor_type) ||
+            actor_name_size == 0U || actor_name_size > sizeof("system") - 1U ||
+            (!has_actor_id &&
+             sqlite3_column_type(statement, 5) != SQLITE_NULL) ||
+            (has_actor_id && actor_id <= 0) ||
+            ((loaded.actor_type == JG_AUDIT_ACTOR_USER ||
+              loaded.actor_type == JG_AUDIT_ACTOR_TOKEN) != has_actor_id) ||
+            !operation_text_valid(source, 1U, JG_AUDIT_SOURCE_MAX) ||
+            source_size != strlen(source) ||
+            !operation_text_valid(request_id, 0U, JG_AUDIT_REQUEST_ID_MAX) ||
+            request_id_size != strlen(request_id) ||
+            !operation_text_valid(requested_action, 1U, JG_AUDIT_ACTION_MAX) ||
+            requested_action_size != strlen(requested_action)) {
+            result = -EILSEQ;
+        }
+    }
+    if (result == 0) {
         (void)memcpy(loaded.kind, kind, kind_size);
         loaded.kind[kind_size] = '\0';
         if (payload_size != 0) {
@@ -1994,6 +2157,14 @@ int jg_database_operation_load(struct jg_database *database,
         }
         loaded.payload_size = (size_t)payload_size;
         loaded.created_at = (uint64_t)created_at;
+        loaded.actor_id = (uint64_t)actor_id;
+        (void)memcpy(loaded.source, source, source_size);
+        loaded.source[source_size] = '\0';
+        (void)memcpy(loaded.request_id, request_id, request_id_size);
+        loaded.request_id[request_id_size] = '\0';
+        (void)memcpy(loaded.requested_action, requested_action,
+                     requested_action_size);
+        loaded.requested_action[requested_action_size] = '\0';
         loaded.ready = state_size == sizeof("ready") - 1U;
     }
     if (result == 0 && sqlite3_step(statement) != SQLITE_DONE) {

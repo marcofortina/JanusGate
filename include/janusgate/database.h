@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "janusgate/audit.h"
 #include "janusgate/backup.h"
 #include "janusgate/blocklist.h"
 #include "janusgate/blocklist_remote.h"
@@ -34,7 +35,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 14U
+#define JG_DATABASE_SCHEMA_VERSION 15U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -117,6 +118,22 @@ struct jg_database_backup {
     size_t size_bytes;
 };
 
+/** Authenticated provenance retained with one durable operation intent. */
+struct jg_database_operation_context {
+    /** Authenticated actor kind. */
+    enum jg_audit_actor_type actor_type;
+    /** Whether actor_id identifies a persistent user or token. */
+    bool has_actor_id;
+    /** Persistent user or token identifier. */
+    uint64_t actor_id;
+    /** Bounded local socket or remote network source. */
+    const char *source;
+    /** Correlation identifier of the initiating request. */
+    const char *request_id;
+    /** Requested management action that opened the operation. */
+    const char *requested_action;
+};
+
 /** One durable cross-resource management operation awaiting completion. */
 struct jg_database_operation {
     /** Stable operation kind interpreted by the management service. */
@@ -127,6 +144,18 @@ struct jg_database_operation {
     size_t payload_size;
     /** Creation time as Unix seconds. */
     uint64_t created_at;
+    /** Authenticated actor kind at operation creation. */
+    enum jg_audit_actor_type actor_type;
+    /** Whether actor_id identifies a persistent user or token. */
+    bool has_actor_id;
+    /** Persistent user or token identifier. */
+    uint64_t actor_id;
+    /** Bounded local socket or remote network source. */
+    char source[JG_AUDIT_SOURCE_MAX + 1U];
+    /** Correlation identifier of the initiating request. */
+    char request_id[JG_AUDIT_REQUEST_ID_MAX + 1U];
+    /** Requested management action that opened the operation. */
+    char requested_action[JG_AUDIT_ACTION_MAX + 1U];
     /** Whether durable recovery snapshots permit external mutation. */
     bool ready;
 };
@@ -413,6 +442,7 @@ JG_PUBLIC int jg_database_schema_version(struct jg_database *database,
  * @param[in] kind Nonempty lowercase operation kind.
  * @param[in] payload Optional opaque recovery payload.
  * @param[in] payload_size Exact payload bytes.
+ * @param[in] context Validated authenticated operation provenance.
  * @param[in] created_at Creation time as Unix seconds.
  *
  * @return 0 on success.
@@ -423,11 +453,13 @@ JG_PUBLIC int jg_database_schema_version(struct jg_database *database,
  * @thread_safety The caller must serialize access to @p database. Distinct
  * connections are serialized by SQLite and the singleton slot.
  */
-JG_PUBLIC int jg_database_operation_prepare(struct jg_database *database,
-                                            const char *kind,
-                                            const uint8_t *payload,
-                                            size_t payload_size,
-                                            uint64_t created_at);
+JG_PUBLIC int jg_database_operation_prepare(
+    struct jg_database *database,
+    const char *kind,
+    const uint8_t *payload,
+    size_t payload_size,
+    const struct jg_database_operation_context *context,
+    uint64_t created_at);
 
 /**
  * @brief Mark the pending operation ready for external mutation.

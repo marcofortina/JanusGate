@@ -462,6 +462,10 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "logging_configuration"));
     assert_true(column_exists(inspection, "logging_configuration", "revision"));
     assert_true(table_exists(inspection, "management_operations"));
+    assert_true(
+        column_exists(inspection, "management_operations", "actor_type"));
+    assert_true(
+        column_exists(inspection, "management_operations", "requested_action"));
     assert_true(table_exists(inspection, "policy_sync_state"));
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
@@ -475,10 +479,19 @@ static void test_initial_migration(void **state)
 static void test_management_operation(void **state)
 {
     static const uint8_t payload[] = {0x01U, 0x02U, 0x03U};
+    static const struct jg_database_operation_context context = {
+        .actor_type = JG_AUDIT_ACTOR_USER,
+        .has_actor_id = true,
+        .actor_id = 42U,
+        .source = "192.0.2.10",
+        .request_id = "request-1",
+        .requested_action = "certificate.install",
+    };
     char directory[64U];
     char path[512U];
     struct jg_database *database = NULL;
     struct jg_database_operation operation;
+    struct jg_database_operation_context invalid = context;
 
     (void)state;
     make_database_path(directory, sizeof(directory), path, sizeof(path));
@@ -486,16 +499,23 @@ static void test_management_operation(void **state)
     assert_int_equal(jg_database_operation_load(database, &operation), -ENOENT);
     assert_int_equal(
         jg_database_operation_prepare(database, "certificate_install", payload,
-                                      sizeof(payload), 123U),
+                                      sizeof(payload), &context, 123U),
         0);
-    assert_int_equal(jg_database_operation_prepare(
-                         database, "another_operation", NULL, 0U, 124U),
+    assert_int_equal(jg_database_operation_prepare(database,
+                                                   "another_operation", NULL,
+                                                   0U, &context, 124U),
                      -EBUSY);
     assert_int_equal(jg_database_operation_load(database, &operation), 0);
     assert_string_equal(operation.kind, "certificate_install");
     assert_int_equal(operation.created_at, 123U);
     assert_int_equal(operation.payload_size, sizeof(payload));
     assert_memory_equal(operation.payload, payload, sizeof(payload));
+    assert_int_equal(operation.actor_type, JG_AUDIT_ACTOR_USER);
+    assert_true(operation.has_actor_id);
+    assert_int_equal(operation.actor_id, 42U);
+    assert_string_equal(operation.source, "192.0.2.10");
+    assert_string_equal(operation.request_id, "request-1");
+    assert_string_equal(operation.requested_action, "certificate.install");
     assert_false(operation.ready);
     assert_int_equal(jg_database_operation_mark_ready(database), 0);
     assert_int_equal(jg_database_operation_mark_ready(database), -ENOENT);
@@ -503,12 +523,16 @@ static void test_management_operation(void **state)
     assert_true(operation.ready);
     assert_int_equal(jg_database_operation_clear(database), 0);
     assert_int_equal(jg_database_operation_clear(database), -ENOENT);
-    assert_int_equal(
-        jg_database_operation_prepare(database, "Invalid", NULL, 0U, 1U),
-        -EINVAL);
-    assert_int_equal(
-        jg_database_operation_prepare(database, "operation", NULL, 1U, 1U),
-        -EINVAL);
+    assert_int_equal(jg_database_operation_prepare(database, "Invalid", NULL,
+                                                   0U, &context, 1U),
+                     -EINVAL);
+    assert_int_equal(jg_database_operation_prepare(database, "operation", NULL,
+                                                   1U, &context, 1U),
+                     -EINVAL);
+    invalid.has_actor_id = false;
+    assert_int_equal(jg_database_operation_prepare(database, "operation", NULL,
+                                                   0U, &invalid, 1U),
+                     -EINVAL);
     jg_database_close(database);
     remove_database(directory, path);
 }

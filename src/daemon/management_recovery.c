@@ -11,6 +11,9 @@
 
 #include "management_internal.h"
 
+#include <sys/socket.h>
+
+#include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +25,23 @@
 #include "janusgate/certificate.h"
 #include "janusgate/logging.h"
 #include "netd_client.h"
+
+/** @brief Return a stable audit actor name for recovery detail records. */
+static const char *recovery_actor_name(enum jg_audit_actor_type actor)
+{
+    switch (actor) {
+    case JG_AUDIT_ACTOR_SYSTEM:
+        return "system";
+    case JG_AUDIT_ACTOR_USER:
+        return "user";
+    case JG_AUDIT_ACTOR_TOKEN:
+        return "token";
+    case JG_AUDIT_ACTOR_LOCAL:
+        return "local";
+    default:
+        return NULL;
+    }
+}
 
 /** @brief Append the fixed recovery suffix to one validated absolute path. */
 static int recovery_path(const char *path, char output[PATH_MAX])
@@ -264,10 +284,30 @@ int start_recovery_operation(struct jg_management *management,
                              size_t payload_size,
                              uint8_t files,
                              bool database,
+                             const struct management_operation_origin *origin,
                              uint64_t now)
 {
-    int result = jg_database_operation_prepare(management->database, kind,
-                                               payload, payload_size, now);
+    char source[INET6_ADDRSTRLEN];
+    struct jg_database_operation_context context;
+    int result = 0;
+
+    if (origin == NULL || origin->request == NULL || origin->remote == NULL ||
+        origin->actor == NULL || origin->action == NULL ||
+        inet_ntop(origin->remote->family == JG_POLICY_ADDRESS_IPV4 ? AF_INET
+                                                                   : AF_INET6,
+                  origin->remote->address, source, sizeof(source)) == NULL) {
+        return -EINVAL;
+    }
+    context = (struct jg_database_operation_context){
+        .actor_type = actor_audit_type(origin->actor),
+        .has_actor_id = actor_has_identifier(origin->actor),
+        .actor_id = origin->actor->actor_id,
+        .source = source,
+        .request_id = origin->request->request_id,
+        .requested_action = origin->action,
+    };
+    result = jg_database_operation_prepare(management->database, kind, payload,
+                                           payload_size, &context, now);
     const bool prepared = result == 0;
 
     if (result == 0) {
@@ -363,20 +403,41 @@ static int finish_recovered_operation(
     struct jg_management *management,
     const struct jg_database_operation *operation)
 {
-    char details[JG_DATABASE_OPERATION_KIND_MAX + 48U];
     const time_t wall_clock = time(NULL);
+    json_t *details = NULL;
+    char *encoded = NULL;
+    const char *original_actor = recovery_actor_name(operation->actor_type);
     struct jg_audit_event event;
-    int written = 0;
     int result = 0;
 
-    if (wall_clock < 0) {
+    if (wall_clock < 0 || original_actor == NULL) {
         return -EIO;
     }
-    written =
-        snprintf(details, sizeof(details), "{\"kind\":\"%s\",\"ready\":%s}",
-                 operation->kind, operation->ready ? "true" : "false");
-    if (written <= 0 || (size_t)written >= sizeof(details)) {
-        return -EOVERFLOW;
+    details = json_object();
+    if (details == NULL ||
+        json_object_set_new(details, "kind", json_string(operation->kind)) !=
+            0 ||
+        json_object_set_new(details, "ready", json_boolean(operation->ready)) !=
+            0 ||
+        json_object_set_new(details, "requested_action",
+                            json_string(operation->requested_action)) != 0 ||
+        json_object_set_new(details, "original_source",
+                            json_string(operation->source)) != 0 ||
+        json_object_set_new(details, "original_request_id",
+                            json_string(operation->request_id)) != 0 ||
+        json_object_set_new(details, "original_actor_type",
+                            json_string(original_actor)) != 0 ||
+        json_object_set_new(details, "original_actor_id",
+                            operation->has_actor_id
+                                ? json_integer((json_int_t)operation->actor_id)
+                                : json_null()) != 0) {
+        json_decref(details);
+        return -ENOMEM;
+    }
+    encoded = json_dumps(details, JSON_COMPACT | JSON_SORT_KEYS);
+    json_decref(details);
+    if (encoded == NULL) {
+        return -ENOMEM;
     }
     event = (struct jg_audit_event){
         .occurred_at = (uint64_t)wall_clock,
@@ -386,9 +447,9 @@ static int finish_recovered_operation(
                                    : "management.operation.discard",
         .object_type = "management_operation",
         .object_id = operation->kind,
-        .details = details,
+        .details = encoded,
         .success = true,
-        .request_id = "",
+        .request_id = operation->request_id,
     };
     result = jg_database_transaction_begin(management->database);
     if (result == 0) {
@@ -408,6 +469,7 @@ static int finish_recovered_operation(
             result = -EIO;
         }
     }
+    free(encoded);
     return result;
 }
 
@@ -552,6 +614,7 @@ int abort_recovery_operation(struct jg_management *management,
 int start_network_recovery(struct jg_management *management,
                            const struct jg_network_config *previous,
                            const struct jg_network_config *replacement,
+                           const struct management_operation_origin *origin,
                            uint64_t now)
 {
     uint8_t payload[1U + JG_NETWORK_CONFIG_WIRE_SIZE * 2U];
@@ -574,7 +637,7 @@ int start_network_recovery(struct jg_management *management,
     if (result == 0) {
         result = start_recovery_operation(
             management, MANAGEMENT_OPERATION_NETWORK_CONFIRM, payload,
-            sizeof(payload), 0U, false, now);
+            sizeof(payload), 0U, false, origin, now);
     }
     return result;
 }

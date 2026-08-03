@@ -736,6 +736,12 @@ int execute_backup_restore_job(struct jg_management *management,
     const struct management_request *request = &request_value;
     const struct remote_address *remote = &job->remote;
     const struct authenticated_actor *actor = &job->actor;
+    const struct management_operation_origin operation_origin = {
+        .request = request,
+        .remote = remote,
+        .actor = actor,
+        .action = "backup.restore",
+    };
     struct jg_database_backup metadata;
     struct jg_database_backup checkpoint;
     struct jg_backup_info info;
@@ -860,7 +866,8 @@ int execute_backup_restore_job(struct jg_management *management,
             certificate_changes ? MANAGEMENT_RECOVERY_CERTIFICATE : 0U;
         result = start_recovery_operation(
             management, MANAGEMENT_OPERATION_BACKUP_RESTORE, recovery_payload,
-            sizeof(recovery_payload), recovery_payload[1U], true, now);
+            sizeof(recovery_payload), recovery_payload[1U], true,
+            &operation_origin, now);
         recovery_started = result == 0;
     }
     if (!dry_run && changes && result != 0) {

@@ -2067,13 +2067,22 @@ static void test_certificate_api(void **state)
 static void test_cross_resource_recovery(void **state)
 {
     static const uint8_t recovery_payload[] = {1U, 1U, 3U};
+    static const struct jg_database_operation_context operation_context = {
+        .actor_type = JG_AUDIT_ACTOR_LOCAL,
+        .source = "127.0.0.1",
+        .request_id = "interrupted-install",
+        .requested_action = "certificate.install",
+    };
     struct management_fixture *fixture = *state;
     struct jg_certificate_material replacement;
     struct jg_certificate_info original;
     struct jg_certificate_info installed;
     struct jg_certificate_info recovered;
     struct jg_database_operation operation;
+    struct jg_audit_record audit;
     char snapshot[160U];
+    size_t audit_count = 0U;
+    uint64_t audit_total = 0U;
     int written = 0;
 
     assert_int_equal(
@@ -2084,7 +2093,8 @@ static void test_cross_resource_recovery(void **state)
     assert_true((size_t)written < sizeof(snapshot));
     assert_int_equal(jg_database_operation_prepare(
                          fixture->database, "certificate_install",
-                         recovery_payload, sizeof(recovery_payload), 100U),
+                         recovery_payload, sizeof(recovery_payload),
+                         &operation_context, 100U),
                      0);
     assert_int_equal(
         jg_certificate_identity_copy(fixture->certificate_path, snapshot), 0);
@@ -2117,6 +2127,15 @@ static void test_cross_resource_recovery(void **state)
                      -ENOENT);
     assert_int_equal(access(snapshot, F_OK), -1);
     assert_int_equal(errno, ENOENT);
+    assert_int_equal(jg_database_audit_list(fixture->database, 0U, &audit, 1U,
+                                            &audit_count, &audit_total),
+                     0);
+    assert_int_equal(audit_count, 1U);
+    assert_int_equal(audit.actor_type, JG_AUDIT_ACTOR_SYSTEM);
+    assert_string_equal(audit.request_id, "interrupted-install");
+    assert_non_null(
+        strstr(audit.details, "\"requested_action\":\"certificate.install\""));
+    assert_non_null(strstr(audit.details, "\"original_actor_type\":\"local\""));
     jg_certificate_material_clear(&replacement);
 }
 

@@ -202,6 +202,14 @@ struct authenticated_actor {
     enum authenticated_actor_kind kind;
 };
 
+/** Initiating authenticated request retained by a durable operation. */
+struct management_operation_origin {
+    const struct management_request *request;
+    const struct remote_address *remote;
+    const struct authenticated_actor *actor;
+    const char *action;
+};
+
 /** Slow operation kinds executed by the single bounded worker. */
 enum management_job_kind {
     MANAGEMENT_JOB_SOURCE_REFRESH = 1,
@@ -548,6 +556,7 @@ int start_recovery_operation(struct jg_management *management,
                              size_t payload_size,
                              uint8_t files,
                              bool database,
+                             const struct management_operation_origin *origin,
                              uint64_t now);
 
 /** @brief Restore or discard one operation left pending across a restart. */
@@ -565,6 +574,7 @@ int abort_recovery_operation(struct jg_management *management,
 int start_network_recovery(struct jg_management *management,
                            const struct jg_network_config *previous,
                            const struct jg_network_config *replacement,
+                           const struct management_operation_origin *origin,
                            uint64_t now);
 
 /** @endcond */

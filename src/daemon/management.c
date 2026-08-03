@@ -4632,6 +4632,12 @@ static int handle_network_confirm(struct jg_management *management,
                                   size_t *written)
 {
     struct authenticated_actor actor;
+    const struct management_operation_origin operation_origin = {
+        .request = request,
+        .remote = remote,
+        .actor = &actor,
+        .action = "network.confirm",
+    };
     struct jg_database_network_config record;
     struct jg_database_network_config updated;
     struct jg_database_network_config recovered;
@@ -4706,8 +4712,9 @@ static int handle_network_confirm(struct jg_management *management,
                 : "The pending network state could not be read.",
             request->request_id, output, output_size, written);
     }
-    result = start_network_recovery(management, &record.config,
-                                    &state.pending_config, now);
+    result =
+        start_network_recovery(management, &record.config,
+                               &state.pending_config, &operation_origin, now);
     if (result == -EBUSY) {
         return respond_error(
             409, "operation_conflict",
@@ -8956,6 +8963,12 @@ static int execute_certificate_csr_job(struct jg_management *management,
     const struct management_request request = {
         .request_id = job->request_id,
     };
+    const struct management_operation_origin operation_origin = {
+        .request = &request,
+        .remote = &job->remote,
+        .actor = &job->actor,
+        .action = "certificate.csr",
+    };
     struct jg_certificate_material material;
     const char *names[JG_CERTIFICATE_SAN_MAX];
     uint8_t recovery_payload[3U] = {
@@ -8990,7 +9003,7 @@ static int execute_certificate_csr_job(struct jg_management *management,
         result = start_recovery_operation(
             management, MANAGEMENT_OPERATION_CERTIFICATE_CSR, recovery_payload,
             sizeof(recovery_payload), recovery_payload[1U], false,
-            job->started_at);
+            &operation_origin, job->started_at);
         recovery_started = result == 0;
     }
     if (result == 0) {
@@ -9125,6 +9138,12 @@ static int handle_certificate_install(struct jg_management *management,
         "private_key",
     };
     struct authenticated_actor actor;
+    const struct management_operation_origin operation_origin = {
+        .request = request,
+        .remote = remote,
+        .actor = &actor,
+        .action = "certificate.install",
+    };
     struct jg_certificate_info current;
     struct jg_certificate_info installed;
     uint8_t recovery_payload[3U] = {
@@ -9204,7 +9223,7 @@ static int handle_certificate_install(struct jg_management *management,
         result = start_recovery_operation(
             management, MANAGEMENT_OPERATION_CERTIFICATE_INSTALL,
             recovery_payload, sizeof(recovery_payload), recovery_payload[1U],
-            false, now);
+            false, &operation_origin, now);
         recovery_started = result == 0;
     }
     if (result == 0) {
@@ -9395,6 +9414,12 @@ static int handle_mtls_authorities_install(
         "certificate_authorities",
     };
     struct authenticated_actor actor;
+    const struct management_operation_origin operation_origin = {
+        .request = request,
+        .remote = remote,
+        .actor = &actor,
+        .action = "mtls.authorities.install",
+    };
     struct jg_certificate_info *authorities = NULL;
     uint8_t recovery_payload[3U] = {
         MANAGEMENT_RECOVERY_VERSION,
@@ -9446,7 +9471,8 @@ static int handle_mtls_authorities_install(
         recovery_payload[1U] = existing ? MANAGEMENT_RECOVERY_CLIENT_CA : 0U;
         result = start_recovery_operation(
             management, MANAGEMENT_OPERATION_MTLS_AUTHORITIES, recovery_payload,
-            sizeof(recovery_payload), recovery_payload[1U], false, now);
+            sizeof(recovery_payload), recovery_payload[1U], false,
+            &operation_origin, now);
         recovery_started = result == 0;
     }
     if (result == 0) {
@@ -9505,6 +9531,12 @@ static int handle_mtls_authorities_remove(
     size_t *written)
 {
     struct authenticated_actor actor;
+    const struct management_operation_origin operation_origin = {
+        .request = request,
+        .remote = remote,
+        .actor = &actor,
+        .action = "mtls.authorities.remove",
+    };
     struct jg_certificate_info *authorities = NULL;
     uint8_t recovery_payload[3U] = {
         MANAGEMENT_RECOVERY_VERSION,
@@ -9548,7 +9580,8 @@ static int handle_mtls_authorities_remove(
     recovery_payload[1U] = existing ? MANAGEMENT_RECOVERY_CLIENT_CA : 0U;
     result = start_recovery_operation(
         management, MANAGEMENT_OPERATION_MTLS_AUTHORITIES, recovery_payload,
-        sizeof(recovery_payload), recovery_payload[1U], false, now);
+        sizeof(recovery_payload), recovery_payload[1U], false,
+        &operation_origin, now);
     recovery_started = result == 0;
     if (result == -EBUSY) {
         return respond_error(
