@@ -132,6 +132,7 @@ add_library(
   src/common/certificate.c
   src/common/checked.c
   src/common/database.c
+  src/common/database_blocklist.c
   src/common/database_configuration.c
   src/common/database_operation.c
   src/common/diagnostic.c

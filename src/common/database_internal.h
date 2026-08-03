@@ -10,6 +10,7 @@
 #ifndef JANUSGATE_DATABASE_INTERNAL_H
 #define JANUSGATE_DATABASE_INTERNAL_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -44,6 +45,36 @@ int jg_database_column_optional_text(sqlite3_stmt *statement,
                                      int column,
                                      char *destination,
                                      size_t capacity);
+
+/** @brief Decode one required nonnegative integer column. */
+int jg_database_column_unsigned(sqlite3_stmt *statement,
+                                int column,
+                                uint64_t *value);
+
+/** @brief Decode a nullable nonnegative integer as zero when absent. */
+int jg_database_column_optional_unsigned(sqlite3_stmt *statement,
+                                         int column,
+                                         uint64_t *value);
+
+/** @brief Decode one optional fixed-size binary column. */
+int jg_database_column_optional_blob(sqlite3_stmt *statement,
+                                     int column,
+                                     uint8_t *destination,
+                                     size_t expected_size,
+                                     bool *present);
+
+/** @brief Read one record revision or report an absent identifier. */
+int jg_database_read_revision(sqlite3 *handle,
+                              const char *query,
+                              uint64_t identifier,
+                              uint64_t *revision);
+
+/** @brief Classify a failed optimistic record write. */
+int jg_database_write_conflict(sqlite3 *handle,
+                               const char *query,
+                               uint64_t identifier,
+                               uint64_t expected_revision,
+                               bool revision_must_advance);
 
 /** @brief Enter a transaction scope, nesting within an existing scope. */
 int jg_database_transaction_begin(struct jg_database *database);
