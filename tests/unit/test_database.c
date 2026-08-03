@@ -1208,6 +1208,142 @@ static void test_policy_modes(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify policy-group observation, promotion, and disabling. */
+static void test_policy_groups(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_database_policy_group_config config = {
+        .name = "Staged security rules",
+        .description = "Rules awaiting impact review",
+        .enforcement = JG_POLICY_OBSERVE,
+        .enabled = true,
+    };
+    struct jg_database_policy_group group;
+    struct jg_database_policy_group updated;
+    struct jg_database_policy_group page[1U];
+    struct jg_database_domain_rule domain_page[1U];
+    struct jg_database_destination_rule destination_page[1U];
+    struct jg_policy_rule_input rule;
+    struct jg_policy_destination_rule_input destination_rule;
+    struct jg_policy_destination destination = {
+        .transport = JG_POLICY_TRANSPORT_TCP,
+        .address_family = JG_POLICY_ADDRESS_IPV4,
+        .address = {203U, 0U, 113U, 45U},
+        .port = 443U,
+    };
+    struct jg_policy_match match;
+    struct jg_policy_destination_match destination_match;
+    struct jg_policy_snapshot_info info;
+    struct jg_policy_snapshot *snapshot = NULL;
+    struct jg_database *database = NULL;
+    size_t count = 0U;
+    bool has_more = false;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_create_policy_group(database, &config, &group),
+                     0);
+    assert_true(group.id > 0U);
+    assert_int_equal(group.revision, 1U);
+    assert_string_equal(group.name, config.name);
+    assert_string_equal(group.description, config.description);
+    assert_int_equal(group.enforcement, JG_POLICY_OBSERVE);
+    assert_true(group.enabled);
+    assert_int_equal(
+        jg_database_create_policy_group(database, &config, &updated), -EEXIST);
+
+    rule = make_rule(40U, "staged.example", true, JG_POLICY_BLOCK,
+                     JG_POLICY_SOURCE_EXPLICIT);
+    rule.group_id = group.id;
+    assert_int_equal(jg_database_replace_domain_rules(database, &rule, 1U), 0);
+    destination_rule = make_destination_rule(50U, JG_POLICY_BLOCK);
+    destination_rule.group_id = group.id;
+    destination_rule.has_port = true;
+    destination_rule.port = 443U;
+    assert_int_equal(
+        jg_database_replace_destination_rules(database, &destination_rule, 1U),
+        0);
+    assert_int_equal(jg_database_list_policy_groups(database, 0U, 1U, page,
+                                                    &count, &has_more),
+                     0);
+    assert_int_equal(count, 1U);
+    assert_false(has_more);
+    assert_int_equal(page[0U].domain_rule_count, 1U);
+    assert_int_equal(page[0U].destination_rule_count, 1U);
+    assert_int_equal(jg_database_list_domain_rules(
+                         database, 0U, 1U, domain_page, &count, &has_more),
+                     0);
+    assert_int_equal(domain_page[0U].group_id, group.id);
+    assert_int_equal(jg_database_list_destination_rules(
+                         database, 0U, 1U, destination_page, &count, &has_more),
+                     0);
+    assert_int_equal(destination_page[0U].group_id, group.id);
+
+    assert_int_equal(jg_database_load_policy_snapshot(database, 1U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "host.staged.example", NULL, &match),
+        0);
+    assert_true(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_ALLOW);
+    assert_int_equal(jg_policy_match_destination(snapshot, &destination, NULL,
+                                                 &destination_match),
+                     0);
+    assert_true(destination_match.would_have_blocked);
+    assert_int_equal(destination_match.effect, JG_POLICY_ALLOW);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
+
+    config.enforcement = JG_POLICY_ENFORCE;
+    assert_int_equal(jg_database_update_policy_group(
+                         database, group.id, &config, group.revision, &updated),
+                     0);
+    assert_int_equal(updated.revision, 2U);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 2U, &snapshot),
+                     0);
+    assert_int_equal(
+        jg_policy_match_domain(snapshot, "staged.example", NULL, &match), 0);
+    assert_false(match.would_have_blocked);
+    assert_int_equal(match.effect, JG_POLICY_BLOCK);
+    jg_policy_snapshot_destroy(snapshot);
+    snapshot = NULL;
+
+    config.enabled = false;
+    assert_int_equal(jg_database_update_policy_group(database, group.id,
+                                                     &config, updated.revision,
+                                                     &updated),
+                     0);
+    assert_int_equal(updated.revision, 3U);
+    assert_int_equal(jg_database_load_policy_snapshot(database, 3U, &snapshot),
+                     0);
+    assert_int_equal(jg_policy_snapshot_get_info(snapshot, &info), 0);
+    assert_int_equal(info.rule_count, 0U);
+    assert_int_equal(info.destination_rule_count, 0U);
+    jg_policy_snapshot_destroy(snapshot);
+
+    assert_int_equal(jg_database_delete_policy_group(database, group.id, 2U),
+                     -EAGAIN);
+    assert_int_equal(
+        jg_database_delete_policy_group(database, group.id, updated.revision),
+        0);
+    assert_int_equal(jg_database_list_domain_rules(
+                         database, 0U, 1U, domain_page, &count, &has_more),
+                     0);
+    assert_int_equal(count, 0U);
+    assert_int_equal(jg_database_list_destination_rules(
+                         database, 0U, 1U, destination_page, &count, &has_more),
+                     0);
+    assert_int_equal(count, 0U);
+    config.name = "";
+    assert_int_equal(jg_database_create_policy_group(database, &config, &group),
+                     -EINVAL);
+
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify atomic policy replacement and immutable snapshot loading. */
 static void test_policy_round_trip(void **state)
 {
@@ -2254,6 +2390,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_version_two_migration),
         cmocka_unit_test(test_insecure_permissions_rejected),
         cmocka_unit_test(test_policy_modes),
+        cmocka_unit_test(test_policy_groups),
         cmocka_unit_test(test_policy_round_trip),
         cmocka_unit_test(test_encrypted_dns_endpoint_policy),
         cmocka_unit_test(test_network_configuration),

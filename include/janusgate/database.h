@@ -52,6 +52,9 @@
 /** Maximum policy group or scope-mode name bytes excluding the terminator. */
 #define JG_DATABASE_POLICY_NAME_MAX 128U
 
+/** Maximum policy-group description bytes excluding the terminator. */
+#define JG_DATABASE_POLICY_DESCRIPTION_MAX 1024U
+
 /** Maximum stored source URL bytes excluding the terminator. */
 #define JG_DATABASE_BLOCKLIST_URL_MAX 2048U
 
@@ -244,6 +247,42 @@ struct jg_database_policy_scope_mode {
     /** Canonical MAC, IP-prefix, or VLAN selector. */
     struct jg_policy_scope scope;
     /** Whether the selector participates in active policy. */
+    bool enabled;
+};
+
+/** Caller-owned configuration for one policy group. */
+struct jg_database_policy_group_config {
+    /** Unique human-readable group name. */
+    const char *name;
+    /** Optional human-readable purpose; use an empty string when absent. */
+    const char *description;
+    /** Enforcement inherited by every blocking rule in the group. */
+    enum jg_policy_enforcement enforcement;
+    /** Whether rules assigned to the group participate in active policy. */
+    bool enabled;
+};
+
+/** Self-contained persistent policy group. */
+struct jg_database_policy_group {
+    /** Stable positive group identifier. */
+    uint64_t id;
+    /** Monotonic optimistic-concurrency revision. */
+    uint64_t revision;
+    /** Creation time as Unix seconds. */
+    uint64_t created_at;
+    /** Last modification time as Unix seconds. */
+    uint64_t updated_at;
+    /** Number of assigned domain rules. */
+    uint64_t domain_rule_count;
+    /** Number of assigned destination rules. */
+    uint64_t destination_rule_count;
+    /** Unique human-readable group name. */
+    char name[JG_DATABASE_POLICY_NAME_MAX + 1U];
+    /** Human-readable group purpose. */
+    char description[JG_DATABASE_POLICY_DESCRIPTION_MAX + 1U];
+    /** Enforcement inherited by every blocking rule in the group. */
+    enum jg_policy_enforcement enforcement;
+    /** Whether assigned rules participate in active policy. */
     bool enabled;
 };
 
@@ -1004,6 +1043,98 @@ JG_PUBLIC int jg_database_replace_policy_config(
     enum jg_policy_enforcement enforcement,
     uint64_t expected_revision,
     struct jg_database_policy_config *updated);
+
+/**
+ * @brief Create one persistent policy group.
+ *
+ * @param[in] database Open database.
+ * @param[in] config Complete group configuration.
+ * @param[out] created Receives the assigned persistent record.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments, text, or enforcement.
+ * @return -EEXIST when the name is already used.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_create_policy_group(
+    struct jg_database *database,
+    const struct jg_database_policy_group_config *config,
+    struct jg_database_policy_group *created);
+
+/**
+ * @brief Replace one policy group at its expected revision.
+ *
+ * @param[in] database Open database.
+ * @param[in] group_id Persistent positive group identifier.
+ * @param[in] config Complete replacement configuration.
+ * @param[in] expected_revision Revision observed by the caller.
+ * @param[out] updated Receives the updated record.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments or configuration.
+ * @return -EEXIST when another group already uses the name.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return -EOVERFLOW when the revision cannot advance.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_update_policy_group(
+    struct jg_database *database,
+    uint64_t group_id,
+    const struct jg_database_policy_group_config *config,
+    uint64_t expected_revision,
+    struct jg_database_policy_group *updated);
+
+/**
+ * @brief Delete one policy group and its assigned rules.
+ *
+ * @param[in] database Open database.
+ * @param[in] group_id Persistent positive group identifier.
+ * @param[in] expected_revision Revision observed by the caller.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -ENOENT when the identifier does not exist.
+ * @return -EAGAIN when the persistent revision has changed.
+ * @return A negative errno-style value for another failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ *
+ * @side_effects Assigned domain and destination rules are deleted atomically by
+ * their foreign-key relationship.
+ */
+JG_PUBLIC int jg_database_delete_policy_group(struct jg_database *database,
+                                              uint64_t group_id,
+                                              uint64_t expected_revision);
+
+/**
+ * @brief Read one stable identifier-ordered page of policy groups.
+ *
+ * @param[in] database Open database.
+ * @param[in] after_id Exclusive identifier cursor, or zero.
+ * @param[in] limit Requested page size.
+ * @param[out] groups Array with room for at least @p limit records.
+ * @param[out] count Number of records written.
+ * @param[out] has_more Whether another record follows this page.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for invalid arguments.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for a SQLite failure.
+ *
+ * @thread_safety The caller must serialize access to @p database.
+ */
+JG_PUBLIC int jg_database_list_policy_groups(
+    struct jg_database *database,
+    uint64_t after_id,
+    size_t limit,
+    struct jg_database_policy_group *groups,
+    size_t *count,
+    bool *has_more);
 
 /**
  * @brief Create one client or VLAN policy-mode selector.
