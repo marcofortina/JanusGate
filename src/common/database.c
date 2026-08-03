@@ -785,7 +785,7 @@ int jg_database_sqlite_result(int status)
 }
 
 /** @brief Execute a trusted SQL batch as individually prepared statements. */
-static int execute_sql(sqlite3 *handle, const char *sql)
+int jg_database_execute_sql(sqlite3 *handle, const char *sql)
 {
     const char *cursor = sql;
     int result = 0;
@@ -823,7 +823,7 @@ static int transaction_begin(struct jg_database *database, const char *sql)
         return database == NULL ? -EINVAL : -EOVERFLOW;
     }
     if (database->transaction_depth == 0U) {
-        result = execute_sql(database->handle, sql);
+        result = jg_database_execute_sql(database->handle, sql);
     }
     if (result == 0) {
         ++database->transaction_depth;
@@ -852,7 +852,7 @@ int jg_database_transaction_commit(struct jg_database *database)
         return -EINVAL;
     }
     if (database->transaction_depth == 1U) {
-        result = execute_sql(database->handle, "COMMIT;");
+        result = jg_database_execute_sql(database->handle, "COMMIT;");
     }
     if (result == 0) {
         --database->transaction_depth;
@@ -869,7 +869,7 @@ int jg_database_transaction_rollback(struct jg_database *database)
         return -EINVAL;
     }
     if (database->transaction_depth > 0U) {
-        result = execute_sql(database->handle, "ROLLBACK;");
+        result = jg_database_execute_sql(database->handle, "ROLLBACK;");
         if (result == 0) {
             database->transaction_depth = 0U;
         }
@@ -1247,8 +1247,8 @@ static int migrate_database(struct jg_database *database,
         for (size_t sql_index = 0U;
              result == 0 && sql_index < migrations[index].sql_count;
              ++sql_index) {
-            result =
-                execute_sql(database->handle, migrations[index].sql[sql_index]);
+            result = jg_database_execute_sql(database->handle,
+                                             migrations[index].sql[sql_index]);
         }
         if (result == 0) {
             result = jg_database_transaction_commit(database);
@@ -1303,13 +1303,13 @@ static int check_database_integrity(sqlite3 *handle)
 /** @brief Remove sensitive records and residual bytes from one snapshot. */
 static int scrub_database(sqlite3 *handle)
 {
-    int result = execute_sql(handle, "PRAGMA secure_delete=ON;");
+    int result = jg_database_execute_sql(handle, "PRAGMA secure_delete=ON;");
 
     if (result == 0) {
-        result = execute_sql(handle, scrub_sensitive_data);
+        result = jg_database_execute_sql(handle, scrub_sensitive_data);
     }
     if (result == 0) {
-        result = execute_sql(handle, "VACUUM;");
+        result = jg_database_execute_sql(handle, "VACUUM;");
     }
     return result;
 }
@@ -1403,23 +1403,25 @@ static int preserve_current_tables(sqlite3 *replacement,
                                    sqlite3 *current,
                                    const char *statements)
 {
-    int result = execute_sql(replacement, "ATTACH ':memory:' AS retained;");
+    int result =
+        jg_database_execute_sql(replacement, "ATTACH ':memory:' AS retained;");
 
     if (result == 0) {
         result = copy_database(replacement, "retained", current, "main");
     }
     if (result == 0) {
-        result = execute_sql(replacement, "BEGIN IMMEDIATE;");
+        result = jg_database_execute_sql(replacement, "BEGIN IMMEDIATE;");
     }
     if (result == 0) {
-        result = execute_sql(replacement, statements);
+        result = jg_database_execute_sql(replacement, statements);
     }
     if (result == 0) {
-        result = execute_sql(replacement, "COMMIT;");
+        result = jg_database_execute_sql(replacement, "COMMIT;");
     } else {
-        (void)execute_sql(replacement, "ROLLBACK;");
+        (void)jg_database_execute_sql(replacement, "ROLLBACK;");
     }
-    if (execute_sql(replacement, "DETACH retained;") != 0 && result == 0) {
+    if (jg_database_execute_sql(replacement, "DETACH retained;") != 0 &&
+        result == 0) {
         result = -EIO;
     }
     return result;
@@ -1731,9 +1733,10 @@ int jg_database_open(const char *path,
             opened->handle, SQLITE_DBCONFIG_DEFENSIVE, 1, NULL));
     }
     if (result == 0) {
-        result = execute_sql(opened->handle, "PRAGMA foreign_keys=ON;"
-                                             "PRAGMA trusted_schema=OFF;"
-                                             "PRAGMA synchronous=FULL;");
+        result =
+            jg_database_execute_sql(opened->handle, "PRAGMA foreign_keys=ON;"
+                                                    "PRAGMA trusted_schema=OFF;"
+                                                    "PRAGMA synchronous=FULL;");
     }
     if (result == 0) {
         result = enable_wal(opened->handle);
@@ -1803,10 +1806,10 @@ int jg_database_schema_version(struct jg_database *database, uint32_t *version)
 }
 
 /** @brief Parse a required SQLite text column without embedded null bytes. */
-static int required_text(sqlite3_stmt *statement,
-                         int column,
-                         const char **text,
-                         size_t *length)
+int jg_database_column_required_text(sqlite3_stmt *statement,
+                                     int column,
+                                     const char **text,
+                                     size_t *length)
 {
     const unsigned char *value = NULL;
     int byte_count = 0;
@@ -1826,10 +1829,10 @@ static int required_text(sqlite3_stmt *statement,
 }
 
 /** @brief Copy one nullable text column into bounded record storage. */
-static int copy_optional_text(sqlite3_stmt *statement,
-                              int column,
-                              char *destination,
-                              size_t capacity)
+int jg_database_column_optional_text(sqlite3_stmt *statement,
+                                     int column,
+                                     char *destination,
+                                     size_t capacity)
 {
     const unsigned char *text = NULL;
     int byte_count = 0;
@@ -1850,533 +1853,6 @@ static int copy_optional_text(sqlite3_stmt *statement,
     (void)memcpy(destination, text, (size_t)byte_count);
     destination[byte_count] = '\0';
     return 0;
-}
-
-/** @brief Validate one stable lowercase management-operation kind. */
-static bool operation_kind_valid(const char *kind)
-{
-    size_t length = 0U;
-
-    if (kind == NULL) {
-        return false;
-    }
-    while (length <= JG_DATABASE_OPERATION_KIND_MAX && kind[length] != '\0') {
-        const unsigned char character = (unsigned char)kind[length];
-
-        if (!((character >= (unsigned char)'a' &&
-               character <= (unsigned char)'z') ||
-              (character >= (unsigned char)'0' &&
-               character <= (unsigned char)'9') ||
-              character == (unsigned char)'_')) {
-            return false;
-        }
-        ++length;
-    }
-    return length != 0U && length <= JG_DATABASE_OPERATION_KIND_MAX;
-}
-
-/** @brief Return the persistent name of one authenticated operation actor. */
-static const char *operation_actor_name(enum jg_audit_actor_type actor)
-{
-    switch (actor) {
-    case JG_AUDIT_ACTOR_SYSTEM:
-        return "system";
-    case JG_AUDIT_ACTOR_USER:
-        return "user";
-    case JG_AUDIT_ACTOR_TOKEN:
-        return "token";
-    case JG_AUDIT_ACTOR_LOCAL:
-        return "local";
-    default:
-        return NULL;
-    }
-}
-
-/** @brief Parse one persistent authenticated operation actor name. */
-static bool operation_actor_parse(const char *name,
-                                  enum jg_audit_actor_type *actor)
-{
-    if (strcmp(name, "system") == 0) {
-        *actor = JG_AUDIT_ACTOR_SYSTEM;
-    } else if (strcmp(name, "user") == 0) {
-        *actor = JG_AUDIT_ACTOR_USER;
-    } else if (strcmp(name, "token") == 0) {
-        *actor = JG_AUDIT_ACTOR_TOKEN;
-    } else if (strcmp(name, "local") == 0) {
-        *actor = JG_AUDIT_ACTOR_LOCAL;
-    } else {
-        return false;
-    }
-    return true;
-}
-
-/** @brief Validate one bounded UTF-8 operation provenance field. */
-static bool operation_text_valid(const char *text,
-                                 size_t minimum,
-                                 size_t maximum)
-{
-    const size_t size = text == NULL ? 0U : strnlen(text, maximum + 1U);
-
-    return text != NULL && size >= minimum && size <= maximum &&
-           jg_utf8_text_valid((const uint8_t *)text, size, minimum == 0U);
-}
-
-/** @brief Validate actor and bounded text semantics for operation provenance.
- */
-static bool operation_context_valid(
-    const struct jg_database_operation_context *context)
-{
-    const bool actor_has_identifier =
-        context != NULL && (context->actor_type == JG_AUDIT_ACTOR_USER ||
-                            context->actor_type == JG_AUDIT_ACTOR_TOKEN);
-
-    return context != NULL &&
-           operation_actor_name(context->actor_type) != NULL &&
-           context->has_actor_id == actor_has_identifier &&
-           (!context->has_actor_id ||
-            (context->actor_id > 0U &&
-             context->actor_id <= (uint64_t)INT64_MAX)) &&
-           operation_text_valid(context->source, 1U, JG_AUDIT_SOURCE_MAX) &&
-           operation_text_valid(context->request_id, 0U,
-                                JG_AUDIT_REQUEST_ID_MAX) &&
-           operation_text_valid(context->requested_action, 1U,
-                                JG_AUDIT_ACTION_MAX);
-}
-
-/** @brief Reserve the singleton durable management-operation slot. */
-int jg_database_operation_prepare(
-    struct jg_database *database,
-    const char *kind,
-    const uint8_t *payload,
-    size_t payload_size,
-    const struct jg_database_operation_context *context,
-    uint64_t created_at)
-{
-    static const char insert[] =
-        "INSERT INTO management_operations(id,kind,state,payload,created_at,"
-        "actor_type,actor_id,source,request_id,requested_action)"
-        " VALUES(1,?1,'preparing',?2,?3,?4,?5,?6,?7,?8)"
-        " ON CONFLICT(id) DO NOTHING;";
-    sqlite3_stmt *statement = NULL;
-    int status = SQLITE_OK;
-    int result = 0;
-
-    if (database == NULL || !operation_kind_valid(kind) ||
-        (payload == NULL && payload_size != 0U) ||
-        payload_size > JG_DATABASE_OPERATION_PAYLOAD_MAX ||
-        !operation_context_valid(context) || created_at > (uint64_t)INT64_MAX) {
-        return -EINVAL;
-    }
-    status = sqlite3_prepare_v3(database->handle, insert, -1,
-                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = jg_database_sqlite_result(status);
-    if (result == 0) {
-        status = sqlite3_bind_text(statement, 1, kind, -1, SQLITE_TRANSIENT);
-        if (status == SQLITE_OK) {
-            status =
-                payload_size == 0U
-                    ? sqlite3_bind_zeroblob(statement, 2, 0)
-                    : sqlite3_bind_blob(statement, 2, payload,
-                                        (int)payload_size, SQLITE_TRANSIENT);
-        }
-        if (status == SQLITE_OK) {
-            status =
-                sqlite3_bind_int64(statement, 3, (sqlite3_int64)created_at);
-        }
-        if (status == SQLITE_OK) {
-            status = sqlite3_bind_text(
-                statement, 4, operation_actor_name(context->actor_type), -1,
-                SQLITE_STATIC);
-        }
-        if (status == SQLITE_OK) {
-            status = context->has_actor_id
-                         ? sqlite3_bind_int64(statement, 5,
-                                              (sqlite3_int64)context->actor_id)
-                         : sqlite3_bind_null(statement, 5);
-        }
-        if (status == SQLITE_OK) {
-            status = sqlite3_bind_text(statement, 6, context->source, -1,
-                                       SQLITE_TRANSIENT);
-        }
-        if (status == SQLITE_OK) {
-            status = sqlite3_bind_text(statement, 7, context->request_id, -1,
-                                       SQLITE_TRANSIENT);
-        }
-        if (status == SQLITE_OK) {
-            status = sqlite3_bind_text(statement, 8, context->requested_action,
-                                       -1, SQLITE_TRANSIENT);
-        }
-        result = jg_database_sqlite_result(status);
-    }
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
-    if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = -EBUSY;
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    return result;
-}
-
-/** @brief Mark the pending operation safe to recover before external work. */
-int jg_database_operation_mark_ready(struct jg_database *database)
-{
-    static const char update[] =
-        "UPDATE management_operations SET state='ready'"
-        " WHERE id=1 AND state='preparing';";
-    int result = 0;
-
-    if (database == NULL) {
-        return -EINVAL;
-    }
-    result = execute_sql(database->handle, update);
-    if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = -ENOENT;
-    }
-    return result;
-}
-
-/** @brief Load the singleton durable management operation. */
-int jg_database_operation_load(struct jg_database *database,
-                               struct jg_database_operation *operation)
-{
-    static const char query[] =
-        "SELECT kind,state,payload,created_at,actor_type,actor_id,source,"
-        "request_id,requested_action FROM management_operations WHERE id=1;";
-    struct jg_database_operation loaded;
-    sqlite3_stmt *statement = NULL;
-    const char *kind = NULL;
-    const char *state = NULL;
-    const char *actor_name = NULL;
-    const char *source = NULL;
-    const char *request_id = NULL;
-    const char *requested_action = NULL;
-    const void *payload = NULL;
-    size_t kind_size = 0U;
-    size_t state_size = 0U;
-    size_t actor_name_size = 0U;
-    size_t source_size = 0U;
-    size_t request_id_size = 0U;
-    size_t requested_action_size = 0U;
-    int payload_size = 0;
-    sqlite3_int64 created_at = 0;
-    sqlite3_int64 actor_id = 0;
-    int status = SQLITE_OK;
-    int result = 0;
-
-    if (database == NULL || operation == NULL) {
-        return -EINVAL;
-    }
-    (void)memset(&loaded, 0, sizeof(loaded));
-    status = sqlite3_prepare_v3(database->handle, query, -1,
-                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = jg_database_sqlite_result(status);
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        if (status == SQLITE_DONE) {
-            result = -ENOENT;
-        } else if (status != SQLITE_ROW) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    if (result == 0) {
-        result = required_text(statement, 0, &kind, &kind_size);
-    }
-    if (result == 0) {
-        result = required_text(statement, 1, &state, &state_size);
-    }
-    if (result == 0 && (kind_size > JG_DATABASE_OPERATION_KIND_MAX ||
-                        !operation_kind_valid(kind) ||
-                        !((state_size == sizeof("ready") - 1U &&
-                           memcmp(state, "ready", state_size) == 0) ||
-                          (state_size == sizeof("preparing") - 1U &&
-                           memcmp(state, "preparing", state_size) == 0)))) {
-        result = -EILSEQ;
-    }
-    if (result == 0 && sqlite3_column_type(statement, 2) != SQLITE_BLOB) {
-        result = -EILSEQ;
-    }
-    if (result == 0) {
-        payload = sqlite3_column_blob(statement, 2);
-        payload_size = sqlite3_column_bytes(statement, 2);
-        created_at = sqlite3_column_int64(statement, 3);
-        if (payload_size < 0 ||
-            (size_t)payload_size > JG_DATABASE_OPERATION_PAYLOAD_MAX ||
-            (payload == NULL && payload_size != 0) ||
-            sqlite3_column_type(statement, 3) != SQLITE_INTEGER ||
-            created_at < 0) {
-            result = -EILSEQ;
-        }
-    }
-    if (result == 0) {
-        result = required_text(statement, 4, &actor_name, &actor_name_size);
-    }
-    if (result == 0) {
-        result = required_text(statement, 6, &source, &source_size);
-    }
-    if (result == 0) {
-        result = required_text(statement, 7, &request_id, &request_id_size);
-    }
-    if (result == 0) {
-        result = required_text(statement, 8, &requested_action,
-                               &requested_action_size);
-    }
-    if (result == 0) {
-        const bool has_actor_id =
-            sqlite3_column_type(statement, 5) == SQLITE_INTEGER;
-
-        actor_id = sqlite3_column_int64(statement, 5);
-        loaded.has_actor_id = has_actor_id;
-        if (!operation_actor_parse(actor_name, &loaded.actor_type) ||
-            actor_name_size == 0U || actor_name_size > sizeof("system") - 1U ||
-            (!has_actor_id &&
-             sqlite3_column_type(statement, 5) != SQLITE_NULL) ||
-            (has_actor_id && actor_id <= 0) ||
-            ((loaded.actor_type == JG_AUDIT_ACTOR_USER ||
-              loaded.actor_type == JG_AUDIT_ACTOR_TOKEN) != has_actor_id) ||
-            !operation_text_valid(source, 1U, JG_AUDIT_SOURCE_MAX) ||
-            source_size != strlen(source) ||
-            !operation_text_valid(request_id, 0U, JG_AUDIT_REQUEST_ID_MAX) ||
-            request_id_size != strlen(request_id) ||
-            !operation_text_valid(requested_action, 1U, JG_AUDIT_ACTION_MAX) ||
-            requested_action_size != strlen(requested_action)) {
-            result = -EILSEQ;
-        }
-    }
-    if (result == 0) {
-        (void)memcpy(loaded.kind, kind, kind_size);
-        loaded.kind[kind_size] = '\0';
-        if (payload_size != 0) {
-            (void)memcpy(loaded.payload, payload, (size_t)payload_size);
-        }
-        loaded.payload_size = (size_t)payload_size;
-        loaded.created_at = (uint64_t)created_at;
-        loaded.actor_id = (uint64_t)actor_id;
-        (void)memcpy(loaded.source, source, source_size);
-        loaded.source[source_size] = '\0';
-        (void)memcpy(loaded.request_id, request_id, request_id_size);
-        loaded.request_id[request_id_size] = '\0';
-        (void)memcpy(loaded.requested_action, requested_action,
-                     requested_action_size);
-        loaded.requested_action[requested_action_size] = '\0';
-        loaded.ready = state_size == sizeof("ready") - 1U;
-    }
-    if (result == 0 && sqlite3_step(statement) != SQLITE_DONE) {
-        result = -EILSEQ;
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    if (result == 0) {
-        *operation = loaded;
-    }
-    return result;
-}
-
-/** @brief Remove the singleton durable management operation. */
-int jg_database_operation_clear(struct jg_database *database)
-{
-    int result = 0;
-
-    if (database == NULL) {
-        return -EINVAL;
-    }
-    result = execute_sql(database->handle,
-                         "DELETE FROM management_operations WHERE id=1;");
-    if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = -ENOENT;
-    }
-    return result;
-}
-
-/** @brief Load persistent policy publication state. */
-int jg_database_policy_sync_load(struct jg_database *database,
-                                 struct jg_database_policy_sync *state)
-{
-    static const char query[] =
-        "SELECT desired_revision,applied_revision,last_attempt_at,last_error"
-        " FROM policy_sync_state WHERE id=1;";
-    struct jg_database_policy_sync loaded;
-    sqlite3_stmt *statement = NULL;
-    const char *error = NULL;
-    size_t error_size = 0U;
-    sqlite3_int64 desired_revision = 0;
-    sqlite3_int64 applied_revision = 0;
-    sqlite3_int64 last_attempt_at = 0;
-    int status = SQLITE_OK;
-    int result = 0;
-
-    if (database == NULL || state == NULL) {
-        return -EINVAL;
-    }
-    (void)memset(&loaded, 0, sizeof(loaded));
-    status = sqlite3_prepare_v3(database->handle, query, -1,
-                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = jg_database_sqlite_result(status);
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        result = status == SQLITE_ROW    ? 0
-                 : status == SQLITE_DONE ? -EILSEQ
-                                         : jg_database_sqlite_result(status);
-    }
-    if (result == 0) {
-        desired_revision = sqlite3_column_int64(statement, 0);
-        applied_revision = sqlite3_column_int64(statement, 1);
-        last_attempt_at = sqlite3_column_int64(statement, 2);
-        if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
-            sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
-            sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
-            desired_revision <= 0 || applied_revision <= 0 ||
-            applied_revision > desired_revision || last_attempt_at < 0) {
-            result = -EILSEQ;
-        }
-    }
-    if (result == 0 && sqlite3_column_type(statement, 3) != SQLITE_NULL) {
-        result = required_text(statement, 3, &error, &error_size);
-        if (result == 0 && (error_size == 0U ||
-                            error_size > JG_DATABASE_POLICY_SYNC_ERROR_MAX)) {
-            result = -EILSEQ;
-        }
-    }
-    if (result == 0) {
-        loaded.desired_revision = (uint64_t)desired_revision;
-        loaded.applied_revision = (uint64_t)applied_revision;
-        loaded.last_attempt_at = (uint64_t)last_attempt_at;
-        if (error != NULL) {
-            (void)memcpy(loaded.last_error, error, error_size);
-            loaded.last_error[error_size] = '\0';
-        }
-    }
-    if (result == 0 && sqlite3_step(statement) != SQLITE_DONE) {
-        result = -EILSEQ;
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    if (result == 0) {
-        *state = loaded;
-    }
-    return result;
-}
-
-/** @brief Advance the desired policy revision after a persistent mutation. */
-int jg_database_policy_sync_advance(struct jg_database *database,
-                                    uint64_t now,
-                                    struct jg_database_policy_sync *state)
-{
-    static const char update[] =
-        "UPDATE policy_sync_state SET desired_revision=desired_revision+1,"
-        "last_error=NULL,updated_at=?1 WHERE id=1"
-        " AND desired_revision<9223372036854775807;";
-    sqlite3_stmt *statement = NULL;
-    int status = SQLITE_OK;
-    int result = 0;
-
-    if (database == NULL || state == NULL || now > (uint64_t)INT64_MAX) {
-        return -EINVAL;
-    }
-    status = sqlite3_prepare_v3(database->handle, update, -1,
-                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = jg_database_sqlite_result(status);
-    if (result == 0) {
-        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)now);
-        result = jg_database_sqlite_result(status);
-    }
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
-    if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = -EOVERFLOW;
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    if (result == 0) {
-        result = jg_database_policy_sync_load(database, state);
-    }
-    return result;
-}
-
-/** @brief Record the result of publishing one desired policy revision. */
-int jg_database_policy_sync_record(struct jg_database *database,
-                                   uint64_t desired_revision,
-                                   bool applied,
-                                   const char *error,
-                                   uint64_t now,
-                                   struct jg_database_policy_sync *state)
-{
-    static const char update[] =
-        "UPDATE policy_sync_state SET applied_revision="
-        "CASE WHEN ?2=1 THEN ?1 ELSE applied_revision END,"
-        "last_attempt_at=?3,last_error=?4,updated_at=?3"
-        " WHERE id=1 AND desired_revision=?1;";
-    const size_t error_size =
-        error == NULL ? 0U
-                      : strnlen(error, JG_DATABASE_POLICY_SYNC_ERROR_MAX + 1U);
-    sqlite3_stmt *statement = NULL;
-    int status = SQLITE_OK;
-    int result = 0;
-
-    if (database == NULL || state == NULL || desired_revision == 0U ||
-        desired_revision > (uint64_t)INT64_MAX || now > (uint64_t)INT64_MAX ||
-        (applied && error != NULL) ||
-        (!applied && (error == NULL || error_size == 0U ||
-                      error_size > JG_DATABASE_POLICY_SYNC_ERROR_MAX))) {
-        return -EINVAL;
-    }
-    status = sqlite3_prepare_v3(database->handle, update, -1,
-                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = jg_database_sqlite_result(status);
-    if (result == 0) {
-        status =
-            sqlite3_bind_int64(statement, 1, (sqlite3_int64)desired_revision);
-        if (status == SQLITE_OK) {
-            status = sqlite3_bind_int(statement, 2, applied ? 1 : 0);
-        }
-        if (status == SQLITE_OK) {
-            status = sqlite3_bind_int64(statement, 3, (sqlite3_int64)now);
-        }
-        if (status == SQLITE_OK) {
-            status = applied
-                         ? sqlite3_bind_null(statement, 4)
-                         : sqlite3_bind_text(statement, 4, error,
-                                             (int)error_size, SQLITE_TRANSIENT);
-        }
-        result = jg_database_sqlite_result(status);
-    }
-    if (result == 0) {
-        status = sqlite3_step(statement);
-        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
-    }
-    if (result == 0 && sqlite3_changes(database->handle) != 1) {
-        result = -EAGAIN;
-    }
-    if (statement != NULL) {
-        status = sqlite3_finalize(statement);
-        if (result == 0) {
-            result = jg_database_sqlite_result(status);
-        }
-    }
-    if (result == 0) {
-        result = jg_database_policy_sync_load(database, state);
-    }
-    return result;
 }
 
 /** @brief Return one lowercase hexadecimal digit. */
@@ -2522,7 +1998,8 @@ int jg_database_load_network_config_record(
         }
     }
     if (result == 0) {
-        result = required_text(statement, 0, &text, &text_size);
+        result =
+            jg_database_column_required_text(statement, 0, &text, &text_size);
     }
     if (result == 0) {
         result = decode_hex(text, text_size, wire, sizeof(wire));
@@ -2676,7 +2153,8 @@ int jg_database_load_logging_config(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = required_text(statement, 0, &text, &text_size);
+        result =
+            jg_database_column_required_text(statement, 0, &text, &text_size);
     }
     if (result == 0 &&
         jg_logging_config_decode(text, text_size, &loaded.config) != 0) {
@@ -2854,7 +2332,8 @@ int jg_database_load_dns_response_config(struct jg_database *database,
         }
     }
     if (result == 0) {
-        result = required_text(statement, 0, &text, &text_size);
+        result =
+            jg_database_column_required_text(statement, 0, &text, &text_size);
     }
     if (result == 0) {
         result = decode_hex(text, text_size, wire, sizeof(wire));
@@ -3135,7 +2614,8 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
-        result = execute_sql(database->handle, "DELETE FROM domain_rules;");
+        result = jg_database_execute_sql(database->handle,
+                                         "DELETE FROM domain_rules;");
     }
     if (result == 0) {
         status =
@@ -3285,8 +2765,8 @@ int jg_database_replace_destination_rules(
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
-        result =
-            execute_sql(database->handle, "DELETE FROM destination_rules;");
+        result = jg_database_execute_sql(database->handle,
+                                         "DELETE FROM destination_rules;");
     }
     if (result == 0) {
         status =
@@ -3470,12 +2950,14 @@ static int decode_domain_rule(sqlite3_stmt *statement,
     if (identifier <= 0) {
         return -EILSEQ;
     }
-    result = required_text(statement, 1, &domain, &domain_length);
+    result =
+        jg_database_column_required_text(statement, 1, &domain, &domain_length);
     if (result == 0 && !jg_domain_is_normalized(domain)) {
         result = -EILSEQ;
     }
     if (result == 0) {
-        result = required_text(statement, 2, &match_type, &text_length);
+        result = jg_database_column_required_text(statement, 2, &match_type,
+                                                  &text_length);
     }
     if (result == 0) {
         if (strcmp(match_type, "suffix") == 0) {
@@ -3485,28 +2967,33 @@ static int decode_domain_rule(sqlite3_stmt *statement,
         }
     }
     if (result == 0) {
-        result = required_text(statement, 3, &effect, &text_length);
+        result = jg_database_column_required_text(statement, 3, &effect,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_effect(effect, &rule->effect);
     }
     if (result == 0) {
-        result = required_text(statement, 4, &source, &text_length);
+        result = jg_database_column_required_text(statement, 4, &source,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_source(source, &rule->source);
     }
     if (result == 0) {
-        result = required_text(statement, 5, &scope, &text_length);
+        result = jg_database_column_required_text(statement, 5, &scope,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_scope(statement, scope, 6, 7, 8, &rule->scope);
     }
     if (result == 0) {
-        result = required_text(statement, 9, &attribution, &attribution_length);
+        result = jg_database_column_required_text(statement, 9, &attribution,
+                                                  &attribution_length);
     }
     if (result == 0) {
-        result = required_text(statement, 10, &target, &text_length);
+        result = jg_database_column_required_text(statement, 10, &target,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_target(target, &rule->target);
@@ -3590,18 +3077,21 @@ static int decode_destination_rule(
     if (identifier <= 0) {
         return -EILSEQ;
     }
-    result = required_text(statement, 1, &effect, &text_length);
+    result =
+        jg_database_column_required_text(statement, 1, &effect, &text_length);
     if (result == 0) {
         result = decode_effect(effect, &rule->effect);
     }
     if (result == 0) {
-        result = required_text(statement, 2, &source, &text_length);
+        result = jg_database_column_required_text(statement, 2, &source,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_source(source, &rule->source);
     }
     if (result == 0) {
-        result = required_text(statement, 3, &transport, &text_length);
+        result = jg_database_column_required_text(statement, 3, &transport,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_transport(transport, &rule->transport);
@@ -3624,14 +3114,15 @@ static int decode_destination_rule(
         result = -EILSEQ;
     }
     if (result == 0) {
-        result = required_text(statement, 8, &scope, &text_length);
+        result = jg_database_column_required_text(statement, 8, &scope,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_scope(statement, scope, 9, 10, 11, &rule->scope);
     }
     if (result == 0) {
-        result =
-            required_text(statement, 12, &attribution, &attribution_length);
+        result = jg_database_column_required_text(statement, 12, &attribution,
+                                                  &attribution_length);
     }
     if (result == 0 &&
         !jg_range_valid(*cursor, attribution_length + 1U, strings_size)) {
@@ -3699,8 +3190,8 @@ static int decode_domain_record(sqlite3_stmt *statement,
         result = -EILSEQ;
     }
     if (result == 0) {
-        result = copy_optional_text(statement, 14, record->category,
-                                    sizeof(record->category));
+        result = jg_database_column_optional_text(
+            statement, 14, record->category, sizeof(record->category));
     }
     if (result == 0 && !jg_utf8_text_valid((const uint8_t *)record->category,
                                            strlen(record->category), true)) {
@@ -3922,19 +3413,20 @@ static int decode_blocklist_source(sqlite3_stmt *statement,
         result = decode_unsigned(statement, 3, &updated_at);
     }
     if (result == 0) {
-        result = copy_optional_text(statement, 4, source->name,
-                                    sizeof(source->name));
+        result = jg_database_column_optional_text(statement, 4, source->name,
+                                                  sizeof(source->name));
+    }
+    if (result == 0) {
+        result = jg_database_column_optional_text(statement, 5, source->url,
+                                                  sizeof(source->url));
+    }
+    if (result == 0) {
+        result = jg_database_column_optional_text(
+            statement, 6, source->signature_url, sizeof(source->signature_url));
     }
     if (result == 0) {
         result =
-            copy_optional_text(statement, 5, source->url, sizeof(source->url));
-    }
-    if (result == 0) {
-        result = copy_optional_text(statement, 6, source->signature_url,
-                                    sizeof(source->signature_url));
-    }
-    if (result == 0) {
-        result = required_text(statement, 7, &text, &text_length);
+            jg_database_column_required_text(statement, 7, &text, &text_length);
     }
     if (result == 0) {
         result = decode_blocklist_format(text, &source->format);
@@ -3959,12 +3451,13 @@ static int decode_blocklist_source(sqlite3_stmt *statement,
                                       &source->has_signature);
     }
     if (result == 0) {
-        result = copy_optional_text(statement, 20, source->etag,
-                                    sizeof(source->etag));
+        result = jg_database_column_optional_text(statement, 20, source->etag,
+                                                  sizeof(source->etag));
     }
     if (result == 0) {
-        result = copy_optional_text(statement, 21, source->last_modified,
-                                    sizeof(source->last_modified));
+        result = jg_database_column_optional_text(
+            statement, 21, source->last_modified,
+            sizeof(source->last_modified));
     }
     if (result == 0) {
         result = decode_optional_blob(statement, 26, source->active_checksum,
@@ -3972,14 +3465,15 @@ static int decode_blocklist_source(sqlite3_stmt *statement,
                                       &source->has_active_checksum);
     }
     if (result == 0) {
-        result = required_text(statement, 29, &text, &text_length);
+        result = jg_database_column_required_text(statement, 29, &text,
+                                                  &text_length);
     }
     if (result == 0) {
         result = decode_blocklist_health(text, &source->health);
     }
     if (result == 0) {
-        result = copy_optional_text(statement, 30, source->last_error,
-                                    sizeof(source->last_error));
+        result = jg_database_column_optional_text(
+            statement, 30, source->last_error, sizeof(source->last_error));
     }
     if (result == 0 &&
         (id == 0U || revision == 0U || updated_at < created_at ||
@@ -4419,9 +3913,9 @@ int jg_database_create_blocklist_source(
         }
     }
     if (result == 0) {
-        result = execute_sql(database->handle,
-                             "INSERT INTO blocklist_source_status(source_id)"
-                             " VALUES(last_insert_rowid());");
+        result = jg_database_execute_sql(
+            database->handle, "INSERT INTO blocklist_source_status(source_id)"
+                              " VALUES(last_insert_rowid());");
     }
     if (result == 0) {
         result = read_blocklist_source(database, (uint64_t)identifier, &source);
@@ -5889,11 +5383,12 @@ static int read_encrypted_endpoints(
             result = -EILSEQ;
         }
         if (result == 0) {
-            result =
-                required_text(statement, 0, &attribution, &attribution_size);
+            result = jg_database_column_required_text(
+                statement, 0, &attribution, &attribution_size);
         }
         if (result == 0) {
-            result = required_text(statement, 4, &transport, &text_size);
+            result = jg_database_column_required_text(statement, 4, &transport,
+                                                      &text_size);
         }
         if (result == 0) {
             result = decode_transport(transport, &rules[index].transport);
@@ -6103,10 +5598,12 @@ static int decode_backup(sqlite3_stmt *statement,
         result = decode_unsigned(statement, 1, &created_at);
     }
     if (result == 0) {
-        result = required_text(statement, 2, &kind, &kind_size);
+        result =
+            jg_database_column_required_text(statement, 2, &kind, &kind_size);
     }
     if (result == 0) {
-        result = required_text(statement, 3, &filename, &filename_size);
+        result = jg_database_column_required_text(statement, 3, &filename,
+                                                  &filename_size);
     }
     if (result == 0 &&
         (sqlite3_column_type(statement, 4) != SQLITE_BLOB ||

@@ -10,6 +10,7 @@
 #ifndef JANUSGATE_DATABASE_INTERNAL_H
 #define JANUSGATE_DATABASE_INTERNAL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <sqlite3.h>
@@ -28,6 +29,21 @@ struct jg_database {
 
 /** @brief Translate a SQLite result to the common errno-style contract. */
 int jg_database_sqlite_result(int status);
+
+/** @brief Execute one fixed SQL statement without returning rows. */
+int jg_database_execute_sql(sqlite3 *handle, const char *sql);
+
+/** @brief Parse a required SQLite text column without embedded null bytes. */
+int jg_database_column_required_text(sqlite3_stmt *statement,
+                                     int column,
+                                     const char **text,
+                                     size_t *length);
+
+/** @brief Copy one nullable text column into bounded record storage. */
+int jg_database_column_optional_text(sqlite3_stmt *statement,
+                                     int column,
+                                     char *destination,
+                                     size_t capacity);
 
 /** @brief Enter a transaction scope, nesting within an existing scope. */
 int jg_database_transaction_begin(struct jg_database *database);
