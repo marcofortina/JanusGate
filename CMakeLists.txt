@@ -135,6 +135,7 @@ add_library(
   src/common/database_blocklist.c
   src/common/database_configuration.c
   src/common/database_operation.c
+  src/common/database_policy.c
   src/common/diagnostic.c
   src/common/dns.c
   src/common/dns_policy.c
