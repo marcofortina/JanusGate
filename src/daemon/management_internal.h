@@ -340,6 +340,12 @@ bool management_restore_in_progress(struct jg_management *management);
 /** @brief Parse one exact lowercase SHA-256 certificate fingerprint. */
 int parse_certificate_fingerprint(const char *text, uint8_t fingerprint[32U]);
 
+/** @brief Return the stable external name for one fixed backend role. */
+const char *management_role_name(enum jg_access_role role);
+
+/** @brief Parse one exact fixed backend role name. */
+enum jg_access_role management_parse_role(const char *name);
+
 /** @brief Securely release one job's transient input. */
 void management_job_parameters_clear(
     enum management_job_kind kind,
