@@ -921,6 +921,53 @@ int handle_destination_rule_delete(struct jg_management *management,
                                    size_t output_size,
                                    size_t *written);
 
+/** @brief Return or replace snapshot-wide policy enforcement. */
+int handle_policy_global_mode(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief List or create policy rule groups. */
+int handle_policy_groups(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Replace or remove one policy rule group. */
+int handle_policy_group(struct jg_management *management,
+                        const struct management_request *request,
+                        const struct remote_address *remote,
+                        uint64_t group_id,
+                        uint64_t now,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
+
+/** @brief List or create client-scoped policy modes. */
+int handle_policy_scope_modes(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Replace or remove one client-scoped policy mode. */
+int handle_policy_scope_mode(struct jg_management *management,
+                             const struct management_request *request,
+                             const struct remote_address *remote,
+                             uint64_t mode_id,
+                             uint64_t now,
+                             uint8_t *output,
+                             size_t output_size,
+                             size_t *written);
+
 /** @brief Return the persistent audit kind for one authenticated actor. */
 enum jg_audit_actor_type actor_audit_type(
     const struct authenticated_actor *actor);

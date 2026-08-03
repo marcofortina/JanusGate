@@ -1015,6 +1015,7 @@ static void test_browser_authentication(void **state)
     value = json_array_get(json_object_get(body, "domains"), 0U);
     assert_string_equal(json_string_value(json_object_get(value, "domain")),
                         "safe.example");
+    assert_true(json_is_null(json_object_get(value, "group_id")));
     assert_string_equal(json_string_value(json_object_get(
                             json_object_get(value, "scope"), "type")),
                         "vlan");
@@ -1042,6 +1043,58 @@ static void test_browser_authentication(void **state)
     assert_true(json_is_true(json_object_get(value, "include_subdomains")));
     assert_string_equal(
         json_string_value(json_object_get(value, "enforcement")), "observe");
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"policy-mode\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/policies/mode\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_string_equal(json_string_value(json_object_get(body, "enforcement")),
+                        "enforce");
+    assert_int_equal(json_integer_value(json_object_get(body, "revision")), 1);
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"policy-groups\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/policies/groups\",\"query\":\"limit=100\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "count")), 0);
+    assert_true(json_is_array(json_object_get(body, "groups")));
+    json_decref(response);
+
+    written =
+        snprintf(request, sizeof(request),
+                 "{\"request_id\":\"policy-scopes\",\"method\":\"GET\","
+                 "\"path\":\"/api/v1/policies/scopes\",\"query\":\"limit=100\","
+                 "\"host\":\"192.168.77.1\",\"remote_address\":\"192.0.2.10\","
+                 "\"session\":\"%s\",\"body\":{}}",
+                 session);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(request));
+    response = process_request(fixture, request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    body = json_object_get(response, "body");
+    assert_int_equal(json_integer_value(json_object_get(body, "count")), 0);
+    assert_true(json_is_array(json_object_get(body, "scope_modes")));
     json_decref(response);
 
     written = snprintf(

@@ -460,6 +460,189 @@ paths:
           $ref: '#/components/responses/JsonSuccess'
         default:
           $ref: '#/components/responses/JsonError'
+  /policies/mode:
+    get:
+      tags: [Policy]
+      operationId: getPolicyMode
+      summary: Read snapshot-wide policy enforcement
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    put:
+      tags: [Policy]
+      operationId: updatePolicyMode
+      summary: Replace snapshot-wide policy enforcement
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyModeUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/groups:
+    get:
+      tags: [Policy]
+      operationId: listPolicyGroups
+      summary: List policy rule groups
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Policy]
+      operationId: createPolicyGroup
+      summary: Create a policy rule group
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyGroup'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/groups/{group_id}:
+    parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Identifier'
+    patch:
+      tags: [Policy]
+      operationId: updatePolicyGroup
+      summary: Replace one policy rule group
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyGroupUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    delete:
+      tags: [Policy]
+      operationId: deletePolicyGroup
+      summary: Remove one policy group and its assigned rules
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/scopes:
+    get:
+      tags: [Policy]
+      operationId: listPolicyScopes
+      summary: List client and VLAN policy modes
+      parameters:
+        - $ref: '#/components/parameters/AfterId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    post:
+      tags: [Policy]
+      operationId: createPolicyScope
+      summary: Create a client or VLAN policy mode
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyScopeMode'
+      responses:
+        '201':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+  /policies/scopes/{scope_id}:
+    parameters:
+      - name: scope_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Identifier'
+    patch:
+      tags: [Policy]
+      operationId: updatePolicyScope
+      summary: Replace one client or VLAN policy mode
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyScopeModeUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
+    delete:
+      tags: [Policy]
+      operationId: deletePolicyScope
+      summary: Remove one client or VLAN policy mode
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Revision'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonSuccess'
+        '202':
+          $ref: '#/components/responses/JsonSuccess'
+        default:
+          $ref: '#/components/responses/JsonError'
   /domains:
     get:
       tags: [Policy]
@@ -1595,7 +1778,7 @@ components:
       type: object
       required:
         [domain, action, target, include_subdomains, scope, attribution, enabled,
-         enforcement]
+         enforcement, group_id]
       properties:
         domain:
           type: string
@@ -1607,6 +1790,10 @@ components:
         enforcement:
           type: string
           enum: [enforce, observe]
+        group_id:
+          oneOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
         target:
           type: string
           enum: [dns, tls_sni]
@@ -1637,7 +1824,7 @@ components:
       type: object
       required:
         [action, transport, address, prefix_length, port, scope, attribution,
-         enabled, enforcement]
+         enabled, enforcement, group_id]
       properties:
         action:
           type: string
@@ -1645,6 +1832,10 @@ components:
         enforcement:
           type: string
           enum: [enforce, observe]
+        group_id:
+          oneOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
         transport:
           type: string
           enum: [any, tcp, udp]
@@ -1738,6 +1929,78 @@ components:
         transport:
           type: string
           enum: [tcp, udp]
+    PolicyModeUpdate:
+      type: object
+      additionalProperties: false
+      required: [revision, enforcement]
+      properties:
+        revision:
+          $ref: '#/components/schemas/Identifier'
+        enforcement:
+          type: string
+          enum: [enforce, observe]
+    PolicyGroupFields:
+      type: object
+      required: [name, enforcement, enabled]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 512
+        enforcement:
+          type: string
+          enum: [enforce, observe]
+        enabled:
+          type: boolean
+    PolicyGroup:
+      allOf:
+        - $ref: '#/components/schemas/PolicyGroupFields'
+      unevaluatedProperties: false
+    PolicyGroupUpdate:
+      allOf:
+        - $ref: '#/components/schemas/PolicyGroupFields'
+        - type: object
+          required: [revision]
+          properties:
+            revision:
+              $ref: '#/components/schemas/Identifier'
+      unevaluatedProperties: false
+    PolicyScopeModeFields:
+      type: object
+      required: [name, enforcement, scope, enabled]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        enforcement:
+          type: string
+          enum: [enforce, observe]
+        scope:
+          allOf:
+            - $ref: '#/components/schemas/Scope'
+          not:
+            properties:
+              type:
+                const: global
+        enabled:
+          type: boolean
+    PolicyScopeMode:
+      allOf:
+        - $ref: '#/components/schemas/PolicyScopeModeFields'
+      unevaluatedProperties: false
+    PolicyScopeModeUpdate:
+      allOf:
+        - $ref: '#/components/schemas/PolicyScopeModeFields'
+        - type: object
+          required: [revision]
+          properties:
+            revision:
+              $ref: '#/components/schemas/Identifier'
+      unevaluatedProperties: false
     SourceFields:
       type: object
       required:

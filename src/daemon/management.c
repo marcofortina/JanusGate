@@ -1284,6 +1284,9 @@ static bool management_path_known(const char *path)
         "/api/v1/network/rollback",
         "/api/v1/network/validate",
         "/api/v1/policies/destinations",
+        "/api/v1/policies/groups",
+        "/api/v1/policies/mode",
+        "/api/v1/policies/scopes",
         "/api/v1/policies/simulate",
         "/api/v1/service/restart",
         "/api/v1/sources",
@@ -1312,6 +1315,10 @@ static bool management_path_known(const char *path)
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/policies/destinations/",
                                       "", &identifier) ||
+           collection_path_identifier(path, "/api/v1/policies/groups/", "",
+                                      &identifier) ||
+           collection_path_identifier(path, "/api/v1/policies/scopes/", "",
+                                      &identifier) ||
            collection_path_identifier(path, "/api/v1/sources/", "",
                                       &identifier) ||
            collection_path_identifier(path, "/api/v1/sources/", "/refresh",
@@ -1342,9 +1349,11 @@ static int dispatch_request(struct jg_management *management,
     uint64_t backup_id = 0U;
     uint64_t destination_rule_id = 0U;
     uint64_t domain_rule_id = 0U;
+    uint64_t group_id = 0U;
     uint64_t job_id = 0U;
     uint64_t mapping_id = 0U;
     uint64_t source_id = 0U;
+    uint64_t scope_mode_id = 0U;
     uint64_t token_id = 0U;
     uint64_t user_id = 0U;
 
@@ -1489,6 +1498,29 @@ static int dispatch_request(struct jg_management *management,
         strcmp(request->method, "GET") == 0) {
         return handle_domain_rules_list(management, request, remote, now,
                                         output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/mode") == 0) {
+        return handle_policy_global_mode(management, request, remote, now,
+                                         output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/groups") == 0) {
+        return handle_policy_groups(management, request, remote, now, output,
+                                    output_size, written);
+    }
+    if (collection_path_identifier(request->path, "/api/v1/policies/groups/",
+                                   "", &group_id)) {
+        return handle_policy_group(management, request, remote, group_id, now,
+                                   output, output_size, written);
+    }
+    if (strcmp(request->path, "/api/v1/policies/scopes") == 0) {
+        return handle_policy_scope_modes(management, request, remote, now,
+                                         output, output_size, written);
+    }
+    if (collection_path_identifier(request->path, "/api/v1/policies/scopes/",
+                                   "", &scope_mode_id)) {
+        return handle_policy_scope_mode(management, request, remote,
+                                        scope_mode_id, now, output, output_size,
+                                        written);
     }
     if (strcmp(request->path, "/api/v1/policies/destinations") == 0 &&
         strcmp(request->method, "GET") == 0) {

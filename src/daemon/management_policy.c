@@ -245,6 +245,11 @@ static json_t *domain_rule_json(const struct jg_database_domain_rule *rule)
         json_object_set_new(body, "action", json_string(effect)) != 0 ||
         json_object_set_new(body, "enforcement", json_string(enforcement)) !=
             0 ||
+        json_object_set_new(body, "group_id",
+                            rule->group_id == 0U
+                                ? json_null()
+                                : json_integer((json_int_t)rule->group_id)) !=
+            0 ||
         json_object_set_new(body, "source", json_string(source)) != 0 ||
         json_object_set_new(body, "target", json_string(target)) != 0 ||
         json_object_set_new(body, "attribution",
@@ -309,6 +314,11 @@ static json_t *destination_rule_json(
                             json_integer((json_int_t)rule->updated_at)) != 0 ||
         json_object_set_new(body, "action", json_string(effect)) != 0 ||
         json_object_set_new(body, "enforcement", json_string(enforcement)) !=
+            0 ||
+        json_object_set_new(body, "group_id",
+                            rule->group_id == 0U
+                                ? json_null()
+                                : json_integer((json_int_t)rule->group_id)) !=
             0 ||
         json_object_set_new(body, "source", json_string(source)) != 0 ||
         json_object_set_new(body, "transport", json_string(transport)) != 0 ||
@@ -387,6 +397,18 @@ static bool parse_policy_enforcement(const char *text,
         return true;
     }
     return false;
+}
+
+/** @brief Parse one optional nullable policy-group identifier. */
+static bool parse_policy_group_id(const json_t *body, uint64_t *group_id)
+{
+    json_t *value = json_object_get(body, "group_id");
+
+    *group_id = 0U;
+    return value == NULL || json_is_null(value) ||
+           (json_is_integer(value) && json_integer_value(value) > 0 &&
+            (uint64_t)json_integer_value(value) <= (uint64_t)INT64_MAX &&
+            (*group_id = (uint64_t)json_integer_value(value)) != 0U);
 }
 
 /** @brief Parse one strict domain-rule client scope object. */
@@ -480,13 +502,14 @@ static int parse_domain_rule_request(json_t *body,
                                      uint64_t *revision)
 {
     static const char *const create_fields[] = {
-        "domain", "include_subdomains", "action",  "target",
-        "scope",  "attribution",        "enabled", "enforcement",
+        "domain",   "include_subdomains", "action",  "target",
+        "scope",    "attribution",        "enabled", "enforcement",
+        "group_id",
     };
     static const char *const update_fields[] = {
-        "revision",    "domain",  "include_subdomains",
-        "action",      "target",  "scope",
-        "attribution", "enabled", "enforcement",
+        "revision",    "domain",   "include_subdomains", "action",
+        "target",      "scope",    "attribution",        "enabled",
+        "enforcement", "group_id",
     };
     const char *domain = required_string(body, "domain", 1U, 1024U);
     const char *action = required_string(body, "action", 5U, 5U);
@@ -512,6 +535,7 @@ static int parse_domain_rule_request(json_t *body,
         !required_boolean(body, "enabled", enabled) ||
         !parse_policy_effect(action, &rule->effect) ||
         !parse_policy_enforcement(enforcement, &rule->enforcement) ||
+        !parse_policy_group_id(body, &rule->group_id) ||
         !parse_policy_target(target, &rule->target)) {
         return -EINVAL;
     }
@@ -561,11 +585,12 @@ static int parse_destination_rule_request(
 {
     static const char *const create_fields[] = {
         "action", "transport",   "address", "prefix_length", "port",
-        "scope",  "attribution", "enabled", "enforcement",
+        "scope",  "attribution", "enabled", "enforcement",   "group_id",
     };
     static const char *const update_fields[] = {
-        "revision", "action", "transport",   "address", "prefix_length",
-        "port",     "scope",  "attribution", "enabled", "enforcement",
+        "revision",      "action",      "transport", "address",
+        "prefix_length", "port",        "scope",     "attribution",
+        "enabled",       "enforcement", "group_id",
     };
     const char *action = required_string(body, "action", 5U, 5U);
     const char *transport = required_string(body, "transport", 3U, 3U);
@@ -597,6 +622,7 @@ static int parse_destination_rule_request(
         port_value == NULL || !required_boolean(body, "enabled", enabled) ||
         !parse_policy_effect(action, &rule->effect) ||
         !parse_policy_enforcement(enforcement, &rule->enforcement) ||
+        !parse_policy_group_id(body, &rule->group_id) ||
         !parse_policy_transport_selector(transport, &rule->transport)) {
         return -EINVAL;
     }
