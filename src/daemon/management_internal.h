@@ -460,6 +460,15 @@ int encode_response(int status,
                     size_t output_size,
                     size_t *written);
 
+/** @brief Encode one plain-text API response envelope. */
+int encode_text_response(int status,
+                         const char *content_type,
+                         const char *text,
+                         size_t text_size,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
 /** @brief Create one consistent API error body. */
 json_t *error_body(const char *code,
                    const char *message,
@@ -513,6 +522,13 @@ int execute_certificate_csr_job(struct jg_management *management,
                                 uint8_t *output,
                                 size_t output_size,
                                 size_t *written);
+
+/** @brief Execute one authenticated diagnostic archive job. */
+int execute_diagnostics_create_job(struct jg_management *management,
+                                   const struct management_job *job,
+                                   uint8_t *output,
+                                   size_t output_size,
+                                   size_t *written);
 
 /** @brief Report whether the appliance still requires initial setup. */
 int handle_authentication_state(struct jg_management *management,
@@ -930,6 +946,89 @@ int respond_actor_error(int result,
 
 /** @brief Add one nonnegative runtime counter to a JSON object. */
 int set_counter(json_t *object, const char *name, uint64_t value);
+
+/** @brief Return authenticated daemon readiness and packet counters. */
+int handle_status(struct jg_management *management,
+                  const struct management_request *request,
+                  const struct remote_address *remote,
+                  uint64_t now,
+                  uint8_t *output,
+                  size_t output_size,
+                  size_t *written);
+
+/** @brief Return authenticated management, daemon, and helper health. */
+int handle_health(struct jg_management *management,
+                  const struct management_request *request,
+                  const struct remote_address *remote,
+                  uint64_t now,
+                  uint8_t *output,
+                  size_t output_size,
+                  size_t *written);
+
+/** @brief Return authenticated Prometheus text for the current runtime. */
+int handle_metrics(struct jg_management *management,
+                   const struct management_request *request,
+                   const struct remote_address *remote,
+                   uint64_t now,
+                   uint8_t *output,
+                   size_t output_size,
+                   size_t *written);
+
+/** @brief Validate or atomically reload persistent runtime configuration. */
+int handle_configuration(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         bool reload,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Authorize, audit, and defer one appliance lifecycle action. */
+int handle_system_action(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         enum jg_system_action action,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Queue one authenticated diagnostic archive creation. */
+int handle_diagnostics_create(struct jg_management *management,
+                              const struct management_request *request,
+                              const struct remote_address *remote,
+                              uint64_t now,
+                              uint8_t *output,
+                              size_t output_size,
+                              size_t *written);
+
+/** @brief Return one authenticated filtered page of operational events. */
+int handle_events_list(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Return one authenticated page of immutable audit records. */
+int handle_audit_list(struct jg_management *management,
+                      const struct management_request *request,
+                      const struct remote_address *remote,
+                      uint64_t now,
+                      uint8_t *output,
+                      size_t output_size,
+                      size_t *written);
+
+/** @brief Verify and report the complete authenticated audit chain. */
+int handle_audit_verify(struct jg_management *management,
+                        const struct management_request *request,
+                        const struct remote_address *remote,
+                        uint64_t now,
+                        uint8_t *output,
+                        size_t output_size,
+                        size_t *written);
 
 /** @brief Return persistent logging configuration and runtime counters. */
 int handle_logging_get(struct jg_management *management,
