@@ -165,6 +165,33 @@ static bool filename_valid(const char *filename)
     return true;
 }
 
+/** @brief Split one absolute transfer path into a directory and filename. */
+static int split_archive_path(const char *path,
+                              char directory[PATH_MAX],
+                              char filename[JG_BACKUP_FILENAME_MAX + 1U])
+{
+    const size_t path_size = path == NULL ? 0U : strnlen(path, PATH_MAX);
+    const char *separator =
+        path_size == 0U || path_size >= PATH_MAX ? NULL : strrchr(path, '/');
+    size_t directory_size = 0U;
+    size_t filename_size = 0U;
+
+    if (separator == NULL || path[0U] != '/' || separator == path ||
+        separator[1U] == '\0') {
+        return -EINVAL;
+    }
+    directory_size = (size_t)(separator - path);
+    filename_size = path_size - directory_size - 1U;
+    if (directory_size >= PATH_MAX || filename_size > JG_BACKUP_FILENAME_MAX ||
+        !filename_valid(separator + 1U)) {
+        return -EINVAL;
+    }
+    (void)memcpy(directory, path, directory_size);
+    directory[directory_size] = '\0';
+    (void)memcpy(filename, separator + 1U, filename_size + 1U);
+    return 0;
+}
+
 /** @brief Return whether one name is an exact private staging filename. */
 static bool staging_filename(const char *filename)
 {
@@ -913,6 +940,51 @@ int jg_backup_load(const char *directory,
         *archive = NULL;
     }
     return result;
+}
+
+/** @brief Store one archive at an absolute private transfer path. */
+int jg_backup_store_path(const char *path,
+                         const uint8_t *archive,
+                         size_t archive_size)
+{
+    char directory[PATH_MAX];
+    char filename[JG_BACKUP_FILENAME_MAX + 1U];
+    const int result = split_archive_path(path, directory, filename);
+
+    return result == 0
+               ? jg_backup_store(directory, filename, archive, archive_size)
+               : result;
+}
+
+/** @brief Load one archive from an absolute private transfer path. */
+int jg_backup_load_path(const char *path,
+                        uint8_t **archive,
+                        size_t *archive_size)
+{
+    char directory[PATH_MAX];
+    char filename[JG_BACKUP_FILENAME_MAX + 1U];
+    int result = 0;
+
+    if (archive == NULL || archive_size == NULL) {
+        return -EINVAL;
+    }
+    *archive = NULL;
+    *archive_size = 0U;
+    result = split_archive_path(path, directory, filename);
+
+    return result == 0
+               ? jg_backup_load(directory, filename, archive, archive_size)
+               : result;
+}
+
+/** @brief Remove one archive at an absolute private transfer path. */
+int jg_backup_remove_path(const char *path)
+{
+    char directory[PATH_MAX];
+    char filename[JG_BACKUP_FILENAME_MAX + 1U];
+    const int result = split_archive_path(path, directory, filename);
+
+    return result == 0 ? jg_backup_remove(directory, filename) : result;
 }
 
 /** @brief Remove one secure private backup archive. */

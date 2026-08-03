@@ -262,6 +262,63 @@ JG_PUBLIC int jg_backup_load(const char *directory,
                              size_t *archive_size);
 
 /**
+ * @brief Atomically write one archive to an absolute private transfer path.
+ *
+ * The parent directory and filename receive the same validation as
+ * jg_backup_store(). Existing destinations are never replaced.
+ *
+ * @param[in] path Absolute destination path.
+ * @param[in] archive Complete archive.
+ * @param[in] archive_size Archive bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a malformed path or archive.
+ * @return Another result from jg_backup_store().
+ *
+ * @thread_safety Concurrent writes to the same path are safe.
+ *
+ * @side_effects Creates and synchronizes one mode-0600 regular file.
+ */
+JG_PUBLIC int jg_backup_store_path(const char *path,
+                                   const uint8_t *archive,
+                                   size_t archive_size);
+
+/**
+ * @brief Load one archive from an absolute private transfer path.
+ *
+ * @param[in] path Absolute source path.
+ * @param[out] archive Receives the owned archive.
+ * @param[out] archive_size Receives the archive size in bytes.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a malformed path.
+ * @return Another result from jg_backup_load().
+ *
+ * @thread_safety Concurrent loads of an immutable file are safe.
+ *
+ * @side_effects Allocates @p archive, which must be released with
+ * jg_backup_data_clear().
+ */
+JG_PUBLIC int jg_backup_load_path(const char *path,
+                                  uint8_t **archive,
+                                  size_t *archive_size);
+
+/**
+ * @brief Remove one archive from an absolute private transfer path.
+ *
+ * @param[in] path Absolute source path.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a malformed path.
+ * @return Another result from jg_backup_remove().
+ *
+ * @thread_safety Concurrent access to the same path is unsupported.
+ *
+ * @side_effects Unlinks and synchronizes one archive directory entry.
+ */
+JG_PUBLIC int jg_backup_remove_path(const char *path);
+
+/**
  * @brief Securely remove one stored backup archive.
  *
  * @param[in] directory Private backup directory.
