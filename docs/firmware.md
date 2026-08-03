@@ -12,7 +12,7 @@ raw image as root because loop devices and mounts are required:
 
 ```sh
 sudo scripts/build-alpine-image.sh \
-  --apk /path/to/packages/janusgate-0.1.2-r0.apk
+  --apk /path/to/packages/janusgate-0.1.3-r0.apk
 scripts/build-qcow2.sh \
   --raw out/alpine/janusgate-alpine-3.24.1-x86_64.raw
 scripts/run-qemu-smoke.sh alpine \

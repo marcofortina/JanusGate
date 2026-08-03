@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
 
-JANUSGATE_VERSION = 0.1.2
+JANUSGATE_VERSION = 0.1.3
 JANUSGATE_SITE = $(BR2_EXTERNAL_JANUSGATE_PATH)/..
 JANUSGATE_SITE_METHOD = local
 JANUSGATE_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \

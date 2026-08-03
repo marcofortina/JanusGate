@@ -33,7 +33,7 @@ done
 cat >"$target_directory/etc/janusgate/firmware-release" <<EOF
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
-JANUSGATE_VERSION=0.1.2
+JANUSGATE_VERSION=0.1.3
 BUILDROOT_VERSION=2025.02.16
 LINUX_VERSION=6.12.98
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}

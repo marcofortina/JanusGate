@@ -3,6 +3,23 @@
 
 # JanusGate release notes
 
+## 0.1.3
+
+Maintenance release improving restore safety and simplifying internal
+subsystem boundaries.
+
+- Serializes applied restores and retains the provenance of automatic recovery
+  checkpoints.
+- Creates backup archives crash consistently, audits recovery checkpoints, and
+  warns administrators before full-appliance restores.
+- Isolates control-plane state, durable recovery, authenticated jobs, and
+  backup operations behind focused management modules.
+- Separates management, database, and account operations by responsibility
+  while preserving their public interfaces and persistent schema.
+- Organizes policy, identity, and appliance CLI commands and separates
+  certificate and blocklist management without changing their behavior.
+- Documents restore recovery semantics and the resulting audit trail.
+
 ## 0.1.2
 
 Hardening release for authenticated administration, recoverable mutations, and
