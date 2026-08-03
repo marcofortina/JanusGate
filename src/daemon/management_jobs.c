@@ -177,6 +177,40 @@ static bool job_actors_equal(const struct authenticated_actor *left,
     return left->kind == right->kind && left->actor_id == right->actor_id;
 }
 
+/** @brief Match the exact authorization and origin of one queued job. */
+static bool job_context_equal(
+    const struct management_job *job,
+    const struct authenticated_actor *actor,
+    const struct management_job_authorization *authorization,
+    const struct remote_address *remote)
+{
+    const uint8_t *job_credential = NULL;
+    const uint8_t *credential = NULL;
+    size_t credential_size = 0U;
+
+    if (!job_actors_equal(&job->actor, actor) ||
+        job->remote.family != remote->family ||
+        sodium_memcmp(job->remote.address, remote->address,
+                      sizeof(job->remote.address)) != 0) {
+        return false;
+    }
+    if (actor->kind == AUTHENTICATED_ACTOR_LOCAL) {
+        return true;
+    }
+    if (actor->kind == AUTHENTICATED_ACTOR_USER) {
+        job_credential = job->authorization.session_digest;
+        credential = authorization->session_digest;
+        credential_size = sizeof(authorization->session_digest);
+    } else if (actor->kind == AUTHENTICATED_ACTOR_TOKEN) {
+        job_credential = job->authorization.certificate_fingerprint;
+        credential = authorization->certificate_fingerprint;
+        credential_size = sizeof(authorization->certificate_fingerprint);
+    } else {
+        return false;
+    }
+    return sodium_memcmp(job_credential, credential, credential_size) == 0;
+}
+
 /** @brief Enforce per-actor and reserved-system queue capacity. */
 static int check_job_capacity(const struct management_jobs *jobs,
                               const struct authenticated_actor *actor,
@@ -203,11 +237,14 @@ static int check_job_capacity(const struct management_jobs *jobs,
 }
 
 /** @brief Coalesce refreshes and serialize restore operations. */
-static int check_job_conflict(const struct management_jobs *jobs,
-                              const struct authenticated_actor *actor,
-                              const struct management_job_submission *prepared,
-                              uint64_t now,
-                              uint64_t *job_id)
+static int check_job_conflict(
+    const struct management_jobs *jobs,
+    const struct authenticated_actor *actor,
+    const struct management_job_authorization *authorization,
+    const struct remote_address *remote,
+    const struct management_job_submission *prepared,
+    uint64_t now,
+    uint64_t *job_id)
 {
     for (size_t index = 0U; index < MANAGEMENT_JOB_CAPACITY; ++index) {
         const struct management_job *job = &jobs->slots[index];
@@ -227,7 +264,7 @@ static int check_job_conflict(const struct management_jobs *jobs,
             job->kind == MANAGEMENT_JOB_SOURCE_REFRESH &&
             job->resource_id == prepared->parameters.source.id) {
             if (job->state == MANAGEMENT_JOB_QUEUED &&
-                job_actors_equal(&job->actor, actor)) {
+                job_context_equal(job, actor, authorization, remote)) {
                 *job_id = job->id;
                 return 1;
             }
@@ -319,7 +356,8 @@ int submit_management_job(struct jg_management *management,
         sodium_memzero(&authorization, sizeof(authorization));
         return -status;
     }
-    result = check_job_conflict(jobs, actor, prepared, now, job_id);
+    result = check_job_conflict(jobs, actor, &authorization, remote, prepared,
+                                now, job_id);
     if (result == 1) {
         result = 0;
         coalesced = true;

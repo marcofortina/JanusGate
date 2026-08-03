@@ -148,6 +148,95 @@ static void test_management_secret_storage(void **state)
     sodium_memzero(key, sizeof(key));
 }
 
+/** @brief Verify refresh coalescing requires one exact request context. */
+static void test_source_refresh_coalescing(void **state)
+{
+    struct management_fixture *fixture = *state;
+    struct management_jobs *jobs = fixture->management->jobs;
+    struct management_request request = {
+        .request_id = "refresh-first",
+        .session = "session-a",
+    };
+    const struct authenticated_actor actor = {
+        .identity = {.user_id = 42U},
+        .actor_id = 42U,
+        .kind = AUTHENTICATED_ACTOR_USER,
+    };
+    const struct authenticated_actor token_actor = {
+        .identity = {.user_id = 43U},
+        .actor_id = 99U,
+        .kind = AUTHENTICATED_ACTOR_TOKEN,
+    };
+    static const char alternate_fingerprint[] =
+        "2222222222222222222222222222222222222222222222222222222222222222";
+    struct remote_address remote = {
+        .family = JG_POLICY_ADDRESS_IPV4,
+        .address = {192U, 0U, 2U, 10U},
+    };
+    struct management_job_submission prepared = {
+        .parameters.source = {.id = 7U, .revision = 1U},
+        .required_permission = JG_ACCESS_OPERATE,
+        .kind = MANAGEMENT_JOB_SOURCE_REFRESH,
+    };
+    uint64_t first_id = 0U;
+    uint64_t repeated_id = 0U;
+
+    assert_int_equal(pthread_mutex_lock(&jobs->mutex), 0);
+    jobs->stopping = true;
+    assert_int_equal(pthread_cond_signal(&jobs->ready), 0);
+    assert_int_equal(pthread_mutex_unlock(&jobs->mutex), 0);
+    assert_int_equal(pthread_join(jobs->thread, NULL), 0);
+    jobs->thread_started = false;
+    jobs->stopping = false;
+
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &actor, &prepared, 100U,
+                                           &first_id),
+                     0);
+    request.request_id = "refresh-repeated";
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &actor, &prepared, 100U,
+                                           &repeated_id),
+                     0);
+    assert_int_equal(repeated_id, first_id);
+
+    request.request_id = "refresh-other-session";
+    request.session = "session-b";
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &actor, &prepared, 100U,
+                                           &repeated_id),
+                     -EALREADY);
+
+    request.request_id = "refresh-other-address";
+    request.session = "session-a";
+    remote.address[3U] = 11U;
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &actor, &prepared, 100U,
+                                           &repeated_id),
+                     -EALREADY);
+
+    request.request_id = "refresh-token";
+    request.client_certificate = management_client_fingerprint;
+    remote.address[3U] = 10U;
+    prepared.parameters.source.id = 8U;
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &token_actor, &prepared,
+                                           100U, &first_id),
+                     0);
+    request.request_id = "refresh-token-repeated";
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &token_actor, &prepared,
+                                           100U, &repeated_id),
+                     0);
+    assert_int_equal(repeated_id, first_id);
+    request.request_id = "refresh-token-other-certificate";
+    request.client_certificate = alternate_fingerprint;
+    assert_int_equal(submit_management_job(fixture->management, &request,
+                                           &remote, &token_actor, &prepared,
+                                           100U, &repeated_id),
+                     -EALREADY);
+}
+
 /** @brief Write one exact buffer to a newly created private file. */
 static void write_private_file(const char *path,
                                const uint8_t *data,
@@ -4907,6 +4996,8 @@ int jg_test_management(void)
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_management_consistency),
         cmocka_unit_test(test_management_secret_storage),
+        cmocka_unit_test_setup_teardown(test_source_refresh_coalescing,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_restore_request_exclusion,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_local_administration,
