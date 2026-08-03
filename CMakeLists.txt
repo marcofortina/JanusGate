@@ -128,6 +128,7 @@ add_library(
   src/common/account_session.c
   src/common/account_token.c
   src/common/account_totp.c
+  src/common/alert_configuration.c
   src/common/audit.c
   src/common/auth.c
   src/common/backup.c
@@ -316,6 +317,7 @@ install(
 install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/access.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/account.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/alert.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/audit.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/auth.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/janusgate/backup.h"

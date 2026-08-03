@@ -15,6 +15,7 @@ add_executable(
   janusgate-unit-tests
   unit/test_access.c
   unit/test_account.c
+  unit/test_alert.c
   unit/test_audit.c
   unit/test_auth.c
   unit/test_backup.c
