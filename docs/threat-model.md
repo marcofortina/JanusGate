@@ -34,6 +34,10 @@ storage, and the software supply chain.
   TOTP, session expiration, and audit records protect browser access. Remote
   automation additionally requires a scoped token and a trusted, explicitly
   mapped client certificate; either identity can be revoked independently.
+- A portable full backup contains sufficient protected state to reproduce
+  appliance identities. Compromise of both an archive and its passphrase can
+  expose that state; keep them under separate controls and transfer archives
+  only through the privileged local path.
 - A compromised `janusgate-web` process is contained by an unprivileged
   account, restricted files, local protocol validation, and the absence of
   direct network-administration capability.

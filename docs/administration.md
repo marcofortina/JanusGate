@@ -120,19 +120,27 @@ home-lab CA example.
 ## Backups and diagnostics
 
 Configuration backups exclude private secrets. Full backups are encrypted
-with a passphrase of at least 16 characters and may include the server private
-key only when explicitly requested. The interface can create, inspect, and
-restore backups. Restore validates the archive, manifest, paths, schema, and
-integrity before replacing state. An applied restore waits for active
-management writes, excludes new writes until completion, and leaves
-authenticated reads and job polling available. JanusGate creates and audits
-an automatic pre-restore checkpoint; the restore audit identifies that
-checkpoint.
+with a passphrase of at least 16 characters. A current full backup is portable:
+its encrypted payload contains the complete database, the TOTP protection key,
+and the installed public client CA bundle. It may include the server private
+key only when explicitly requested. Treat the archive as authentication
+material and keep its passphrase separately.
+
+The interface can create, inspect, and restore backups. Restore validates the
+archive, manifest, paths, schema, and integrity before replacing state. An
+applied restore waits for active management writes, excludes new writes until
+completion, and leaves authenticated reads and job polling available.
+JanusGate creates and audits an automatic pre-restore checkpoint; the restore
+audit identifies that checkpoint.
 
 A full restore replaces users, sessions, API tokens, TOTP credentials, and
 client-certificate mappings. It can therefore invalidate the browser session
 or remote API identity that started it before the final job result is read.
 Prefer the local console and `janusgatectl` for full recovery restores.
+The privileged local CLI also exports a verified archive to an absolute
+private path and imports an off-appliance archive under a new local ID. These
+transfer operations are intentionally unavailable through the browser and the
+remote API. See [Recovery](recovery.md) for the supported procedure.
 
 Diagnostics create a bounded archive containing versions, sanitized
 configuration, recent service information, and selected logs. Review it before

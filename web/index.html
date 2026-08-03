@@ -1973,7 +1973,8 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                   <h3>Create backup</h3>
                   <p>
                     Configuration backups contain no secrets. Full backups
-                    are always passphrase-encrypted.
+                    are always passphrase-encrypted and include portable TOTP
+                    and client-certificate trust state.
                   </p>
                 </div>
               </div>
@@ -2059,8 +2060,8 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                 </p>
                 <p id="full-restore-warning" hidden>
                   A full restore replaces users, sessions, API tokens, TOTP,
-                  and client-certificate mappings. This browser session may
-                  end before the final job result can be retrieved. Prefer
+                  client-certificate trust, and mappings. This browser session
+                  may end before the final job result can be retrieved. Prefer
                   the local console and <code>janusgatectl</code> for recovery.
                 </p>
               </div>

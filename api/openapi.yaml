@@ -1255,6 +1255,11 @@ paths:
       tags: [Backups]
       operationId: createBackup
       summary: Create a configuration or encrypted full backup
+      description: >-
+        Current full backups are portable encrypted archives containing the
+        complete database, TOTP protection key, public client CA bundle, and
+        the server private key only when explicitly requested. Configuration
+        backups exclude authentication secrets.
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
@@ -1273,6 +1278,10 @@ paths:
       tags: [Backups]
       operationId: inspectBackup
       summary: Inspect and verify a stored backup
+      description: >-
+        Returns the verified archive manifest, including its format and
+        compatible reader versions, section sizes, encryption state, and
+        whether the archive is portable.
       parameters:
         - $ref: '#/components/parameters/BackupId'
       responses:
@@ -1288,10 +1297,12 @@ paths:
       description: >-
         An applied restore waits for active management mutations, excludes new
         mutations, and creates an audited pre-restore checkpoint. Reads and job
-        polling remain available. A full restore replaces users, sessions, API
-        tokens, TOTP credentials, and mTLS mappings, so the remote identity that
+        polling remain available. A current full restore replaces users,
+        sessions, API tokens, TOTP credentials and their protection key, the
+        public client CA bundle, and mTLS mappings, so the remote identity that
         started it may be unable to retrieve the completed job; prefer the
-        local Unix-socket CLI for full recovery restores.
+        local Unix-socket CLI for full recovery restores. Archive import and
+        export are intentionally local-only and are not remote API operations.
       parameters:
         - $ref: '#/components/parameters/BackupId'
         - $ref: '#/components/parameters/CsrfToken'

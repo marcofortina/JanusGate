@@ -129,6 +129,9 @@ Lifetime rule and traffic aggregates are preserved.
 - `backup create configuration` creates a non-secret backup.
 - `backup create full` requires `--passphrase-file`; private-key inclusion also
   requires `--include-private-key`.
+- `backup export ID FILE` writes a verified archive to a new absolute private
+  path; `backup import FILE` validates an off-appliance archive and assigns a
+  new local ID. Both commands are local-socket only.
 - `backup restore ID` requires the matching passphrase for an encrypted
   backup, performs a dry run, and creates an audited checkpoint before
   applying changes.
@@ -137,10 +140,12 @@ Lifetime rule and traffic aggregates are preserved.
 CSR generation, backup creation and restore, and diagnostic archive creation
 use the same bounded job queue; the CLI waits for completion before presenting
 or saving the result. An applied restore temporarily excludes other management
-writes. Full restores replace users, sessions, tokens, TOTP credentials, and
-mTLS mappings, so a remote caller can lose authorization before reading the
-job result. Run full recovery restores through the default local socket from a
-retained console.
+writes. Current full archives carry the TOTP protection key and public client
+CA bundle as well as the database, so they can restore authentication state on
+a replacement appliance. Full restores replace users, sessions, tokens, TOTP
+credentials, and mTLS trust and mappings, so a remote caller can lose
+authorization before reading the job result. Run full recovery restores
+through the default local socket from a retained console.
 
 ## Runtime operations
 

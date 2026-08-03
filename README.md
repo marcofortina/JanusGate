@@ -48,8 +48,8 @@ management interface is never attached to the data bridge.
   interception or QUIC SNI parsing.
 - Transactional network changes with confirmation and rollback.
 - HTTPS administration, privileged local CLI, mandatory-mTLS remote CLI,
-  roles, TOTP, tokens, CSRF protection, audit chain, metrics, backups, and
-  diagnostics.
+  roles, TOTP, tokens, CSRF protection, audit chain, metrics, portable
+  encrypted backups, and diagnostics.
 - Structured stderr/syslog logging with bounded, expiring, privacy-aware
   operational tracing.
 - Per-rule lifetime counters, retained client impact, conservative relationship

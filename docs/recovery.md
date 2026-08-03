@@ -48,12 +48,48 @@ available.
 
 Run full restores from a retained local console through the default Unix
 socket. A full restore replaces users, sessions, API tokens, TOTP credentials,
-and client-certificate mappings; the remote identity that submitted the job
-may therefore be invalid before it can read the result. Only a last-resort
-manual database replacement requires stopping every JanusGate service first.
-Preserve the damaged database and its write-ahead-log companions before any
-manual work, then start the daemon first and verify health and audit state
-before starting the web service.
+the TOTP protection key, the public client CA bundle, and client-certificate
+mappings; the remote identity that submitted the job may therefore be invalid
+before it can read the result. A format-version 1 archive remains readable but
+does not carry the TOTP key or client CA and preserves those files on the
+target appliance.
+
+### Off-appliance recovery archives
+
+Backup transfer is available only through the privileged local socket. Both
+the source or destination file and its parent directory must be owned by the
+JanusGate service account; the directory must have no group or other access,
+an imported file must have mode `0600`, and an export never overwrites an
+existing destination. Use an absolute path:
+
+```sh
+install -d -o janusgate -g janusgate -m 0700 /var/lib/janusgate/transfer
+janusgatectl backup export 42 /var/lib/janusgate/transfer/appliance.jgb
+```
+
+Move the exported archive to separately controlled storage and retain its
+passphrase independently. To recover on a replacement appliance, copy the
+archive into a fresh private transfer directory with owner `janusgate` and
+mode `0600`, then run:
+
+```sh
+janusgatectl backup import /var/lib/janusgate/transfer/appliance.jgb
+janusgatectl backup inspect NEW_ID
+janusgatectl --passphrase-file /secure/backup.pass backup restore NEW_ID
+```
+
+The import validates the archive and records a new local backup ID. Inspect
+the manifest for `portable: true`, complete the restore dry run, confirm the
+reported database, TOTP-key, client-CA, and certificate changes, then apply.
+Afterward, restart or reload the services indicated by the result and verify
+local login, TOTP, client-certificate automation, the server certificate,
+policy publication, and the audit chain. Management addressing and other
+OS-owned network configuration are not part of the archive.
+
+Only a last-resort manual database replacement requires stopping every
+JanusGate service first. Preserve the damaged database and its write-ahead-log
+companions before any manual work, then start the daemon first and verify
+health and audit state before starting the web service.
 
 ## Management consistency recovery
 

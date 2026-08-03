@@ -62,10 +62,12 @@ forwarding may retain records longer than the in-memory window; their access,
 transport, rotation, and deletion are the deployer's responsibility.
 
 Do not place passwords, API tokens, session cookies, TOTP seeds, backup
-passphrases, private keys, or complete request bodies in logs. Remote list
-credentials and TLS material must remain in restricted files. Diagnostic
-bundles omit or redact secret fields, but an operator must still inspect a
-bundle before sharing it.
+passphrases, private keys, or complete request bodies in logs. A portable full
+backup contains the encrypted identity database and its TOTP protection key;
+it must be handled as authentication material even when the server private key
+was excluded. Remote list credentials and TLS material must remain in
+restricted files. Diagnostic bundles omit or redact secret fields, but an
+operator must still inspect a bundle before sharing it.
 
 Access to management data should be limited by role and by network placement.
 Browser administration uses HTTPS, password, and optional TOTP without a

@@ -55,13 +55,19 @@ explicit validation and publication retry. During an applied restore,
 `management.restore_in_progress` is true and
 `management.mutations_allowed` is false. New writes receive
 `503 restore_in_progress`; authenticated reads and job polling continue.
+Authentication validation for reads is itself read-only; bounded session and
+token activity timestamps are best-effort and are skipped while restore owns
+the mutation gate.
 
 Blocklist updates, backups, diagnostics, and CSR generation return a bounded
 job reference with HTTP `202`. Poll `/jobs/{id}` as the same authenticated
 actor; completed results remain available until read, or for at most one hour.
-A full restore replaces sessions, tokens, users, TOTP credentials, and mTLS
-mappings. A remote actor may consequently lose permission to poll the job that
-performed it; use the local Unix-socket CLI for full recovery restores.
+A current full restore replaces sessions, tokens, users, TOTP credentials and
+their protection key, the public client CA bundle, and mTLS mappings. A remote
+actor may consequently lose permission to poll the job that performed it; use
+the local Unix-socket CLI for full recovery restores. Archive import and export
+are privileged local-socket operations and are deliberately absent from the
+remote contract.
 
 ## Resource groups
 

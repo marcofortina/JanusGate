@@ -341,7 +341,8 @@ Create a configuration backup without authentication secrets and wait for the
 bounded job to complete.
 .TP
 .B backup create full
-Create an authenticated encrypted full backup.
+Create an authenticated encrypted portable full backup containing the
+database, TOTP protection key, and public client CA bundle.
 A passphrase is read from
 .B --passphrase-file
 or securely from the terminal.
@@ -349,13 +350,24 @@ or securely from the terminal.
 .BI "backup inspect " id
 Verify and display stored backup metadata.
 .TP
+.BI "backup export " "id file"
+Verify a stored archive and write it to a new absolute private path.
+This operation is available only through the local socket and never overwrites
+an existing file.
+.TP
+.BI "backup import " file
+Validate an archive from an absolute private path, copy it into protected
+storage, and assign it a new local ID.
+This operation is available only through the local socket.
+.TP
 .BI "backup restore " id
 Validate a backup, show the dry-run comparison, and apply it only after
 confirmation. Both phases wait for their bounded management jobs. An applied
 restore excludes other management writes and creates an audited checkpoint.
-A full restore replaces users, sessions, tokens, TOTP credentials, and
-client-certificate mappings; run full recovery restores through the local
-socket because remote authorization may be replaced before the result is read.
+A current full restore replaces users, sessions, tokens, TOTP credentials and
+their protection key, the public client CA bundle, and client-certificate
+mappings; run full recovery restores through the local socket because remote
+authorization may be replaced before the result is read.
 .SH SYSTEM COMMANDS
 .TP
 .B diagnostics create

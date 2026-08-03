@@ -75,7 +75,10 @@ boundaries.
 SQLite stores configuration, identities, roles, sessions, tokens, policy
 rules, source metadata, events, and the append-only audit chain. Schema
 migrations run transactionally. Secrets are hashed or encrypted before
-storage; private keys and full backups receive restrictive permissions.
+storage. Portable full backups encrypt the database, TOTP protection key,
+public client CA bundle, and any explicitly selected server private key as one
+authenticated payload; private keys and full backups receive restrictive
+permissions.
 Argon2id password work completes before the short transaction that records an
 authentication result. Browser attempts are bounded by source and globally.
 
