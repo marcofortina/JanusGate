@@ -461,6 +461,18 @@ enum jg_audit_actor_type actor_audit_type(
 /** @brief Return whether one actor has a persistent database identifier. */
 bool actor_has_identifier(const struct authenticated_actor *actor);
 
+/** @brief Begin one persistent mutation that must share its audit commit. */
+int audited_mutation_begin(struct jg_management *management);
+
+/** @brief Abandon an audit scope when its persistent mutation fails. */
+int audited_mutation_check(struct jg_management *management,
+                           int operation_result);
+
+/** @brief Commit a mutation with its audit event or restore prior state. */
+int audited_mutation_finish(struct jg_management *management,
+                            int operation_result,
+                            bool reload_policy);
+
 /** @brief Authenticate one session, token, certificate, or local root actor. */
 int authenticate_actor(struct jg_management *management,
                        const struct management_request *request,
@@ -506,6 +518,51 @@ int handle_logging_traces(struct jg_management *management,
                           uint8_t *output,
                           size_t output_size,
                           size_t *written);
+
+/** @brief Return the persistent inline-network configuration. */
+int handle_network_get(struct jg_management *management,
+                       const struct management_request *request,
+                       const struct remote_address *remote,
+                       uint64_t now,
+                       uint8_t *output,
+                       size_t output_size,
+                       size_t *written);
+
+/** @brief Validate a proposed network configuration without applying it. */
+int handle_network_validate(struct jg_management *management,
+                            const struct management_request *request,
+                            const struct remote_address *remote,
+                            uint64_t now,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *written);
+
+/** @brief Stage one revision-bound network change for confirmation. */
+int handle_network_apply(struct jg_management *management,
+                         const struct management_request *request,
+                         const struct remote_address *remote,
+                         uint64_t now,
+                         uint8_t *output,
+                         size_t output_size,
+                         size_t *written);
+
+/** @brief Confirm one pending network change and persist its revision. */
+int handle_network_confirm(struct jg_management *management,
+                           const struct management_request *request,
+                           const struct remote_address *remote,
+                           uint64_t now,
+                           uint8_t *output,
+                           size_t output_size,
+                           size_t *written);
+
+/** @brief Roll back one pending network change without persistence. */
+int handle_network_rollback(struct jg_management *management,
+                            const struct management_request *request,
+                            const struct remote_address *remote,
+                            uint64_t now,
+                            uint8_t *output,
+                            size_t output_size,
+                            size_t *written);
 
 /** @brief Reconcile shared health with persistent policy publication state. */
 void refresh_policy_sync_health(struct jg_management *management);
