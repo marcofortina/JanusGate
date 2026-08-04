@@ -56,8 +56,12 @@ target appliance.
 
 Configuration restores retain the appliance's current webhook transport and
 pending outbox. Full restores recover both from the selected archive as one
-coherent delivery state; receivers should deduplicate the globally unique
-`X-JanusGate-Event-ID` because an interrupted attempt can be delivered again.
+coherent delivery state. An applied restore prevents new delivery claims and
+waits for an active attempt, whose HTTPS call is bounded by the configured
+webhook timeout, to finish and record its result before replacing persistent
+state. Receivers must still deduplicate the globally unique
+`X-JanusGate-Event-ID` because a process or power interruption can cause the
+same event to be delivered again.
 
 ### Off-appliance recovery archives
 

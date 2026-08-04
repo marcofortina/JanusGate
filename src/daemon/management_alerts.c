@@ -728,7 +728,9 @@ static bool delivery_stopping(struct management_alerts *alerts)
     return stopping;
 }
 
-/** @brief Deliver one bounded batch without holding the mutation gate. */
+/**
+ * @brief Deliver one bounded batch while each attempt holds a restore lease.
+ */
 static int deliver_notifications(struct management_alerts *alerts)
 {
     int result = 0;
@@ -743,6 +745,7 @@ static int deliver_notifications(struct management_alerts *alerts)
         uint64_t attempted_at = 0U;
         uint64_t completed_at = 0U;
         int delivery_result = alert_time(&attempted_at);
+        bool claimed = false;
         bool mutation_active = false;
 
         if (delivery_result == 0) {
@@ -754,46 +757,35 @@ static int deliver_notifications(struct management_alerts *alerts)
                 alerts->database, alerts->management->secrets->totp_key,
                 attempted_at, &configuration, secret, &delivery);
         }
+        claimed = delivery_result == 0;
+        if (claimed) {
+            const int webhook_result = alert_webhook_deliver(
+                configuration.values.webhook_url,
+                configuration.values.webhook_ca_pem,
+                configuration.values.webhook_timeout_seconds, secret,
+                delivery.event_id, attempted_at, delivery.payload, error);
+
+            delivery_result = alert_time(&completed_at);
+            if (delivery_result == 0) {
+                int completion_result = jg_database_alert_delivery_complete(
+                    alerts->database, &delivery, webhook_result == 0,
+                    completed_at, webhook_result == 0 ? NULL : error);
+
+                retain_error(publish_storage_metrics(alerts),
+                             &completion_result);
+                retain_error(completion_result, &delivery_result);
+            }
+            retain_error(webhook_result, &delivery_result);
+        }
         if (mutation_active) {
             management_mutation_end(alerts->management);
         }
-        if (delivery_result == -ENOENT) {
-            jg_alert_configuration_clear(&configuration);
-            sodium_memzero(secret, sizeof(secret));
-            break;
-        }
-        if (delivery_result != 0) {
-            jg_alert_configuration_clear(&configuration);
-            sodium_memzero(secret, sizeof(secret));
-            result = delivery_result;
-            break;
-        }
-        delivery_result = alert_webhook_deliver(
-            configuration.values.webhook_url,
-            configuration.values.webhook_ca_pem,
-            configuration.values.webhook_timeout_seconds, secret,
-            delivery.event_id, attempted_at, delivery.payload, error);
-        retain_error(alert_time(&completed_at), &result);
-        if (result == 0) {
-            int completion_result =
-                management_mutation_begin(alerts->management);
-
-            if (completion_result == 0) {
-                completion_result = jg_database_alert_delivery_complete(
-                    alerts->database, &delivery, delivery_result == 0,
-                    completed_at, delivery_result == 0 ? NULL : error);
-                if (completion_result == -ENOENT) {
-                    completion_result = 0;
-                }
-                retain_error(publish_storage_metrics(alerts),
-                             &completion_result);
-                management_mutation_end(alerts->management);
-            }
-            retain_error(completion_result, &result);
-        }
-        retain_error(delivery_result, &result);
         jg_alert_configuration_clear(&configuration);
         sodium_memzero(secret, sizeof(secret));
+        if (!claimed && delivery_result == -ENOENT) {
+            break;
+        }
+        retain_error(delivery_result, &result);
     }
     return result;
 }
@@ -862,12 +854,14 @@ static void *run_management_alerts(void *context)
             management_mutation_end(alerts->management);
         }
         jg_alert_configuration_clear(&configuration);
-        atomic_store_explicit(
-            &alerts->management->health->alert_last_evaluation_at, now,
-            memory_order_release);
-        atomic_store_explicit(
-            &alerts->management->health->alert_evaluation_successful,
-            evaluation_result == 0, memory_order_release);
+        if (evaluation_result != -EBUSY) {
+            atomic_store_explicit(
+                &alerts->management->health->alert_last_evaluation_at, now,
+                memory_order_release);
+            atomic_store_explicit(
+                &alerts->management->health->alert_evaluation_successful,
+                evaluation_result == 0, memory_order_release);
+        }
         if (evaluation_result != 0 && evaluation_result != -EBUSY) {
             (void)jg_log_emit(JG_LOG_WARNING, "alerting",
                               "alerting.evaluation_failed", "",
@@ -878,12 +872,14 @@ static void *run_management_alerts(void *context)
         if (alert_time(&delivery_at) != 0) {
             delivery_at = now;
         }
-        atomic_store_explicit(
-            &alerts->management->health->alert_last_delivery_at, delivery_at,
-            memory_order_release);
-        atomic_store_explicit(
-            &alerts->management->health->alert_delivery_successful,
-            delivery_result == 0, memory_order_release);
+        if (delivery_result != -EBUSY) {
+            atomic_store_explicit(
+                &alerts->management->health->alert_last_delivery_at,
+                delivery_at, memory_order_release);
+            atomic_store_explicit(
+                &alerts->management->health->alert_delivery_successful,
+                delivery_result == 0, memory_order_release);
+        }
         if (delivery_result != 0 && delivery_result != -EBUSY) {
             (void)jg_log_emit(
                 JG_LOG_WARNING, "alerting", "alerting.delivery_failed", "",

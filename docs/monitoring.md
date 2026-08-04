@@ -178,10 +178,12 @@ Failed requests enter bounded exponential retry and become abandoned after ten
 attempts. The outbox survives service restarts, and an interrupted claim is
 recovered without changing its event identity. Evaluation and delivery expose
 separate health and last-run metrics, so endpoint failure does not misreport
-condition evaluation. Use **Send test**, inspect the receiver, confirm delivery
-metrics, and only then route production incidents.
-Rotating the secret immediately changes the key used for pending deliveries;
-coordinate receiver changes accordingly.
+condition evaluation. A restore temporarily suspends both passes without
+replacing their latest completed timestamps or outcomes. Use **Send test**,
+inspect the receiver, confirm delivery metrics, and only then route production
+incidents. Rotating the secret changes the key used by claims made after the
+update; an attempt already claimed completes with its previous transport
+snapshot. Coordinate receiver changes across that bounded overlap.
 
 ## Operational checklist
 

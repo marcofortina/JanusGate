@@ -157,8 +157,9 @@ audit identifies that checkpoint.
 A configuration restore retains the live webhook credentials, endpoint, and
 outbox. A full restore instead restores the webhook configuration and its
 outbox together from the archive, preventing pending payloads from being sent
-with unrelated transport credentials. Existing incident and audit history is
-retained according to the recovery contract.
+with unrelated transport credentials. Both wait for any claimed delivery to
+record its result before replacing state. Existing incident and audit history
+is retained according to the recovery contract.
 
 A full restore replaces users, sessions, API tokens, TOTP credentials, and
 client-certificate mappings. It can therefore invalidate the browser session
