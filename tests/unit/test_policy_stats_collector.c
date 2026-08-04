@@ -122,12 +122,14 @@ static void test_collection(void **state)
                 {
                     .dimension = JG_POLICY_STATS_DOMAIN,
                     .rule_id = 10U,
+                    .statistics_id = {0x10U},
                     .decision = true,
                     .would_block = true,
                 },
                 {
                     .dimension = JG_POLICY_STATS_DESTINATION,
                     .rule_id = 20U,
+                    .statistics_id = {0x20U},
                     .would_block = true,
                     .shadowed = true,
                 },
@@ -149,6 +151,7 @@ static void test_collection(void **state)
                 {
                     .dimension = JG_POLICY_STATS_DOMAIN,
                     .rule_id = 11U,
+                    .statistics_id = {0x11U},
                     .decision = true,
                     .allow_decision = true,
                 },

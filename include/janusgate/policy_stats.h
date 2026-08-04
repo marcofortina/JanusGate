@@ -76,8 +76,10 @@ struct jg_policy_rule_sample {
     uint64_t occurred_at;
     /** Domain or destination rule namespace. */
     enum jg_policy_stats_dimension dimension;
-    /** Stable positive rule identifier. */
+    /** Positive database identifier valid for the sampled rule version. */
     uint64_t rule_id;
+    /** Immutable identity of the rule at the sampled policy generation. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Inspection path used by the request. */
     enum jg_policy_stats_path path;
     /** Client identity available during policy matching. */
@@ -132,7 +134,7 @@ struct jg_policy_traffic_stats {
 struct jg_policy_rule_stats {
     /** Domain or destination rule namespace. */
     enum jg_policy_stats_dimension dimension;
-    /** Stable positive rule identifier. */
+    /** Current positive database identifier of the rule. */
     uint64_t rule_id;
     /** Every recorded match. */
     uint64_t match_count;

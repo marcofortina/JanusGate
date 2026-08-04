@@ -137,6 +137,7 @@ static struct jg_policy_store *build_observing_store(void)
 {
     const struct jg_policy_rule_input rule = {
         .id = 18U,
+        .statistics_id = {0x18U},
         .domain = "blocked.test",
         .effect = JG_POLICY_BLOCK,
         .enforcement = JG_POLICY_OBSERVE,

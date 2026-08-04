@@ -126,9 +126,13 @@ static bool event_client_valid(const struct jg_policy_client *client)
 /** @brief Check relationships within one matching-rule event entry. */
 static bool event_rule_valid(const struct jg_policy_stats_event_rule *rule)
 {
+    static const uint8_t empty_identity[JG_POLICY_RULE_IDENTITY_SIZE] = {0};
+
     return (rule->dimension == JG_POLICY_STATS_DOMAIN ||
             rule->dimension == JG_POLICY_STATS_DESTINATION) &&
            rule->rule_id != 0U && rule->rule_id <= INT64_MAX &&
+           memcmp(rule->statistics_id, empty_identity,
+                  sizeof(empty_identity)) != 0 &&
            rule->decision != rule->shadowed &&
            (!rule->enforced_block || rule->would_block) &&
            (!rule->allow_decision ||
@@ -211,6 +215,9 @@ static size_t prepare_database_batch(
                 .allow_decision = rule->allow_decision,
                 .shadowed = rule->shadowed,
             };
+            (void)memcpy(collector->rules[rule_count].statistics_id,
+                         rule->statistics_id,
+                         sizeof(collector->rules[rule_count].statistics_id));
             ++rule_count;
         }
     }

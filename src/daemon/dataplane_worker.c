@@ -229,12 +229,14 @@ static int monotonic_milliseconds(uint64_t *milliseconds)
 }
 
 /** @brief Append one selected or shadowed rule to a bounded event. */
-static void append_stats_rule(struct jg_policy_stats_event *event,
-                              enum jg_policy_stats_dimension dimension,
-                              uint64_t rule_id,
-                              enum jg_policy_effect effect,
-                              bool decision,
-                              bool enforced)
+static void append_stats_rule(
+    struct jg_policy_stats_event *event,
+    enum jg_policy_stats_dimension dimension,
+    uint64_t rule_id,
+    const uint8_t statistics_id[static JG_POLICY_RULE_IDENTITY_SIZE],
+    enum jg_policy_effect effect,
+    bool decision,
+    bool enforced)
 {
     struct jg_policy_stats_event_rule *rule = &event->rules[event->rule_count];
 
@@ -247,6 +249,8 @@ static void append_stats_rule(struct jg_policy_stats_event *event,
         .allow_decision = enforced && effect == JG_POLICY_ALLOW,
         .shadowed = !decision,
     };
+    (void)memcpy(rule->statistics_id, statistics_id,
+                 sizeof(rule->statistics_id));
     ++event->rule_count;
 }
 
@@ -261,10 +265,12 @@ static void append_domain_stats(struct jg_policy_stats_event *event,
         return;
     }
     append_stats_rule(event, JG_POLICY_STATS_DOMAIN, match->rule_id,
-                      match->configured_effect, true, same_rule);
+                      match->statistics_id, match->configured_effect, true,
+                      same_rule);
     if (match->enforcing_matched && !same_rule) {
-        append_stats_rule(event, JG_POLICY_STATS_DOMAIN,
-                          match->enforcing_rule_id, match->effect, false, true);
+        append_stats_rule(
+            event, JG_POLICY_STATS_DOMAIN, match->enforcing_rule_id,
+            match->enforcing_statistics_id, match->effect, false, true);
     }
 }
 
@@ -280,10 +286,12 @@ static void append_destination_stats(
         return;
     }
     append_stats_rule(event, JG_POLICY_STATS_DESTINATION, match->rule_id,
-                      match->configured_effect, true, same_rule);
+                      match->statistics_id, match->configured_effect, true,
+                      same_rule);
     if (match->enforcing_matched && !same_rule) {
-        append_stats_rule(event, JG_POLICY_STATS_DESTINATION,
-                          match->enforcing_rule_id, match->effect, false, true);
+        append_stats_rule(
+            event, JG_POLICY_STATS_DESTINATION, match->enforcing_rule_id,
+            match->enforcing_statistics_id, match->effect, false, true);
     }
 }
 

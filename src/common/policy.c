@@ -18,6 +18,7 @@
 /** Rule representation used only while constructing a snapshot. */
 struct build_rule {
     uint64_t id;
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     char *domain;
     char *attribution;
     bool include_subdomains;
@@ -31,6 +32,7 @@ struct build_rule {
 /** Destination-rule representation used while constructing a snapshot. */
 struct build_destination_rule {
     uint64_t id;
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     char *attribution;
     enum jg_policy_effect effect;
     enum jg_policy_enforcement enforcement;
@@ -48,6 +50,7 @@ struct build_destination_rule {
 /** Compact rule representation retained by an immutable snapshot. */
 struct stored_rule {
     uint64_t id;
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     uint32_t domain_offset;
     uint32_t attribution_offset;
     uint8_t priority;
@@ -62,6 +65,7 @@ struct stored_rule {
 /** Compact destination rule retained by an immutable snapshot. */
 struct stored_destination_rule {
     uint64_t id;
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     uint32_t attribution_offset;
     uint8_t priority;
     enum jg_policy_effect effect;
@@ -463,6 +467,8 @@ static int prepare_rules(const struct jg_policy_rule_input *input,
         source_size = source_length + 1U;
 
         build[index].id = input[index].id;
+        (void)memcpy(build[index].statistics_id, input[index].statistics_id,
+                     sizeof(build[index].statistics_id));
         build[index].domain = packed + cursor;
         (void)memcpy(build[index].domain, normalized, domain_size);
         cursor += domain_size;
@@ -620,6 +626,8 @@ static int prepare_destination_rules(
         const size_t attribution_size = strlen(input[index].attribution) + 1U;
 
         build[index].id = input[index].id;
+        (void)memcpy(build[index].statistics_id, input[index].statistics_id,
+                     sizeof(build[index].statistics_id));
         build[index].effect = input[index].effect;
         build[index].enforcement = input[index].enforcement;
         build[index].source = input[index].source;
@@ -880,6 +888,8 @@ static int snapshot_populate(struct jg_policy_snapshot *snapshot,
         const size_t attribution_size = strlen(rules[index].attribution) + 1U;
 
         stored->id = rules[index].id;
+        (void)memcpy(stored->statistics_id, rules[index].statistics_id,
+                     sizeof(stored->statistics_id));
         stored->domain_offset = (uint32_t)cursor;
         (void)memcpy(snapshot->strings + cursor, rules[index].domain,
                      domain_size);
@@ -986,6 +996,8 @@ static int snapshot_populate_destinations(
         const size_t attribution_size = strlen(rules[index].attribution) + 1U;
 
         stored->id = rules[index].id;
+        (void)memcpy(stored->statistics_id, rules[index].statistics_id,
+                     sizeof(stored->statistics_id));
         stored->attribution_offset = (uint32_t)cursor;
         (void)memcpy(snapshot->destination_strings + cursor,
                      rules[index].attribution, attribution_size);
@@ -1423,6 +1435,8 @@ static int match_domain_target(const struct jg_policy_snapshot *snapshot,
                                     enforcement == JG_POLICY_OBSERVE;
         match->matched = true;
         match->rule_id = selected->id;
+        (void)memcpy(match->statistics_id, selected->statistics_id,
+                     sizeof(match->statistics_id));
         match->source = selected->source;
         match->domain = snapshot->strings + selected->domain_offset;
         match->attribution = snapshot->strings + selected->attribution_offset;
@@ -1431,6 +1445,8 @@ static int match_domain_target(const struct jg_policy_snapshot *snapshot,
         match->effect = enforcing->effect;
         match->enforcing_matched = true;
         match->enforcing_rule_id = enforcing->id;
+        (void)memcpy(match->enforcing_statistics_id, enforcing->statistics_id,
+                     sizeof(match->enforcing_statistics_id));
         match->enforcing_source = enforcing->source;
         match->enforcing_domain = snapshot->strings + enforcing->domain_offset;
         match->enforcing_attribution =
@@ -1573,6 +1589,8 @@ int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
                                     enforcement == JG_POLICY_OBSERVE;
         match->matched = true;
         match->rule_id = selected->id;
+        (void)memcpy(match->statistics_id, selected->statistics_id,
+                     sizeof(match->statistics_id));
         match->source = selected->source;
         match->attribution =
             snapshot->destination_strings + selected->attribution_offset;
@@ -1581,6 +1599,8 @@ int jg_policy_match_destination(const struct jg_policy_snapshot *snapshot,
         match->effect = enforcing->effect;
         match->enforcing_matched = true;
         match->enforcing_rule_id = enforcing->id;
+        (void)memcpy(match->enforcing_statistics_id, enforcing->statistics_id,
+                     sizeof(match->enforcing_statistics_id));
         match->enforcing_source = enforcing->source;
         match->enforcing_attribution =
             snapshot->destination_strings + enforcing->attribution_offset;

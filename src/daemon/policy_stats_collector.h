@@ -33,8 +33,10 @@
 struct jg_policy_stats_event_rule {
     /** Domain or destination rule namespace. */
     enum jg_policy_stats_dimension dimension;
-    /** Stable positive rule identifier. */
+    /** Positive database identifier valid for the sampled policy generation. */
     uint64_t rule_id;
+    /** Immutable identity copied from the matching policy snapshot. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Whether this rule selected its dimension's verdict. */
     bool decision;
     /** Whether this rule would block when enforced. */

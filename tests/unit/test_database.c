@@ -369,6 +369,8 @@ static struct jg_policy_rule_input make_rule(uint64_t id,
 
     (void)memset(&rule, 0, sizeof(rule));
     rule.id = id;
+    rule.statistics_id[0U] = 1U;
+    rule.statistics_id[15U] = (uint8_t)id;
     rule.domain = domain;
     rule.include_subdomains = include_subdomains;
     rule.effect = effect;
@@ -387,6 +389,8 @@ static struct jg_policy_destination_rule_input make_destination_rule(
 
     (void)memset(&rule, 0, sizeof(rule));
     rule.id = id;
+    rule.statistics_id[0U] = 2U;
+    rule.statistics_id[15U] = (uint8_t)id;
     rule.effect = effect;
     rule.source = JG_POLICY_SOURCE_EXPLICIT;
     rule.transport = JG_POLICY_TRANSPORT_ANY;
@@ -667,18 +671,27 @@ static void test_database_export(void **state)
         "zeroblob(32),1,100);"
         "INSERT INTO management_operations(id,kind,state,payload,created_at)"
         " VALUES(1,'test_operation','ready',x'0102',10);"
-        "INSERT INTO policy_rule_stats(dimension,rule_id,match_count,"
+        "INSERT INTO domain_rules(id,domain,match_type,effect,source,"
+        "scope_type,attribution,enabled,updated_at,target,revision,category,"
+        "enforcement,statistics_id) VALUES(1,'example.test','exact','block',"
+        "'explicit','global','database export test',1,10,'dns',1,'',"
+        "'enforce',x'01000000000000000000000000000001');"
+        "INSERT INTO policy_rule_stats(dimension,statistics_id,rule_id,"
+        "match_count,"
         "decision_count,would_block_count,enforced_block_count,"
         "allow_decision_count,shadowed_count,first_hit_at,last_hit_at)"
-        " VALUES('domain',1,3,2,1,1,1,1,10,20);"
+        " VALUES('domain',x'01000000000000000000000000000001',1,3,2,1,1,"
+        "1,1,10,20);"
         "INSERT INTO policy_traffic_stats(id,request_count,matched_count,"
         "would_block_count,enforced_block_count,first_request_at,"
         "last_request_at) VALUES(1,4,3,1,1,10,20);"
-        "INSERT INTO policy_impact_buckets(bucket_start,dimension,rule_id,"
+        "INSERT INTO policy_impact_buckets(bucket_start,dimension,"
+        "statistics_id,rule_id,"
         "path,client_family,client_address,client_mac,vlan_id,domain,"
         "query_type,match_count,decision_count,would_block_count,"
         "enforced_block_count,allow_decision_count,shadowed_count)"
-        " VALUES(0,'domain',1,'dns',4,x'c000020a',x'001122334455',7,"
+        " VALUES(0,'domain',x'01000000000000000000000000000001',1,'dns',4,"
+        "x'c000020a',x'001122334455',7,"
         "'example.test',1,3,2,1,1,1,1);"
         "INSERT INTO policy_traffic_buckets(bucket_start,path,request_count,"
         "matched_count,would_block_count,enforced_block_count)"
@@ -1486,6 +1499,14 @@ static void test_policy_statistics(void **state)
     bool has_more = false;
 
     (void)state;
+    rules[0U].statistics_id[0U] = 1U;
+    rules[0U].statistics_id[15U] = 10U;
+    rules[1U].statistics_id[0U] = 1U;
+    rules[1U].statistics_id[15U] = 10U;
+    rules[2U].statistics_id[0U] = 1U;
+    rules[2U].statistics_id[15U] = 11U;
+    rules[3U].statistics_id[0U] = 2U;
+    rules[3U].statistics_id[15U] = 20U;
     rules[0U].client.has_mac = true;
     rules[0U].client.mac[0U] = 0x02U;
     rules[0U].client.address_family = JG_POLICY_ADDRESS_IPV4;
@@ -1685,6 +1706,7 @@ static void test_policy_analysis(void **state)
                                  JG_POLICY_ALLOW, JG_POLICY_SOURCE_EXPLICIT);
     domain_rules[2U] = domain_rules[0U];
     domain_rules[2U].id = 12U;
+    domain_rules[2U].statistics_id[15U] = 12U;
     domain_rules[3U] = make_rule(13U, "example.org", true, JG_POLICY_ALLOW,
                                  JG_POLICY_SOURCE_EXPLICIT);
     destination_rules[0U] = make_destination_rule(20U, JG_POLICY_BLOCK);
@@ -1692,9 +1714,16 @@ static void test_policy_analysis(void **state)
     destination_rules[0U].port = 443U;
     destination_rules[1U] = destination_rules[0U];
     destination_rules[1U].id = 21U;
+    destination_rules[1U].statistics_id[15U] = 21U;
     destination_rules[2U] = make_destination_rule(22U, JG_POLICY_ALLOW);
     destination_rules[2U].has_port = true;
     destination_rules[2U].port = 443U;
+    (void)memcpy(samples[0U].statistics_id, domain_rules[0U].statistics_id,
+                 sizeof(samples[0U].statistics_id));
+    (void)memcpy(samples[1U].statistics_id, domain_rules[0U].statistics_id,
+                 sizeof(samples[1U].statistics_id));
+    (void)memcpy(samples[2U].statistics_id, destination_rules[0U].statistics_id,
+                 sizeof(samples[2U].statistics_id));
     disabled_input = make_rule(0U, "disabled.example", false, JG_POLICY_BLOCK,
                                JG_POLICY_SOURCE_EXPLICIT);
 
@@ -1845,6 +1874,8 @@ static void test_policy_round_trip(void **state)
     struct jg_policy_match match;
     struct jg_policy_destination_match destination_match;
     struct jg_database *database = NULL;
+    uint8_t domain_statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
+    uint8_t destination_statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     size_t page_count = 0U;
     bool has_more = false;
 
@@ -2004,16 +2035,26 @@ static void test_policy_round_trip(void **state)
     assert_string_equal(created_rule.domain, "new.example");
     assert_false(created_rule.enabled);
     assert_int_equal(created_rule.enforcement, JG_POLICY_OBSERVE);
+    (void)memcpy(domain_statistics_id, created_rule.statistics_id,
+                 sizeof(domain_statistics_id));
     mutable_rule.id = created_rule.id;
-    mutable_rule.domain = "Updated.Example.";
-    mutable_rule.include_subdomains = true;
     mutable_rule.enforcement = JG_POLICY_ENFORCE;
     assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
                                                     true, created_rule.revision,
                                                     &updated_rule),
                      0);
+    assert_memory_equal(updated_rule.statistics_id, domain_statistics_id,
+                        sizeof(domain_statistics_id));
+    mutable_rule.domain = "Updated.Example.";
+    mutable_rule.include_subdomains = true;
+    assert_int_equal(jg_database_update_domain_rule(database, &mutable_rule,
+                                                    true, updated_rule.revision,
+                                                    &updated_rule),
+                     0);
     assert_int_equal(updated_rule.id, created_rule.id);
-    assert_int_equal(updated_rule.revision, 2U);
+    assert_int_equal(updated_rule.revision, 3U);
+    assert_memory_not_equal(updated_rule.statistics_id, domain_statistics_id,
+                            sizeof(domain_statistics_id));
     assert_string_equal(updated_rule.domain, "updated.example");
     assert_true(updated_rule.include_subdomains);
     assert_true(updated_rule.enabled);
@@ -2030,7 +2071,7 @@ static void test_policy_round_trip(void **state)
                                                     created_rule.revision),
                      -EAGAIN);
     assert_int_equal(
-        jg_database_delete_domain_rule(database, created_rule.id, 2U), 0);
+        jg_database_delete_domain_rule(database, created_rule.id, 3U), 0);
     assert_int_equal(
         jg_database_delete_domain_rule(database, created_rule.id, 2U), -ENOENT);
     mutable_rule.id = 1U;
@@ -2056,15 +2097,27 @@ static void test_policy_round_trip(void **state)
     assert_int_equal(created_destination.enforcement, JG_POLICY_OBSERVE);
     assert_true(created_destination.has_address);
     assert_int_equal(created_destination.address[3U], 0U);
+    (void)memcpy(destination_statistics_id, created_destination.statistics_id,
+                 sizeof(destination_statistics_id));
     mutable_destination.id = created_destination.id;
-    mutable_destination.has_port = true;
-    mutable_destination.port = 443U;
     mutable_destination.enforcement = JG_POLICY_ENFORCE;
     assert_int_equal(jg_database_update_destination_rule(
                          database, &mutable_destination, true,
                          created_destination.revision, &updated_destination),
                      0);
-    assert_int_equal(updated_destination.revision, 2U);
+    assert_memory_equal(updated_destination.statistics_id,
+                        destination_statistics_id,
+                        sizeof(destination_statistics_id));
+    mutable_destination.has_port = true;
+    mutable_destination.port = 443U;
+    assert_int_equal(jg_database_update_destination_rule(
+                         database, &mutable_destination, true,
+                         updated_destination.revision, &updated_destination),
+                     0);
+    assert_int_equal(updated_destination.revision, 3U);
+    assert_memory_not_equal(updated_destination.statistics_id,
+                            destination_statistics_id,
+                            sizeof(destination_statistics_id));
     assert_true(updated_destination.enabled);
     assert_true(updated_destination.has_port);
     assert_int_equal(updated_destination.port, 443U);
@@ -2083,7 +2136,7 @@ static void test_policy_round_trip(void **state)
                                             created_destination.revision),
         -EAGAIN);
     assert_int_equal(jg_database_delete_destination_rule(
-                         database, created_destination.id, 2U),
+                         database, created_destination.id, 3U),
                      0);
     assert_int_equal(jg_database_delete_destination_rule(
                          database, created_destination.id, 2U),
@@ -2703,7 +2756,18 @@ static void test_blocklist_activation(void **state)
     struct jg_blocklist *blocklist = NULL;
     struct jg_policy_snapshot *snapshot = NULL;
     struct jg_policy_match match;
+    struct jg_policy_rule_sample sample = {
+        .occurred_at = 100U,
+        .dimension = JG_POLICY_STATS_DOMAIN,
+        .path = JG_POLICY_STATS_DNS,
+        .domain = "alpha.example",
+        .query_type = 1U,
+        .decision = true,
+        .would_block = true,
+    };
+    struct jg_policy_rule_stats statistics;
     struct jg_database *database = NULL;
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     size_t count = 0U;
     bool has_more = false;
 
@@ -2746,6 +2810,31 @@ static void test_blocklist_activation(void **state)
     assert_int_equal(rules[0U].source, JG_POLICY_SOURCE_BLOCKLIST);
     assert_string_equal(rules[1U].domain, "beta.example");
     assert_string_equal(rules[1U].category, "tracking");
+    sample.rule_id = rules[0U].id;
+    (void)memcpy(sample.statistics_id, rules[0U].statistics_id,
+                 sizeof(sample.statistics_id));
+    (void)memcpy(statistics_id, rules[0U].statistics_id, sizeof(statistics_id));
+    assert_int_equal(
+        jg_database_record_policy_stats(database, NULL, 0U, &sample, 1U), 0);
+    remote.last_attempt_at = 150U;
+    remote.last_success_at = 150U;
+    remote.next_attempt_at = 3750U;
+    assert_int_equal(jg_database_activate_blocklist(database, source.id,
+                                                    source.revision, blocklist,
+                                                    &remote, &report),
+                     0);
+    assert_int_equal(jg_database_list_domain_rules(database, 0U, 2U, rules,
+                                                   &count, &has_more),
+                     0);
+    assert_memory_equal(rules[0U].statistics_id, statistics_id,
+                        sizeof(statistics_id));
+    assert_int_equal(
+        jg_database_list_policy_rule_stats(database, JG_POLICY_STATS_DOMAIN, 0U,
+                                           1U, &statistics, &count, &has_more),
+        0);
+    assert_int_equal(count, 1U);
+    assert_int_equal(statistics.rule_id, rules[0U].id);
+    assert_int_equal(statistics.match_count, 1U);
     assert_int_equal(jg_database_list_blocklist_sources(
                          database, 0U, 1U, &updated, &count, &has_more),
                      0);

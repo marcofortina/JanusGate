@@ -134,6 +134,37 @@ static const char preserve_restore_history_data[] =
     "INSERT INTO main.alert_incidents SELECT * FROM retained.alert_incidents;"
     "INSERT INTO main.alert_outbox SELECT * FROM retained.alert_outbox;";
 
+/** Reconcile retained statistics with rules applied by a configuration restore.
+ */
+static const char reconcile_policy_statistics[] =
+    "UPDATE policy_rule_stats SET rule_id=CASE dimension WHEN 'domain' THEN "
+    "(SELECT id FROM domain_rules WHERE statistics_id="
+    "policy_rule_stats.statistics_id) ELSE (SELECT id FROM destination_rules "
+    "WHERE statistics_id=policy_rule_stats.statistics_id) END WHERE EXISTS("
+    "SELECT 1 FROM domain_rules WHERE dimension='domain' AND statistics_id="
+    "policy_rule_stats.statistics_id) OR EXISTS(SELECT 1 FROM "
+    "destination_rules WHERE dimension='destination' AND statistics_id="
+    "policy_rule_stats.statistics_id);"
+    "DELETE FROM policy_rule_stats WHERE NOT EXISTS(SELECT 1 FROM "
+    "domain_rules WHERE dimension='domain' AND statistics_id="
+    "policy_rule_stats.statistics_id) AND NOT EXISTS(SELECT 1 FROM "
+    "destination_rules WHERE dimension='destination' AND statistics_id="
+    "policy_rule_stats.statistics_id);"
+    "UPDATE policy_impact_buckets SET rule_id=CASE dimension WHEN 'domain' "
+    "THEN (SELECT id FROM domain_rules WHERE statistics_id="
+    "policy_impact_buckets.statistics_id) ELSE (SELECT id FROM "
+    "destination_rules WHERE statistics_id="
+    "policy_impact_buckets.statistics_id) END WHERE EXISTS(SELECT 1 FROM "
+    "domain_rules WHERE dimension='domain' AND statistics_id="
+    "policy_impact_buckets.statistics_id) OR EXISTS(SELECT 1 FROM "
+    "destination_rules WHERE dimension='destination' AND statistics_id="
+    "policy_impact_buckets.statistics_id);"
+    "DELETE FROM policy_impact_buckets WHERE NOT EXISTS(SELECT 1 FROM "
+    "domain_rules WHERE dimension='domain' AND statistics_id="
+    "policy_impact_buckets.statistics_id) AND NOT EXISTS(SELECT 1 FROM "
+    "destination_rules WHERE dimension='destination' AND statistics_id="
+    "policy_impact_buckets.statistics_id);";
+
 /** Foundation tables for schema version one. */
 static const char migration_1_foundation[] =
     "CREATE TABLE schema_migrations ("
@@ -1041,6 +1072,192 @@ static const char *const migration_18[] = {
     migration_18_version,
 };
 
+/** Add immutable identities to policy rules and their statistics. */
+static const char migration_19_domain_identity[] =
+    "ALTER TABLE domain_rules RENAME TO domain_rules_v18;"
+    "CREATE TABLE domain_rules("
+    "id INTEGER PRIMARY KEY,"
+    "group_id INTEGER REFERENCES policy_groups(id) ON DELETE CASCADE,"
+    "blocklist_source_id INTEGER REFERENCES blocklist_sources(id) ON DELETE "
+    "CASCADE,"
+    "domain TEXT NOT NULL CHECK(length(domain) BETWEEN 1 AND 253),"
+    "match_type TEXT NOT NULL CHECK(match_type IN ('exact','suffix')),"
+    "effect TEXT NOT NULL CHECK(effect IN ('allow','block')),"
+    "source TEXT NOT NULL CHECK(source IN "
+    "('explicit','blocklist','emergency')),"
+    "scope_type TEXT NOT NULL CHECK(scope_type IN "
+    "('global','mac','ipv4','ipv6','vlan')),"
+    "scope_value BLOB,prefix_length INTEGER,vlan_id INTEGER,"
+    "attribution TEXT NOT NULL CHECK(length(attribution) BETWEEN 1 AND 255),"
+    "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=0),"
+    "target TEXT NOT NULL CHECK(target IN ('dns','tls_sni')),"
+    "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),"
+    "category TEXT NOT NULL DEFAULT '' "
+    "CHECK(length(CAST(category AS BLOB))<=128),"
+    "enforcement TEXT NOT NULL DEFAULT 'enforce' "
+    "CHECK(enforcement IN ('enforce','observe')),"
+    "statistics_id BLOB NOT NULL UNIQUE CHECK(length(statistics_id)=16),"
+    "CHECK((source='blocklist' AND effect='block') OR "
+    "(source='emergency' AND effect='allow') OR source='explicit'),"
+    "CHECK((scope_type='global' AND scope_value IS NULL AND "
+    "prefix_length IS NULL AND vlan_id IS NULL) OR "
+    "(scope_type='mac' AND length(scope_value)=6 AND prefix_length IS NULL "
+    "AND vlan_id IS NULL) OR (scope_type='ipv4' AND length(scope_value)=4 "
+    "AND prefix_length BETWEEN 0 AND 32 AND vlan_id IS NULL) OR "
+    "(scope_type='ipv6' AND length(scope_value)=16 AND prefix_length BETWEEN "
+    "0 AND 128 AND vlan_id IS NULL) OR (scope_type='vlan' AND scope_value IS "
+    "NULL AND prefix_length IS NULL AND vlan_id BETWEEN 0 AND 4094))"
+    ") STRICT;"
+    "INSERT INTO domain_rules(id,group_id,blocklist_source_id,domain,"
+    "match_type,effect,source,scope_type,scope_value,prefix_length,vlan_id,"
+    "attribution,enabled,updated_at,target,revision,category,enforcement,"
+    "statistics_id) SELECT id,group_id,blocklist_source_id,domain,match_type,"
+    "effect,source,scope_type,scope_value,prefix_length,vlan_id,attribution,"
+    "enabled,updated_at,target,revision,category,enforcement,randomblob(16) "
+    "FROM domain_rules_v18;"
+    "DROP TABLE domain_rules_v18;"
+    "CREATE INDEX domain_rules_domain_idx ON domain_rules(domain) WHERE "
+    "enabled=1;";
+
+/** Add immutable identities to destination rules. */
+static const char migration_19_destination_identity[] =
+    "ALTER TABLE destination_rules RENAME TO destination_rules_v18;"
+    "CREATE TABLE destination_rules("
+    "id INTEGER PRIMARY KEY,"
+    "group_id INTEGER REFERENCES policy_groups(id) ON DELETE CASCADE,"
+    "effect TEXT NOT NULL CHECK(effect IN ('allow','block')),"
+    "source TEXT NOT NULL CHECK(source IN "
+    "('explicit','blocklist','emergency')),"
+    "protocol TEXT NOT NULL CHECK(protocol IN ('any','tcp','udp')),"
+    "family INTEGER,address BLOB,prefix_length INTEGER,"
+    "port INTEGER CHECK(port IS NULL OR port BETWEEN 1 AND 65535),"
+    "scope_type TEXT NOT NULL CHECK(scope_type IN "
+    "('global','mac','ipv4','ipv6','vlan')),"
+    "scope_value BLOB,scope_prefix_length INTEGER,scope_vlan_id INTEGER,"
+    "attribution TEXT NOT NULL CHECK(length(attribution) BETWEEN 1 AND 255),"
+    "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),"
+    "updated_at INTEGER NOT NULL CHECK(updated_at>=0),"
+    "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),"
+    "enforcement TEXT NOT NULL DEFAULT 'enforce' "
+    "CHECK(enforcement IN ('enforce','observe')),"
+    "statistics_id BLOB NOT NULL UNIQUE CHECK(length(statistics_id)=16),"
+    "CHECK((source='blocklist' AND effect='block') OR "
+    "(source='emergency' AND effect='allow') OR source='explicit'),"
+    "CHECK(address IS NOT NULL OR port IS NOT NULL),"
+    "CHECK((address IS NULL AND family IS NULL AND prefix_length IS NULL) OR "
+    "(family=4 AND length(address)=4 AND prefix_length BETWEEN 0 AND 32) OR "
+    "(family=6 AND length(address)=16 AND prefix_length BETWEEN 0 AND 128)),"
+    "CHECK((scope_type='global' AND scope_value IS NULL AND "
+    "scope_prefix_length IS NULL AND scope_vlan_id IS NULL) OR "
+    "(scope_type='mac' AND length(scope_value)=6 AND scope_prefix_length IS "
+    "NULL AND scope_vlan_id IS NULL) OR (scope_type='ipv4' AND "
+    "length(scope_value)=4 AND scope_prefix_length BETWEEN 0 AND 32 AND "
+    "scope_vlan_id IS NULL) OR (scope_type='ipv6' AND length(scope_value)=16 "
+    "AND scope_prefix_length BETWEEN 0 AND 128 AND scope_vlan_id IS NULL) OR "
+    "(scope_type='vlan' AND scope_value IS NULL AND scope_prefix_length IS "
+    "NULL AND scope_vlan_id BETWEEN 0 AND 4094))"
+    ") STRICT;"
+    "INSERT INTO destination_rules(id,group_id,effect,source,protocol,family,"
+    "address,prefix_length,port,scope_type,scope_value,scope_prefix_length,"
+    "scope_vlan_id,attribution,enabled,updated_at,revision,enforcement,"
+    "statistics_id) SELECT id,group_id,effect,source,protocol,family,address,"
+    "prefix_length,port,scope_type,scope_value,scope_prefix_length,"
+    "scope_vlan_id,attribution,enabled,updated_at,revision,enforcement,"
+    "randomblob(16) FROM destination_rules_v18;"
+    "DROP TABLE destination_rules_v18;";
+
+/** Re-key existing policy statistics through immutable rule identities. */
+static const char migration_19_lifetime_statistics[] =
+    "ALTER TABLE policy_rule_stats RENAME TO policy_rule_stats_v18;"
+    "CREATE TABLE policy_rule_stats("
+    "dimension TEXT NOT NULL CHECK(dimension IN ('domain','destination')),"
+    "statistics_id BLOB NOT NULL CHECK(length(statistics_id)=16),"
+    "rule_id INTEGER NOT NULL CHECK(rule_id>0),"
+    "match_count INTEGER NOT NULL DEFAULT 0 CHECK(match_count>=0),"
+    "decision_count INTEGER NOT NULL DEFAULT 0 CHECK(decision_count>=0),"
+    "would_block_count INTEGER NOT NULL DEFAULT 0 CHECK(would_block_count>=0),"
+    "enforced_block_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(enforced_block_count>=0),"
+    "allow_decision_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(allow_decision_count>=0),"
+    "shadowed_count INTEGER NOT NULL DEFAULT 0 CHECK(shadowed_count>=0),"
+    "first_hit_at INTEGER NOT NULL CHECK(first_hit_at>=0),"
+    "last_hit_at INTEGER NOT NULL CHECK(last_hit_at>=first_hit_at),"
+    "PRIMARY KEY(dimension,statistics_id)"
+    ") WITHOUT ROWID,STRICT;"
+    "INSERT INTO policy_rule_stats SELECT s.dimension,r.statistics_id,"
+    "s.rule_id,s.match_count,s.decision_count,s.would_block_count,"
+    "s.enforced_block_count,s.allow_decision_count,s.shadowed_count,"
+    "s.first_hit_at,s.last_hit_at FROM policy_rule_stats_v18 s JOIN "
+    "domain_rules r ON s.dimension='domain' AND r.id=s.rule_id UNION ALL "
+    "SELECT s.dimension,r.statistics_id,s.rule_id,s.match_count,"
+    "s.decision_count,s.would_block_count,s.enforced_block_count,"
+    "s.allow_decision_count,s.shadowed_count,s.first_hit_at,s.last_hit_at "
+    "FROM policy_rule_stats_v18 s JOIN destination_rules r ON "
+    "s.dimension='destination' AND r.id=s.rule_id;"
+    "DROP TABLE policy_rule_stats_v18;"
+    "CREATE INDEX policy_rule_stats_rule_idx ON "
+    "policy_rule_stats(dimension,rule_id);";
+
+/** Re-key detailed policy statistics through immutable rule identities. */
+static const char migration_19_detail_statistics[] =
+    "ALTER TABLE policy_impact_buckets RENAME TO policy_impact_buckets_v18;"
+    "CREATE TABLE policy_impact_buckets("
+    "bucket_start INTEGER NOT NULL CHECK(bucket_start>=0 AND "
+    "bucket_start%3600=0),"
+    "dimension TEXT NOT NULL CHECK(dimension IN ('domain','destination')),"
+    "statistics_id BLOB NOT NULL CHECK(length(statistics_id)=16),"
+    "rule_id INTEGER NOT NULL CHECK(rule_id>0),"
+    "path TEXT NOT NULL CHECK(path IN ('dns','tls_sni','destination')),"
+    "client_family INTEGER NOT NULL CHECK(client_family IN (0,4,6)),"
+    "client_address BLOB NOT NULL CHECK((client_family=0 AND "
+    "length(client_address)=0) OR (client_family=4 AND "
+    "length(client_address)=4) OR (client_family=6 AND "
+    "length(client_address)=16)),"
+    "client_mac BLOB NOT NULL CHECK(length(client_mac) IN (0,6)),"
+    "vlan_id INTEGER NOT NULL CHECK(vlan_id BETWEEN -1 AND 4094),"
+    "domain TEXT NOT NULL CHECK(length(domain)<=253),"
+    "query_type INTEGER NOT NULL CHECK(query_type BETWEEN 0 AND 65535),"
+    "match_count INTEGER NOT NULL DEFAULT 0 CHECK(match_count>=0),"
+    "decision_count INTEGER NOT NULL DEFAULT 0 CHECK(decision_count>=0),"
+    "would_block_count INTEGER NOT NULL DEFAULT 0 CHECK(would_block_count>=0),"
+    "enforced_block_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(enforced_block_count>=0),"
+    "allow_decision_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK(allow_decision_count>=0),"
+    "shadowed_count INTEGER NOT NULL DEFAULT 0 CHECK(shadowed_count>=0),"
+    "PRIMARY KEY(bucket_start,dimension,statistics_id,path,client_family,"
+    "client_address,client_mac,vlan_id,domain,query_type)"
+    ") WITHOUT ROWID,STRICT;"
+    "INSERT INTO policy_impact_buckets SELECT s.bucket_start,s.dimension,"
+    "r.statistics_id,s.rule_id,s.path,s.client_family,s.client_address,"
+    "s.client_mac,s.vlan_id,s.domain,s.query_type,s.match_count,"
+    "s.decision_count,s.would_block_count,s.enforced_block_count,"
+    "s.allow_decision_count,s.shadowed_count FROM policy_impact_buckets_v18 s "
+    "JOIN domain_rules r ON s.dimension='domain' AND r.id=s.rule_id UNION ALL "
+    "SELECT s.bucket_start,s.dimension,r.statistics_id,s.rule_id,s.path,"
+    "s.client_family,s.client_address,s.client_mac,s.vlan_id,s.domain,"
+    "s.query_type,s.match_count,s.decision_count,s.would_block_count,"
+    "s.enforced_block_count,s.allow_decision_count,s.shadowed_count FROM "
+    "policy_impact_buckets_v18 s JOIN destination_rules r ON "
+    "s.dimension='destination' AND r.id=s.rule_id;"
+    "DROP TABLE policy_impact_buckets_v18;"
+    "CREATE INDEX policy_impact_rule_time_idx ON policy_impact_buckets("
+    "dimension,rule_id,bucket_start);"
+    "CREATE INDEX policy_impact_time_idx ON "
+    "policy_impact_buckets(bucket_start);"
+    "INSERT INTO schema_migrations(version,applied_at) VALUES(19,unixepoch());"
+    "PRAGMA user_version=19;";
+
+/** Ordered statement groups composing schema version nineteen. */
+static const char *const migration_19[] = {
+    migration_19_domain_identity,
+    migration_19_destination_identity,
+    migration_19_lifetime_statistics,
+    migration_19_detail_statistics,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -1061,6 +1278,7 @@ static const struct database_migration migrations[] = {
     {16U, migration_16, sizeof(migration_16) / sizeof(migration_16[0])},
     {17U, migration_17, sizeof(migration_17) / sizeof(migration_17[0])},
     {18U, migration_18, sizeof(migration_18) / sizeof(migration_18[0])},
+    {19U, migration_19, sizeof(migration_19) / sizeof(migration_19[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */
@@ -1959,6 +2177,10 @@ int jg_database_restore(struct jg_database *database,
     if (result == 0 && report->changes && !dry_run && !include_sensitive) {
         result = preserve_current_tables(replacement, database->handle,
                                          preserve_sensitive_data);
+    }
+    if (result == 0 && report->changes && !dry_run && !include_sensitive) {
+        result =
+            jg_database_execute_sql(replacement, reconcile_policy_statistics);
     }
     if (result == 0 && report->changes && !dry_run) {
         result = replace_database(database->handle, replacement);

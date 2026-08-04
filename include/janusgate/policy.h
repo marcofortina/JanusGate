@@ -28,6 +28,9 @@
 #include "janusgate/domain.h"
 #include "janusgate/version.h"
 
+/** Size in bytes of an immutable persistent rule identity. */
+#define JG_POLICY_RULE_IDENTITY_SIZE 16U
+
 /** Number of bytes in a policy snapshot SHA-256 checksum. */
 #define JG_POLICY_CHECKSUM_SIZE 32U
 
@@ -177,6 +180,8 @@ struct jg_policy_enforcement_config {
 struct jg_policy_rule_input {
     /** Stable nonzero identifier used to explain a verdict. */
     uint64_t id;
+    /** Immutable identity used to associate statistics across row changes. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Optional persistent policy-group identifier. */
     uint64_t group_id;
     /** UTF-8 domain normalized by the builder using IDNA2008. */
@@ -203,6 +208,8 @@ struct jg_policy_rule_input {
 struct jg_policy_destination_rule_input {
     /** Stable nonzero identifier used to explain a verdict. */
     uint64_t id;
+    /** Immutable identity used to associate statistics across row changes. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Optional persistent policy-group identifier. */
     uint64_t group_id;
     /** Allow or block action. */
@@ -300,6 +307,8 @@ struct jg_policy_match {
     bool matched;
     /** Matching rule identifier, or zero for the default action. */
     uint64_t rule_id;
+    /** Immutable identity of the matching rule. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Matching rule origin, or JG_POLICY_SOURCE_DEFAULT. */
     enum jg_policy_source source;
     /** Matched normalized rule domain, or null for the default action. */
@@ -311,6 +320,8 @@ struct jg_policy_match {
     bool enforcing_matched;
     /** Enforcing rule identifier, or zero for the default action. */
     uint64_t enforcing_rule_id;
+    /** Immutable identity of the enforcing rule. */
+    uint8_t enforcing_statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Enforcing rule origin, or JG_POLICY_SOURCE_DEFAULT. */
     enum jg_policy_source enforcing_source;
     /** Enforcing normalized rule domain, or null for default policy. */
@@ -338,6 +349,8 @@ struct jg_policy_destination_match {
     bool matched;
     /** Matching rule identifier, or zero for default policy. */
     uint64_t rule_id;
+    /** Immutable identity of the matching rule. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Matching rule origin, or JG_POLICY_SOURCE_DEFAULT. */
     enum jg_policy_source source;
     /** Matching rule attribution, or null for default policy. */
@@ -347,6 +360,8 @@ struct jg_policy_destination_match {
     bool enforcing_matched;
     /** Enforcing rule identifier, or zero for the default action. */
     uint64_t enforcing_rule_id;
+    /** Immutable identity of the enforcing rule. */
+    uint8_t enforcing_statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Enforcing rule origin, or JG_POLICY_SOURCE_DEFAULT. */
     enum jg_policy_source enforcing_source;
     /** Enforcing rule attribution, or null for default policy. */

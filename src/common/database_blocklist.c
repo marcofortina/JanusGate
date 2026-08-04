@@ -13,6 +13,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include "database_internal.h"
@@ -765,6 +766,26 @@ int jg_database_delete_blocklist_source(struct jg_database *database,
         }
     }
     if (result == 0) {
+        result = jg_database_execute_sql(
+            database->handle,
+            "UPDATE policy_rule_stats SET rule_id=(SELECT r.id FROM "
+            "domain_rules r WHERE r.statistics_id="
+            "policy_rule_stats.statistics_id) WHERE dimension='domain' AND "
+            "EXISTS(SELECT 1 FROM domain_rules r WHERE r.statistics_id="
+            "policy_rule_stats.statistics_id);"
+            "UPDATE policy_impact_buckets SET rule_id=(SELECT r.id FROM "
+            "domain_rules r WHERE r.statistics_id="
+            "policy_impact_buckets.statistics_id) WHERE dimension='domain' "
+            "AND EXISTS(SELECT 1 FROM domain_rules r WHERE r.statistics_id="
+            "policy_impact_buckets.statistics_id);"
+            "DELETE FROM policy_rule_stats WHERE dimension='domain' AND NOT "
+            "EXISTS(SELECT 1 FROM domain_rules r WHERE "
+            "r.statistics_id=policy_rule_stats.statistics_id);"
+            "DELETE FROM policy_impact_buckets WHERE dimension='domain' AND "
+            "NOT EXISTS(SELECT 1 FROM domain_rules r WHERE "
+            "r.statistics_id=policy_impact_buckets.statistics_id);");
+    }
+    if (result == 0) {
         result = jg_database_transaction_commit(database);
     } else {
         (void)jg_database_transaction_rollback(database);
@@ -838,6 +859,10 @@ static int insert_blocklist_entry(sqlite3_stmt *statement,
                                   const char *attribution,
                                   const struct jg_blocklist_entry *entry)
 {
+    uint8_t identity_input[sizeof(source_id) + JG_DOMAIN_NAME_MAX];
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
+    size_t domain_size = strlen(entry->domain);
+    size_t index = 0U;
     int status = sqlite3_reset(statement);
     int result = jg_database_sqlite_result(status);
 
@@ -867,9 +892,62 @@ static int insert_blocklist_entry(sqlite3_stmt *statement,
         status = sqlite3_bind_int64(statement, 5, (sqlite3_int64)updated_at);
         result = jg_database_sqlite_result(status);
     }
+    for (index = 0U; index < sizeof(source_id); ++index) {
+        identity_input[index] =
+            (uint8_t)(source_id >> ((sizeof(source_id) - index - 1U) * 8U));
+    }
+    (void)memcpy(identity_input + sizeof(source_id), entry->domain,
+                 domain_size);
+    if (result == 0 &&
+        crypto_generichash(statistics_id, sizeof(statistics_id), identity_input,
+                           sizeof(source_id) + domain_size, NULL, 0U) != 0) {
+        result = -EIO;
+    }
+    if (result == 0) {
+        status = sqlite3_bind_blob(statement, 6, statistics_id,
+                                   sizeof(statistics_id), SQLITE_TRANSIENT);
+        result = jg_database_sqlite_result(status);
+    }
     if (result == 0) {
         status = sqlite3_step(statement);
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    return result;
+}
+
+/** @brief Retain rule identities while one source is atomically refreshed. */
+static int stage_blocklist_rule_identities(sqlite3 *handle, uint64_t source_id)
+{
+    static const char insert[] =
+        "INSERT INTO temp.blocklist_rule_identities(domain,statistics_id) "
+        "SELECT domain,statistics_id FROM domain_rules WHERE "
+        "blocklist_source_id=?1;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int result = jg_database_execute_sql(
+        handle, "DROP TABLE IF EXISTS temp.blocklist_rule_identities;"
+                "CREATE TEMP TABLE blocklist_rule_identities("
+                "domain TEXT PRIMARY KEY,statistics_id BLOB NOT NULL "
+                "CHECK(length(statistics_id)=16)) WITHOUT ROWID,STRICT;");
+
+    if (result == 0) {
+        status = sqlite3_prepare_v3(
+            handle, insert, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)source_id);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
     }
     return result;
 }
@@ -972,9 +1050,10 @@ int jg_database_activate_blocklist(
     static const char insert[] =
         "INSERT INTO domain_rules("
         "blocklist_source_id,domain,match_type,effect,source,scope_type,"
-        "attribution,enabled,updated_at,target,category"
+        "attribution,enabled,updated_at,target,category,statistics_id"
         ") VALUES(?1,?2,'suffix','block','blocklist','global',?3,1,?5,'dns',"
-        "?4);";
+        "?4,coalesce((SELECT statistics_id FROM "
+        "temp.blocklist_rule_identities WHERE domain=?2),?6));";
     static const char remove[] =
         "DELETE FROM domain_rules WHERE blocklist_source_id=?1;";
     struct jg_blocklist_info info;
@@ -982,6 +1061,7 @@ int jg_database_activate_blocklist(
     sqlite3_stmt *remove_statement = NULL;
     size_t index = 0U;
     uint64_t revision = 0U;
+    bool identities_staged = false;
     int status = SQLITE_OK;
     int result = 0;
 
@@ -999,6 +1079,10 @@ int jg_database_activate_blocklist(
     }
     if (result == 0 && revision != expected_revision) {
         result = -EAGAIN;
+    }
+    if (result == 0) {
+        result = stage_blocklist_rule_identities(database->handle, source_id);
+        identities_staged = result == 0;
     }
     if (result == 0) {
         status = sqlite3_prepare_v3(database->handle, remove, -1,
@@ -1035,6 +1119,26 @@ int jg_database_activate_blocklist(
         result = store_blocklist_success(database->handle, source_id, state,
                                          &info, report);
     }
+    if (result == 0) {
+        result = jg_database_execute_sql(
+            database->handle,
+            "UPDATE policy_rule_stats SET rule_id=(SELECT r.id FROM "
+            "domain_rules r WHERE r.statistics_id="
+            "policy_rule_stats.statistics_id) WHERE dimension='domain' AND "
+            "EXISTS(SELECT 1 FROM domain_rules r WHERE r.statistics_id="
+            "policy_rule_stats.statistics_id);"
+            "UPDATE policy_impact_buckets SET rule_id=(SELECT r.id FROM "
+            "domain_rules r WHERE r.statistics_id="
+            "policy_impact_buckets.statistics_id) WHERE dimension='domain' "
+            "AND EXISTS(SELECT 1 FROM domain_rules r WHERE r.statistics_id="
+            "policy_impact_buckets.statistics_id);"
+            "DELETE FROM policy_rule_stats WHERE dimension='domain' AND NOT "
+            "EXISTS(SELECT 1 FROM domain_rules r WHERE "
+            "r.statistics_id=policy_rule_stats.statistics_id);"
+            "DELETE FROM policy_impact_buckets WHERE dimension='domain' AND "
+            "NOT EXISTS(SELECT 1 FROM domain_rules r WHERE "
+            "r.statistics_id=policy_impact_buckets.statistics_id);");
+    }
     if (insert_statement != NULL) {
         status = sqlite3_finalize(insert_statement);
         if (result == 0) {
@@ -1045,6 +1149,15 @@ int jg_database_activate_blocklist(
         status = sqlite3_finalize(remove_statement);
         if (result == 0) {
             result = jg_database_sqlite_result(status);
+        }
+    }
+    if (identities_staged) {
+        const int drop_result = jg_database_execute_sql(
+            database->handle,
+            "DROP TABLE IF EXISTS temp.blocklist_rule_identities;");
+
+        if (result == 0) {
+            result = drop_result;
         }
     }
     if (result == 0) {

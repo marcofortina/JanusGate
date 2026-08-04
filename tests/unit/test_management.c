@@ -780,6 +780,7 @@ static void test_policy_analysis_api(void **state)
     json_t *value = NULL;
 
     domain_rules[0U].id = 1U;
+    domain_rules[0U].statistics_id[0U] = 1U;
     domain_rules[0U].domain = "example.org";
     domain_rules[0U].include_subdomains = true;
     domain_rules[0U].effect = JG_POLICY_BLOCK;
@@ -788,12 +789,14 @@ static void test_policy_analysis_api(void **state)
     domain_rules[0U].scope.type = JG_POLICY_SCOPE_GLOBAL;
     domain_rules[0U].attribution = "staged domain policy";
     domain_rules[1U].id = 2U;
+    domain_rules[1U].statistics_id[0U] = 2U;
     domain_rules[1U].domain = "safe.example.org";
     domain_rules[1U].effect = JG_POLICY_ALLOW;
     domain_rules[1U].source = JG_POLICY_SOURCE_EXPLICIT;
     domain_rules[1U].scope.type = JG_POLICY_SCOPE_GLOBAL;
     domain_rules[1U].attribution = "local exception";
     destination_rule.id = 3U;
+    destination_rule.statistics_id[0U] = 3U;
     destination_rule.effect = JG_POLICY_BLOCK;
     destination_rule.enforcement = JG_POLICY_OBSERVE;
     destination_rule.source = JG_POLICY_SOURCE_EXPLICIT;
@@ -803,6 +806,7 @@ static void test_policy_analysis_api(void **state)
     destination_rule.scope.type = JG_POLICY_SCOPE_GLOBAL;
     destination_rule.attribution = "staged destination policy";
     sample.client.address_family = JG_POLICY_ADDRESS_IPV4;
+    sample.statistics_id[0U] = 1U;
     sample.client.address[0U] = 192U;
     sample.client.address[1U] = 0U;
     sample.client.address[2U] = 2U;
@@ -921,6 +925,7 @@ static void test_policy_statistics_api(void **state)
         .occurred_at = 3600U,
         .dimension = JG_POLICY_STATS_DOMAIN,
         .rule_id = 1U,
+        .statistics_id = {1U},
         .path = JG_POLICY_STATS_DNS,
         .domain = "expired.example",
         .query_type = 1U,

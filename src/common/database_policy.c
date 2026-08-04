@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include "database_internal.h"
@@ -116,6 +117,35 @@ static void canonical_network(uint8_t *output,
         (void)memset(output + first_clear_byte, 0,
                      address_size - first_clear_byte);
     }
+}
+
+/** @brief Test whether a persistent statistics identity is unset. */
+static bool statistics_id_empty(
+    const uint8_t identity[JG_POLICY_RULE_IDENTITY_SIZE])
+{
+    static const uint8_t empty[JG_POLICY_RULE_IDENTITY_SIZE] = {0};
+
+    return sodium_memcmp(identity, empty, sizeof(empty)) == 0;
+}
+
+/** @brief Assign a cryptographically random persistent statistics identity. */
+static void assign_statistics_id(uint8_t identity[JG_POLICY_RULE_IDENTITY_SIZE])
+{
+    randombytes_buf(identity, JG_POLICY_RULE_IDENTITY_SIZE);
+}
+
+/** @brief Bind one initialized persistent statistics identity. */
+static int bind_statistics_id(
+    sqlite3_stmt *statement,
+    int parameter,
+    const uint8_t identity[static JG_POLICY_RULE_IDENTITY_SIZE])
+{
+    if (statistics_id_empty(identity)) {
+        return -EINVAL;
+    }
+    return jg_database_sqlite_result(
+        sqlite3_bind_blob(statement, parameter, identity,
+                          JG_POLICY_RULE_IDENTITY_SIZE, SQLITE_TRANSIENT));
 }
 
 /** @brief Validate a complete replacement rule set before opening a
@@ -283,8 +313,8 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         "INSERT INTO domain_rules("
         "id,domain,match_type,effect,source,scope_type,scope_value,"
         "prefix_length,vlan_id,attribution,enabled,updated_at,target,"
-        "enforcement,group_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,"
-        "unixepoch(),?11,?12,?13);";
+        "enforcement,group_id,statistics_id) VALUES(?1,?2,?3,?4,?5,?6,?7,"
+        "?8,?9,?10,1,unixepoch(),?11,?12,?13,?14);";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     int status;
@@ -298,8 +328,11 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
-        result = jg_database_execute_sql(database->handle,
-                                         "DELETE FROM domain_rules;");
+        result = jg_database_execute_sql(
+            database->handle,
+            "DELETE FROM policy_rule_stats WHERE dimension='domain';"
+            "DELETE FROM policy_impact_buckets WHERE dimension='domain';"
+            "DELETE FROM domain_rules;");
     }
     if (result == 0) {
         status =
@@ -308,7 +341,16 @@ int jg_database_replace_domain_rules(struct jg_database *database,
         result = jg_database_sqlite_result(status);
     }
     for (index = 0U; result == 0 && index < rule_count; ++index) {
-        result = bind_domain_rule(statement, &rules[index]);
+        struct jg_policy_rule_input persistent = rules[index];
+
+        if (statistics_id_empty(persistent.statistics_id)) {
+            assign_statistics_id(persistent.statistics_id);
+        }
+        result = bind_domain_rule(statement, &persistent);
+        if (result == 0) {
+            result =
+                bind_statistics_id(statement, 14, persistent.statistics_id);
+        }
         if (result == 0) {
             status = sqlite3_step(statement);
             result =
@@ -445,9 +487,9 @@ int jg_database_replace_destination_rules(
         "INSERT INTO destination_rules("
         "id,effect,source,protocol,family,address,prefix_length,port,"
         "scope_type,scope_value,scope_prefix_length,scope_vlan_id,"
-        "attribution,enabled,updated_at,enforcement,group_id"
+        "attribution,enabled,updated_at,enforcement,group_id,statistics_id"
         ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1,"
-        "unixepoch(),?14,?15);";
+        "unixepoch(),?14,?15,?16);";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
     int status = SQLITE_OK;
@@ -461,8 +503,12 @@ int jg_database_replace_destination_rules(
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
-        result = jg_database_execute_sql(database->handle,
-                                         "DELETE FROM destination_rules;");
+        result = jg_database_execute_sql(
+            database->handle,
+            "DELETE FROM policy_rule_stats WHERE dimension='destination';"
+            "DELETE FROM policy_impact_buckets WHERE "
+            "dimension='destination';"
+            "DELETE FROM destination_rules;");
     }
     if (result == 0) {
         status =
@@ -471,7 +517,16 @@ int jg_database_replace_destination_rules(
         result = jg_database_sqlite_result(status);
     }
     for (index = 0U; result == 0 && index < rule_count; ++index) {
-        result = bind_destination_rule(statement, &rules[index]);
+        struct jg_policy_destination_rule_input persistent = rules[index];
+
+        if (statistics_id_empty(persistent.statistics_id)) {
+            assign_statistics_id(persistent.statistics_id);
+        }
+        result = bind_destination_rule(statement, &persistent);
+        if (result == 0) {
+            result =
+                bind_statistics_id(statement, 16, persistent.statistics_id);
+        }
         if (result == 0) {
             status = sqlite3_step(statement);
             result =
@@ -721,6 +776,15 @@ static int decode_domain_rule(sqlite3_stmt *statement,
                                                       &rule->group_id);
     }
     if (result == 0 &&
+        (sqlite3_column_type(statement, 13) != SQLITE_BLOB ||
+         sqlite3_column_bytes(statement, 13) != JG_POLICY_RULE_IDENTITY_SIZE)) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        (void)memcpy(rule->statistics_id, sqlite3_column_blob(statement, 13),
+                     sizeof(rule->statistics_id));
+    }
+    if (result == 0 &&
         (!jg_range_valid(*cursor, domain_length + 1U, strings_size) ||
          !jg_range_valid(*cursor + domain_length + 1U, attribution_length + 1U,
                          strings_size))) {
@@ -858,6 +922,15 @@ static int decode_destination_rule(
                                                       &rule->group_id);
     }
     if (result == 0 &&
+        (sqlite3_column_type(statement, 15) != SQLITE_BLOB ||
+         sqlite3_column_bytes(statement, 15) != JG_POLICY_RULE_IDENTITY_SIZE)) {
+        result = -EILSEQ;
+    }
+    if (result == 0) {
+        (void)memcpy(rule->statistics_id, sqlite3_column_blob(statement, 15),
+                     sizeof(rule->statistics_id));
+    }
+    if (result == 0 &&
         !jg_range_valid(*cursor, attribution_length + 1U, strings_size)) {
         result = -EOVERFLOW;
     }
@@ -917,18 +990,18 @@ static int decode_domain_record(sqlite3_stmt *statement,
         decode_domain_rule(statement, &rule, strings, sizeof(strings), &cursor);
     if (result == 0) {
         result = jg_database_column_optional_unsigned(
-            statement, 13, &record->blocklist_source_id);
+            statement, 14, &record->blocklist_source_id);
     }
     if (result == 0) {
-        result = decode_rule_metadata(statement, 14, 15, 16, &record->enabled,
+        result = decode_rule_metadata(statement, 15, 16, 17, &record->enabled,
                                       &record->updated_at, &record->revision);
     }
-    if (result == 0 && sqlite3_column_type(statement, 17) != SQLITE_TEXT) {
+    if (result == 0 && sqlite3_column_type(statement, 18) != SQLITE_TEXT) {
         result = -EILSEQ;
     }
     if (result == 0) {
         result = jg_database_column_optional_text(
-            statement, 17, record->category, sizeof(record->category));
+            statement, 18, record->category, sizeof(record->category));
     }
     if (result == 0 && !jg_utf8_text_valid((const uint8_t *)record->category,
                                            strlen(record->category), true)) {
@@ -936,6 +1009,8 @@ static int decode_domain_record(sqlite3_stmt *statement,
     }
     if (result == 0) {
         record->id = rule.id;
+        (void)memcpy(record->statistics_id, rule.statistics_id,
+                     sizeof(record->statistics_id));
         record->group_id = rule.group_id;
         record->include_subdomains = rule.include_subdomains;
         record->effect = rule.effect;
@@ -965,11 +1040,13 @@ static int decode_destination_record(
     result = decode_destination_rule(statement, &rule, strings, sizeof(strings),
                                      &cursor);
     if (result == 0) {
-        result = decode_rule_metadata(statement, 15, 16, 17, &record->enabled,
+        result = decode_rule_metadata(statement, 16, 17, 18, &record->enabled,
                                       &record->updated_at, &record->revision);
     }
     if (result == 0) {
         record->id = rule.id;
+        (void)memcpy(record->statistics_id, rule.statistics_id,
+                     sizeof(record->statistics_id));
         record->group_id = rule.group_id;
         record->effect = rule.effect;
         record->enforcement = rule.enforcement;
@@ -999,7 +1076,8 @@ int jg_database_list_domain_rules(struct jg_database *database,
     static const char query[] =
         "SELECT id,domain,match_type,effect,source,scope_type,scope_value,"
         "prefix_length,vlan_id,attribution,target,enforcement,group_id,"
-        "blocklist_source_id,enabled,updated_at,revision,category FROM "
+        "statistics_id,blocklist_source_id,enabled,updated_at,revision,"
+        "category FROM "
         "domain_rules WHERE id>?1 ORDER BY id LIMIT ?2;";
     sqlite3_stmt *statement = NULL;
     size_t index = 0U;
@@ -1088,6 +1166,105 @@ static int read_domain_record(struct jg_database *database,
     return result;
 }
 
+/** @brief Compare canonical policy scopes without depending on padding. */
+static bool scope_equal(const struct jg_policy_scope *left,
+                        const struct jg_policy_scope *right)
+{
+    if (left->type != right->type) {
+        return false;
+    }
+    switch (left->type) {
+    case JG_POLICY_SCOPE_GLOBAL:
+        return true;
+    case JG_POLICY_SCOPE_MAC:
+        return sodium_memcmp(left->value.mac, right->value.mac,
+                             sizeof(left->value.mac)) == 0;
+    case JG_POLICY_SCOPE_IPV4:
+        return left->value.network.prefix_length ==
+                   right->value.network.prefix_length &&
+               sodium_memcmp(left->value.network.address,
+                             right->value.network.address, 4U) == 0;
+    case JG_POLICY_SCOPE_IPV6:
+        return left->value.network.prefix_length ==
+                   right->value.network.prefix_length &&
+               sodium_memcmp(left->value.network.address,
+                             right->value.network.address, 16U) == 0;
+    case JG_POLICY_SCOPE_VLAN:
+        return left->value.vlan_id == right->value.vlan_id;
+    default:
+        return false;
+    }
+}
+
+/** @brief Test whether a domain update preserves rule matching semantics. */
+static bool domain_semantics_equal(
+    const struct jg_database_domain_rule *current,
+    const struct jg_policy_rule_input *replacement)
+{
+    char normalized[JG_DOMAIN_NAME_MAX + 1U];
+    struct jg_policy_scope scope;
+
+    return jg_domain_normalize(replacement->domain, normalized,
+                               sizeof(normalized)) == 0 &&
+           jg_policy_scope_normalize(&replacement->scope, &scope) == 0 &&
+           strcmp(current->domain, normalized) == 0 &&
+           current->include_subdomains == replacement->include_subdomains &&
+           current->effect == replacement->effect &&
+           current->source == replacement->source &&
+           current->target == replacement->target &&
+           current->group_id == replacement->group_id &&
+           scope_equal(&current->scope, &scope);
+}
+
+/** @brief Remove aggregates belonging to one retired rule identity. */
+static int delete_rule_statistics(
+    struct jg_database *database,
+    const char *dimension,
+    const uint8_t identity[static JG_POLICY_RULE_IDENTITY_SIZE])
+{
+    static const char *const queries[] = {
+        "DELETE FROM policy_rule_stats WHERE dimension=?1 AND "
+        "statistics_id=?2;",
+        "DELETE FROM policy_impact_buckets WHERE dimension=?1 AND "
+        "statistics_id=?2;",
+    };
+    size_t index = 0U;
+    int result = 0;
+
+    for (index = 0U; result == 0 && index < 2U; ++index) {
+        sqlite3_stmt *statement = NULL;
+        int status =
+            sqlite3_prepare_v3(database->handle, queries[index], -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+
+        result = jg_database_sqlite_result(status);
+        if (result == 0) {
+            status =
+                sqlite3_bind_text(statement, 1, dimension, -1, SQLITE_STATIC);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_blob(statement, 2, identity,
+                                       JG_POLICY_RULE_IDENTITY_SIZE,
+                                       SQLITE_TRANSIENT);
+        }
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+        if (result == 0) {
+            status = sqlite3_step(statement);
+            result =
+                status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+        }
+        if (statement != NULL) {
+            status = sqlite3_finalize(statement);
+            if (result == 0) {
+                result = jg_database_sqlite_result(status);
+            }
+        }
+    }
+    return result;
+}
+
 /** @brief Create one persistent domain rule with an assigned identifier. */
 int jg_database_create_domain_rule(struct jg_database *database,
                                    const struct jg_policy_rule_input *rule,
@@ -1098,9 +1275,10 @@ int jg_database_create_domain_rule(struct jg_database *database,
         "INSERT INTO domain_rules("
         "id,domain,match_type,effect,source,scope_type,scope_value,"
         "prefix_length,vlan_id,attribution,enabled,updated_at,target,"
-        "enforcement,group_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?14,"
-        "unixepoch(),?11,?12,?13);";
+        "enforcement,group_id,statistics_id) VALUES(?1,?2,?3,?4,?5,?6,?7,"
+        "?8,?9,?10,?14,unixepoch(),?11,?12,?13,?15);";
     struct jg_database_domain_rule record;
+    struct jg_policy_rule_input persistent;
     sqlite3_stmt *statement = NULL;
     sqlite3_int64 identifier = 0;
     int status = SQLITE_OK;
@@ -1112,6 +1290,10 @@ int jg_database_create_domain_rule(struct jg_database *database,
     (void)memset(created, 0, sizeof(*created));
     result = validate_domain_rule(rule, true);
     if (result == 0) {
+        persistent = *rule;
+        assign_statistics_id(persistent.statistics_id);
+    }
+    if (result == 0) {
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
@@ -1121,11 +1303,14 @@ int jg_database_create_domain_rule(struct jg_database *database,
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        result = bind_domain_rule(statement, rule);
+        result = bind_domain_rule(statement, &persistent);
     }
     if (result == 0) {
         status = sqlite3_bind_int(statement, 14, enabled ? 1 : 0);
         result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_statistics_id(statement, 15, persistent.statistics_id);
     }
     if (result == 0) {
         status = sqlite3_step(statement);
@@ -1170,10 +1355,13 @@ int jg_database_update_domain_rule(struct jg_database *database,
         "UPDATE domain_rules SET domain=?2,match_type=?3,effect=?4,source=?5,"
         "scope_type=?6,scope_value=?7,prefix_length=?8,vlan_id=?9,"
         "attribution=?10,target=?11,enforcement=?12,group_id=?13,enabled=?14,"
-        "updated_at=unixepoch(),revision=revision+1 WHERE id=?1 AND "
-        "revision=?15"
+        "statistics_id=?16,updated_at=unixepoch(),revision=revision+1 WHERE "
+        "id=?1 AND revision=?15"
         " AND revision<9223372036854775807;";
+    struct jg_database_domain_rule current;
     struct jg_database_domain_rule record;
+    struct jg_policy_rule_input persistent;
+    bool semantics_changed = false;
     sqlite3_stmt *statement = NULL;
     int status = SQLITE_OK;
     int result = 0;
@@ -1188,13 +1376,26 @@ int jg_database_update_domain_rule(struct jg_database *database,
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
+        result = read_domain_record(database, rule->id, &current);
+    }
+    if (result == 0) {
+        persistent = *rule;
+        semantics_changed = !domain_semantics_equal(&current, rule);
+        if (semantics_changed) {
+            assign_statistics_id(persistent.statistics_id);
+        } else {
+            (void)memcpy(persistent.statistics_id, current.statistics_id,
+                         sizeof(persistent.statistics_id));
+        }
+    }
+    if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, update, -1,
                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        result = bind_domain_rule(statement, rule);
+        result = bind_domain_rule(statement, &persistent);
     }
     if (result == 0) {
         status = sqlite3_bind_int(statement, 14, enabled ? 1 : 0);
@@ -1203,6 +1404,9 @@ int jg_database_update_domain_rule(struct jg_database *database,
                                         (sqlite3_int64)expected_revision);
         }
         result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_statistics_id(statement, 16, persistent.statistics_id);
     }
     if (result == 0) {
         status = sqlite3_step(statement);
@@ -1217,6 +1421,10 @@ int jg_database_update_domain_rule(struct jg_database *database,
         if (result == 0) {
             result = jg_database_sqlite_result(status);
         }
+    }
+    if (result == 0 && semantics_changed) {
+        result =
+            delete_rule_statistics(database, "domain", current.statistics_id);
     }
     if (result == 0) {
         result = read_domain_record(database, rule->id, &record);
@@ -1242,6 +1450,7 @@ int jg_database_delete_domain_rule(struct jg_database *database,
     static const char remove[] =
         "DELETE FROM domain_rules WHERE id=?1 AND revision=?2;";
     sqlite3_stmt *statement = NULL;
+    struct jg_database_domain_rule current;
     int status = SQLITE_OK;
     int result = 0;
 
@@ -1250,6 +1459,9 @@ int jg_database_delete_domain_rule(struct jg_database *database,
         return -EINVAL;
     }
     result = jg_database_transaction_begin(database);
+    if (result == 0) {
+        result = read_domain_record(database, rule_id, &current);
+    }
     if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, remove, -1,
@@ -1279,6 +1491,10 @@ int jg_database_delete_domain_rule(struct jg_database *database,
         }
     }
     if (result == 0) {
+        result =
+            delete_rule_statistics(database, "domain", current.statistics_id);
+    }
+    if (result == 0) {
         result = jg_database_transaction_commit(database);
     } else {
         (void)jg_database_transaction_rollback(database);
@@ -1299,7 +1515,8 @@ int jg_database_list_destination_rules(
         "SELECT r.id,r.effect,r.source,r.protocol,r.family,r.address,"
         "r.prefix_length,r.port,r.scope_type,r.scope_value,"
         "r.scope_prefix_length,r.scope_vlan_id,r.attribution,"
-        "r.enforcement,r.group_id,r.enabled,r.updated_at,r.revision FROM "
+        "r.enforcement,r.group_id,r.statistics_id,r.enabled,r.updated_at,"
+        "r.revision FROM "
         "destination_rules AS r WHERE r.id>?1"
         " ORDER BY r.id LIMIT ?2;";
     sqlite3_stmt *statement = NULL;
@@ -1390,6 +1607,42 @@ static int read_destination_record(struct jg_database *database,
     return result;
 }
 
+/** @brief Test whether a destination update preserves matching semantics. */
+static bool destination_semantics_equal(
+    const struct jg_database_destination_rule *current,
+    const struct jg_policy_destination_rule_input *replacement)
+{
+    struct jg_policy_scope scope;
+    uint8_t address[16U] = {0};
+    size_t address_size = 0U;
+
+    if (jg_policy_scope_normalize(&replacement->scope, &scope) != 0 ||
+        current->effect != replacement->effect ||
+        current->source != replacement->source ||
+        current->transport != replacement->transport ||
+        current->has_address != replacement->has_address ||
+        current->has_port != replacement->has_port ||
+        current->group_id != replacement->group_id ||
+        !scope_equal(&current->scope, &scope)) {
+        return false;
+    }
+    if (replacement->has_port && current->port != replacement->port) {
+        return false;
+    }
+    if (!replacement->has_address) {
+        return true;
+    }
+    if (current->address_family != replacement->address_family ||
+        current->prefix_length != replacement->prefix_length) {
+        return false;
+    }
+    address_size =
+        replacement->address_family == JG_POLICY_ADDRESS_IPV4 ? 4U : 16U;
+    canonical_network(address, replacement->address, address_size,
+                      replacement->prefix_length);
+    return sodium_memcmp(current->address, address, address_size) == 0;
+}
+
 /** @brief Create one destination rule with an assigned identifier. */
 int jg_database_create_destination_rule(
     struct jg_database *database,
@@ -1401,10 +1654,11 @@ int jg_database_create_destination_rule(
         "INSERT INTO destination_rules("
         "id,effect,source,protocol,family,address,prefix_length,port,"
         "scope_type,scope_value,scope_prefix_length,scope_vlan_id,"
-        "attribution,enabled,updated_at,enforcement,group_id"
+        "attribution,enabled,updated_at,enforcement,group_id,statistics_id"
         ") VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?16,"
-        "unixepoch(),?14,?15);";
+        "unixepoch(),?14,?15,?17);";
     struct jg_database_destination_rule record;
+    struct jg_policy_destination_rule_input persistent;
     sqlite3_stmt *statement = NULL;
     sqlite3_int64 identifier = 0;
     int status = SQLITE_OK;
@@ -1416,6 +1670,10 @@ int jg_database_create_destination_rule(
     (void)memset(created, 0, sizeof(*created));
     result = validate_destination_rule(rule, true);
     if (result == 0) {
+        persistent = *rule;
+        assign_statistics_id(persistent.statistics_id);
+    }
+    if (result == 0) {
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
@@ -1425,11 +1683,14 @@ int jg_database_create_destination_rule(
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        result = bind_destination_rule(statement, rule);
+        result = bind_destination_rule(statement, &persistent);
     }
     if (result == 0) {
         status = sqlite3_bind_int(statement, 16, enabled ? 1 : 0);
         result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_statistics_id(statement, 17, persistent.statistics_id);
     }
     if (result == 0) {
         status = sqlite3_step(statement);
@@ -1476,10 +1737,13 @@ int jg_database_update_destination_rule(
         "family=?5,address=?6,prefix_length=?7,port=?8,scope_type=?9,"
         "scope_value=?10,scope_prefix_length=?11,scope_vlan_id=?12,"
         "attribution=?13,enforcement=?14,group_id=?15,enabled=?16,"
-        "updated_at=unixepoch(),revision=revision+1 WHERE id=?1 AND "
-        "revision=?17"
+        "statistics_id=?18,updated_at=unixepoch(),revision=revision+1 WHERE "
+        "id=?1 AND revision=?17"
         " AND revision<9223372036854775807;";
+    struct jg_database_destination_rule current;
     struct jg_database_destination_rule record;
+    struct jg_policy_destination_rule_input persistent;
+    bool semantics_changed = false;
     sqlite3_stmt *statement = NULL;
     int status = SQLITE_OK;
     int result = 0;
@@ -1494,13 +1758,26 @@ int jg_database_update_destination_rule(
         result = jg_database_transaction_begin(database);
     }
     if (result == 0) {
+        result = read_destination_record(database, rule->id, &current);
+    }
+    if (result == 0) {
+        persistent = *rule;
+        semantics_changed = !destination_semantics_equal(&current, rule);
+        if (semantics_changed) {
+            assign_statistics_id(persistent.statistics_id);
+        } else {
+            (void)memcpy(persistent.statistics_id, current.statistics_id,
+                         sizeof(persistent.statistics_id));
+        }
+    }
+    if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, update, -1,
                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        result = bind_destination_rule(statement, rule);
+        result = bind_destination_rule(statement, &persistent);
     }
     if (result == 0) {
         status = sqlite3_bind_int(statement, 16, enabled ? 1 : 0);
@@ -1509,6 +1786,9 @@ int jg_database_update_destination_rule(
                                         (sqlite3_int64)expected_revision);
         }
         result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        result = bind_statistics_id(statement, 18, persistent.statistics_id);
     }
     if (result == 0) {
         status = sqlite3_step(statement);
@@ -1523,6 +1803,10 @@ int jg_database_update_destination_rule(
         if (result == 0) {
             result = jg_database_sqlite_result(status);
         }
+    }
+    if (result == 0 && semantics_changed) {
+        result = delete_rule_statistics(database, "destination",
+                                        current.statistics_id);
     }
     if (result == 0) {
         result = read_destination_record(database, rule->id, &record);
@@ -1548,6 +1832,7 @@ int jg_database_delete_destination_rule(struct jg_database *database,
     static const char remove[] =
         "DELETE FROM destination_rules WHERE id=?1 AND revision=?2;";
     sqlite3_stmt *statement = NULL;
+    struct jg_database_destination_rule current;
     int status = SQLITE_OK;
     int result = 0;
 
@@ -1556,6 +1841,9 @@ int jg_database_delete_destination_rule(struct jg_database *database,
         return -EINVAL;
     }
     result = jg_database_transaction_begin(database);
+    if (result == 0) {
+        result = read_destination_record(database, rule_id, &current);
+    }
     if (result == 0) {
         status =
             sqlite3_prepare_v3(database->handle, remove, -1,
@@ -1583,6 +1871,10 @@ int jg_database_delete_destination_rule(struct jg_database *database,
         if (result == 0) {
             result = jg_database_sqlite_result(status);
         }
+    }
+    if (result == 0) {
+        result = delete_rule_statistics(database, "destination",
+                                        current.statistics_id);
     }
     if (result == 0) {
         result = jg_database_transaction_commit(database);
@@ -1730,7 +2022,8 @@ static int read_domain_rules(sqlite3 *handle,
         "SELECT r.id,r.domain,r.match_type,r.effect,r.source,r.scope_type,"
         "r.scope_value,r.prefix_length,r.vlan_id,r.attribution,r.target,"
         "CASE WHEN r.enforcement='observe' OR s.enforcement='observe' OR "
-        "g.enforcement='observe' THEN 'observe' ELSE 'enforce' END,r.group_id"
+        "g.enforcement='observe' THEN 'observe' ELSE 'enforce' END,r.group_id,"
+        "r.statistics_id"
         " FROM domain_rules AS r LEFT JOIN blocklist_sources AS s"
         " ON s.id=r.blocklist_source_id LEFT JOIN policy_groups AS g"
         " ON g.id=r.group_id WHERE r.enabled=1"
@@ -1787,7 +2080,8 @@ static int read_destination_rules(
         "r.prefix_length,r.port,r.scope_type,r.scope_value,"
         "r.scope_prefix_length,r.scope_vlan_id,r.attribution,"
         "CASE WHEN r.enforcement='observe' OR g.enforcement='observe' THEN "
-        "'observe' ELSE 'enforce' END,r.group_id FROM destination_rules AS r "
+        "'observe' ELSE 'enforce' END,r.group_id,r.statistics_id FROM "
+        "destination_rules AS r "
         "LEFT JOIN policy_groups AS g ON g.id=r.group_id WHERE r.enabled=1 "
         "AND (r.group_id IS NULL OR g.enabled=1) "
         "ORDER BY r.id;";

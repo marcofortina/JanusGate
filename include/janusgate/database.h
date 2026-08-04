@@ -36,7 +36,7 @@
 #include "janusgate/version.h"
 
 /** Current persistent schema version. */
-#define JG_DATABASE_SCHEMA_VERSION 18U
+#define JG_DATABASE_SCHEMA_VERSION 19U
 
 /** Largest accepted SQLite busy timeout in milliseconds. */
 #define JG_DATABASE_BUSY_TIMEOUT_MAX 60000U
@@ -293,6 +293,8 @@ struct jg_database_policy_group {
 struct jg_database_domain_rule {
     /** Stable positive rule identifier. */
     uint64_t id;
+    /** Immutable identity used by persistent statistics. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Optional persistent policy-group identifier. */
     uint64_t group_id;
     /** Owning blocklist source identifier, or zero for manual rules. */
@@ -329,6 +331,8 @@ struct jg_database_domain_rule {
 struct jg_database_destination_rule {
     /** Stable positive rule identifier. */
     uint64_t id;
+    /** Immutable identity used by persistent statistics. */
+    uint8_t statistics_id[JG_POLICY_RULE_IDENTITY_SIZE];
     /** Optional persistent policy-group identifier. */
     uint64_t group_id;
     /** Monotonic optimistic-concurrency revision. */

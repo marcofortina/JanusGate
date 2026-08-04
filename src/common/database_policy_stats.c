@@ -82,6 +82,7 @@ static bool traffic_sample_valid(const struct jg_policy_traffic_sample *sample)
 /** @brief Validate one matching-rule impact sample. */
 static bool rule_sample_valid(const struct jg_policy_rule_sample *sample)
 {
+    static const uint8_t empty_identity[JG_POLICY_RULE_IDENTITY_SIZE] = {0};
     const bool domain_dimension =
         sample != NULL && sample->dimension == JG_POLICY_STATS_DOMAIN;
     const bool destination_dimension =
@@ -89,6 +90,8 @@ static bool rule_sample_valid(const struct jg_policy_rule_sample *sample)
 
     if (sample == NULL || (!domain_dimension && !destination_dimension) ||
         sample->rule_id == 0U || sample->rule_id > POLICY_STATS_COUNTER_MAX ||
+        memcmp(sample->statistics_id, empty_identity, sizeof(empty_identity)) ==
+            0 ||
         sample->occurred_at > POLICY_STATS_COUNTER_MAX ||
         path_text(sample->path) == NULL || !client_valid(&sample->client) ||
         sample->domain == NULL || sample->decision == sample->shadowed ||
@@ -194,25 +197,30 @@ static int bind_rule(sqlite3_stmt *lifetime,
 
     if (status == SQLITE_OK) {
         status =
-            sqlite3_bind_int64(lifetime, 2, (sqlite3_int64)sample->rule_id);
+            sqlite3_bind_blob(lifetime, 2, sample->statistics_id,
+                              sizeof(sample->statistics_id), SQLITE_TRANSIENT);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(lifetime, 3, sample->decision ? 1 : 0);
+        status =
+            sqlite3_bind_int64(lifetime, 3, (sqlite3_int64)sample->rule_id);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(lifetime, 4, sample->would_block ? 1 : 0);
+        status = sqlite3_bind_int(lifetime, 4, sample->decision ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(lifetime, 5, sample->enforced_block ? 1 : 0);
+        status = sqlite3_bind_int(lifetime, 5, sample->would_block ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(lifetime, 6, sample->allow_decision ? 1 : 0);
+        status = sqlite3_bind_int(lifetime, 6, sample->enforced_block ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(lifetime, 7, sample->shadowed ? 1 : 0);
+        status = sqlite3_bind_int(lifetime, 7, sample->allow_decision ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int64(lifetime, 8, occurred_at);
+        status = sqlite3_bind_int(lifetime, 8, sample->shadowed ? 1 : 0);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_int64(lifetime, 9, occurred_at);
     }
     if (status == SQLITE_OK) {
         status = sqlite3_bind_int64(detail, 1, bucket_start);
@@ -221,46 +229,51 @@ static int bind_rule(sqlite3_stmt *lifetime,
         status = sqlite3_bind_text(detail, 2, dimension, -1, SQLITE_STATIC);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int64(detail, 3, (sqlite3_int64)sample->rule_id);
+        status =
+            sqlite3_bind_blob(detail, 3, sample->statistics_id,
+                              sizeof(sample->statistics_id), SQLITE_TRANSIENT);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_text(detail, 4, path, -1, SQLITE_STATIC);
+        status = sqlite3_bind_int64(detail, 4, (sqlite3_int64)sample->rule_id);
+    }
+    if (status == SQLITE_OK) {
+        status = sqlite3_bind_text(detail, 5, path, -1, SQLITE_STATIC);
     }
     if (status == SQLITE_OK) {
         status =
-            sqlite3_bind_int(detail, 5, (int)sample->client.address_family);
+            sqlite3_bind_int(detail, 6, (int)sample->client.address_family);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_blob(detail, 6, address, address_size,
+        status = sqlite3_bind_blob(detail, 7, address, address_size,
                                    SQLITE_TRANSIENT);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_blob(detail, 7, mac, mac_size, SQLITE_TRANSIENT);
+        status = sqlite3_bind_blob(detail, 8, mac, mac_size, SQLITE_TRANSIENT);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 8, vlan_id);
+        status = sqlite3_bind_int(detail, 9, vlan_id);
     }
     if (status == SQLITE_OK) {
         status =
-            sqlite3_bind_text(detail, 9, sample->domain, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(detail, 10, sample->domain, -1, SQLITE_TRANSIENT);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 10, (int)sample->query_type);
+        status = sqlite3_bind_int(detail, 11, (int)sample->query_type);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 11, sample->decision ? 1 : 0);
+        status = sqlite3_bind_int(detail, 12, sample->decision ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 12, sample->would_block ? 1 : 0);
+        status = sqlite3_bind_int(detail, 13, sample->would_block ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 13, sample->enforced_block ? 1 : 0);
+        status = sqlite3_bind_int(detail, 14, sample->enforced_block ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 14, sample->allow_decision ? 1 : 0);
+        status = sqlite3_bind_int(detail, 15, sample->allow_decision ? 1 : 0);
     }
     if (status == SQLITE_OK) {
-        status = sqlite3_bind_int(detail, 15, sample->shadowed ? 1 : 0);
+        status = sqlite3_bind_int(detail, 16, sample->shadowed ? 1 : 0);
     }
     return jg_database_sqlite_result(status);
 }
@@ -320,11 +333,13 @@ int jg_database_record_policy_stats(
         "AND enforced_block_count<9223372036854775807 THEN "
         "enforced_block_count+1 ELSE enforced_block_count END;";
     static const char rule_lifetime[] =
-        "INSERT INTO policy_rule_stats(dimension,rule_id,match_count,"
+        "INSERT INTO policy_rule_stats(dimension,statistics_id,rule_id,"
+        "match_count,"
         "decision_count,would_block_count,enforced_block_count,"
         "allow_decision_count,shadowed_count,first_hit_at,last_hit_at) VALUES("
-        "?1,?2,1,?3,?4,?5,?6,?7,?8,?8) ON CONFLICT(dimension,rule_id) DO "
-        "UPDATE SET match_count=CASE WHEN match_count<9223372036854775807 "
+        "?1,?2,?3,1,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(dimension,"
+        "statistics_id) DO UPDATE SET rule_id=excluded.rule_id,"
+        "match_count=CASE WHEN match_count<9223372036854775807 "
         "THEN match_count+1 ELSE match_count END,decision_count=CASE WHEN "
         "excluded.decision_count=1 AND decision_count<9223372036854775807 "
         "THEN decision_count+1 ELSE decision_count END,would_block_count=CASE "
@@ -341,12 +356,14 @@ int jg_database_record_policy_stats(
         "first_hit_at,excluded.first_hit_at),last_hit_at=max(last_hit_at,"
         "excluded.last_hit_at);";
     static const char rule_detail[] =
-        "INSERT INTO policy_impact_buckets(bucket_start,dimension,rule_id,"
-        "path,client_family,client_address,client_mac,vlan_id,domain,"
+        "INSERT INTO policy_impact_buckets(bucket_start,dimension,"
+        "statistics_id,rule_id,path,client_family,client_address,client_mac,"
+        "vlan_id,domain,"
         "query_type,match_count,decision_count,would_block_count,"
         "enforced_block_count,allow_decision_count,shadowed_count) VALUES(?1,"
-        "?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11,?12,?13,?14,?15) ON CONFLICT "
-        "DO UPDATE SET match_count=CASE WHEN match_count<9223372036854775807 "
+        "?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?13,?14,?15,?16) ON "
+        "CONFLICT DO UPDATE SET rule_id=excluded.rule_id,match_count=CASE "
+        "WHEN match_count<9223372036854775807 "
         "THEN match_count+1 ELSE match_count END,decision_count=CASE WHEN "
         "excluded.decision_count=1 AND decision_count<9223372036854775807 "
         "THEN decision_count+1 ELSE decision_count END,would_block_count=CASE "
