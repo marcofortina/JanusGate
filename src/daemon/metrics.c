@@ -13,7 +13,7 @@
 #include "janusgate/checked.h"
 
 /** Number of stable metrics emitted from one runtime snapshot. */
-#define METRIC_COUNT 46U
+#define METRIC_COUNT 48U
 
 /** Number of scalar management metrics emitted after runtime counters. */
 #define MANAGEMENT_METRIC_COUNT 15U
@@ -109,6 +109,10 @@ static const struct metric_descriptor metrics[METRIC_COUNT] = {
      "Policy decisions accepted by the statistics collector."},
     {"janusgate_policy_stats_dropped_total", "counter",
      "Policy decisions discarded without delaying traffic."},
+    {"janusgate_policy_stats_dropped_during_restore_total", "counter",
+     "Policy decisions discarded while a database restore was quiesced."},
+    {"janusgate_policy_stats_stale_generation_dropped_total", "counter",
+     "Policy decisions discarded after their policy generation expired."},
     {"janusgate_policy_stats_recorded_requests_total", "counter",
      "Policy request samples committed to persistent statistics."},
     {"janusgate_policy_stats_recorded_rules_total", "counter",
@@ -218,11 +222,13 @@ static void collect_values(const struct jg_daemon_runtime_stats *stats,
     values[38U] = stats->dataplane.dns_sinkholed;
     values[39U] = stats->policy_stats.submitted;
     values[40U] = stats->policy_stats.dropped;
-    values[41U] = stats->policy_stats.recorded_requests;
-    values[42U] = stats->policy_stats.recorded_rules;
-    values[43U] = stats->policy_stats.write_failures;
-    values[44U] = stats->policy_stats.cleanup_batches;
-    values[45U] = stats->policy_stats.cleanup_failures;
+    values[41U] = stats->policy_stats.restore_dropped;
+    values[42U] = stats->policy_stats.stale_generation_dropped;
+    values[43U] = stats->policy_stats.recorded_requests;
+    values[44U] = stats->policy_stats.recorded_rules;
+    values[45U] = stats->policy_stats.write_failures;
+    values[46U] = stats->policy_stats.cleanup_batches;
+    values[47U] = stats->policy_stats.cleanup_failures;
 }
 
 /** @brief Copy scalar management counters into stable metric order. */

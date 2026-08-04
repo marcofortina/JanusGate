@@ -44,6 +44,8 @@ enum jg_dataplane_reason {
  * @brief Complete result of one stateless packet evaluation.
  */
 struct jg_dataplane_result {
+    /** Immutable policy generation used for this decision. */
+    uint64_t policy_generation;
     /** Final immediate kernel verdict. */
     enum jg_nfqueue_verdict verdict;
     /** Stable explanation class. */

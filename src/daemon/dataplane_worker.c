@@ -314,6 +314,7 @@ static void submit_policy_stats(struct jg_dataplane_worker *worker,
         return;
     }
     event.occurred_at = (uint64_t)occurred_at;
+    event.policy_generation = result->policy_generation;
     event.path = result->policy_path;
     event.client = result->client;
     event.query_type = result->query_type;

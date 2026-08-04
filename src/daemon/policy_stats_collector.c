@@ -37,6 +37,8 @@
 struct atomic_collector_stats {
     atomic_uint_fast64_t submitted;
     atomic_uint_fast64_t dropped;
+    atomic_uint_fast64_t restore_dropped;
+    atomic_uint_fast64_t stale_generation_dropped;
     atomic_uint_fast64_t recorded_requests;
     atomic_uint_fast64_t recorded_rules;
     atomic_uint_fast64_t write_failures;
@@ -60,10 +62,14 @@ struct jg_policy_stats_collector {
     size_t head;
     size_t count;
     uint64_t next_cleanup_at;
+    uint64_t generation;
     bool mutex_initialized;
     bool condition_initialized;
     bool started;
     bool stopping;
+    bool paused;
+    bool restore_pause;
+    bool writer_active;
 };
 
 /** @brief Add to one relaxed counter while saturating at UINT64_MAX. */
@@ -89,6 +95,8 @@ static void initialize_stats(struct atomic_collector_stats *stats)
 {
     atomic_init(&stats->submitted, 0U);
     atomic_init(&stats->dropped, 0U);
+    atomic_init(&stats->restore_dropped, 0U);
+    atomic_init(&stats->stale_generation_dropped, 0U);
     atomic_init(&stats->recorded_requests, 0U);
     atomic_init(&stats->recorded_rules, 0U);
     atomic_init(&stats->write_failures, 0U);
@@ -144,7 +152,8 @@ static bool event_valid(const struct jg_policy_stats_event *event)
 {
     size_t index = 0U;
 
-    if (event == NULL || event->occurred_at > INT64_MAX ||
+    if (event == NULL || event->policy_generation == 0U ||
+        event->occurred_at > INT64_MAX ||
         event->rule_count > JG_POLICY_STATS_EVENT_RULE_MAX ||
         !event_path_valid(event) || !event_client_valid(&event->client) ||
         (event->would_block && !event->matched) ||
@@ -280,11 +289,20 @@ static void run_cleanup(struct jg_policy_stats_collector *collector,
 /** @brief Wait for queued work, a stop request, or the retention deadline. */
 static void wait_for_work(struct jg_policy_stats_collector *collector)
 {
-    while (collector->count == 0U && !collector->stopping) {
+    while ((collector->count == 0U || collector->paused) &&
+           !collector->stopping) {
         const time_t current = time(NULL);
         struct timespec deadline;
         int status = 0;
 
+        if (collector->paused) {
+            status =
+                pthread_cond_wait(&collector->condition, &collector->mutex);
+            if (status != 0) {
+                return;
+            }
+            continue;
+        }
         if (current < 0 || (uint64_t)current >= collector->next_cleanup_at) {
             return;
         }
@@ -308,6 +326,7 @@ static void *collector_main(void *context)
     for (;;) {
         size_t event_count = 0U;
         bool stopping = false;
+        bool cleanup_due = false;
         const int status = pthread_mutex_lock(&collector->mutex);
 
         if (status != 0) {
@@ -315,21 +334,34 @@ static void *collector_main(void *context)
             return NULL;
         }
         wait_for_work(collector);
-        event_count = drain_batch(collector);
+        if (!collector->paused) {
+            const time_t current = time(NULL);
+
+            event_count = drain_batch(collector);
+            cleanup_due =
+                current < 0 || (uint64_t)current >= collector->next_cleanup_at;
+        }
         stopping = collector->stopping;
+        collector->writer_active = event_count != 0U || cleanup_due;
         (void)pthread_mutex_unlock(&collector->mutex);
 
         if (event_count != 0U) {
             write_batch(collector, event_count);
         }
-        if (!stopping) {
+        if (!stopping && cleanup_due) {
             const time_t current = time(NULL);
 
-            if (current >= 0 &&
-                (uint64_t)current >= collector->next_cleanup_at) {
+            if (current >= 0) {
                 run_cleanup(collector, (uint64_t)current);
             }
         }
+        if (pthread_mutex_lock(&collector->mutex) != 0) {
+            atomic_saturating_add(&collector->stats.write_failures, 1U);
+            return NULL;
+        }
+        collector->writer_active = false;
+        (void)pthread_cond_broadcast(&collector->condition);
+        (void)pthread_mutex_unlock(&collector->mutex);
         if (stopping && event_count == 0U) {
             return NULL;
         }
@@ -340,6 +372,7 @@ static void *collector_main(void *context)
 int jg_policy_stats_collector_create(
     struct jg_database *database,
     size_t capacity,
+    uint64_t initial_generation,
     struct jg_policy_stats_collector **collector)
 {
     struct jg_policy_stats_collector *created = NULL;
@@ -351,7 +384,7 @@ int jg_policy_stats_collector_create(
     }
     *collector = NULL;
     if (database == NULL || capacity < JG_POLICY_STATS_QUEUE_MIN ||
-        capacity > JG_POLICY_STATS_QUEUE_MAX) {
+        initial_generation == 0U || capacity > JG_POLICY_STATS_QUEUE_MAX) {
         return -EINVAL;
     }
     created = calloc(1U, sizeof(*created));
@@ -359,6 +392,7 @@ int jg_policy_stats_collector_create(
         return -ENOMEM;
     }
     created->capacity = capacity;
+    created->generation = initial_generation;
     created->batch_capacity = capacity < POLICY_STATS_WRITE_BATCH
                                   ? capacity
                                   : POLICY_STATS_WRITE_BATCH;
@@ -433,6 +467,8 @@ int jg_policy_stats_collector_submit(
     const struct jg_policy_stats_event *event)
 {
     size_t tail = 0U;
+    bool restore_drop = false;
+    bool stale_drop = false;
     int status = 0;
     int result = 0;
 
@@ -450,6 +486,13 @@ int jg_policy_stats_collector_submit(
     }
     if (!collector->started || collector->stopping) {
         result = -ECANCELED;
+    } else if (collector->paused) {
+        result = -ECANCELED;
+        restore_drop = collector->restore_pause;
+        stale_drop = !collector->restore_pause;
+    } else if (event->policy_generation != collector->generation) {
+        result = -ESTALE;
+        stale_drop = true;
     } else if (collector->count == collector->capacity) {
         result = -EAGAIN;
     } else {
@@ -462,7 +505,88 @@ int jg_policy_stats_collector_submit(
     status = pthread_mutex_unlock(&collector->mutex);
     if (result != 0) {
         atomic_saturating_add(&collector->stats.dropped, 1U);
+        if (restore_drop) {
+            atomic_saturating_add(&collector->stats.restore_dropped, 1U);
+        }
+        if (stale_drop) {
+            atomic_saturating_add(&collector->stats.stale_generation_dropped,
+                                  1U);
+        }
     }
+    return result == 0 && status != 0 ? -status : result;
+}
+
+/** @brief Quiesce the writer and discard queued events at a policy boundary. */
+int jg_policy_stats_collector_pause(struct jg_policy_stats_collector *collector,
+                                    bool restore)
+{
+    size_t discarded = 0U;
+    int status = 0;
+    int result = 0;
+
+    if (collector == NULL) {
+        return -EINVAL;
+    }
+    status = pthread_mutex_lock(&collector->mutex);
+    if (status != 0) {
+        return -status;
+    }
+    if (!collector->started || collector->stopping) {
+        result = -ECANCELED;
+    } else if (collector->paused) {
+        result = -EALREADY;
+    } else {
+        collector->paused = true;
+        collector->restore_pause = restore;
+        discarded = collector->count;
+        collector->head = 0U;
+        collector->count = 0U;
+        atomic_saturating_add(&collector->stats.dropped, discarded);
+        if (restore) {
+            atomic_saturating_add(&collector->stats.restore_dropped, discarded);
+        } else {
+            atomic_saturating_add(&collector->stats.stale_generation_dropped,
+                                  discarded);
+        }
+        (void)pthread_cond_broadcast(&collector->condition);
+        while (status == 0 && collector->writer_active) {
+            status =
+                pthread_cond_wait(&collector->condition, &collector->mutex);
+        }
+        if (status != 0) {
+            result = -status;
+        }
+    }
+    status = pthread_mutex_unlock(&collector->mutex);
+    return result == 0 && status != 0 ? -status : result;
+}
+
+/** @brief Resume collection for exactly one published policy generation. */
+int jg_policy_stats_collector_resume(
+    struct jg_policy_stats_collector *collector,
+    uint64_t generation)
+{
+    int status = 0;
+    int result = 0;
+
+    if (collector == NULL || generation == 0U) {
+        return -EINVAL;
+    }
+    status = pthread_mutex_lock(&collector->mutex);
+    if (status != 0) {
+        return -status;
+    }
+    if (!collector->started || collector->stopping) {
+        result = -ECANCELED;
+    } else if (!collector->paused) {
+        result = -EALREADY;
+    } else {
+        collector->generation = generation;
+        collector->paused = false;
+        collector->restore_pause = false;
+        (void)pthread_cond_broadcast(&collector->condition);
+    }
+    status = pthread_mutex_unlock(&collector->mutex);
     return result == 0 && status != 0 ? -status : result;
 }
 
@@ -535,6 +659,10 @@ int jg_policy_stats_collector_get_stats(
         atomic_load_explicit(&collector->stats.submitted, memory_order_relaxed);
     stats->dropped =
         atomic_load_explicit(&collector->stats.dropped, memory_order_relaxed);
+    stats->restore_dropped = atomic_load_explicit(
+        &collector->stats.restore_dropped, memory_order_relaxed);
+    stats->stale_generation_dropped = atomic_load_explicit(
+        &collector->stats.stale_generation_dropped, memory_order_relaxed);
     stats->recorded_requests = atomic_load_explicit(
         &collector->stats.recorded_requests, memory_order_relaxed);
     stats->recorded_rules = atomic_load_explicit(

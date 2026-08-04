@@ -128,6 +128,14 @@ int management_restore_begin(struct jg_management *management)
             status =
                 pthread_cond_wait(&consistency->available, &consistency->mutex);
         }
+        if (status == 0 && management->runtime != NULL) {
+            const int pause_result =
+                jg_daemon_runtime_pause_policy_statistics(management->runtime);
+
+            if (pause_result != 0) {
+                status = -pause_result;
+            }
+        }
         if (status != 0) {
             consistency->restore_active = false;
             (void)pthread_cond_broadcast(&consistency->available);
@@ -148,6 +156,13 @@ void management_restore_end(struct jg_management *management)
     consistency = management->consistency;
     if (pthread_mutex_lock(&consistency->mutex) != 0) {
         return;
+    }
+    if (management->runtime != NULL &&
+        jg_daemon_runtime_resume_policy_statistics(management->runtime) != 0) {
+        mark_management_degraded(
+            management, MANAGEMENT_DEGRADED_DATABASE_ROLLBACK,
+            "management.statistics_resume",
+            "Policy statistics could not resume after a restore");
     }
     consistency->restore_active = false;
     (void)pthread_cond_broadcast(&consistency->available);

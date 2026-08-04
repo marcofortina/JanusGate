@@ -101,6 +101,7 @@ static void test_collection(void **state)
     char directory[64U];
     char path[512U];
     struct jg_policy_stats_event dns = {
+        .policy_generation = 1U,
         .occurred_at = 7200U,
         .path = JG_POLICY_STATS_DNS,
         .client =
@@ -136,6 +137,7 @@ static void test_collection(void **state)
             },
     };
     struct jg_policy_stats_event tls = {
+        .policy_generation = 1U,
         .occurred_at = 10800U,
         .path = JG_POLICY_STATS_TLS_SNI,
         .client =
@@ -182,7 +184,7 @@ static void test_collection(void **state)
                          database, false, 1U, config.revision, 100U, &config),
                      0);
     assert_int_equal(jg_policy_stats_collector_create(
-                         database, JG_POLICY_STATS_QUEUE_MIN, &collector),
+                         database, JG_POLICY_STATS_QUEUE_MIN, 1U, &collector),
                      0);
     assert_int_equal(jg_policy_stats_collector_submit(collector, &dns),
                      -ECANCELED);
@@ -229,8 +231,8 @@ static void test_collection(void **state)
     assert_int_equal(jg_database_update_policy_stats_config(
                          database, true, 1U, config.revision, 200U, &config),
                      0);
-    assert_int_equal(jg_policy_stats_collector_create(database, 8U, &collector),
-                     0);
+    assert_int_equal(
+        jg_policy_stats_collector_create(database, 8U, 1U, &collector), 0);
     assert_int_equal(jg_policy_stats_collector_start(collector), 0);
     wait_for_cleanup(collector);
     assert_int_equal(jg_policy_stats_collector_request_stop(collector), 0);
@@ -248,10 +250,11 @@ static void test_collection(void **state)
         jg_database_load_policy_traffic_stats(database, &traffic_stats), 0);
     assert_int_equal(traffic_stats.request_count, 3U);
 
-    assert_int_equal(jg_policy_stats_collector_create(NULL, 8U, &collector),
+    assert_int_equal(jg_policy_stats_collector_create(NULL, 8U, 1U, &collector),
                      -EINVAL);
-    assert_int_equal(jg_policy_stats_collector_create(database, 1U, &collector),
-                     -EINVAL);
+    assert_int_equal(
+        jg_policy_stats_collector_create(database, 1U, 1U, &collector),
+        -EINVAL);
     assert_int_equal(jg_policy_stats_collector_start(NULL), -EINVAL);
     assert_int_equal(jg_policy_stats_collector_request_stop(NULL), -EINVAL);
     assert_int_equal(jg_policy_stats_collector_join(NULL), -EINVAL);
@@ -261,11 +264,69 @@ static void test_collection(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify restore barriers and stale-generation rejection. */
+static void test_generation_barrier(void **state)
+{
+    char directory[64U];
+    char path[512U];
+    struct jg_policy_stats_event event = {
+        .policy_generation = 1U,
+        .occurred_at = 7200U,
+        .path = JG_POLICY_STATS_DNS,
+        .client =
+            {
+                .address_family = JG_POLICY_ADDRESS_IPV4,
+                .address = {192U, 0U, 2U, 20U},
+            },
+        .domain = "generation.example",
+        .query_type = 1U,
+    };
+    struct jg_policy_stats_collector_stats stats;
+    struct jg_policy_stats_collector *collector = NULL;
+    struct jg_database *database = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(
+        jg_policy_stats_collector_create(database, 8U, 1U, &collector), 0);
+    assert_int_equal(jg_policy_stats_collector_start(collector), 0);
+
+    assert_int_equal(jg_policy_stats_collector_pause(collector, true), 0);
+    assert_int_equal(jg_policy_stats_collector_pause(collector, true),
+                     -EALREADY);
+    assert_int_equal(jg_policy_stats_collector_submit(collector, &event),
+                     -ECANCELED);
+    assert_int_equal(jg_policy_stats_collector_resume(collector, 2U), 0);
+    assert_int_equal(jg_policy_stats_collector_resume(collector, 2U),
+                     -EALREADY);
+    assert_int_equal(jg_policy_stats_collector_submit(collector, &event),
+                     -ESTALE);
+    event.policy_generation = 2U;
+    submit_event(collector, &event);
+
+    assert_int_equal(jg_policy_stats_collector_request_stop(collector), 0);
+    assert_int_equal(jg_policy_stats_collector_join(collector), 0);
+    assert_int_equal(jg_policy_stats_collector_get_stats(collector, &stats), 0);
+    assert_int_equal(stats.submitted, 1U);
+    assert_int_equal(stats.dropped, 2U);
+    assert_int_equal(stats.restore_dropped, 1U);
+    assert_int_equal(stats.stale_generation_dropped, 1U);
+    assert_int_equal(stats.recorded_requests, 1U);
+    jg_policy_stats_collector_destroy(collector);
+
+    assert_int_equal(jg_policy_stats_collector_pause(NULL, true), -EINVAL);
+    assert_int_equal(jg_policy_stats_collector_resume(NULL, 1U), -EINVAL);
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Run the asynchronous policy-statistics collector test group. */
 int jg_test_policy_stats_collector(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_collection),
+        cmocka_unit_test(test_generation_barrier),
     };
 
     return cmocka_run_group_tests_name("policy stats collector", tests, NULL,

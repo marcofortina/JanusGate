@@ -422,7 +422,7 @@ int jg_daemon_runtime_prepare(const struct jg_daemon_runtime_config *config,
     if (result == 0) {
         result = jg_policy_stats_collector_create(started->database,
                                                   JG_POLICY_STATS_QUEUE_DEFAULT,
-                                                  &started->policy_stats);
+                                                  1U, &started->policy_stats);
     }
     if (result == 0) {
         result = jg_management_create(
@@ -564,6 +564,7 @@ int jg_daemon_runtime_reload_policy_from_database(
     struct jg_database *database)
 {
     uint64_t generation = 0U;
+    bool resume_collector = false;
     int status = 0;
     int result = 0;
 
@@ -574,11 +575,17 @@ int jg_daemon_runtime_reload_policy_from_database(
     if (status != 0) {
         return -status;
     }
+    result = jg_policy_stats_collector_pause(runtime->policy_stats, false);
+    if (result == 0) {
+        resume_collector = true;
+    } else if (result == -EALREADY || result == -ECANCELED) {
+        result = 0;
+    }
     generation =
         atomic_load_explicit(&runtime->policy_generation, memory_order_acquire);
-    if (generation == UINT64_MAX) {
+    if (result == 0 && generation == UINT64_MAX) {
         result = -EOVERFLOW;
-    } else {
+    } else if (result == 0) {
         ++generation;
         result = jg_policy_store_reload_from_database(runtime->policies,
                                                       database, generation);
@@ -587,11 +594,46 @@ int jg_daemon_runtime_reload_policy_from_database(
                                   memory_order_release);
         }
     }
+    if (resume_collector) {
+        const uint64_t active_generation = atomic_load_explicit(
+            &runtime->policy_generation, memory_order_acquire);
+        const int resume_result = jg_policy_stats_collector_resume(
+            runtime->policy_stats, active_generation);
+
+        if (result == 0) {
+            result = resume_result;
+        }
+    }
     status = pthread_mutex_unlock(&runtime->policy_mutex);
     if (result == 0 && status != 0) {
         result = -status;
     }
     return result;
+}
+
+/** @brief Quiesce asynchronous policy-statistics writes for a restore. */
+int jg_daemon_runtime_pause_policy_statistics(struct jg_daemon_runtime *runtime)
+{
+    int result =
+        runtime == NULL
+            ? -EINVAL
+            : jg_policy_stats_collector_pause(runtime->policy_stats, true);
+
+    return result == -ECANCELED ? 0 : result;
+}
+
+/** @brief Resume statistics for the current immutable policy generation. */
+int jg_daemon_runtime_resume_policy_statistics(
+    struct jg_daemon_runtime *runtime)
+{
+    uint64_t generation = 0U;
+    int result = jg_daemon_runtime_get_policy_generation(runtime, &generation);
+
+    if (result == 0) {
+        result =
+            jg_policy_stats_collector_resume(runtime->policy_stats, generation);
+    }
+    return result == -EALREADY || result == -ECANCELED ? 0 : result;
 }
 
 /** @brief Load and publish the next committed policy generation. */

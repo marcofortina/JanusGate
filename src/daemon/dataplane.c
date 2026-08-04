@@ -22,14 +22,20 @@
 #define VLAN_ID_MAX 4094U
 
 /** @brief Initialize one conservative result before parsing begins. */
-static void initialize_result(struct jg_dataplane_result *result)
+static void initialize_result(struct jg_dataplane_result *result,
+                              const struct jg_policy_snapshot *snapshot)
 {
+    struct jg_policy_snapshot_info info;
+
     (void)memset(result, 0, sizeof(*result));
     result->verdict = JG_NFQUEUE_DROP;
     result->reason = JG_DATAPLANE_MALFORMED;
     result->packet_result = JG_PACKET_MALFORMED;
     result->dns_result = JG_DNS_MALFORMED;
     result->question_index = SIZE_MAX;
+    if (snapshot != NULL && jg_policy_snapshot_get_info(snapshot, &info) == 0) {
+        result->policy_generation = info.generation;
+    }
 }
 
 /** @brief Derive client policy attributes from a validated packet view. */
@@ -196,7 +202,7 @@ int jg_dataplane_evaluate(const uint8_t *frame,
     if (result == NULL) {
         return -EINVAL;
     }
-    initialize_result(result);
+    initialize_result(result, snapshot);
     if (frame == NULL || snapshot == NULL) {
         return -EINVAL;
     }
@@ -273,7 +279,7 @@ int jg_dataplane_evaluate_reassembled_udp(
     if (packet != NULL) {
         packet_copy = *packet;
     }
-    initialize_result(result);
+    initialize_result(result, snapshot);
     if (packet == NULL || payload == NULL || snapshot == NULL ||
         !packet_copy.fragmented ||
         packet_copy.ip_protocol != (uint8_t)JG_TRANSPORT_UDP) {
@@ -321,7 +327,7 @@ int jg_dataplane_evaluate_tcp_dns(const struct jg_packet_view *packet,
     if (packet != NULL) {
         packet_copy = *packet;
     }
-    initialize_result(result);
+    initialize_result(result, snapshot);
     if (packet == NULL || message == NULL || snapshot == NULL ||
         packet_copy.fragmented || packet_copy.transport != JG_TRANSPORT_TCP ||
         packet_copy.ip_protocol != (uint8_t)JG_TRANSPORT_TCP ||
@@ -350,7 +356,7 @@ int jg_dataplane_evaluate_visible_sni(const struct jg_packet_view *packet,
     if (packet != NULL) {
         packet_copy = *packet;
     }
-    initialize_result(result);
+    initialize_result(result, snapshot);
     if (packet == NULL || server_name == NULL || snapshot == NULL ||
         packet_copy.fragmented || packet_copy.transport != JG_TRANSPORT_TCP ||
         packet_copy.ip_protocol != (uint8_t)JG_TRANSPORT_TCP ||

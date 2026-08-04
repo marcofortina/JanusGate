@@ -645,8 +645,8 @@ static void test_policy_statistics(void **state)
     (void)state;
     make_database_path(directory, sizeof(directory), path, sizeof(path));
     assert_int_equal(jg_database_open(path, 1000U, &database), 0);
-    assert_int_equal(jg_policy_stats_collector_create(database, 8U, &collector),
-                     0);
+    assert_int_equal(
+        jg_policy_stats_collector_create(database, 8U, 1U, &collector), 0);
     assert_int_equal(jg_policy_stats_collector_start(collector), 0);
     assert_int_equal(
         jg_dataplane_worker_create(store, 0U, NULL, NULL, NULL, &worker), 0);

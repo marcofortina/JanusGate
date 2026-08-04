@@ -51,6 +51,8 @@ struct jg_policy_stats_event_rule {
 
 /** Self-contained statistic event copied from one packet worker. */
 struct jg_policy_stats_event {
+    /** Immutable policy generation used to produce this event. */
+    uint64_t policy_generation;
     /** Observation time as Unix seconds. */
     uint64_t occurred_at;
     /** Primary inspection path for this packet decision. */
@@ -79,6 +81,10 @@ struct jg_policy_stats_collector_stats {
     uint64_t submitted;
     /** Events discarded without affecting packet verdicts. */
     uint64_t dropped;
+    /** Events discarded while an applied restore held the writer barrier. */
+    uint64_t restore_dropped;
+    /** Events discarded after their policy generation ceased to be active. */
+    uint64_t stale_generation_dropped;
     /** Request samples committed to persistent aggregates. */
     uint64_t recorded_requests;
     /** Rule samples committed to persistent aggregates. */
@@ -99,6 +105,7 @@ struct jg_policy_stats_collector;
  *
  * @param[in] database Open primary database used to create a peer connection.
  * @param[in] capacity Number of queued events.
+ * @param[in] initial_generation First accepted immutable policy generation.
  * @param[out] collector Receives the owned stopped collector.
  *
  * @return 0 on success.
@@ -111,7 +118,22 @@ struct jg_policy_stats_collector;
 int jg_policy_stats_collector_create(
     struct jg_database *database,
     size_t capacity,
+    uint64_t initial_generation,
     struct jg_policy_stats_collector **collector);
+
+/**
+ * @brief Suspend submissions and wait until the database writer is idle.
+ *
+ * Queued events are explicitly discarded so no sample from the old policy
+ * generation can reach a replacement database.
+ */
+int jg_policy_stats_collector_pause(struct jg_policy_stats_collector *collector,
+                                    bool restore);
+
+/** @brief Resume collection for one newly published policy generation. */
+int jg_policy_stats_collector_resume(
+    struct jg_policy_stats_collector *collector,
+    uint64_t generation);
 
 /** @brief Start the single database-writer thread. */
 int jg_policy_stats_collector_start(

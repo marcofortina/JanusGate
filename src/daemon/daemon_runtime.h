@@ -308,6 +308,14 @@ int jg_daemon_runtime_get_policy_generation(
     const struct jg_daemon_runtime *runtime,
     uint64_t *generation);
 
+/** @brief Quiesce policy-statistics writes before an applied restore. */
+int jg_daemon_runtime_pause_policy_statistics(
+    struct jg_daemon_runtime *runtime);
+
+/** @brief Resume policy statistics for the currently published generation. */
+int jg_daemon_runtime_resume_policy_statistics(
+    struct jg_daemon_runtime *runtime);
+
 /**
  * @brief Simulate policy against the currently published snapshot.
  *

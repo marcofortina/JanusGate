@@ -1159,7 +1159,6 @@ int execute_backup_restore_job(struct jg_management *management,
     struct jg_backup_contents contents;
     struct jg_database_restore_report report;
     struct jg_database_restore_report audit_report;
-    struct jg_database_policy_sync policy_sync;
     uint8_t recovery_payload[3U] = {MANAGEMENT_RECOVERY_VERSION, 0U, 0U};
     const char *passphrase =
         job->parameters.backup_restore.passphrase_size == 0U
@@ -1177,6 +1176,8 @@ int execute_backup_restore_job(struct jg_management *management,
     bool client_ca_was_present = false;
     bool recovery_started = false;
     bool restore_active = false;
+    bool policy_published = false;
+    uint64_t runtime_generation = 0U;
     json_t *body = NULL;
     json_t *backup = NULL;
     json_t *database_report = NULL;
@@ -1350,13 +1351,20 @@ int execute_backup_restore_job(struct jg_management *management,
                                           &client_ca_changes);
     }
     if (!dry_run && changes && result == 0) {
-        result = jg_database_policy_sync_advance(management->database, now,
-                                                 &policy_sync);
+        result = management_publish_policy_change(
+            management, now, &policy_published, &runtime_generation);
+        if (result == 0 && management->runtime != NULL && !policy_published) {
+            result = -EIO;
+        }
     }
     if (!dry_run && changes && result != 0) {
-        const int rollback_result =
-            abort_recovery_operation(management, result);
+        int rollback_result = abort_recovery_operation(management, result);
 
+        if (rollback_result != -EIO && management->runtime != NULL &&
+            jg_daemon_runtime_reload_policy_from_database(
+                management->runtime, management->database) != 0) {
+            rollback_result = -EIO;
+        }
         management_restore_end(management);
         jg_backup_contents_clear(&contents);
         return respond_error(
@@ -1387,6 +1395,14 @@ int execute_backup_restore_job(struct jg_management *management,
         refresh_policy_sync_health(management);
     }
     if (result != 0) {
+        if (restore_active && management->runtime != NULL &&
+            jg_daemon_runtime_reload_policy_from_database(
+                management->runtime, management->database) != 0) {
+            mark_management_degraded(
+                management, MANAGEMENT_DEGRADED_DATABASE_ROLLBACK,
+                "management.policy_reload",
+                "Policy could not be reloaded after restore recovery");
+        }
         if (restore_active) {
             management_restore_end(management);
         }
