@@ -171,11 +171,15 @@ must:
    request body bytes;
 3. compare `X-JanusGate-Signature`, including its `sha256=` prefix, in constant
    time;
-4. deduplicate the stable `X-JanusGate-Event-ID` before returning HTTP 2xx.
+4. deduplicate the globally unique 128-bit `X-JanusGate-Event-ID` before
+   returning HTTP 2xx.
 
 Failed requests enter bounded exponential retry and become abandoned after ten
-attempts. The outbox survives service restarts. Use **Send test**, inspect the
-receiver, confirm delivery metrics, and only then route production incidents.
+attempts. The outbox survives service restarts, and an interrupted claim is
+recovered without changing its event identity. Evaluation and delivery expose
+separate health and last-run metrics, so endpoint failure does not misreport
+condition evaluation. Use **Send test**, inspect the receiver, confirm delivery
+metrics, and only then route production incidents.
 Rotating the secret immediately changes the key used for pending deliveries;
 coordinate receiver changes accordingly.
 

@@ -16,7 +16,7 @@
 #define METRIC_COUNT 53U
 
 /** Number of scalar management metrics emitted after runtime counters. */
-#define MANAGEMENT_METRIC_COUNT 15U
+#define MANAGEMENT_METRIC_COUNT 17U
 
 /** Stable metadata for one numeric Prometheus metric. */
 struct metric_descriptor {
@@ -168,6 +168,10 @@ static const struct metric_descriptor
          "Whether desired and applied policy revisions match."},
         {"janusgate_management_degraded", "gauge",
          "Whether management consistency is degraded."},
+        {"janusgate_alert_last_delivery_timestamp_seconds", "gauge",
+         "Unix timestamp of the latest webhook delivery-processing pass."},
+        {"janusgate_alert_delivery_successful", "gauge",
+         "Whether the latest webhook delivery-processing pass completed."},
 };
 
 /** Fixed labelled metric describing currently open incidents. */
@@ -266,6 +270,8 @@ static void collect_management_values(
     values[12U] = management->audit_valid;
     values[13U] = management->policy_synchronized;
     values[14U] = management->management_degraded;
+    values[15U] = management->alert_last_delivery_at;
+    values[16U] = management->alert_delivery_successful;
 }
 
 /** @brief Measure one complete Prometheus metric record. */

@@ -47,6 +47,8 @@ static void test_render_snapshot(void **state)
     management.authentication_failures_total = 6U;
     management.alert_open_by_type[JG_ALERT_TYPE_QUEUE_DROPS - 1U] = 2U;
     management.alert_deliveries_pending = 3U;
+    management.alert_last_delivery_at = 42U;
+    management.alert_delivery_successful = 1U;
     management.filesystem_minimum_available_basis_points = 987U;
     management.policy_synchronized = 1U;
     assert_int_equal(jg_metrics_render(&stats, &management, output,
@@ -88,6 +90,9 @@ static void test_render_snapshot(void **state)
     assert_non_null(
         strstr(output, "janusgate_alerts_open{type=\"queue_drops\"} 2\n"));
     assert_non_null(strstr(output, "janusgate_alert_deliveries_pending 3\n"));
+    assert_non_null(
+        strstr(output, "janusgate_alert_last_delivery_timestamp_seconds 42\n"));
+    assert_non_null(strstr(output, "janusgate_alert_delivery_successful 1\n"));
     assert_non_null(strstr(
         output, "janusgate_filesystem_minimum_available_ratio 0.0987\n"));
     assert_non_null(strstr(output, "janusgate_policy_synchronized 1\n"));

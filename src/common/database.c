@@ -161,15 +161,13 @@ static const char preserve_restore_history_data[] =
     "DELETE FROM main.backup_metadata;"
     "DELETE FROM main.management_operations;"
     "DELETE FROM main.alert_incidents;"
-    "DELETE FROM main.alert_outbox;"
     "INSERT INTO main.audit_events SELECT * FROM retained.audit_events;"
     "INSERT INTO main.operational_events "
     "SELECT * FROM retained.operational_events;"
     "INSERT INTO main.backup_metadata SELECT * FROM retained.backup_metadata;"
     "INSERT INTO main.management_operations "
     "SELECT * FROM retained.management_operations;"
-    "INSERT INTO main.alert_incidents SELECT * FROM retained.alert_incidents;"
-    "INSERT INTO main.alert_outbox SELECT * FROM retained.alert_outbox;";
+    "INSERT INTO main.alert_incidents SELECT * FROM retained.alert_incidents;";
 
 /** Reconcile retained statistics with rules applied by a configuration restore.
  */
@@ -1432,6 +1430,46 @@ static const char *const migration_20[] = {
     migration_20_policy_statistics_counters,
 };
 
+/** Give webhook events durable identities and recoverable delivery claims. */
+static const char migration_21_alert_outbox[] =
+    "ALTER TABLE alert_outbox RENAME TO alert_outbox_v20;"
+    "CREATE TABLE alert_outbox("
+    "id INTEGER PRIMARY KEY,"
+    "event_uuid BLOB NOT NULL UNIQUE CHECK(length(event_uuid)=16),"
+    "incident_id INTEGER REFERENCES alert_incidents(id) ON DELETE SET NULL,"
+    "kind TEXT NOT NULL CHECK(kind IN ('incident','event')),"
+    "event_code TEXT NOT NULL CHECK(length(event_code) BETWEEN 1 AND 128),"
+    "transition TEXT NOT NULL CHECK(transition IN "
+    "('open','resolved','event')),"
+    "payload TEXT NOT NULL CHECK(length(payload) BETWEEN 2 AND 8192),"
+    "status TEXT NOT NULL CHECK(status IN "
+    "('pending','delivered','abandoned')),"
+    "created_at INTEGER NOT NULL CHECK(created_at>=0),"
+    "next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at>=created_at),"
+    "attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 20),"
+    "delivered_at INTEGER CHECK(delivered_at IS NULL OR "
+    "delivered_at>=created_at),"
+    "last_error TEXT CHECK(last_error IS NULL OR length(last_error)<=512),"
+    "claim_token BLOB CHECK(claim_token IS NULL OR length(claim_token)=16),"
+    "claimed_at INTEGER CHECK(claimed_at IS NULL OR claimed_at>=created_at),"
+    "CHECK((claim_token IS NULL)=(claimed_at IS NULL))"
+    ") STRICT;"
+    "INSERT INTO alert_outbox(id,event_uuid,incident_id,kind,event_code,"
+    "transition,payload,status,created_at,next_attempt_at,attempts,"
+    "delivered_at,last_error) SELECT id,randomblob(16),incident_id,kind,"
+    "event_code,transition,payload,status,created_at,next_attempt_at,attempts,"
+    "delivered_at,last_error FROM alert_outbox_v20;"
+    "DROP TABLE alert_outbox_v20;"
+    "CREATE INDEX alert_outbox_due_idx ON "
+    "alert_outbox(status,next_attempt_at,claimed_at,id);"
+    "INSERT INTO schema_migrations(version,applied_at) VALUES(21,unixepoch());"
+    "PRAGMA user_version=21;";
+
+/** Ordered statement groups composing schema version twenty-one. */
+static const char *const migration_21[] = {
+    migration_21_alert_outbox,
+};
+
 /** Ordered migration sequence. */
 static const struct database_migration migrations[] = {
     {1U, migration_1, sizeof(migration_1) / sizeof(migration_1[0])},
@@ -1454,6 +1492,7 @@ static const struct database_migration migrations[] = {
     {18U, migration_18, sizeof(migration_18) / sizeof(migration_18[0])},
     {19U, migration_19, sizeof(migration_19) / sizeof(migration_19[0])},
     {20U, migration_20, sizeof(migration_20) / sizeof(migration_20[0])},
+    {21U, migration_21, sizeof(migration_21) / sizeof(migration_21[0])},
 };
 
 /** @brief Translate a SQLite result to the public errno-style contract. */

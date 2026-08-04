@@ -785,6 +785,8 @@ static void collect_management_metrics(const struct jg_management *management,
         &management->health->alert_deliveries_failed, memory_order_acquire);
     metrics->alert_last_evaluation_at = atomic_load_explicit(
         &management->health->alert_last_evaluation_at, memory_order_acquire);
+    metrics->alert_last_delivery_at = atomic_load_explicit(
+        &management->health->alert_last_delivery_at, memory_order_acquire);
     metrics->certificate_expiry_timestamp =
         atomic_load_explicit(&management->health->certificate_expiry_timestamp,
                              memory_order_acquire);
@@ -800,6 +802,11 @@ static void collect_management_metrics(const struct jg_management *management,
         memory_order_acquire);
     metrics->alert_evaluation_successful =
         atomic_load_explicit(&management->health->alert_evaluation_successful,
+                             memory_order_acquire)
+            ? 1U
+            : 0U;
+    metrics->alert_delivery_successful =
+        atomic_load_explicit(&management->health->alert_delivery_successful,
                              memory_order_acquire)
             ? 1U
             : 0U;

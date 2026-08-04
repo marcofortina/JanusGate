@@ -37,6 +37,8 @@ struct jg_management_metrics {
     uint64_t alert_deliveries_failed;
     /** Latest native alert evaluation Unix timestamp. */
     uint64_t alert_last_evaluation_at;
+    /** Latest webhook delivery-processing Unix timestamp. */
+    uint64_t alert_last_delivery_at;
     /** Management certificate expiry Unix timestamp. */
     uint64_t certificate_expiry_timestamp;
     /** Enabled remote blocklist sources currently unhealthy. */
@@ -49,6 +51,8 @@ struct jg_management_metrics {
     uint64_t filesystem_minimum_available_basis_points;
     /** One when the latest alert evaluation completed, otherwise zero. */
     uint64_t alert_evaluation_successful;
+    /** One when the latest webhook delivery pass completed, otherwise zero. */
+    uint64_t alert_delivery_successful;
     /** One when the latest audit verification succeeded, otherwise zero. */
     uint64_t audit_valid;
     /** One when desired and applied policy revisions match. */

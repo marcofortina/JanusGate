@@ -154,6 +154,12 @@ completion, and leaves authenticated reads and job polling available.
 JanusGate creates and audits an automatic pre-restore checkpoint; the restore
 audit identifies that checkpoint.
 
+A configuration restore retains the live webhook credentials, endpoint, and
+outbox. A full restore instead restores the webhook configuration and its
+outbox together from the archive, preventing pending payloads from being sent
+with unrelated transport credentials. Existing incident and audit history is
+retained according to the recovery contract.
+
 A full restore replaces users, sessions, API tokens, TOTP credentials, and
 client-certificate mappings. It can therefore invalidate the browser session
 or remote API identity that started it before the final job result is read.

@@ -126,12 +126,14 @@ struct management_health {
     _Atomic uint64_t alert_deliveries_succeeded;
     _Atomic uint64_t alert_deliveries_failed;
     _Atomic uint64_t alert_last_evaluation_at;
+    _Atomic uint64_t alert_last_delivery_at;
     _Atomic uint64_t certificate_expiry_timestamp;
     _Atomic uint64_t blocklist_sources_unhealthy;
     _Atomic uint64_t blocklist_sources_stale;
     _Atomic uint64_t filesystem_minimum_available_bytes;
     _Atomic uint64_t filesystem_minimum_available_basis_points;
     _Atomic bool alert_evaluation_successful;
+    _Atomic bool alert_delivery_successful;
     _Atomic bool audit_valid;
     _Atomic bool policy_synchronized;
 };

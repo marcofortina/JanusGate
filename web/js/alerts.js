@@ -277,7 +277,7 @@ async function testWebhook() {
         body: {},
       });
 
-      announce(`Webhook test ${result.delivery_id} was queued.`);
+      announce(`Webhook test ${result.event_id} was queued.`);
     } catch (error) {
       showError(byId("alerts-error"), errorMessage(error));
     }

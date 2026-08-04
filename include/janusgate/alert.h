@@ -67,6 +67,12 @@
 /** Largest retained webhook delivery error excluding its terminator. */
 #define JG_ALERT_DELIVERY_ERROR_MAX 512U
 
+/** Lowercase hexadecimal webhook event identity including its terminator. */
+#define JG_ALERT_EVENT_ID_SIZE 33U
+
+/** Raw bytes in one transient webhook delivery claim. */
+#define JG_ALERT_DELIVERY_CLAIM_SIZE 16U
+
 /** Opaque database connection declared by database.h. */
 struct jg_database;
 
@@ -190,8 +196,12 @@ struct jg_alert_filter {
  * @brief One due webhook delivery copied from the durable outbox.
  */
 struct jg_alert_delivery {
-    /** Persistent positive outbox identifier. */
+    /** Internal persistent outbox identifier. */
     uint64_t id;
+    /** Globally unique event identity exposed to webhook receivers. */
+    char event_id[JG_ALERT_EVENT_ID_SIZE];
+    /** Opaque ownership token for this delivery attempt. */
+    uint8_t claim[JG_ALERT_DELIVERY_CLAIM_SIZE];
     /** Canonical webhook JSON body. */
     char payload[JG_ALERT_PAYLOAD_MAX + 1U];
     /** Number of prior failed delivery attempts. */
@@ -469,21 +479,22 @@ JG_PUBLIC int jg_database_alert_list(struct jg_database *database,
  * @param[in] summary Human-readable event summary.
  * @param[in] details JSON object canonicalized before persistence.
  * @param[in] now Current Unix timestamp in seconds.
- * @param[out] delivery_id Receives the positive outbox identifier; null
+ * @param[out] event_id Receives the globally unique event identity; null
  * discards it.
  *
  * @return 0 on success or a negative validation, allocation, or SQLite error.
  */
-JG_PUBLIC int jg_database_alert_event_enqueue(struct jg_database *database,
-                                              const char *event_code,
-                                              enum jg_alert_severity severity,
-                                              const char *summary,
-                                              const char *details,
-                                              uint64_t now,
-                                              uint64_t *delivery_id);
+JG_PUBLIC int jg_database_alert_event_enqueue(
+    struct jg_database *database,
+    const char *event_code,
+    enum jg_alert_severity severity,
+    const char *summary,
+    const char *details,
+    uint64_t now,
+    char event_id[JG_ALERT_EVENT_ID_SIZE]);
 
 /**
- * @brief Load the oldest due pending webhook delivery.
+ * @brief Atomically claim the oldest due pending webhook delivery.
  *
  * @return 0 when one delivery was loaded.
  * @return -ENOENT when no pending delivery is currently due.
@@ -501,7 +512,8 @@ JG_PUBLIC int jg_database_alert_delivery_next(
  * backoff and become permanently abandoned after ten attempts.
  *
  * @param[in,out] database Open database.
- * @param[in] delivery_id Positive outbox identifier.
+ * @param[in] delivery Delivery and opaque claim returned by
+ * @ref jg_database_alert_delivery_next.
  * @param[in] delivered Whether the remote endpoint accepted the payload.
  * @param[in] now Current Unix timestamp in seconds.
  * @param[in] error Administrative-safe failure text when not delivered.
@@ -510,11 +522,12 @@ JG_PUBLIC int jg_database_alert_delivery_next(
  * @return -ENOENT when the pending identifier no longer exists.
  * @return A negative validation or SQLite error otherwise.
  */
-JG_PUBLIC int jg_database_alert_delivery_complete(struct jg_database *database,
-                                                  uint64_t delivery_id,
-                                                  bool delivered,
-                                                  uint64_t now,
-                                                  const char *error);
+JG_PUBLIC int jg_database_alert_delivery_complete(
+    struct jg_database *database,
+    const struct jg_alert_delivery *delivery,
+    bool delivered,
+    uint64_t now,
+    const char *error);
 
 /**
  * @brief Collect bounded incident and delivery aggregates for monitoring.

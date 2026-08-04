@@ -54,6 +54,11 @@ before it can read the result. A format-version 1 archive remains readable but
 does not carry the TOTP key or client CA and preserves those files on the
 target appliance.
 
+Configuration restores retain the appliance's current webhook transport and
+pending outbox. Full restores recover both from the selected archive as one
+coherent delivery state; receivers should deduplicate the globally unique
+`X-JanusGate-Event-ID` because an interrupted attempt can be delivered again.
+
 ### Off-appliance recovery archives
 
 Backup transfer is available only through the privileged local socket. Both

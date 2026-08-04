@@ -141,7 +141,7 @@ int alert_webhook_signature(const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
 }
 
 /** @brief Build all fixed headers for one signed webhook request. */
-static int create_headers(uint64_t delivery_id,
+static int create_headers(const char event_id[JG_ALERT_EVENT_ID_SIZE],
                           uint64_t timestamp,
                           const char signature[ALERT_WEBHOOK_SIGNATURE_SIZE],
                           struct curl_slist **headers)
@@ -150,7 +150,7 @@ static int create_headers(uint64_t delivery_id,
     char timestamp_header[64U];
     char signature_header[128U];
     int written = snprintf(identifier_header, sizeof(identifier_header),
-                           "X-JanusGate-Event-ID: %" PRIu64, delivery_id);
+                           "X-JanusGate-Event-ID: %s", event_id);
     int result = 0;
 
     *headers = NULL;
@@ -204,7 +204,7 @@ int alert_webhook_deliver(const char *url,
                           const char *ca_pem,
                           uint32_t timeout_seconds,
                           const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
-                          uint64_t delivery_id,
+                          const char event_id[JG_ALERT_EVENT_ID_SIZE],
                           uint64_t timestamp,
                           const char *payload,
                           char error[JG_ALERT_DELIVERY_ERROR_MAX + 1U])
@@ -221,16 +221,27 @@ int alert_webhook_deliver(const char *url,
     bool http_failure = false;
     int result = 0;
 
-    if (url == NULL || secret == NULL || delivery_id == 0U || timestamp == 0U ||
+    if (url == NULL || secret == NULL || event_id == NULL || timestamp == 0U ||
         payload_size == 0U || payload_size > JG_ALERT_PAYLOAD_MAX ||
         timeout_seconds == 0U || timeout_seconds > 30U || error == NULL) {
+        return -EINVAL;
+    }
+    for (size_t index = 0U; index < JG_ALERT_EVENT_ID_SIZE - 1U; ++index) {
+        const char character = event_id[index];
+
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f'))) {
+            return -EINVAL;
+        }
+    }
+    if (event_id[JG_ALERT_EVENT_ID_SIZE - 1U] != '\0') {
         return -EINVAL;
     }
     error[0U] = '\0';
     result = alert_webhook_signature(secret, timestamp, payload, payload_size,
                                      signature);
     if (result == 0) {
-        result = create_headers(delivery_id, timestamp, signature, &headers);
+        result = create_headers(event_id, timestamp, signature, &headers);
     }
     if (result == 0 && ca_pem != NULL) {
         ca_copy = strdup(ca_pem);

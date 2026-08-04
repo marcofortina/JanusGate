@@ -869,6 +869,13 @@
           "legendFormat": "Abandoned retained",
           "range": true,
           "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "min(janusgate_alert_delivery_successful{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "Delivery healthy",
+          "range": true,
+          "refId": "C"
         }
       ],
       "title": "Webhook delivery",

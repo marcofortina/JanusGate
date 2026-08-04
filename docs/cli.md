@@ -156,7 +156,8 @@ The default configuration is equivalent to:
 Run `alert webhook rotate` before enabling delivery and save the returned HMAC
 secret immediately; it is never displayed again. `alert webhook test` queues
 one signed test through the same durable outbox and retry path used by real
-transitions. Private and home-lab webhook authorities are accepted through
+transitions and returns its globally unique event identifier. Private and
+home-lab webhook authorities are accepted through
 `webhook_ca_pem`. Receiver verification and Prometheus/Grafana integration are
 documented in [Monitoring and native alerting](monitoring.md).
 

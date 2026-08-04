@@ -235,10 +235,10 @@ static void test_alert_incident_lifecycle(void **state)
     assert_int_equal(
         jg_database_alert_delivery_next(fixture->database, 100U, &delivery), 0);
     assert_non_null(strstr(delivery.payload, "\"event\":\"alert.opened\""));
-    assert_int_equal(jg_database_alert_delivery_complete(
-                         fixture->database, delivery.id, false, 100U,
-                         "Endpoint unavailable"),
-                     0);
+    assert_int_equal(
+        jg_database_alert_delivery_complete(fixture->database, &delivery, false,
+                                            100U, "Endpoint unavailable"),
+        0);
     assert_int_equal(
         jg_database_alert_delivery_next(fixture->database, 129U, &delivery),
         -ENOENT);
@@ -246,7 +246,7 @@ static void test_alert_incident_lifecycle(void **state)
         jg_database_alert_delivery_next(fixture->database, 130U, &delivery), 0);
     assert_int_equal(delivery.attempts, 1U);
     assert_int_equal(jg_database_alert_delivery_complete(
-                         fixture->database, delivery.id, true, 130U, NULL),
+                         fixture->database, &delivery, true, 130U, NULL),
                      0);
 
     assert_int_equal(jg_database_alert_reconcile(fixture->database, &condition,
@@ -259,7 +259,7 @@ static void test_alert_incident_lifecycle(void **state)
     assert_int_equal(
         jg_database_alert_delivery_next(fixture->database, 200U, &delivery), 0);
     assert_int_equal(jg_database_alert_delivery_complete(
-                         fixture->database, delivery.id, true, 200U, NULL),
+                         fixture->database, &delivery, true, 200U, NULL),
                      0);
     assert_int_equal(
         jg_database_alert_storage_metrics(fixture->database, &metrics), 0);
@@ -287,22 +287,47 @@ static void test_alert_events(void **state)
 {
     struct alert_fixture *fixture = *state;
     struct jg_alert_delivery delivery;
-    uint64_t identifier = 0U;
+    struct jg_alert_delivery recovered;
+    struct jg_alert_delivery invalid;
+    char event_id[JG_ALERT_EVENT_ID_SIZE];
 
     assert_int_equal(jg_database_alert_event_enqueue(
                          fixture->database, "backup.restored",
                          JG_ALERT_SEVERITY_WARNING, "A backup was restored.",
-                         "{\"backup_id\":7}", 400U, &identifier),
+                         "{\"backup_id\":7}", 400U, event_id),
                      0);
-    assert_true(identifier > 0U);
+    assert_int_equal(strlen(event_id), JG_ALERT_EVENT_ID_SIZE - 1U);
+    assert_int_equal(strspn(event_id, "0123456789abcdef"),
+                     JG_ALERT_EVENT_ID_SIZE - 1U);
     assert_int_equal(
         jg_database_alert_delivery_next(fixture->database, 400U, &delivery), 0);
-    assert_int_equal(delivery.id, identifier);
+    assert_string_equal(delivery.event_id, event_id);
     assert_non_null(strstr(delivery.payload, "\"event\":\"backup.restored\""));
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 400U, &recovered),
+        -ENOENT);
+    invalid = delivery;
+    invalid.claim[0U] ^= UINT8_C(0xff);
+    assert_int_equal(jg_database_alert_delivery_complete(
+                         fixture->database, &invalid, true, 400U, NULL),
+                     -ENOENT);
     assert_int_equal(jg_database_alert_delivery_complete(fixture->database,
-                                                         delivery.id, false,
-                                                         400U, "line\nbreak"),
+                                                         &delivery, false, 400U,
+                                                         "line\nbreak"),
                      -EINVAL);
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 519U, &recovered),
+        -ENOENT);
+    assert_int_equal(
+        jg_database_alert_delivery_next(fixture->database, 520U, &recovered),
+        0);
+    assert_string_equal(recovered.event_id, event_id);
+    assert_memory_not_equal(recovered.claim, delivery.claim,
+                            sizeof(recovered.claim));
+    assert_int_equal(
+        jg_database_alert_delivery_complete(
+            fixture->database, &recovered, false, 520U, "Endpoint unavailable"),
+        0);
     assert_int_equal(
         jg_database_alert_event_enqueue(fixture->database, "Invalid Event",
                                         JG_ALERT_SEVERITY_WARNING,

@@ -38,7 +38,7 @@
 #define MANAGEMENT_ALERT_AUDIT_INTERVAL 3600U
 
 /** Maximum deliveries attempted in one worker pass. */
-#define MANAGEMENT_ALERT_DELIVERY_BATCH 16U
+#define MANAGEMENT_ALERT_DELIVERY_BATCH 4U
 
 /** Blocklist source records evaluated per bounded storage page. */
 #define MANAGEMENT_ALERT_SOURCE_PAGE 16U
@@ -716,46 +716,96 @@ static int evaluate_conditions(
     return result;
 }
 
-/** @brief Deliver one bounded batch from the durable webhook outbox. */
-static int deliver_notifications(
-    struct management_alerts *alerts,
-    const struct jg_alert_configuration *configuration,
-    uint64_t now)
+/** @brief Check whether shutdown was requested between delivery attempts. */
+static bool delivery_stopping(struct management_alerts *alerts)
 {
-    uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    bool stopping = true;
+
+    if (pthread_mutex_lock(&alerts->mutex) == 0) {
+        stopping = alerts->stopping;
+        (void)pthread_mutex_unlock(&alerts->mutex);
+    }
+    return stopping;
+}
+
+/** @brief Deliver one bounded batch without holding the mutation gate. */
+static int deliver_notifications(struct management_alerts *alerts)
+{
     int result = 0;
 
-    if (!configuration->values.webhook_enabled) {
-        return 0;
-    }
-    result = jg_database_alert_webhook_secret_load(
-        alerts->database, alerts->management->secrets->totp_key, secret);
-    for (size_t index = 0U;
-         result == 0 && index < MANAGEMENT_ALERT_DELIVERY_BATCH; ++index) {
+    for (size_t index = 0U; result == 0 && !delivery_stopping(alerts) &&
+                            index < MANAGEMENT_ALERT_DELIVERY_BATCH;
+         ++index) {
+        struct jg_alert_configuration configuration = {0};
         struct jg_alert_delivery delivery;
+        uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE] = {0};
         char error[JG_ALERT_DELIVERY_ERROR_MAX + 1U];
-        int delivery_result =
-            jg_database_alert_delivery_next(alerts->database, now, &delivery);
+        uint64_t attempted_at = 0U;
+        uint64_t completed_at = 0U;
+        int delivery_result = alert_time(&attempted_at);
+        bool mutation_active = false;
 
+        if (delivery_result == 0) {
+            delivery_result = management_mutation_begin(alerts->management);
+            mutation_active = delivery_result == 0;
+        }
+        if (delivery_result == 0) {
+            delivery_result = jg_database_alert_configuration_load(
+                alerts->database, &configuration);
+        }
+        if (delivery_result == 0 && !configuration.values.webhook_enabled) {
+            delivery_result = -ENOENT;
+        }
+        if (delivery_result == 0) {
+            delivery_result = jg_database_alert_webhook_secret_load(
+                alerts->database, alerts->management->secrets->totp_key,
+                secret);
+        }
+        if (delivery_result == 0) {
+            delivery_result = jg_database_alert_delivery_next(
+                alerts->database, attempted_at, &delivery);
+        }
+        if (mutation_active) {
+            management_mutation_end(alerts->management);
+        }
         if (delivery_result == -ENOENT) {
+            jg_alert_configuration_clear(&configuration);
+            sodium_memzero(secret, sizeof(secret));
             break;
         }
         if (delivery_result != 0) {
+            jg_alert_configuration_clear(&configuration);
+            sodium_memzero(secret, sizeof(secret));
             result = delivery_result;
             break;
         }
         delivery_result = alert_webhook_deliver(
-            configuration->values.webhook_url,
-            configuration->values.webhook_ca_pem,
-            configuration->values.webhook_timeout_seconds, secret, delivery.id,
-            now, delivery.payload, error);
-        retain_error(jg_database_alert_delivery_complete(
-                         alerts->database, delivery.id, delivery_result == 0,
-                         now, delivery_result == 0 ? NULL : error),
-                     &result);
+            configuration.values.webhook_url,
+            configuration.values.webhook_ca_pem,
+            configuration.values.webhook_timeout_seconds, secret,
+            delivery.event_id, attempted_at, delivery.payload, error);
+        retain_error(alert_time(&completed_at), &result);
+        if (result == 0) {
+            int completion_result =
+                management_mutation_begin(alerts->management);
+
+            if (completion_result == 0) {
+                completion_result = jg_database_alert_delivery_complete(
+                    alerts->database, &delivery, delivery_result == 0,
+                    completed_at, delivery_result == 0 ? NULL : error);
+                if (completion_result == -ENOENT) {
+                    completion_result = 0;
+                }
+                retain_error(publish_storage_metrics(alerts),
+                             &completion_result);
+                management_mutation_end(alerts->management);
+            }
+            retain_error(completion_result, &result);
+        }
+        retain_error(delivery_result, &result);
+        jg_alert_configuration_clear(&configuration);
+        sodium_memzero(secret, sizeof(secret));
     }
-    sodium_memzero(secret, sizeof(secret));
-    retain_error(publish_storage_metrics(alerts), &result);
     return result;
 }
 
@@ -797,27 +847,27 @@ static void *run_management_alerts(void *context)
     for (;;) {
         struct jg_alert_configuration configuration = {0};
         uint64_t now = 0U;
+        uint64_t delivery_at = 0U;
         uint32_t interval = 60U;
-        int result = alert_time(&now);
+        int evaluation_result = alert_time(&now);
+        int delivery_result = 0;
         bool stop = false;
         bool mutation_active = false;
 
-        if (result == 0) {
-            result = management_mutation_begin(alerts->management);
-            mutation_active = result == 0;
+        if (evaluation_result == 0) {
+            evaluation_result = management_mutation_begin(alerts->management);
+            mutation_active = evaluation_result == 0;
         }
-        if (result == 0) {
-            result = jg_database_alert_configuration_load(alerts->database,
-                                                          &configuration);
+        if (evaluation_result == 0) {
+            evaluation_result = jg_database_alert_configuration_load(
+                alerts->database, &configuration);
         }
-        if (result == 0) {
+        if (evaluation_result == 0) {
             interval = configuration.values.evaluation_interval_seconds;
             retain_error(enqueue_startup_event(alerts, &configuration, now),
-                         &result);
+                         &evaluation_result);
             retain_error(evaluate_conditions(alerts, &configuration, now),
-                         &result);
-            retain_error(deliver_notifications(alerts, &configuration, now),
-                         &result);
+                         &evaluation_result);
         }
         if (mutation_active) {
             management_mutation_end(alerts->management);
@@ -828,11 +878,27 @@ static void *run_management_alerts(void *context)
             memory_order_release);
         atomic_store_explicit(
             &alerts->management->health->alert_evaluation_successful,
-            result == 0, memory_order_release);
-        if (result != 0 && result != -EBUSY) {
+            evaluation_result == 0, memory_order_release);
+        if (evaluation_result != 0 && evaluation_result != -EBUSY) {
+            (void)jg_log_emit(JG_LOG_WARNING, "alerting",
+                              "alerting.evaluation_failed", "",
+                              "Native alert evaluation did not complete", NULL);
+        }
+
+        delivery_result = deliver_notifications(alerts);
+        if (alert_time(&delivery_at) != 0) {
+            delivery_at = now;
+        }
+        atomic_store_explicit(
+            &alerts->management->health->alert_last_delivery_at, delivery_at,
+            memory_order_release);
+        atomic_store_explicit(
+            &alerts->management->health->alert_delivery_successful,
+            delivery_result == 0, memory_order_release);
+        if (delivery_result != 0 && delivery_result != -EBUSY) {
             (void)jg_log_emit(
-                JG_LOG_WARNING, "alerting", "alerting.evaluation_failed", "",
-                "Native alert evaluation or delivery did not complete", NULL);
+                JG_LOG_WARNING, "alerting", "alerting.delivery_failed", "",
+                "Webhook delivery processing did not complete", NULL);
         }
 
         if (pthread_mutex_lock(&alerts->mutex) != 0) {

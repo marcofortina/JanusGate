@@ -87,8 +87,10 @@ A separate bounded management worker starts only after the packet runtime and
 policy-statistics collector are ready. It periodically samples fixed health
 conditions, reconciles deduplicated incident keys in SQLite, and publishes a
 fixed-cardinality Prometheus snapshot. Incident transitions optionally enter
-the same transaction as a durable webhook outbox item. Delivery runs outside
-request handling with bounded retries, HMAC signatures, and verified HTTPS.
+the same transaction as a durable webhook outbox item. A short database claim
+precedes delivery; verified HTTPS runs without holding the management mutation
+gate, and completion uses the claim to reject stale workers. Claims abandoned
+by an interrupted process become recoverable after a bounded interval.
 
 The data plane reports policy outcomes through a bounded asynchronous queue.
 The collector stores lifetime rule and traffic counters separately from

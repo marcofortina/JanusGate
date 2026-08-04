@@ -24,8 +24,8 @@ groups:
         annotations:
           summary: "JanusGate alert evaluation failed on {{ $labels.instance }}"
           description: >-
-            The latest native condition evaluation or notification pass did
-            not complete successfully.
+            The latest native condition evaluation did not complete
+            successfully.
 
       - alert: JanusGateAlertEvaluationStale
         expr: >-
@@ -39,6 +39,29 @@ groups:
           description: >-
             Native alert evaluation has not completed for at least ten
             minutes. Check janusgated and persistent-storage health.
+
+      - alert: JanusGateAlertDeliveryFailed
+        expr: janusgate_alert_delivery_successful{job="janusgate"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate webhook delivery failed on {{ $labels.instance }}"
+          description: >-
+            The latest bounded webhook delivery pass did not complete.
+            Inspect endpoint reachability, TLS trust, and pending deliveries.
+
+      - alert: JanusGateAlertDeliveryStale
+        expr: >-
+          (time() - janusgate_alert_last_delivery_timestamp_seconds{job="janusgate"} > 600)
+          or janusgate_alert_last_delivery_timestamp_seconds{job="janusgate"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate webhook delivery is stale on {{ $labels.instance }}"
+          description: >-
+            Webhook delivery processing has not run for at least ten minutes.
 
   - name: janusgate.native-incidents
     interval: 30s

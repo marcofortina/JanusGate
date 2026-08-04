@@ -698,7 +698,15 @@ static void test_database_export(void **state)
         "'example.test',1,3,2,1,1,1,1);"
         "INSERT INTO policy_traffic_buckets(bucket_start,path,request_count,"
         "matched_count,would_block_count,enforced_block_count)"
-        " VALUES(0,'dns',4,3,1,1);";
+        " VALUES(0,'dns',4,3,1,1);"
+        "UPDATE alert_configuration SET webhook_enabled=1,"
+        "webhook_url='https://backup.example.test/alerts',"
+        "webhook_secret_ciphertext=zeroblob(48),"
+        "webhook_secret_nonce=zeroblob(24) WHERE id=1;"
+        "INSERT INTO alert_outbox(id,event_uuid,kind,event_code,transition,"
+        "payload,status,created_at,next_attempt_at) VALUES(1,"
+        "x'01000000000000000000000000000001','event','backup.test','event',"
+        "'{}','pending',10,10);";
     static const char *const private_tables[] = {
         "users",
         "user_roles",
@@ -716,6 +724,7 @@ static void test_database_export(void **state)
         "policy_traffic_stats",
         "policy_impact_buckets",
         "policy_traffic_buckets",
+        "alert_outbox",
     };
     char directory[64U];
     char path[512U];
@@ -773,7 +782,9 @@ static void test_database_export(void **state)
         sqlite3_exec(writer,
                      "UPDATE system_settings SET value='changed';"
                      "UPDATE users SET password_hash='current-hash';"
-                     "UPDATE policy_rule_stats SET match_count=9;",
+                     "UPDATE policy_rule_stats SET match_count=9;"
+                     "UPDATE alert_configuration SET "
+                     "webhook_url='https://current.example.test/alerts';",
                      NULL, NULL, NULL),
         SQLITE_OK);
     assert_int_equal(sqlite3_close(writer), SQLITE_OK);
@@ -815,6 +826,13 @@ static void test_database_export(void **state)
                          "SELECT match_count FROM policy_rule_stats WHERE "
                          "dimension='domain' AND rule_id=1;",
                          9);
+    assert_text_value(snapshot,
+                      "SELECT webhook_url FROM alert_configuration WHERE "
+                      "id=1;",
+                      "https://current.example.test/alerts");
+    assert_text_value(snapshot,
+                      "SELECT hex(event_uuid) FROM alert_outbox WHERE id=1;",
+                      "01000000000000000000000000000001");
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
     snapshot = NULL;
     jg_database_export_clear(data, data_size);
@@ -828,6 +846,13 @@ static void test_database_export(void **state)
             "UPDATE system_settings SET value='changed-again';"
             "UPDATE users SET password_hash='replacement-hash';"
             "UPDATE policy_rule_stats SET match_count=11;"
+            "UPDATE alert_configuration SET "
+            "webhook_url='https://replacement.example.test/alerts';"
+            "DELETE FROM alert_outbox;"
+            "INSERT INTO alert_outbox(id,event_uuid,kind,event_code,"
+            "transition,payload,status,created_at,next_attempt_at) VALUES(2,"
+            "x'02000000000000000000000000000002','event','replacement.test',"
+            "'event','{}','pending',20,20);"
             "INSERT INTO backup_metadata(id,created_at,kind,path,"
             "checksum,schema_version,size_bytes) VALUES("
             "2,20,'full','backup-2.jgb',zeroblob(32),9,200);"
@@ -868,6 +893,14 @@ static void test_database_export(void **state)
                          "SELECT match_count FROM policy_rule_stats WHERE "
                          "dimension='domain' AND rule_id=1;",
                          9);
+    assert_text_value(snapshot,
+                      "SELECT webhook_url FROM alert_configuration WHERE "
+                      "id=1;",
+                      "https://current.example.test/alerts");
+    assert_text_value(snapshot,
+                      "SELECT hex(event_uuid) FROM alert_outbox WHERE id=1;",
+                      "01000000000000000000000000000001");
+    assert_int_equal(row_count(snapshot, "alert_outbox"), 1);
     assert_int_equal(sqlite3_close(snapshot), SQLITE_OK);
     jg_database_export_clear(inspection_data, inspection_data_size);
 

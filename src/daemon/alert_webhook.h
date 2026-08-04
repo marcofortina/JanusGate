@@ -44,7 +44,7 @@ int alert_webhook_deliver(const char *url,
                           const char *ca_pem,
                           uint32_t timeout_seconds,
                           const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
-                          uint64_t delivery_id,
+                          const char event_id[JG_ALERT_EVENT_ID_SIZE],
                           uint64_t timestamp,
                           const char *payload,
                           char error[JG_ALERT_DELIVERY_ERROR_MAX + 1U]);

@@ -4749,6 +4749,7 @@ static void test_alert_api(void **state)
     json_t *body = NULL;
     json_t *item = NULL;
     const char *secret = NULL;
+    const char *event_id = NULL;
 
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      200);
@@ -4786,7 +4787,11 @@ static void test_alert_api(void **state)
     assert_int_equal(json_integer_value(json_object_get(response, "status")),
                      202);
     body = json_object_get(response, "body");
-    assert_true(json_integer_value(json_object_get(body, "delivery_id")) > 0);
+    event_id = json_string_value(json_object_get(body, "event_id"));
+    assert_non_null(event_id);
+    assert_int_equal(strlen(event_id), JG_ALERT_EVENT_ID_SIZE - 1U);
+    assert_int_equal(strspn(event_id, "0123456789abcdef"),
+                     JG_ALERT_EVENT_ID_SIZE - 1U);
     assert_string_equal(json_string_value(json_object_get(body, "state")),
                         "pending");
     json_decref(response);

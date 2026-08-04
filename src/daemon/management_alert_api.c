@@ -648,7 +648,7 @@ int handle_alert_webhook_test(struct jg_management *management,
 {
     struct authenticated_actor actor;
     struct jg_alert_configuration configuration = {0};
-    uint64_t delivery_id = 0U;
+    char event_id[JG_ALERT_EVENT_ID_SIZE];
     json_t *details = NULL;
     json_t *body = NULL;
     int result = authenticate_actor(management, request, remote, true,
@@ -674,7 +674,7 @@ int handle_alert_webhook_test(struct jg_management *management,
     if (result == 0) {
         result = jg_database_alert_event_enqueue(
             management->database, "webhook.test", JG_ALERT_SEVERITY_WARNING,
-            "JanusGate webhook test notification.", "{}", now, &delivery_id);
+            "JanusGate webhook test notification.", "{}", now, event_id);
     }
     if (result == 0) {
         details = json_object();
@@ -685,8 +685,7 @@ int handle_alert_webhook_test(struct jg_management *management,
                                           0U, now);
     }
     if (result == 0) {
-        body = json_pack("{s:I,s:s}", "delivery_id", (json_int_t)delivery_id,
-                         "state", "pending");
+        body = json_pack("{s:s,s:s}", "event_id", event_id, "state", "pending");
         result = body == NULL ? -ENOMEM : 0;
     }
     json_decref(details);

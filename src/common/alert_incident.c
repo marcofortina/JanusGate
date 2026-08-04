@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include <jansson.h>
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include "database_internal.h"
@@ -27,6 +28,21 @@
 
 /** Maximum webhook attempts before permanent abandonment. */
 #define ALERT_DELIVERY_ATTEMPTS_MAX 10U
+
+/** Seconds after which an interrupted delivery claim may be recovered. */
+#define ALERT_DELIVERY_CLAIM_TIMEOUT 120U
+
+/** @brief Encode fixed bytes as lowercase hexadecimal text. */
+static void encode_hex(const uint8_t *bytes, size_t size, char *text)
+{
+    static const char digits[] = "0123456789abcdef";
+
+    for (size_t index = 0U; index < size; ++index) {
+        text[index * 2U] = digits[bytes[index] >> 4U];
+        text[index * 2U + 1U] = digits[bytes[index] & UINT8_C(0x0f)];
+    }
+    text[size * 2U] = '\0';
+}
 
 /** @brief Return one bounded string length or one past the limit. */
 static size_t bounded_length(const char *text, size_t maximum)
@@ -406,39 +422,53 @@ static int enqueue_payload(sqlite3 *handle,
                            const char *transition,
                            const char *payload,
                            uint64_t now,
-                           uint64_t *delivery_id)
+                           char event_id[JG_ALERT_EVENT_ID_SIZE])
 {
     static const char insert[] =
-        "INSERT INTO alert_outbox(incident_id,kind,event_code,transition,"
-        "payload,status,created_at,next_attempt_at) VALUES("
-        "?1,?2,?3,?4,?5,'pending',?6,?6);";
+        "INSERT INTO alert_outbox(event_uuid,incident_id,kind,event_code,"
+        "transition,payload,status,created_at,next_attempt_at) VALUES("
+        "?1,?2,?3,?4,?5,?6,'pending',?7,?7);";
+    uint8_t event_uuid[JG_ALERT_DELIVERY_CLAIM_SIZE];
     sqlite3_stmt *statement = NULL;
-    int status = sqlite3_prepare_v3(
-        handle, insert, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    int result = jg_database_sqlite_result(status);
+    int status = SQLITE_OK;
+    int result = sodium_init() < 0 ? -EIO : 0;
+
+    if (event_id != NULL) {
+        event_id[0U] = '\0';
+    }
+    if (result == 0) {
+        randombytes_buf(event_uuid, sizeof(event_uuid));
+        status = sqlite3_prepare_v3(
+            handle, insert, -1, SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
 
     if (result == 0) {
+        status = sqlite3_bind_blob(statement, 1, event_uuid,
+                                   (int)sizeof(event_uuid), SQLITE_TRANSIENT);
+    }
+    if (result == 0 && status == SQLITE_OK) {
         status =
             incident_id == 0U
-                ? sqlite3_bind_null(statement, 1)
-                : sqlite3_bind_int64(statement, 1, (sqlite3_int64)incident_id);
+                ? sqlite3_bind_null(statement, 2)
+                : sqlite3_bind_int64(statement, 2, (sqlite3_int64)incident_id);
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_text(statement, 2, kind, -1, SQLITE_STATIC);
+            status = sqlite3_bind_text(statement, 3, kind, -1, SQLITE_STATIC);
         }
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_text(statement, 3, event_code, -1,
+            status = sqlite3_bind_text(statement, 4, event_code, -1,
                                        SQLITE_TRANSIENT);
         }
         if (status == SQLITE_OK) {
             status =
-                sqlite3_bind_text(statement, 4, transition, -1, SQLITE_STATIC);
+                sqlite3_bind_text(statement, 5, transition, -1, SQLITE_STATIC);
         }
         if (status == SQLITE_OK) {
             status =
-                sqlite3_bind_text(statement, 5, payload, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(statement, 6, payload, -1, SQLITE_TRANSIENT);
         }
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_int64(statement, 6, (sqlite3_int64)now);
+            status = sqlite3_bind_int64(statement, 7, (sqlite3_int64)now);
         }
         result = jg_database_sqlite_result(status);
     }
@@ -446,14 +476,8 @@ static int enqueue_payload(sqlite3 *handle,
         status = sqlite3_step(statement);
         result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
     }
-    if (result == 0 && delivery_id != NULL) {
-        const sqlite3_int64 identifier = sqlite3_last_insert_rowid(handle);
-
-        if (identifier <= 0) {
-            result = -EOVERFLOW;
-        } else {
-            *delivery_id = (uint64_t)identifier;
-        }
+    if (result == 0 && event_id != NULL) {
+        encode_hex(event_uuid, sizeof(event_uuid), event_id);
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -461,6 +485,7 @@ static int enqueue_payload(sqlite3 *handle,
             result = jg_database_sqlite_result(status);
         }
     }
+    sodium_memzero(event_uuid, sizeof(event_uuid));
     return result;
 }
 
@@ -888,7 +913,7 @@ int jg_database_alert_event_enqueue(struct jg_database *database,
                                     const char *summary,
                                     const char *details,
                                     uint64_t now,
-                                    uint64_t *delivery_id)
+                                    char event_id[JG_ALERT_EVENT_ID_SIZE])
 {
     const size_t summary_size = bounded_length(summary, JG_ALERT_SUMMARY_MAX);
     char *canonical = NULL;
@@ -897,8 +922,8 @@ int jg_database_alert_event_enqueue(struct jg_database *database,
     char *payload = NULL;
     int result = 0;
 
-    if (delivery_id != NULL) {
-        *delivery_id = 0U;
+    if (event_id != NULL) {
+        event_id[0U] = '\0';
     }
     if (database == NULL ||
         !identifier_valid(event_code, JG_ALERT_EVENT_CODE_MAX) ||
@@ -935,7 +960,7 @@ int jg_database_alert_event_enqueue(struct jg_database *database,
     }
     if (result == 0) {
         result = enqueue_payload(database->handle, 0U, "event", event_code,
-                                 "event", payload, now, delivery_id);
+                                 "event", payload, now, event_id);
     }
     free(payload);
     json_decref(root);
@@ -944,28 +969,50 @@ int jg_database_alert_event_enqueue(struct jg_database *database,
     return result;
 }
 
-/** @brief Load the oldest due pending webhook delivery. */
+/** @brief Atomically claim the oldest due pending webhook delivery. */
 int jg_database_alert_delivery_next(struct jg_database *database,
                                     uint64_t now,
                                     struct jg_alert_delivery *delivery)
 {
     static const char query[] =
-        "SELECT id,payload,attempts FROM alert_outbox WHERE status='pending' "
-        "AND next_attempt_at<=?1 ORDER BY id LIMIT 1;";
+        "SELECT id,event_uuid,payload,attempts FROM alert_outbox WHERE "
+        "status='pending' AND next_attempt_at<=?1 AND (claim_token IS NULL "
+        "OR claimed_at<=?2) ORDER BY id LIMIT 1;";
+    static const char claim[] =
+        "UPDATE alert_outbox SET claim_token=?1,claimed_at=?2 WHERE id=?3 "
+        "AND status='pending' AND next_attempt_at<=?2 AND (claim_token IS "
+        "NULL OR claimed_at<=?4);";
     sqlite3_stmt *statement = NULL;
+    const void *event_uuid = NULL;
+    const uint64_t stale_before = now > ALERT_DELIVERY_CLAIM_TIMEOUT
+                                      ? now - ALERT_DELIVERY_CLAIM_TIMEOUT
+                                      : 0U;
     uint64_t attempts = 0U;
     int status = SQLITE_OK;
-    int result = 0;
+    int result = sodium_init() < 0 ? -EIO : 0;
 
     if (database == NULL || delivery == NULL || now > ALERT_VALUE_MAX) {
         return -EINVAL;
     }
     (void)memset(delivery, 0, sizeof(*delivery));
-    status = sqlite3_prepare_v3(database->handle, query, -1,
-                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
-    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        randombytes_buf(delivery->claim, sizeof(delivery->claim));
+    }
+    if (result == 0) {
+        result = jg_database_transaction_begin(database);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, query, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
     if (result == 0) {
         status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)now);
+        if (status == SQLITE_OK) {
+            status =
+                sqlite3_bind_int64(statement, 2, (sqlite3_int64)stale_before);
+        }
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
@@ -980,14 +1027,61 @@ int jg_database_alert_delivery_next(struct jg_database *database,
         result = jg_database_column_unsigned(statement, 0, &delivery->id);
     }
     if (result == 0) {
-        result = read_text(statement, 1, delivery->payload,
+        event_uuid = sqlite3_column_blob(statement, 1);
+        if (event_uuid == NULL || sqlite3_column_bytes(statement, 1) !=
+                                      JG_ALERT_DELIVERY_CLAIM_SIZE) {
+            result = -EILSEQ;
+        } else {
+            encode_hex(event_uuid, JG_ALERT_DELIVERY_CLAIM_SIZE,
+                       delivery->event_id);
+        }
+    }
+    if (result == 0) {
+        result = read_text(statement, 2, delivery->payload,
                            sizeof(delivery->payload), true);
     }
     if (result == 0) {
-        result = jg_database_column_unsigned(statement, 2, &attempts);
+        result = jg_database_column_unsigned(statement, 3, &attempts);
         if (result == 0 && attempts >= ALERT_DELIVERY_ATTEMPTS_MAX) {
             result = -EILSEQ;
         }
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        statement = NULL;
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    if (result == 0) {
+        status =
+            sqlite3_prepare_v3(database->handle, claim, -1,
+                               SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status =
+            sqlite3_bind_blob(statement, 1, delivery->claim,
+                              (int)sizeof(delivery->claim), SQLITE_TRANSIENT);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 2, (sqlite3_int64)now);
+        }
+        if (status == SQLITE_OK) {
+            status =
+                sqlite3_bind_int64(statement, 3, (sqlite3_int64)delivery->id);
+        }
+        if (status == SQLITE_OK) {
+            status =
+                sqlite3_bind_int64(statement, 4, (sqlite3_int64)stale_before);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EAGAIN;
     }
     if (statement != NULL) {
         status = sqlite3_finalize(statement);
@@ -997,24 +1091,30 @@ int jg_database_alert_delivery_next(struct jg_database *database,
     }
     if (result == 0) {
         delivery->attempts = (uint32_t)attempts;
-    } else {
+        result = jg_database_transaction_commit(database);
+    }
+    if (result != 0) {
+        (void)jg_database_transaction_rollback(database);
         (void)memset(delivery, 0, sizeof(*delivery));
     }
     return result;
 }
 
 /** @brief Complete one webhook delivery attempt. */
-int jg_database_alert_delivery_complete(struct jg_database *database,
-                                        uint64_t delivery_id,
-                                        bool delivered,
-                                        uint64_t now,
-                                        const char *error)
+int jg_database_alert_delivery_complete(
+    struct jg_database *database,
+    const struct jg_alert_delivery *delivery,
+    bool delivered,
+    uint64_t now,
+    const char *error)
 {
     static const char query[] =
-        "SELECT attempts FROM alert_outbox WHERE id=?1 AND status='pending';";
+        "SELECT attempts FROM alert_outbox WHERE id=?1 AND status='pending' "
+        "AND claim_token=?2;";
     static const char update[] =
         "UPDATE alert_outbox SET status=?1,next_attempt_at=?2,attempts=?3,"
-        "delivered_at=?4,last_error=?5 WHERE id=?6 AND status='pending';";
+        "delivered_at=?4,last_error=?5,claim_token=NULL,claimed_at=NULL WHERE "
+        "id=?6 AND status='pending' AND claim_token=?7;";
     const size_t error_size =
         error == NULL ? 0U : bounded_length(error, JG_ALERT_DELIVERY_ERROR_MAX);
     sqlite3_stmt *statement = NULL;
@@ -1025,8 +1125,8 @@ int jg_database_alert_delivery_complete(struct jg_database *database,
     int status = SQLITE_OK;
     int result = 0;
 
-    if (database == NULL || delivery_id == 0U ||
-        delivery_id > ALERT_VALUE_MAX || now > ALERT_VALUE_MAX ||
+    if (database == NULL || delivery == NULL || delivery->id == 0U ||
+        delivery->id > ALERT_VALUE_MAX || now > ALERT_VALUE_MAX ||
         (!delivered &&
          (error_size == 0U || error_size > JG_ALERT_DELIVERY_ERROR_MAX ||
           !jg_utf8_text_valid((const uint8_t *)error, error_size, false)))) {
@@ -1040,7 +1140,12 @@ int jg_database_alert_delivery_complete(struct jg_database *database,
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)delivery_id);
+        status = sqlite3_bind_int64(statement, 1, (sqlite3_int64)delivery->id);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_blob(statement, 2, delivery->claim,
+                                       (int)sizeof(delivery->claim),
+                                       SQLITE_TRANSIENT);
+        }
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
@@ -1108,7 +1213,12 @@ int jg_database_alert_delivery_complete(struct jg_database *database,
         }
         if (status == SQLITE_OK) {
             status =
-                sqlite3_bind_int64(statement, 6, (sqlite3_int64)delivery_id);
+                sqlite3_bind_int64(statement, 6, (sqlite3_int64)delivery->id);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_blob(statement, 7, delivery->claim,
+                                       (int)sizeof(delivery->claim),
+                                       SQLITE_TRANSIENT);
         }
         result = jg_database_sqlite_result(status);
     }
