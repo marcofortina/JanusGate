@@ -496,6 +496,9 @@ static void test_initial_migration(void **state)
     assert_true(table_exists(inspection, "policy_traffic_stats"));
     assert_true(table_exists(inspection, "policy_impact_buckets"));
     assert_true(table_exists(inspection, "policy_traffic_buckets"));
+    assert_true(table_exists(inspection, "policy_statistics_storage"));
+    assert_true(table_exists(inspection, "policy_statistics_rule_hour_budget"));
+    assert_true(table_exists(inspection, "policy_statistics_domain_budget"));
     assert_true(column_exists(inspection, "policy_groups", "enforcement"));
     assert_true(column_exists(inspection, "blocklist_sources", "enforcement"));
     assert_true(column_exists(inspection, "domain_rules", "enforcement"));
@@ -513,7 +516,7 @@ static void test_initial_migration(void **state)
         inspection,
         "SELECT retention_months FROM policy_statistics_configuration "
         "WHERE id=1;",
-        12);
+        JG_POLICY_STATS_RETENTION_DEFAULT);
     assert_int_equal(sqlite3_close(inspection), SQLITE_OK);
 
     database = NULL;
@@ -1490,13 +1493,17 @@ static void test_policy_statistics(void **state)
     };
     struct jg_policy_rule_sample invalid_rule;
     struct jg_policy_traffic_sample invalid_traffic;
+    struct jg_policy_rule_sample cardinality_rules[11U];
     struct jg_policy_stats_config config;
+    struct jg_policy_stats_config_update update;
+    struct jg_policy_stats_storage storage;
     struct jg_policy_traffic_stats traffic_stats;
     struct jg_policy_rule_stats rule_stats[2U];
     struct jg_policy_stats_cleanup_report report;
     struct jg_database *database = NULL;
     size_t count = 0U;
     bool has_more = false;
+    char cardinality_domains[11U][64U];
 
     (void)state;
     rules[0U].statistics_id[0U] = 1U;
@@ -1531,19 +1538,31 @@ static void test_policy_statistics(void **state)
     assert_int_equal(config.retention_months,
                      JG_POLICY_STATS_RETENTION_DEFAULT);
     assert_int_equal(config.revision, 1U);
-    assert_int_equal(jg_database_update_policy_stats_config(database, true, 1U,
-                                                            config.revision,
-                                                            7000000U, &config),
+    update = (struct jg_policy_stats_config_update){
+        .retention_enabled = true,
+        .detail_enabled = true,
+        .retention_months = 1U,
+        .detail_max_rows = config.detail_max_rows,
+        .detail_max_rows_per_rule_hour = config.detail_max_rows_per_rule_hour,
+        .detail_max_domains_per_rule_hour =
+            config.detail_max_domains_per_rule_hour,
+        .maximum_database_bytes = config.maximum_database_bytes,
+        .minimum_free_bytes = config.minimum_free_bytes,
+    };
+    assert_int_equal(jg_database_update_policy_stats_config(
+                         database, &update, config.revision, 7000000U, &config),
                      0);
     assert_int_equal(config.retention_months, 1U);
     assert_int_equal(config.revision, 2U);
     assert_int_equal(config.updated_at, 7000000U);
     assert_int_equal(jg_database_update_policy_stats_config(
-                         database, true, 1U, 1U, 7000001U, &config),
+                         database, &update, 1U, 7000001U, &config),
                      -EAGAIN);
+    update.retention_months = 0U;
     assert_int_equal(jg_database_update_policy_stats_config(
-                         database, true, 0U, 2U, 7000001U, &config),
+                         database, &update, 2U, 7000001U, &config),
                      -EINVAL);
+    update.retention_months = 1U;
 
     assert_int_equal(
         jg_database_record_policy_stats(database, traffic, 2U, rules, 4U), 0);
@@ -1628,6 +1647,69 @@ static void test_policy_statistics(void **state)
                                            2U, rule_stats, &count, &has_more),
         0);
     assert_int_equal(rule_stats[0U].match_count, 2U);
+
+    update.detail_max_rows_per_rule_hour = JG_POLICY_STATS_RULE_HOUR_ROWS_MIN;
+    update.detail_max_domains_per_rule_hour =
+        JG_POLICY_STATS_RULE_HOUR_DOMAINS_MIN;
+    assert_int_equal(jg_database_update_policy_stats_config(
+                         database, &update, config.revision, 8000000U, &config),
+                     0);
+    for (size_t index = 0U; index < 11U; ++index) {
+        const int written = snprintf(cardinality_domains[index],
+                                     sizeof(cardinality_domains[index]),
+                                     "cardinality-%zu.example", index);
+
+        assert_true(written > 0);
+        assert_true((size_t)written < sizeof(cardinality_domains[index]));
+        cardinality_rules[index] = (struct jg_policy_rule_sample){
+            .occurred_at = 9000000U,
+            .dimension = JG_POLICY_STATS_DOMAIN,
+            .rule_id = 44U,
+            .path = JG_POLICY_STATS_DNS,
+            .domain = cardinality_domains[index],
+            .query_type = 1U,
+            .decision = true,
+            .would_block = true,
+        };
+        cardinality_rules[index].statistics_id[0U] = 0x44U;
+    }
+    assert_int_equal(jg_database_record_policy_stats(database, NULL, 0U,
+                                                     cardinality_rules, 11U),
+                     0);
+    assert_integer_value(
+        database->handle,
+        "SELECT match_count FROM policy_rule_stats WHERE dimension='domain' "
+        "AND rule_id=44;",
+        11);
+    assert_integer_value(database->handle,
+                         "SELECT count(*) FROM policy_impact_buckets WHERE "
+                         "dimension='domain' AND rule_id=44;",
+                         JG_POLICY_STATS_RULE_HOUR_ROWS_MIN);
+    assert_int_equal(jg_database_load_policy_stats_storage(database, &storage),
+                     0);
+    assert_int_equal(storage.detail_rows,
+                     3U + JG_POLICY_STATS_RULE_HOUR_ROWS_MIN);
+    assert_int_equal(storage.cardinality_dropped, 1U);
+
+    update.detail_enabled = false;
+    assert_int_equal(jg_database_update_policy_stats_config(
+                         database, &update, config.revision, 8000001U, &config),
+                     0);
+    cardinality_rules[0U].occurred_at = 9003600U;
+    cardinality_rules[0U].domain = "disabled-detail.example";
+    assert_int_equal(jg_database_record_policy_stats(database, NULL, 0U,
+                                                     cardinality_rules, 1U),
+                     0);
+    assert_integer_value(
+        database->handle,
+        "SELECT match_count FROM policy_rule_stats WHERE dimension='domain' "
+        "AND rule_id=44;",
+        12);
+    assert_int_equal(jg_database_load_policy_stats_storage(database, &storage),
+                     0);
+    assert_int_equal(storage.detail_rows,
+                     3U + JG_POLICY_STATS_RULE_HOUR_ROWS_MIN);
+    assert_int_equal(storage.cardinality_dropped, 1U);
 
     assert_int_equal(
         jg_database_cleanup_policy_stats(database, 7776000U, 0U, &report),
@@ -2354,6 +2436,13 @@ static void test_network_configuration_migration(void **state)
         "INSERT INTO system_settings(key,value,updated_at) "
         "SELECT 'network.configuration',value,updated_at "
         "FROM network_configuration WHERE id=1;"
+        "DROP TRIGGER policy_impact_count_delete;"
+        "DROP TRIGGER policy_impact_count_insert;"
+        "DROP TRIGGER policy_impact_cardinality_guard;"
+        "DROP TRIGGER policy_impact_storage_guard;"
+        "DROP TABLE policy_statistics_domain_budget;"
+        "DROP TABLE policy_statistics_rule_hour_budget;"
+        "DROP TABLE policy_statistics_storage;"
         "DROP TABLE alert_outbox;"
         "DROP TABLE alert_incidents;"
         "DROP TABLE alert_configuration;"

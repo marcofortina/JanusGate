@@ -44,6 +44,11 @@ struct atomic_collector_stats {
     atomic_uint_fast64_t write_failures;
     atomic_uint_fast64_t cleanup_batches;
     atomic_uint_fast64_t cleanup_failures;
+    atomic_uint_fast64_t detail_rows;
+    atomic_uint_fast64_t estimated_bytes;
+    atomic_uint_fast64_t cardinality_dropped;
+    atomic_uint_fast64_t storage_dropped;
+    atomic_uint_fast64_t storage_suspended;
 };
 
 /** Complete bounded collector state. */
@@ -102,6 +107,35 @@ static void initialize_stats(struct atomic_collector_stats *stats)
     atomic_init(&stats->write_failures, 0U);
     atomic_init(&stats->cleanup_batches, 0U);
     atomic_init(&stats->cleanup_failures, 0U);
+    atomic_init(&stats->detail_rows, 0U);
+    atomic_init(&stats->estimated_bytes, 0U);
+    atomic_init(&stats->cardinality_dropped, 0U);
+    atomic_init(&stats->storage_dropped, 0U);
+    atomic_init(&stats->storage_suspended, 0U);
+}
+
+/** @brief Refresh lock-free bounded-storage counters from SQLite. */
+static int refresh_storage_stats(struct jg_policy_stats_collector *collector)
+{
+    struct jg_policy_stats_storage storage;
+    const int result =
+        jg_database_load_policy_stats_storage(collector->database, &storage);
+
+    if (result == 0) {
+        atomic_store_explicit(&collector->stats.detail_rows,
+                              storage.detail_rows, memory_order_relaxed);
+        atomic_store_explicit(&collector->stats.estimated_bytes,
+                              storage.estimated_bytes, memory_order_relaxed);
+        atomic_store_explicit(&collector->stats.cardinality_dropped,
+                              storage.cardinality_dropped,
+                              memory_order_relaxed);
+        atomic_store_explicit(&collector->stats.storage_dropped,
+                              storage.storage_dropped, memory_order_relaxed);
+        atomic_store_explicit(&collector->stats.storage_suspended,
+                              storage.storage_suspended ? 1U : 0U,
+                              memory_order_relaxed);
+    }
+    return result;
 }
 
 /** @brief Check whether one event path and domain pair is canonical. */
@@ -248,6 +282,9 @@ static void write_batch(struct jg_policy_stats_collector *collector,
     } else {
         atomic_saturating_add(&collector->stats.write_failures, 1U);
     }
+    if (refresh_storage_stats(collector) != 0) {
+        atomic_saturating_add(&collector->stats.write_failures, 1U);
+    }
 }
 
 /** @brief Add bounded seconds to a wall-clock time. */
@@ -283,6 +320,9 @@ static void run_cleanup(struct jg_policy_stats_collector *collector,
         atomic_saturating_add(&collector->stats.cleanup_batches, 1U);
         collector->next_cleanup_at =
             future_time(now, POLICY_STATS_CLEANUP_CONTINUE_SECONDS);
+    }
+    if (refresh_storage_stats(collector) != 0) {
+        atomic_saturating_add(&collector->stats.cleanup_failures, 1U);
     }
 }
 
@@ -424,6 +464,11 @@ int jg_policy_stats_collector_create(
         return result;
     }
     initialize_stats(&created->stats);
+    result = refresh_storage_stats(created);
+    if (result != 0) {
+        jg_policy_stats_collector_destroy(created);
+        return result;
+    }
     *collector = created;
     return 0;
 }
@@ -673,6 +718,16 @@ int jg_policy_stats_collector_get_stats(
         &collector->stats.cleanup_batches, memory_order_relaxed);
     stats->cleanup_failures = atomic_load_explicit(
         &collector->stats.cleanup_failures, memory_order_relaxed);
+    stats->detail_rows = atomic_load_explicit(&collector->stats.detail_rows,
+                                              memory_order_relaxed);
+    stats->estimated_bytes = atomic_load_explicit(
+        &collector->stats.estimated_bytes, memory_order_relaxed);
+    stats->cardinality_dropped = atomic_load_explicit(
+        &collector->stats.cardinality_dropped, memory_order_relaxed);
+    stats->storage_dropped = atomic_load_explicit(
+        &collector->stats.storage_dropped, memory_order_relaxed);
+    stats->storage_suspended = atomic_load_explicit(
+        &collector->stats.storage_suspended, memory_order_relaxed);
     return 0;
 }
 

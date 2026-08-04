@@ -95,6 +95,16 @@ struct jg_policy_stats_collector_stats {
     uint64_t cleanup_batches;
     /** Failed automatic cleanup attempts. */
     uint64_t cleanup_failures;
+    /** Current retained impact rows. */
+    uint64_t detail_rows;
+    /** Latest aggregate bytes occupied by SQLite files. */
+    uint64_t estimated_bytes;
+    /** New impact rows rejected by a cardinality budget. */
+    uint64_t cardinality_dropped;
+    /** Impact samples skipped while storage thresholds were exceeded. */
+    uint64_t storage_dropped;
+    /** One while byte or filesystem thresholds suspend detail collection. */
+    uint64_t storage_suspended;
 };
 
 /** Opaque bounded asynchronous statistics collector. */

@@ -13,7 +13,7 @@
 #include "janusgate/checked.h"
 
 /** Number of stable metrics emitted from one runtime snapshot. */
-#define METRIC_COUNT 48U
+#define METRIC_COUNT 53U
 
 /** Number of scalar management metrics emitted after runtime counters. */
 #define MANAGEMENT_METRIC_COUNT 15U
@@ -123,6 +123,16 @@ static const struct metric_descriptor metrics[METRIC_COUNT] = {
      "Completed automatic policy-statistics cleanup batches."},
     {"janusgate_policy_stats_cleanup_failures_total", "counter",
      "Failed automatic policy-statistics cleanup attempts."},
+    {"janusgate_policy_stats_detail_rows", "gauge",
+     "Detailed policy-impact rows currently retained."},
+    {"janusgate_policy_stats_estimated_bytes", "gauge",
+     "Latest aggregate byte estimate for JanusGate SQLite files."},
+    {"janusgate_policy_stats_cardinality_dropped_total", "counter",
+     "New policy-impact rows rejected by persistent cardinality budgets."},
+    {"janusgate_policy_stats_storage_dropped_total", "counter",
+     "Policy-impact samples skipped while storage thresholds were exceeded."},
+    {"janusgate_policy_stats_storage_suspended", "gauge",
+     "Whether storage thresholds currently suspend detailed statistics."},
 };
 
 /** Ordered management metric names and descriptions. */
@@ -229,6 +239,11 @@ static void collect_values(const struct jg_daemon_runtime_stats *stats,
     values[45U] = stats->policy_stats.write_failures;
     values[46U] = stats->policy_stats.cleanup_batches;
     values[47U] = stats->policy_stats.cleanup_failures;
+    values[48U] = stats->policy_stats.detail_rows;
+    values[49U] = stats->policy_stats.estimated_bytes;
+    values[50U] = stats->policy_stats.cardinality_dropped;
+    values[51U] = stats->policy_stats.storage_dropped;
+    values[52U] = stats->policy_stats.storage_suspended;
 }
 
 /** @brief Copy scalar management counters into stable metric order. */

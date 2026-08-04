@@ -36,7 +36,7 @@ counters, recent events, and active configuration. Policy pages provide:
   network, MAC address, or VLAN;
 - rule impact with lifetime hits, retained clients, traffic percentage, and
   conservative relationship findings;
-- configurable detailed-statistics retention with cleanup preview;
+- bounded detailed-statistics storage with cleanup preview;
 - local blocklist import and export;
 - remote source creation, update, enable, disable, and refresh.
 
@@ -69,11 +69,11 @@ ambiguous relationship. JanusGate never edits or deletes a rule in response.
 Adjust, disable, or remove the rule, or change it to **Enforce** only after the
 observed impact is acceptable.
 
-The statistics-retention panel preserves lifetime aggregates and defaults to
-12 months of detailed hourly impact. Administrators can configure 1–120
-months, enable or disable scheduled cleanup, preview expired detail, and
-confirm removal of one bounded batch. A manual cleanup can require multiple
-batches; the result states whether deletion is complete.
+The statistics-storage panel preserves lifetime aggregates and defaults to
+three months of detailed hourly impact. Administrators can configure
+retention, row and domain cardinality, database and free-space budgets, and
+whether detail is collected. Cleanup is previewable and bounded. Reaching a
+limit stops only new detail; lifetime counters remain active.
 
 ## Network
 

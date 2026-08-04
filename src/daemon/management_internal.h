@@ -879,7 +879,7 @@ int handle_policy_rule_analysis(struct jg_management *management,
                                 size_t output_size,
                                 size_t *written);
 
-/** @brief Return or replace detailed policy-statistics retention. */
+/** @brief Return or replace the detailed policy-statistics storage policy. */
 int handle_policy_statistics(struct jg_management *management,
                              const struct management_request *request,
                              const struct remote_address *remote,

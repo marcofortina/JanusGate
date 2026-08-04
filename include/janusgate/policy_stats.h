@@ -18,13 +18,55 @@
 #include "janusgate/version.h"
 
 /** Default detailed policy-statistics retention in calendar months. */
-#define JG_POLICY_STATS_RETENTION_DEFAULT 12U
+#define JG_POLICY_STATS_RETENTION_DEFAULT 3U
 
 /** Smallest configurable detailed-statistics retention. */
 #define JG_POLICY_STATS_RETENTION_MIN 1U
 
 /** Largest configurable detailed-statistics retention. */
 #define JG_POLICY_STATS_RETENTION_MAX 120U
+
+/** Default maximum number of retained per-rule impact rows. */
+#define JG_POLICY_STATS_DETAIL_ROWS_DEFAULT UINT64_C(250000)
+
+/** Smallest configurable retained impact-row budget. */
+#define JG_POLICY_STATS_DETAIL_ROWS_MIN UINT64_C(1000)
+
+/** Largest configurable retained impact-row budget. */
+#define JG_POLICY_STATS_DETAIL_ROWS_MAX UINT64_C(5000000)
+
+/** Default maximum impact rows retained per rule and UTC hour. */
+#define JG_POLICY_STATS_RULE_HOUR_ROWS_DEFAULT 1000U
+
+/** Smallest configurable per-rule, per-hour impact-row budget. */
+#define JG_POLICY_STATS_RULE_HOUR_ROWS_MIN 10U
+
+/** Largest configurable per-rule, per-hour impact-row budget. */
+#define JG_POLICY_STATS_RULE_HOUR_ROWS_MAX 100000U
+
+/** Default maximum distinct domains retained per rule and UTC hour. */
+#define JG_POLICY_STATS_RULE_HOUR_DOMAINS_DEFAULT 256U
+
+/** Smallest configurable per-rule, per-hour distinct-domain budget. */
+#define JG_POLICY_STATS_RULE_HOUR_DOMAINS_MIN 10U
+
+/** Largest configurable per-rule, per-hour distinct-domain budget. */
+#define JG_POLICY_STATS_RULE_HOUR_DOMAINS_MAX 10000U
+
+/** Default maximum aggregate SQLite storage before detail is suspended. */
+#define JG_POLICY_STATS_DATABASE_BYTES_DEFAULT UINT64_C(1073741824)
+
+/** Smallest configurable aggregate SQLite storage budget. */
+#define JG_POLICY_STATS_DATABASE_BYTES_MIN UINT64_C(67108864)
+
+/** Largest configurable aggregate SQLite storage budget. */
+#define JG_POLICY_STATS_DATABASE_BYTES_MAX UINT64_C(1099511627776)
+
+/** Default free-space reserve before detail collection is suspended. */
+#define JG_POLICY_STATS_FREE_BYTES_DEFAULT UINT64_C(268435456)
+
+/** Largest configurable free-space reserve. */
+#define JG_POLICY_STATS_FREE_BYTES_MAX UINT64_C(1099511627776)
 
 /** Largest number of samples accepted by one database batch. */
 #define JG_POLICY_STATS_BATCH_MAX 1024U
@@ -100,18 +142,64 @@ struct jg_policy_rule_sample {
     bool shadowed;
 };
 
-/** Persistent detailed-statistics retention configuration. */
+/** Persistent detailed-statistics storage configuration. */
 struct jg_policy_stats_config {
     /** Whether scheduled retention cleanup is enabled. */
     bool retention_enabled;
+    /** Whether detailed hourly collection is enabled. */
+    bool detail_enabled;
     /** Number of calendar months retained in detailed buckets. */
     uint32_t retention_months;
+    /** Maximum retained impact rows across all rules. */
+    uint64_t detail_max_rows;
+    /** Maximum retained impact rows per rule and UTC hour. */
+    uint32_t detail_max_rows_per_rule_hour;
+    /** Maximum distinct domains retained per rule and UTC hour. */
+    uint32_t detail_max_domains_per_rule_hour;
+    /** Aggregate SQLite byte budget before detail collection is suspended. */
+    uint64_t maximum_database_bytes;
+    /** Required filesystem reserve before detail collection is suspended. */
+    uint64_t minimum_free_bytes;
     /** Monotonic optimistic-concurrency revision. */
     uint64_t revision;
     /** Last configuration modification time as Unix seconds. */
     uint64_t updated_at;
     /** Last completed detail cleanup time as Unix seconds, or zero. */
     uint64_t last_cleanup_at;
+};
+
+/** Replacement values for detailed policy-statistics storage policy. */
+struct jg_policy_stats_config_update {
+    /** Whether scheduled retention cleanup is enabled. */
+    bool retention_enabled;
+    /** Whether detailed hourly collection is enabled. */
+    bool detail_enabled;
+    /** Number of calendar months retained in detailed buckets. */
+    uint32_t retention_months;
+    /** Maximum retained impact rows across all rules. */
+    uint64_t detail_max_rows;
+    /** Maximum retained impact rows per rule and UTC hour. */
+    uint32_t detail_max_rows_per_rule_hour;
+    /** Maximum distinct domains retained per rule and UTC hour. */
+    uint32_t detail_max_domains_per_rule_hour;
+    /** Aggregate SQLite byte budget before detail collection is suspended. */
+    uint64_t maximum_database_bytes;
+    /** Required filesystem reserve before detail collection is suspended. */
+    uint64_t minimum_free_bytes;
+};
+
+/** Persistent bounded-detail storage status. */
+struct jg_policy_stats_storage {
+    /** Current retained impact rows. */
+    uint64_t detail_rows;
+    /** Latest aggregate bytes occupied by SQLite files. */
+    uint64_t estimated_bytes;
+    /** New impact rows rejected by a cardinality budget. */
+    uint64_t cardinality_dropped;
+    /** Impact samples skipped while storage thresholds were exceeded. */
+    uint64_t storage_dropped;
+    /** Whether a byte or filesystem threshold currently suspends detail. */
+    bool storage_suspended;
 };
 
 /** Lifetime request counters preserved across detail cleanup. */
@@ -238,7 +326,7 @@ struct jg_policy_stats_cleanup_report {
 struct jg_database;
 
 /**
- * @brief Load persistent detailed-statistics retention configuration.
+ * @brief Load persistent detailed-statistics storage configuration.
  *
  * @param[in] database Open database.
  * @param[out] config Receives the self-contained configuration.
@@ -255,11 +343,10 @@ JG_PUBLIC int jg_database_load_policy_stats_config(
     struct jg_policy_stats_config *config);
 
 /**
- * @brief Replace retention configuration at its expected revision.
+ * @brief Replace the detail storage policy at its expected revision.
  *
  * @param[in] database Open database.
- * @param[in] retention_enabled Whether scheduled cleanup is enabled.
- * @param[in] retention_months Calendar months of details to retain.
+ * @param[in] update Complete replacement storage policy.
  * @param[in] expected_revision Revision observed by the caller.
  * @param[in] updated_at Modification time as Unix seconds.
  * @param[out] updated Receives the updated configuration.
@@ -274,11 +361,25 @@ JG_PUBLIC int jg_database_load_policy_stats_config(
  */
 JG_PUBLIC int jg_database_update_policy_stats_config(
     struct jg_database *database,
-    bool retention_enabled,
-    uint32_t retention_months,
+    const struct jg_policy_stats_config_update *update,
     uint64_t expected_revision,
     uint64_t updated_at,
     struct jg_policy_stats_config *updated);
+
+/**
+ * @brief Load persistent detailed-statistics storage health.
+ *
+ * @param[in] database Open database.
+ * @param[out] storage Receives bounded storage counters and state.
+ *
+ * @return 0 on success.
+ * @return -EINVAL for a null argument.
+ * @return -EILSEQ for invalid persistent content.
+ * @return A negative errno-style value for another SQLite failure.
+ */
+JG_PUBLIC int jg_database_load_policy_stats_storage(
+    struct jg_database *database,
+    struct jg_policy_stats_storage *storage);
 
 /**
  * @brief Atomically add bounded request and matching-rule sample batches.

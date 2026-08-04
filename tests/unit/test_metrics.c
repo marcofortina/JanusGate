@@ -39,6 +39,11 @@ static void test_render_snapshot(void **state)
     stats.policy_stats.dropped = 5U;
     stats.policy_stats.restore_dropped = 2U;
     stats.policy_stats.stale_generation_dropped = 3U;
+    stats.policy_stats.detail_rows = 1234U;
+    stats.policy_stats.estimated_bytes = 5678U;
+    stats.policy_stats.cardinality_dropped = 9U;
+    stats.policy_stats.storage_dropped = 10U;
+    stats.policy_stats.storage_suspended = 1U;
     management.authentication_failures_total = 6U;
     management.alert_open_by_type[JG_ALERT_TYPE_QUEUE_DROPS - 1U] = 2U;
     management.alert_deliveries_pending = 3U;
@@ -68,6 +73,16 @@ static void test_render_snapshot(void **state)
         output, "janusgate_policy_stats_dropped_during_restore_total 2\n"));
     assert_non_null(strstr(
         output, "janusgate_policy_stats_stale_generation_dropped_total 3\n"));
+    assert_non_null(
+        strstr(output, "janusgate_policy_stats_detail_rows 1234\n"));
+    assert_non_null(
+        strstr(output, "janusgate_policy_stats_estimated_bytes 5678\n"));
+    assert_non_null(
+        strstr(output, "janusgate_policy_stats_cardinality_dropped_total 9\n"));
+    assert_non_null(
+        strstr(output, "janusgate_policy_stats_storage_dropped_total 10\n"));
+    assert_non_null(
+        strstr(output, "janusgate_policy_stats_storage_suspended 1\n"));
     assert_non_null(
         strstr(output, "janusgate_authentication_failures_total 6\n"));
     assert_non_null(

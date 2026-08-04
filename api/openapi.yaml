@@ -558,7 +558,7 @@ paths:
     get:
       tags: [Policy]
       operationId: getPolicyStatistics
-      summary: Read policy-statistics retention and lifetime traffic counters
+      summary: Read bounded policy-statistics storage and lifetime counters
       responses:
         '200':
           $ref: '#/components/responses/JsonSuccess'
@@ -567,7 +567,7 @@ paths:
     put:
       tags: [Policy]
       operationId: updatePolicyStatistics
-      summary: Replace detailed-statistics retention at its current revision
+      summary: Replace detailed-statistics storage policy at its current revision
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
       requestBody:
@@ -2193,7 +2193,16 @@ components:
     PolicyStatisticsUpdate:
       type: object
       additionalProperties: false
-      required: [revision, retention_enabled, retention_months]
+      required:
+        - revision
+        - retention_enabled
+        - retention_months
+        - detail_enabled
+        - detail_max_rows
+        - detail_max_rows_per_rule_hour
+        - detail_max_domains_per_rule_hour
+        - maximum_database_bytes
+        - minimum_free_bytes
       properties:
         revision:
           $ref: '#/components/schemas/Identifier'
@@ -2203,6 +2212,28 @@ components:
           type: integer
           minimum: 1
           maximum: 120
+        detail_enabled:
+          type: boolean
+        detail_max_rows:
+          type: integer
+          minimum: 1000
+          maximum: 5000000
+        detail_max_rows_per_rule_hour:
+          type: integer
+          minimum: 10
+          maximum: 100000
+        detail_max_domains_per_rule_hour:
+          type: integer
+          minimum: 10
+          maximum: 10000
+        maximum_database_bytes:
+          type: integer
+          minimum: 67108864
+          maximum: 1099511627776
+        minimum_free_bytes:
+          type: integer
+          minimum: 0
+          maximum: 1099511627776
     PolicyStatisticsCleanup:
       oneOf:
         - type: object

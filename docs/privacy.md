@@ -17,10 +17,10 @@ should follow the organization's accountability requirement.
 
 Policy-impact detail can contain client IP and MAC addresses, VLAN identifiers,
 domains, destinations, and selected policy paths in hourly buckets. Scheduled
-retention is enabled by default for 12 months and is configurable from 1 to 120
-months. Choose the shortest period that supports rollout review and incident
-response. Disabling scheduled cleanup stops automatic deletion; it does not
-disable collection or remove existing detail.
+retention is enabled by default for three months and is configurable from 1 to
+120 months. Collection can be disabled independently. Explicit row, domain,
+database-byte, and free-space budgets prevent unbounded detail growth while
+lifetime counters remain available.
 
 Cleanup is previewable and incremental. It removes only expired impact detail;
 lifetime rule and traffic aggregates contain no client identifiers and remain

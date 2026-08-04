@@ -887,7 +887,7 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                 <fieldset class="plain-fieldset"
                           id="policy-statistics-fieldset">
                   <legend class="visually-hidden">
-                    Policy-statistics retention
+                    Policy-statistics storage policy
                   </legend>
                   <div class="form-grid three-columns">
                     <label>
@@ -895,16 +895,45 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                       <input name="retention_months" type="number"
                              min="1" max="120" required>
                     </label>
+                    <label>
+                      Total impact rows
+                      <input name="detail_max_rows" type="number"
+                             min="1000" max="5000000" required>
+                    </label>
+                    <label>
+                      Rows per rule and hour
+                      <input name="detail_max_rows_per_rule_hour" type="number"
+                             min="10" max="100000" required>
+                    </label>
+                    <label>
+                      Domains per rule and hour
+                      <input name="detail_max_domains_per_rule_hour"
+                             type="number" min="10" max="10000" required>
+                    </label>
+                    <label>
+                      SQLite limit (MiB)
+                      <input name="maximum_database_mib" type="number"
+                             min="64" max="1048576" required>
+                    </label>
+                    <label>
+                      Free-space reserve (MiB)
+                      <input name="minimum_free_mib" type="number"
+                             min="0" max="1048576" required>
+                    </label>
                     <label class="check-label">
                       <input name="retention_enabled" type="checkbox">
                       Scheduled cleanup enabled
+                    </label>
+                    <label class="check-label">
+                      <input name="detail_enabled" type="checkbox">
+                      Detailed collection enabled
                     </label>
                   </div>
                   <div class="button-row form-actions">
                     <button class="primary-action"
                             id="policy-statistics-submit"
                             data-busy-label="Saving…" type="submit">
-                      Save retention
+                      Save storage policy
                     </button>
                     <button id="policy-statistics-preview"
                             data-busy-label="Checking…" type="button">

@@ -24,30 +24,75 @@ static int decode_config(sqlite3_stmt *statement,
                          struct jg_policy_stats_config *config)
 {
     uint64_t retention_months = 0U;
+    uint64_t detail_max_rows = 0U;
+    uint64_t detail_max_rows_per_rule_hour = 0U;
+    uint64_t detail_max_domains_per_rule_hour = 0U;
+    uint64_t maximum_database_bytes = 0U;
+    uint64_t minimum_free_bytes = 0U;
     uint64_t revision = 0U;
     uint64_t updated_at = 0U;
     uint64_t last_cleanup_at = 0U;
-    const int enabled = sqlite3_column_int(statement, 0);
+    const int retention_enabled = sqlite3_column_int(statement, 0);
+    const int detail_enabled = sqlite3_column_int(statement, 2);
     int result = jg_database_column_unsigned(statement, 1, &retention_months);
 
     if (result == 0) {
-        result = jg_database_column_unsigned(statement, 2, &revision);
+        result = jg_database_column_unsigned(statement, 3, &detail_max_rows);
     }
     if (result == 0) {
-        result = jg_database_column_unsigned(statement, 3, &updated_at);
+        result = jg_database_column_unsigned(statement, 4,
+                                             &detail_max_rows_per_rule_hour);
     }
     if (result == 0) {
-        result = jg_database_column_unsigned(statement, 4, &last_cleanup_at);
+        result = jg_database_column_unsigned(statement, 5,
+                                             &detail_max_domains_per_rule_hour);
+    }
+    if (result == 0) {
+        result =
+            jg_database_column_unsigned(statement, 6, &maximum_database_bytes);
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 7, &minimum_free_bytes);
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 8, &revision);
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 9, &updated_at);
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 10, &last_cleanup_at);
     }
     if (result == 0 &&
-        ((enabled != 0 && enabled != 1) ||
+        ((retention_enabled != 0 && retention_enabled != 1) ||
+         (detail_enabled != 0 && detail_enabled != 1) ||
          retention_months < JG_POLICY_STATS_RETENTION_MIN ||
-         retention_months > JG_POLICY_STATS_RETENTION_MAX || revision == 0U)) {
+         retention_months > JG_POLICY_STATS_RETENTION_MAX ||
+         detail_max_rows < JG_POLICY_STATS_DETAIL_ROWS_MIN ||
+         detail_max_rows > JG_POLICY_STATS_DETAIL_ROWS_MAX ||
+         detail_max_rows_per_rule_hour < JG_POLICY_STATS_RULE_HOUR_ROWS_MIN ||
+         detail_max_rows_per_rule_hour > JG_POLICY_STATS_RULE_HOUR_ROWS_MAX ||
+         detail_max_domains_per_rule_hour <
+             JG_POLICY_STATS_RULE_HOUR_DOMAINS_MIN ||
+         detail_max_domains_per_rule_hour >
+             JG_POLICY_STATS_RULE_HOUR_DOMAINS_MAX ||
+         maximum_database_bytes < JG_POLICY_STATS_DATABASE_BYTES_MIN ||
+         maximum_database_bytes > JG_POLICY_STATS_DATABASE_BYTES_MAX ||
+         minimum_free_bytes > JG_POLICY_STATS_FREE_BYTES_MAX ||
+         revision == 0U)) {
         result = -EILSEQ;
     }
     if (result == 0) {
-        config->retention_enabled = enabled != 0;
+        config->retention_enabled = retention_enabled != 0;
+        config->detail_enabled = detail_enabled != 0;
         config->retention_months = (uint32_t)retention_months;
+        config->detail_max_rows = detail_max_rows;
+        config->detail_max_rows_per_rule_hour =
+            (uint32_t)detail_max_rows_per_rule_hour;
+        config->detail_max_domains_per_rule_hour =
+            (uint32_t)detail_max_domains_per_rule_hour;
+        config->maximum_database_bytes = maximum_database_bytes;
+        config->minimum_free_bytes = minimum_free_bytes;
         config->revision = revision;
         config->updated_at = updated_at;
         config->last_cleanup_at = last_cleanup_at;
@@ -60,8 +105,11 @@ int jg_database_load_policy_stats_config(struct jg_database *database,
                                          struct jg_policy_stats_config *config)
 {
     static const char query[] =
-        "SELECT retention_enabled,retention_months,revision,updated_at,"
-        "last_cleanup_at FROM policy_statistics_configuration WHERE id=1;";
+        "SELECT retention_enabled,retention_months,detail_enabled,"
+        "detail_max_rows,detail_max_rows_per_rule_hour,"
+        "detail_max_domains_per_rule_hour,maximum_database_bytes,"
+        "minimum_free_bytes,revision,updated_at,last_cleanup_at FROM "
+        "policy_statistics_configuration WHERE id=1;";
     sqlite3_stmt *statement = NULL;
     int status = SQLITE_OK;
     int result = 0;
@@ -93,19 +141,21 @@ int jg_database_load_policy_stats_config(struct jg_database *database,
     return result;
 }
 
-/** @brief Replace retention configuration at its expected revision. */
+/** @brief Replace the detail storage policy at its expected revision. */
 int jg_database_update_policy_stats_config(
     struct jg_database *database,
-    bool retention_enabled,
-    uint32_t retention_months,
+    const struct jg_policy_stats_config_update *update,
     uint64_t expected_revision,
     uint64_t updated_at,
     struct jg_policy_stats_config *updated)
 {
-    static const char update[] =
+    static const char update_query[] =
         "UPDATE policy_statistics_configuration SET retention_enabled=?1,"
-        "retention_months=?2,revision=revision+1,updated_at=?3 WHERE id=1 AND "
-        "revision=?4 AND revision<9223372036854775807;";
+        "retention_months=?2,detail_enabled=?3,detail_max_rows=?4,"
+        "detail_max_rows_per_rule_hour=?5,"
+        "detail_max_domains_per_rule_hour=?6,maximum_database_bytes=?7,"
+        "minimum_free_bytes=?8,revision=revision+1,updated_at=?9 WHERE id=1 "
+        "AND revision=?10 AND revision<9223372036854775807;";
     static const char revision_query[] =
         "SELECT revision FROM policy_statistics_configuration WHERE id=?1;";
     struct jg_policy_stats_config record;
@@ -113,8 +163,22 @@ int jg_database_update_policy_stats_config(
     int status = SQLITE_OK;
     int result = 0;
 
-    if (database == NULL || retention_months < JG_POLICY_STATS_RETENTION_MIN ||
-        retention_months > JG_POLICY_STATS_RETENTION_MAX ||
+    if (database == NULL || update == NULL ||
+        update->retention_months < JG_POLICY_STATS_RETENTION_MIN ||
+        update->retention_months > JG_POLICY_STATS_RETENTION_MAX ||
+        update->detail_max_rows < JG_POLICY_STATS_DETAIL_ROWS_MIN ||
+        update->detail_max_rows > JG_POLICY_STATS_DETAIL_ROWS_MAX ||
+        update->detail_max_rows_per_rule_hour <
+            JG_POLICY_STATS_RULE_HOUR_ROWS_MIN ||
+        update->detail_max_rows_per_rule_hour >
+            JG_POLICY_STATS_RULE_HOUR_ROWS_MAX ||
+        update->detail_max_domains_per_rule_hour <
+            JG_POLICY_STATS_RULE_HOUR_DOMAINS_MIN ||
+        update->detail_max_domains_per_rule_hour >
+            JG_POLICY_STATS_RULE_HOUR_DOMAINS_MAX ||
+        update->maximum_database_bytes < JG_POLICY_STATS_DATABASE_BYTES_MIN ||
+        update->maximum_database_bytes > JG_POLICY_STATS_DATABASE_BYTES_MAX ||
+        update->minimum_free_bytes > JG_POLICY_STATS_FREE_BYTES_MAX ||
         expected_revision == 0U || expected_revision > POLICY_STATS_VALUE_MAX ||
         updated_at > POLICY_STATS_VALUE_MAX || updated == NULL) {
         return -EINVAL;
@@ -123,21 +187,47 @@ int jg_database_update_policy_stats_config(
     result = jg_database_transaction_begin(database);
     if (result == 0) {
         status =
-            sqlite3_prepare_v3(database->handle, update, -1,
+            sqlite3_prepare_v3(database->handle, update_query, -1,
                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
         result = jg_database_sqlite_result(status);
     }
     if (result == 0) {
-        status = sqlite3_bind_int(statement, 1, retention_enabled ? 1 : 0);
+        status =
+            sqlite3_bind_int(statement, 1, update->retention_enabled ? 1 : 0);
         if (status == SQLITE_OK) {
-            status = sqlite3_bind_int(statement, 2, (int)retention_months);
+            status =
+                sqlite3_bind_int(statement, 2, (int)update->retention_months);
         }
         if (status == SQLITE_OK) {
             status =
-                sqlite3_bind_int64(statement, 3, (sqlite3_int64)updated_at);
+                sqlite3_bind_int(statement, 3, update->detail_enabled ? 1 : 0);
         }
         if (status == SQLITE_OK) {
             status = sqlite3_bind_int64(statement, 4,
+                                        (sqlite3_int64)update->detail_max_rows);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int(
+                statement, 5, (int)update->detail_max_rows_per_rule_hour);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int(
+                statement, 6, (int)update->detail_max_domains_per_rule_hour);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(
+                statement, 7, (sqlite3_int64)update->maximum_database_bytes);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(
+                statement, 8, (sqlite3_int64)update->minimum_free_bytes);
+        }
+        if (status == SQLITE_OK) {
+            status =
+                sqlite3_bind_int64(statement, 9, (sqlite3_int64)updated_at);
+        }
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int64(statement, 10,
                                         (sqlite3_int64)expected_revision);
         }
         result = jg_database_sqlite_result(status);
@@ -167,6 +257,68 @@ int jg_database_update_policy_stats_config(
     }
     if (result == 0) {
         *updated = record;
+    }
+    return result;
+}
+
+/** @brief Load persistent detailed-statistics storage health. */
+int jg_database_load_policy_stats_storage(
+    struct jg_database *database,
+    struct jg_policy_stats_storage *storage)
+{
+    static const char query[] =
+        "SELECT detail_rows,estimated_bytes,cardinality_dropped,"
+        "storage_dropped,storage_suspended FROM policy_statistics_storage "
+        "WHERE id=1;";
+    sqlite3_stmt *statement = NULL;
+    int status = SQLITE_OK;
+    int suspended = 0;
+    int result = 0;
+
+    if (database == NULL || storage == NULL) {
+        return -EINVAL;
+    }
+    *storage = (struct jg_policy_stats_storage){0};
+    status = sqlite3_prepare_v3(database->handle, query, -1,
+                                SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    result = jg_database_sqlite_result(status);
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result =
+            status == SQLITE_ROW
+                ? jg_database_column_unsigned(statement, 0,
+                                              &storage->detail_rows)
+                : (status == SQLITE_DONE ? -EILSEQ
+                                         : jg_database_sqlite_result(status));
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 1,
+                                             &storage->estimated_bytes);
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 2,
+                                             &storage->cardinality_dropped);
+    }
+    if (result == 0) {
+        result = jg_database_column_unsigned(statement, 3,
+                                             &storage->storage_dropped);
+    }
+    if (result == 0) {
+        suspended = sqlite3_column_int(statement, 4);
+        if (suspended != 0 && suspended != 1) {
+            result = -EILSEQ;
+        } else {
+            storage->storage_suspended = suspended != 0;
+        }
+    }
+    if (result == 0 && sqlite3_step(statement) != SQLITE_DONE) {
+        result = -EIO;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
     }
     return result;
 }
@@ -359,8 +511,9 @@ int jg_database_cleanup_policy_stats(
 {
     static const char delete_impact[] =
         "DELETE FROM policy_impact_buckets WHERE (bucket_start,dimension,"
-        "rule_id,path,client_family,client_address,client_mac,vlan_id,domain,"
-        "query_type) IN (SELECT bucket_start,dimension,rule_id,path,"
+        "statistics_id,path,client_family,client_address,client_mac,vlan_id,"
+        "domain,query_type) IN (SELECT bucket_start,dimension,statistics_id,"
+        "path,"
         "client_family,client_address,client_mac,vlan_id,domain,query_type "
         "FROM policy_impact_buckets WHERE bucket_start<?1 ORDER BY "
         "bucket_start LIMIT ?2);";

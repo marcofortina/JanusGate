@@ -114,11 +114,11 @@ means that the rule produced observed would-blocks; `cleanup_candidate` means
 that an enabled explicit rule has no recorded use. Both require operator
 review and never alter or delete a rule.
 
-Detailed statistics default to 12 months of scheduled retention and accept a
-configured range of 1–120 months. Cleanup can be previewed, then executed in
-batches of at most 10,000 rows. It removes only expired hourly rule, client,
-domain, destination, and path detail. Lifetime rule and traffic aggregates are
-preserved even when scheduled retention is disabled or manual cleanup runs.
+Detailed statistics default to three months of scheduled retention and are
+bounded by configurable total rows, per-rule hourly rows and domains, aggregate
+SQLite bytes, and free filesystem space. Collection can be disabled without
+affecting lifetime counters. Cleanup can be previewed, then executed in batches
+of at most 10,000 rows; it removes only expired hourly detail.
 
 Validate the contract with:
 

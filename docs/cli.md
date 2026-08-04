@@ -42,8 +42,8 @@ output and explicit high-impact operations.
 - `policy analyze KIND ID` reports lifetime hits, retained client impact,
   traffic percentage, and conservative duplicate, conflict, shadowing, and
   reachability findings. Analysis supports `domain` and `destination`.
-- `policy statistics` reports detailed-statistics retention and lifetime
-  traffic counters.
+- `policy statistics` reports bounded detailed-statistics storage, health, and
+  lifetime traffic counters.
 - `blocklist list`, `blocklist export`, and `source list` inspect list state.
 - `events [QUERY]` and `audit [QUERY]` accept a bounded query string;
   `audit verify` validates the chain.
@@ -66,9 +66,8 @@ output and explicit high-impact operations.
   `policy simulate FILE` spelling remains available.
 - `policy mode` reads global enforcement; `policy mode FILE` replaces it after
   automatically reading the current revision.
-- `policy statistics FILE` replaces the detailed-statistics retention setting
-  after automatically reading its current revision. The document contains
-  `retention_enabled` and `retention_months`, from 1 through 120.
+- `policy statistics FILE` replaces the complete detailed-statistics storage
+  policy after automatically reading its current revision.
 - `policy cleanup preview` reports expired detail without changing it;
   `policy cleanup run` removes one bounded batch and requires confirmation or
   `--yes`. Repeat the command only when its result reports `complete: false`.
@@ -104,18 +103,26 @@ not proof and never trigger an automatic policy change. `policy explain FILE`
 shows the configured decision, every observation layer, the effective verdict,
 and the rule responsible for a proposed request.
 
-Detailed impact defaults to 12 months of scheduled retention. To change it,
-pass a document such as this to `policy statistics FILE`:
+Detailed impact defaults to three months of scheduled retention with bounded
+rows, domains, database bytes, and filesystem headroom. To change it, pass a
+complete document such as this to `policy statistics FILE`:
 
 ```json
 {
   "retention_enabled": true,
-  "retention_months": 6
+  "retention_months": 3,
+  "detail_enabled": true,
+  "detail_max_rows": 250000,
+  "detail_max_rows_per_rule_hour": 1000,
+  "detail_max_domains_per_rule_hour": 256,
+  "maximum_database_bytes": 1073741824,
+  "minimum_free_bytes": 268435456
 }
 ```
 
-Scheduled and manual cleanup remove only expired hourly impact detail.
-Lifetime rule and traffic aggregates are preserved.
+Scheduled and manual cleanup remove only expired hourly detail. New detail is
+discarded at explicit cardinality limits or suspended before either storage
+threshold is crossed; lifetime rule and traffic aggregates remain active.
 
 ## Native alerting
 

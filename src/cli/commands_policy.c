@@ -185,7 +185,7 @@ static int run_policy_mode(const struct cli_options *options,
     return result;
 }
 
-/** @brief Read or replace detailed policy-statistics retention. */
+/** @brief Read or replace detailed policy-statistics storage policy. */
 static int run_policy_statistics(const struct cli_options *options,
                                  const char *token,
                                  const char *file)

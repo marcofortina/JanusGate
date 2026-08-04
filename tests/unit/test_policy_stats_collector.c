@@ -166,6 +166,7 @@ static void test_collection(void **state)
     struct jg_policy_stats_collector_stats collector_stats;
     struct jg_policy_stats_cleanup_report cleanup;
     struct jg_policy_stats_config config;
+    struct jg_policy_stats_config_update update;
     struct jg_policy_traffic_stats traffic_stats;
     struct jg_policy_rule_stats rules[2U];
     struct jg_policy_stats_collector *collector = NULL;
@@ -180,8 +181,19 @@ static void test_collection(void **state)
     assert_int_equal(jg_database_open(path, 1000U, &database), 0);
     assert_int_equal(jg_database_load_policy_stats_config(database, &config),
                      0);
+    update = (struct jg_policy_stats_config_update){
+        .retention_enabled = false,
+        .detail_enabled = config.detail_enabled,
+        .retention_months = 1U,
+        .detail_max_rows = config.detail_max_rows,
+        .detail_max_rows_per_rule_hour = config.detail_max_rows_per_rule_hour,
+        .detail_max_domains_per_rule_hour =
+            config.detail_max_domains_per_rule_hour,
+        .maximum_database_bytes = config.maximum_database_bytes,
+        .minimum_free_bytes = config.minimum_free_bytes,
+    };
     assert_int_equal(jg_database_update_policy_stats_config(
-                         database, false, 1U, config.revision, 100U, &config),
+                         database, &update, config.revision, 100U, &config),
                      0);
     assert_int_equal(jg_policy_stats_collector_create(
                          database, JG_POLICY_STATS_QUEUE_MIN, 1U, &collector),
@@ -228,8 +240,9 @@ static void test_collection(void **state)
     assert_int_equal(
         jg_database_record_policy_stats(database, &old_traffic, 1U, NULL, 0U),
         0);
+    update.retention_enabled = true;
     assert_int_equal(jg_database_update_policy_stats_config(
-                         database, true, 1U, config.revision, 200U, &config),
+                         database, &update, config.revision, 200U, &config),
                      0);
     assert_int_equal(
         jg_policy_stats_collector_create(database, 8U, 1U, &collector), 0);

@@ -217,7 +217,7 @@ async function analyzeRule(kind, rule) {
 }
 
 /**
- * Render configured retention and lifetime counters.
+ * Render configured detail storage and lifetime counters.
  */
 function renderPolicyStatistics() {
   const form = byId("policy-statistics-form");
@@ -226,11 +226,29 @@ function renderPolicyStatistics() {
   form.elements.retention_enabled.checked =
     policyStatistics.retention_enabled;
   form.elements.retention_months.value = policyStatistics.retention_months;
+  form.elements.detail_enabled.checked = policyStatistics.detail_enabled;
+  form.elements.detail_max_rows.value = policyStatistics.detail_max_rows;
+  form.elements.detail_max_rows_per_rule_hour.value =
+    policyStatistics.detail_max_rows_per_rule_hour;
+  form.elements.detail_max_domains_per_rule_hour.value =
+    policyStatistics.detail_max_domains_per_rule_hour;
+  form.elements.maximum_database_mib.value =
+    policyStatistics.maximum_database_bytes / 1048576;
+  form.elements.minimum_free_mib.value =
+    policyStatistics.minimum_free_bytes / 1048576;
   byId("policy-statistics-summary").textContent = [
+    policyStatistics.detail_enabled
+      ? "Detailed collection enabled"
+      : "Detailed collection disabled",
     policyStatistics.retention_enabled
       ? "Scheduled cleanup enabled"
       : "Scheduled cleanup disabled",
     `${formatNumber(policyStatistics.retention_months)} months of detail`,
+    `${formatNumber(policyStatistics.storage.detail_rows)} retained rows`,
+    `${formatNumber(policyStatistics.storage.cardinality_dropped)} cardinality drops`,
+    policyStatistics.storage.storage_suspended
+      ? "storage suspended"
+      : "storage available",
     `${formatNumber(lifetime.request_count)} lifetime requests`,
     `${formatNumber(lifetime.would_block_count)} lifetime would-blocks`,
     `last cleanup ${formatTimestamp(policyStatistics.last_cleanup_at)}`,
@@ -238,7 +256,7 @@ function renderPolicyStatistics() {
 }
 
 /**
- * Fetch policy-statistics retention and lifetime counters.
+ * Fetch policy-statistics storage and lifetime counters.
  */
 async function fetchPolicyStatistics() {
   policyStatistics = await api("/api/v1/policies/statistics");
@@ -246,7 +264,7 @@ async function fetchPolicyStatistics() {
 }
 
 /**
- * Replace detailed-statistics retention at its current revision.
+ * Replace detailed-statistics storage policy at its current revision.
  */
 async function submitPolicyStatistics(event) {
   event.preventDefault();
@@ -260,10 +278,22 @@ async function submitPolicyStatistics(event) {
           revision: policyStatistics.revision,
           retention_enabled: form.elements.retention_enabled.checked,
           retention_months: Number(form.elements.retention_months.value),
+          detail_enabled: form.elements.detail_enabled.checked,
+          detail_max_rows: Number(form.elements.detail_max_rows.value),
+          detail_max_rows_per_rule_hour: Number(
+            form.elements.detail_max_rows_per_rule_hour.value,
+          ),
+          detail_max_domains_per_rule_hour: Number(
+            form.elements.detail_max_domains_per_rule_hour.value,
+          ),
+          maximum_database_bytes:
+            Number(form.elements.maximum_database_mib.value) * 1048576,
+          minimum_free_bytes:
+            Number(form.elements.minimum_free_mib.value) * 1048576,
         },
       });
       renderPolicyStatistics();
-      announce("Policy-statistics retention was updated.", "success");
+      announce("Policy-statistics storage policy was updated.", "success");
     } catch (error) {
       showError(byId("policies-error"), errorMessage(error));
     }

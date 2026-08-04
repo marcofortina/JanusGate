@@ -893,12 +893,22 @@ static void test_policy_statistics_api(void **state)
         "{\"request_id\":\"statistics-update\",\"method\":\"PUT\","
         "\"path\":\"/api/v1/policies/statistics\",\"host\":\"localhost\","
         "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":1,"
-        "\"retention_enabled\":false,\"retention_months\":6}}";
+        "\"retention_enabled\":false,\"retention_months\":6,"
+        "\"detail_enabled\":true,\"detail_max_rows\":250000,"
+        "\"detail_max_rows_per_rule_hour\":1000,"
+        "\"detail_max_domains_per_rule_hour\":256,"
+        "\"maximum_database_bytes\":1073741824,"
+        "\"minimum_free_bytes\":268435456}}";
     static const char stale_request[] =
         "{\"request_id\":\"statistics-stale\",\"method\":\"PUT\","
         "\"path\":\"/api/v1/policies/statistics\",\"host\":\"localhost\","
         "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":1,"
-        "\"retention_enabled\":true,\"retention_months\":12}}";
+        "\"retention_enabled\":true,\"retention_months\":3,"
+        "\"detail_enabled\":true,\"detail_max_rows\":250000,"
+        "\"detail_max_rows_per_rule_hour\":1000,"
+        "\"detail_max_domains_per_rule_hour\":256,"
+        "\"maximum_database_bytes\":1073741824,"
+        "\"minimum_free_bytes\":268435456}}";
     static const char preview_request[] =
         "{\"request_id\":\"statistics-preview\",\"method\":\"POST\","
         "\"path\":\"/api/v1/policies/statistics/cleanup\","
@@ -945,7 +955,9 @@ static void test_policy_statistics_api(void **state)
     body = json_object_get(response, "body");
     assert_true(json_is_true(json_object_get(body, "retention_enabled")));
     assert_int_equal(
-        json_integer_value(json_object_get(body, "retention_months")), 12);
+        json_integer_value(json_object_get(body, "retention_months")), 3);
+    assert_true(json_is_true(json_object_get(body, "detail_enabled")));
+    assert_true(json_is_object(json_object_get(body, "storage")));
     lifetime = json_object_get(body, "lifetime");
     assert_int_equal(
         json_integer_value(json_object_get(lifetime, "request_count")), 1);

@@ -167,7 +167,9 @@ groups:
 
       - alert: JanusGatePolicyStatisticsDropped
         expr: >-
-          increase(janusgate_policy_stats_dropped_total{job="janusgate"}[10m]) > 0
+          increase(janusgate_policy_stats_dropped_total{job="janusgate"}[10m])
+          - increase(janusgate_policy_stats_dropped_during_restore_total{job="janusgate"}[10m])
+          - increase(janusgate_policy_stats_stale_generation_dropped_total{job="janusgate"}[10m]) > 0
         labels:
           severity: warning
         annotations:
@@ -175,3 +177,26 @@ groups:
           description: >-
             The bounded asynchronous statistics collector discarded samples
             during the last ten minutes. Check sustained appliance load.
+
+      - alert: JanusGatePolicyStatisticsCardinalityLimited
+        expr: >-
+          increase(janusgate_policy_stats_cardinality_dropped_total{job="janusgate"}[10m]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "JanusGate policy detail reached a cardinality limit on {{ $labels.instance }}"
+          description: >-
+            New detailed rows exceeded a configured total, per-rule, or domain
+            budget. Lifetime counters continue to be recorded.
+
+      - alert: JanusGatePolicyStatisticsStorageSuspended
+        expr: >-
+          janusgate_policy_stats_storage_suspended{job="janusgate"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JanusGate policy detail storage is suspended on {{ $labels.instance }}"
+          description: >-
+            The SQLite byte budget or filesystem reserve has been crossed.
+            Lifetime counters continue while detailed collection is suspended.

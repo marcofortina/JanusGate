@@ -121,6 +121,11 @@ authentication failures, filesystem headroom, certificate lifetime, remote
 source health, webhook delivery, and policy-statistics backpressure. Metric
 and dashboard retention remain the responsibility of Prometheus and Grafana.
 
+Detailed policy-impact storage is explicitly bounded. Prometheus exposes its
+current row and byte estimates, cardinality and storage drops, and suspension
+state without labels derived from domains or clients. Lifetime counters remain
+active when an administrator disables detail or storage thresholds suspend it.
+
 ## Native incidents
 
 The WebGUI **Alerts** page and `janusgatectl alert` commands administer the

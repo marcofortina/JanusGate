@@ -4,7 +4,7 @@
 
 /**
  * @file management_policy_statistics.c
- * @brief Policy-statistics retention and cleanup administration.
+ * @brief Policy-statistics storage and cleanup administration.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -52,7 +52,7 @@ static json_t *traffic_json(const struct jg_policy_traffic_stats *stats,
     return body;
 }
 
-/** @brief Serialize detailed policy-statistics retention configuration. */
+/** @brief Serialize the detailed policy-statistics storage policy. */
 static json_t *retention_json(const struct jg_policy_stats_config *config)
 {
     json_t *body = json_object();
@@ -63,6 +63,17 @@ static json_t *retention_json(const struct jg_policy_stats_config *config)
         json_object_set_new(
             body, "retention_months",
             json_integer((json_int_t)config->retention_months)) != 0 ||
+        json_object_set_new(body, "detail_enabled",
+                            json_boolean(config->detail_enabled)) != 0 ||
+        set_counter(body, "detail_max_rows", config->detail_max_rows) != 0 ||
+        set_counter(body, "detail_max_rows_per_rule_hour",
+                    config->detail_max_rows_per_rule_hour) != 0 ||
+        set_counter(body, "detail_max_domains_per_rule_hour",
+                    config->detail_max_domains_per_rule_hour) != 0 ||
+        set_counter(body, "maximum_database_bytes",
+                    config->maximum_database_bytes) != 0 ||
+        set_counter(body, "minimum_free_bytes", config->minimum_free_bytes) !=
+            0 ||
         json_object_set_new(body, "revision",
                             json_integer((json_int_t)config->revision)) != 0 ||
         set_optional_timestamp(body, "updated_at", config->updated_at) != 0 ||
@@ -74,19 +85,33 @@ static json_t *retention_json(const struct jg_policy_stats_config *config)
     return body;
 }
 
-/** @brief Serialize retention configuration and lifetime traffic counters. */
+/** @brief Serialize storage configuration and lifetime traffic counters. */
 static json_t *statistics_json(const struct jg_policy_stats_config *config,
+                               const struct jg_policy_stats_storage *storage,
                                const struct jg_policy_traffic_stats *traffic,
                                bool has_traffic)
 {
     json_t *lifetime = traffic_json(traffic, has_traffic);
+    json_t *storage_body = json_object();
     json_t *body = retention_json(config);
 
-    if (lifetime == NULL || body == NULL ||
-        json_object_set(body, "lifetime", lifetime) != 0) {
+    if (storage_body == NULL ||
+        set_counter(storage_body, "detail_rows", storage->detail_rows) != 0 ||
+        set_counter(storage_body, "estimated_bytes",
+                    storage->estimated_bytes) != 0 ||
+        set_counter(storage_body, "cardinality_dropped",
+                    storage->cardinality_dropped) != 0 ||
+        set_counter(storage_body, "storage_dropped",
+                    storage->storage_dropped) != 0 ||
+        json_object_set_new(storage_body, "storage_suspended",
+                            json_boolean(storage->storage_suspended)) != 0 ||
+        lifetime == NULL || body == NULL ||
+        json_object_set(body, "lifetime", lifetime) != 0 ||
+        json_object_set(body, "storage", storage_body) != 0) {
         json_decref(body);
         body = NULL;
     }
+    json_decref(storage_body);
     json_decref(lifetime);
     return body;
 }
@@ -180,7 +205,7 @@ static int load_traffic(struct jg_database *database,
     return result;
 }
 
-/** @brief Return or replace detailed policy-statistics retention. */
+/** @brief Return or replace the detailed policy-statistics storage policy. */
 int handle_policy_statistics(struct jg_management *management,
                              const struct management_request *request,
                              const struct remote_address *remote,
@@ -193,14 +218,26 @@ int handle_policy_statistics(struct jg_management *management,
         "revision",
         "retention_enabled",
         "retention_months",
+        "detail_enabled",
+        "detail_max_rows",
+        "detail_max_rows_per_rule_hour",
+        "detail_max_domains_per_rule_hour",
+        "maximum_database_bytes",
+        "minimum_free_bytes",
     };
     struct authenticated_actor actor;
     struct jg_policy_stats_config config = {0};
+    struct jg_policy_stats_config_update update = {0};
+    struct jg_policy_stats_storage storage = {0};
     struct jg_policy_traffic_stats traffic = {0};
     const bool updating = strcmp(request->method, "PUT") == 0;
     uint64_t revision = 0U;
     uint64_t months = 0U;
-    bool enabled = false;
+    uint64_t detail_max_rows = 0U;
+    uint64_t detail_max_rows_per_rule_hour = 0U;
+    uint64_t detail_max_domains_per_rule_hour = 0U;
+    uint64_t maximum_database_bytes = 0U;
+    uint64_t minimum_free_bytes = 0U;
     bool has_traffic = false;
     bool mutation_open = false;
     json_t *body = NULL;
@@ -223,23 +260,55 @@ int handle_policy_statistics(struct jg_management *management,
         result =
             jg_database_load_policy_stats_config(management->database, &config);
     } else {
-        if (!fields_allowed(request->body, fields, 3U) ||
+        if (!fields_allowed(request->body, fields, 9U) ||
             !required_identifier(request->body, "revision", &revision) ||
-            !required_boolean(request->body, "retention_enabled", &enabled) ||
+            !required_boolean(request->body, "retention_enabled",
+                              &update.retention_enabled) ||
             !required_unsigned(request->body, "retention_months",
                                JG_POLICY_STATS_RETENTION_MAX, &months) ||
-            months < JG_POLICY_STATS_RETENTION_MIN) {
+            months < JG_POLICY_STATS_RETENTION_MIN ||
+            !required_boolean(request->body, "detail_enabled",
+                              &update.detail_enabled) ||
+            !required_unsigned(request->body, "detail_max_rows",
+                               JG_POLICY_STATS_DETAIL_ROWS_MAX,
+                               &detail_max_rows) ||
+            detail_max_rows < JG_POLICY_STATS_DETAIL_ROWS_MIN ||
+            !required_unsigned(request->body, "detail_max_rows_per_rule_hour",
+                               JG_POLICY_STATS_RULE_HOUR_ROWS_MAX,
+                               &detail_max_rows_per_rule_hour) ||
+            detail_max_rows_per_rule_hour <
+                JG_POLICY_STATS_RULE_HOUR_ROWS_MIN ||
+            !required_unsigned(request->body,
+                               "detail_max_domains_per_rule_hour",
+                               JG_POLICY_STATS_RULE_HOUR_DOMAINS_MAX,
+                               &detail_max_domains_per_rule_hour) ||
+            detail_max_domains_per_rule_hour <
+                JG_POLICY_STATS_RULE_HOUR_DOMAINS_MIN ||
+            !required_unsigned(request->body, "maximum_database_bytes",
+                               JG_POLICY_STATS_DATABASE_BYTES_MAX,
+                               &maximum_database_bytes) ||
+            maximum_database_bytes < JG_POLICY_STATS_DATABASE_BYTES_MIN ||
+            !required_unsigned(request->body, "minimum_free_bytes",
+                               JG_POLICY_STATS_FREE_BYTES_MAX,
+                               &minimum_free_bytes)) {
             return respond_error(
                 400, "invalid_body",
-                "The policy-statistics retention is not valid.",
+                "The policy-statistics storage policy is not valid.",
                 request->request_id, output, output_size, written);
         }
+        update.retention_months = (uint32_t)months;
+        update.detail_max_rows = detail_max_rows;
+        update.detail_max_rows_per_rule_hour =
+            (uint32_t)detail_max_rows_per_rule_hour;
+        update.detail_max_domains_per_rule_hour =
+            (uint32_t)detail_max_domains_per_rule_hour;
+        update.maximum_database_bytes = maximum_database_bytes;
+        update.minimum_free_bytes = minimum_free_bytes;
         result = audited_mutation_begin(management);
         if (result == 0) {
             mutation_open = true;
             result = jg_database_update_policy_stats_config(
-                management->database, enabled, (uint32_t)months, revision, now,
-                &config);
+                management->database, &update, revision, now, &config);
         }
         if (result != 0 && mutation_open) {
             result = audited_mutation_check(management, result);
@@ -254,7 +323,7 @@ int handle_policy_statistics(struct jg_management *management,
         if (result == 0) {
             result = append_statistics_audit(
                 management, request, remote, &actor,
-                "policy.statistics.retention.update", "retention", body, true,
+                "policy.statistics.storage.update", "storage", body, true,
                 revision, true, config.revision, now);
         }
         if (mutation_open) {
@@ -264,15 +333,19 @@ int handle_policy_statistics(struct jg_management *management,
     if (result == -EAGAIN) {
         json_decref(body);
         return respond_error(409, "revision_conflict",
-                             "The retention configuration has changed.",
+                             "The statistics storage policy has changed.",
                              request->request_id, output, output_size, written);
+    }
+    if (result == 0) {
+        result = jg_database_load_policy_stats_storage(management->database,
+                                                       &storage);
     }
     if (result == 0) {
         result = load_traffic(management->database, &traffic, &has_traffic);
     }
     if (result == 0) {
         json_decref(body);
-        body = statistics_json(&config, &traffic, has_traffic);
+        body = statistics_json(&config, &storage, &traffic, has_traffic);
         if (body == NULL) {
             result = -ENOMEM;
         }
@@ -281,7 +354,7 @@ int handle_policy_statistics(struct jg_management *management,
         json_decref(body);
         return respond_error(
             500, "policy_statistics_failed",
-            "Policy-statistics retention could not be processed.",
+            "The policy-statistics storage policy could not be processed.",
             request->request_id, output, output_size, written);
     }
     return encode_response(200, body, NULL, output, output_size, written);

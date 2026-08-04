@@ -2,13 +2,19 @@
  * Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "janusgate/database.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 
 #include <sqlite3.h>
 
@@ -295,6 +301,107 @@ static int finalize_writes(sqlite3_stmt *statements[4U], int result)
     return result;
 }
 
+/** @brief Add a filesystem byte count while saturating at the schema limit. */
+static uint64_t add_storage_bytes(uint64_t current, uint64_t added)
+{
+    return added > POLICY_STATS_COUNTER_MAX - current ? POLICY_STATS_COUNTER_MAX
+                                                      : current + added;
+}
+
+/** @brief Add one existing SQLite file to an aggregate storage estimate. */
+static bool include_file_size(const char *path, uint64_t *bytes)
+{
+    struct stat metadata;
+
+    if (stat(path, &metadata) == 0 && metadata.st_size >= 0) {
+        *bytes = add_storage_bytes(*bytes, (uint64_t)metadata.st_size);
+        return true;
+    }
+    return errno == ENOENT;
+}
+
+/** @brief Decide whether storage thresholds require detail suspension. */
+static void inspect_storage(const struct jg_database *database,
+                            const struct jg_policy_stats_config *config,
+                            uint64_t *estimated_bytes,
+                            bool *suspended)
+{
+    static const char *const suffixes[] = {"-wal", "-shm"};
+    struct statvfs filesystem;
+    char auxiliary[PATH_MAX];
+    uint64_t available = 0U;
+    bool complete = include_file_size(database->path, estimated_bytes);
+
+    for (size_t index = 0U; index < sizeof(suffixes) / sizeof(suffixes[0U]);
+         ++index) {
+        const int written = snprintf(auxiliary, sizeof(auxiliary), "%s%s",
+                                     database->path, suffixes[index]);
+
+        if (written <= 0 || (size_t)written >= sizeof(auxiliary) ||
+            !include_file_size(auxiliary, estimated_bytes)) {
+            complete = false;
+        }
+    }
+    if (statvfs(database->path, &filesystem) == 0) {
+        const uint64_t blocks = (uint64_t)filesystem.f_bavail;
+        const uint64_t block_size = (uint64_t)filesystem.f_frsize;
+
+        available = block_size != 0U && blocks > UINT64_MAX / block_size
+                        ? UINT64_MAX
+                        : blocks * block_size;
+    } else {
+        complete = false;
+    }
+    *suspended = !complete ||
+                 *estimated_bytes >= config->maximum_database_bytes ||
+                 available < config->minimum_free_bytes;
+}
+
+/** @brief Persist the latest bounded-detail storage decision. */
+static int update_storage_status(struct jg_database *database,
+                                 uint64_t estimated_bytes,
+                                 bool suspended,
+                                 size_t skipped_rules)
+{
+    static const char query[] =
+        "UPDATE policy_statistics_storage SET estimated_bytes=?1,"
+        "storage_suspended=?2,storage_dropped=CASE WHEN ?3>"
+        "9223372036854775807-storage_dropped THEN 9223372036854775807 ELSE "
+        "storage_dropped+?3 END WHERE id=1;";
+    sqlite3_stmt *statement = NULL;
+    int status =
+        sqlite3_prepare_v3(database->handle, query, -1,
+                           SQLITE_PREPARE_PERSISTENT, &statement, NULL);
+    int result = jg_database_sqlite_result(status);
+
+    if (result == 0) {
+        status =
+            sqlite3_bind_int64(statement, 1, (sqlite3_int64)estimated_bytes);
+        if (status == SQLITE_OK) {
+            status = sqlite3_bind_int(statement, 2, suspended ? 1 : 0);
+        }
+        if (status == SQLITE_OK) {
+            status =
+                sqlite3_bind_int64(statement, 3, (sqlite3_int64)skipped_rules);
+        }
+        result = jg_database_sqlite_result(status);
+    }
+    if (result == 0) {
+        status = sqlite3_step(statement);
+        result = status == SQLITE_DONE ? 0 : jg_database_sqlite_result(status);
+    }
+    if (result == 0 && sqlite3_changes(database->handle) != 1) {
+        result = -EILSEQ;
+    }
+    if (statement != NULL) {
+        status = sqlite3_finalize(statement);
+        if (result == 0) {
+            result = jg_database_sqlite_result(status);
+        }
+    }
+    return result;
+}
+
 /** @brief Atomically add bounded request and matching-rule sample batches. */
 int jg_database_record_policy_stats(
     struct jg_database *database,
@@ -380,7 +487,11 @@ int jg_database_record_policy_stats(
     const char *const queries[4U] = {traffic_lifetime, traffic_detail,
                                      rule_lifetime, rule_detail};
     sqlite3_stmt *statements[4U] = {NULL, NULL, NULL, NULL};
+    struct jg_policy_stats_config config;
+    uint64_t estimated_bytes = 0U;
     size_t index = 0U;
+    bool storage_suspended = false;
+    bool detail_active = false;
     int result = 0;
 
     if (database == NULL || traffic_count > JG_POLICY_STATS_BATCH_MAX ||
@@ -400,7 +511,18 @@ int jg_database_record_policy_stats(
             return -EINVAL;
         }
     }
-    result = jg_database_transaction_begin(database);
+    result = jg_database_load_policy_stats_config(database, &config);
+    if (result == 0) {
+        inspect_storage(database, &config, &estimated_bytes,
+                        &storage_suspended);
+        detail_active = config.detail_enabled && !storage_suspended;
+        result = jg_database_transaction_begin(database);
+    }
+    if (result == 0) {
+        result = update_storage_status(
+            database, estimated_bytes, storage_suspended,
+            config.detail_enabled && storage_suspended ? rule_count : 0U);
+    }
     for (index = 0U; result == 0 && index < 4U; ++index) {
         const int status = sqlite3_prepare_v3(database->handle, queries[index],
                                               -1, SQLITE_PREPARE_PERSISTENT,
@@ -413,7 +535,7 @@ int jg_database_record_policy_stats(
         if (result == 0) {
             result = execute_write(statements[0U]);
         }
-        if (result == 0) {
+        if (result == 0 && detail_active) {
             result = execute_write(statements[1U]);
         }
     }
@@ -422,7 +544,7 @@ int jg_database_record_policy_stats(
         if (result == 0) {
             result = execute_write(statements[2U]);
         }
-        if (result == 0) {
+        if (result == 0 && detail_active) {
             result = execute_write(statements[3U]);
         }
     }
