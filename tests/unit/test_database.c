@@ -640,6 +640,64 @@ static void test_policy_sync_state(void **state)
     remove_database(directory, path);
 }
 
+/** @brief Verify failed commits and implicit rollbacks restore autocommit. */
+static void test_transaction_recovery(void **state)
+{
+    static const char schema[] =
+        "PRAGMA foreign_keys=ON;"
+        "CREATE TABLE transaction_parent(id INTEGER PRIMARY KEY);"
+        "CREATE TABLE transaction_child(parent_id INTEGER REFERENCES "
+        "transaction_parent(id) DEFERRABLE INITIALLY DEFERRED);"
+        "CREATE TABLE transaction_unique(value INTEGER UNIQUE ON CONFLICT "
+        "ROLLBACK);";
+    char directory[64U];
+    char path[512U];
+    struct jg_database *database = NULL;
+
+    (void)state;
+    make_database_path(directory, sizeof(directory), path, sizeof(path));
+    assert_int_equal(jg_database_open(path, 1000U, &database), 0);
+    assert_int_equal(jg_database_execute_sql(database->handle, schema), 0);
+
+    assert_int_equal(jg_database_transaction_begin(database), 0);
+    assert_int_equal(
+        jg_database_execute_sql(database->handle,
+                                "INSERT INTO transaction_child VALUES(1);"),
+        0);
+    assert_int_equal(jg_database_transaction_commit(database), -EIO);
+    assert_int_equal(database->transaction_depth, 0U);
+    assert_int_equal(sqlite3_get_autocommit(database->handle), 1);
+    assert_int_equal(row_count(database->handle, "transaction_child"), 0U);
+
+    assert_int_equal(jg_database_transaction_begin(database), 0);
+    assert_int_equal(
+        jg_database_execute_sql(database->handle,
+                                "INSERT INTO transaction_unique VALUES(1);"),
+        0);
+    assert_int_equal(
+        jg_database_execute_sql(database->handle,
+                                "INSERT INTO transaction_unique VALUES(1);"),
+        -EIO);
+    assert_int_equal(sqlite3_get_autocommit(database->handle), 1);
+    assert_int_equal(database->transaction_depth, 1U);
+    assert_int_equal(jg_database_transaction_rollback(database), 0);
+    assert_int_equal(database->transaction_depth, 0U);
+    assert_int_equal(row_count(database->handle, "transaction_unique"), 0U);
+
+    assert_int_equal(jg_database_transaction_begin(database), 0);
+    assert_int_equal(
+        jg_database_execute_sql(database->handle,
+                                "INSERT INTO transaction_parent VALUES(1);"
+                                "INSERT INTO transaction_child VALUES(1);"),
+        0);
+    assert_int_equal(jg_database_transaction_commit(database), 0);
+    assert_int_equal(row_count(database->handle, "transaction_parent"), 1U);
+    assert_int_equal(row_count(database->handle, "transaction_child"), 1U);
+
+    jg_database_close(database);
+    remove_database(directory, path);
+}
+
 /** @brief Verify full and secret-free in-memory database snapshots. */
 static void test_database_export(void **state)
 {
@@ -3076,6 +3134,7 @@ int jg_test_database(void)
         cmocka_unit_test(test_backup_metadata),
         cmocka_unit_test(test_management_operation),
         cmocka_unit_test(test_policy_sync_state),
+        cmocka_unit_test(test_transaction_recovery),
         cmocka_unit_test(test_newer_schema_rejected),
         cmocka_unit_test(test_version_one_migration),
         cmocka_unit_test(test_version_two_migration),

@@ -1559,6 +1559,14 @@ static int transaction_begin(struct jg_database *database, const char *sql)
     if (database == NULL || database->transaction_depth == UINT_MAX) {
         return database == NULL ? -EINVAL : -EOVERFLOW;
     }
+    if (database->transaction_failed) {
+        return -EIO;
+    }
+    if ((database->transaction_depth == 0U) !=
+        (sqlite3_get_autocommit(database->handle) != 0)) {
+        database->transaction_failed = true;
+        return -EIO;
+    }
     if (database->transaction_depth == 0U) {
         result = jg_database_execute_sql(database->handle, sql);
     }
@@ -1580,7 +1588,25 @@ int jg_database_transaction_begin_read(struct jg_database *database)
     return transaction_begin(database, "BEGIN;");
 }
 
-/** @brief Commit one transaction scope and persist the outermost scope. */
+/** @brief Restore autocommit after an aborted or failed transaction. */
+static int transaction_recover(struct jg_database *database)
+{
+    int result = 0;
+
+    if (sqlite3_get_autocommit(database->handle) == 0) {
+        result = jg_database_execute_sql(database->handle, "ROLLBACK;");
+    }
+    if (sqlite3_get_autocommit(database->handle) != 0) {
+        database->transaction_depth = 0U;
+        database->transaction_failed = false;
+        return 0;
+    }
+    database->transaction_failed = true;
+    return result == 0 ? -EIO : result;
+}
+
+/** @brief Commit one scope and roll back an outer commit that cannot persist.
+ */
 int jg_database_transaction_commit(struct jg_database *database)
 {
     int result = 0;
@@ -1588,30 +1614,35 @@ int jg_database_transaction_commit(struct jg_database *database)
     if (database == NULL || database->transaction_depth == 0U) {
         return -EINVAL;
     }
-    if (database->transaction_depth == 1U) {
-        result = jg_database_execute_sql(database->handle, "COMMIT;");
+    if (database->transaction_failed) {
+        return -EIO;
+    }
+    if (sqlite3_get_autocommit(database->handle) != 0) {
+        database->transaction_depth = 0U;
+        return -EIO;
+    }
+    if (database->transaction_depth > 1U) {
+        --database->transaction_depth;
+        return 0;
+    }
+    result = jg_database_execute_sql(database->handle, "COMMIT;");
+    if (result == 0 && sqlite3_get_autocommit(database->handle) != 0) {
+        database->transaction_depth = 0U;
+        return 0;
     }
     if (result == 0) {
-        --database->transaction_depth;
+        result = -EIO;
     }
-    return result;
+    return transaction_recover(database) == 0 ? result : -EIO;
 }
 
 /** @brief Roll back every active transaction scope. */
 int jg_database_transaction_rollback(struct jg_database *database)
 {
-    int result = 0;
-
     if (database == NULL) {
         return -EINVAL;
     }
-    if (database->transaction_depth > 0U) {
-        result = jg_database_execute_sql(database->handle, "ROLLBACK;");
-        if (result == 0) {
-            database->transaction_depth = 0U;
-        }
-    }
-    return result;
+    return transaction_recover(database);
 }
 
 /** @brief Validate the immediate parent directory of a database path. */

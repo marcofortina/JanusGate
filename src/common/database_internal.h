@@ -24,6 +24,8 @@ struct jg_database {
     char *path;
     /** Number of cooperating transaction scopes on this connection. */
     unsigned int transaction_depth;
+    /** Whether an active transaction could not be rolled back safely. */
+    bool transaction_failed;
     /** Configured busy timeout reused by private peer connections. */
     uint32_t busy_timeout_ms;
 };
@@ -82,7 +84,10 @@ int jg_database_transaction_begin(struct jg_database *database);
 /** @brief Enter a read transaction scope, nesting within an existing scope. */
 int jg_database_transaction_begin_read(struct jg_database *database);
 
-/** @brief Commit one transaction scope and persist the outermost scope. */
+/**
+ * @brief Commit one transaction scope and recover the outermost scope on
+ * failure.
+ */
 int jg_database_transaction_commit(struct jg_database *database);
 
 /** @brief Roll back every active transaction scope. */
