@@ -1100,6 +1100,51 @@ int jg_database_alert_delivery_next(struct jg_database *database,
     return result;
 }
 
+/** @brief Atomically snapshot webhook transport and claim one due delivery. */
+int jg_database_alert_delivery_claim(
+    struct jg_database *database,
+    const uint8_t protection_key[JG_ALERT_WEBHOOK_SECRET_SIZE],
+    uint64_t now,
+    struct jg_alert_configuration *configuration,
+    uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
+    struct jg_alert_delivery *delivery)
+{
+    int result = 0;
+
+    if (database == NULL || protection_key == NULL || configuration == NULL ||
+        secret == NULL || delivery == NULL) {
+        return -EINVAL;
+    }
+    (void)memset(configuration, 0, sizeof(*configuration));
+    (void)memset(secret, 0, JG_ALERT_WEBHOOK_SECRET_SIZE);
+    (void)memset(delivery, 0, sizeof(*delivery));
+    result = jg_database_transaction_begin(database);
+    if (result == 0) {
+        result = jg_database_alert_configuration_load(database, configuration);
+    }
+    if (result == 0 && !configuration->values.webhook_enabled) {
+        result = -ENOENT;
+    }
+    if (result == 0) {
+        result = jg_database_alert_webhook_secret_load(database, protection_key,
+                                                       secret);
+    }
+    if (result == 0) {
+        result = jg_database_alert_delivery_next(database, now, delivery);
+    }
+    if (result == 0) {
+        result = jg_database_transaction_commit(database);
+    } else {
+        (void)jg_database_transaction_rollback(database);
+    }
+    if (result != 0) {
+        jg_alert_configuration_clear(configuration);
+        sodium_memzero(secret, JG_ALERT_WEBHOOK_SECRET_SIZE);
+        (void)memset(delivery, 0, sizeof(*delivery));
+    }
+    return result;
+}
+
 /** @brief Complete one webhook delivery attempt. */
 int jg_database_alert_delivery_complete(
     struct jg_database *database,

@@ -336,6 +336,70 @@ static void test_alert_events(void **state)
     assert_int_equal(jg_database_alert_prune(fixture->database), 0);
 }
 
+/** @brief Verify one transaction binds transport state to an outbox claim. */
+static void test_alert_delivery_claim(void **state)
+{
+    struct alert_fixture *fixture = *state;
+    struct jg_alert_configuration configuration = {0};
+    struct jg_alert_configuration updated = {0};
+    struct jg_alert_configuration_update replacement;
+    struct jg_alert_delivery delivery;
+    uint8_t expected[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    uint8_t key[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    uint8_t wrong_key[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    char secret_text[JG_ALERT_WEBHOOK_SECRET_TEXT_SIZE];
+    char event_id[JG_ALERT_EVENT_ID_SIZE];
+
+    randombytes_buf(key, sizeof(key));
+    randombytes_buf(wrong_key, sizeof(wrong_key));
+    assert_int_equal(
+        jg_database_alert_event_enqueue(fixture->database, "delivery.test",
+                                        JG_ALERT_SEVERITY_WARNING,
+                                        "Test delivery.", "{}", 600U, event_id),
+        0);
+    assert_int_equal(jg_database_alert_delivery_claim(fixture->database, key,
+                                                      600U, &configuration,
+                                                      secret, &delivery),
+                     -ENOENT);
+    assert_int_equal(
+        jg_database_alert_webhook_secret_rotate(
+            fixture->database, key, 1U, 601U, secret_text, &configuration),
+        0);
+    decode_secret(secret_text, expected);
+    replacement = configuration.values;
+    replacement.webhook_enabled = true;
+    replacement.webhook_url = "https://alerts.home.arpa/janusgate";
+    assert_int_equal(jg_database_alert_configuration_replace(
+                         fixture->database, &replacement,
+                         configuration.revision, 602U, &updated),
+                     0);
+    jg_alert_configuration_clear(&configuration);
+    assert_int_equal(
+        jg_database_alert_delivery_claim(fixture->database, wrong_key, 602U,
+                                         &configuration, secret, &delivery),
+        -EBADMSG);
+    assert_int_equal(jg_database_alert_delivery_claim(fixture->database, key,
+                                                      602U, &configuration,
+                                                      secret, &delivery),
+                     0);
+    assert_int_equal(configuration.revision, updated.revision);
+    assert_string_equal(configuration.values.webhook_url,
+                        "https://alerts.home.arpa/janusgate");
+    assert_memory_equal(secret, expected, sizeof(expected));
+    assert_string_equal(delivery.event_id, event_id);
+    assert_int_equal(jg_database_alert_delivery_complete(
+                         fixture->database, &delivery, true, 602U, NULL),
+                     0);
+    jg_alert_configuration_clear(&configuration);
+    jg_alert_configuration_clear(&updated);
+    sodium_memzero(secret_text, sizeof(secret_text));
+    sodium_memzero(wrong_key, sizeof(wrong_key));
+    sodium_memzero(expected, sizeof(expected));
+    sodium_memzero(secret, sizeof(secret));
+    sodium_memzero(key, sizeof(key));
+}
+
 /** @brief Verify deterministic timestamp-bound webhook signatures. */
 static void test_alert_signature(void **state)
 {
@@ -374,6 +438,8 @@ int jg_test_alert(void)
         cmocka_unit_test_setup_teardown(test_alert_incident_lifecycle,
                                         setup_alert, teardown_alert),
         cmocka_unit_test_setup_teardown(test_alert_events, setup_alert,
+                                        teardown_alert),
+        cmocka_unit_test_setup_teardown(test_alert_delivery_claim, setup_alert,
                                         teardown_alert),
         cmocka_unit_test(test_alert_signature),
     };

@@ -506,6 +506,35 @@ JG_PUBLIC int jg_database_alert_delivery_next(
     struct jg_alert_delivery *delivery);
 
 /**
+ * @brief Atomically snapshot webhook transport and claim one due delivery.
+ *
+ * Configuration, secret material, and the outbox claim are read or changed in
+ * one transaction. A transport update committed after this function returns
+ * does not alter the claimed attempt.
+ *
+ * @param[in,out] database Open database.
+ * @param[in] protection_key Exact appliance-local protection key.
+ * @param[in] now Current Unix timestamp in seconds.
+ * @param[out] configuration Receives the owned transport snapshot.
+ * @param[out] secret Receives the authenticated plaintext HMAC secret.
+ * @param[out] delivery Receives the claimed delivery.
+ *
+ * @return 0 when one delivery and its transport were loaded.
+ * @return -ENOENT when delivery is disabled or no event is currently due.
+ * @return A negative validation, cryptographic, allocation, or SQLite error.
+ *
+ * @side_effects The caller must clear @p configuration and securely erase
+ * @p secret after every successful call.
+ */
+JG_PUBLIC int jg_database_alert_delivery_claim(
+    struct jg_database *database,
+    const uint8_t protection_key[JG_ALERT_WEBHOOK_SECRET_SIZE],
+    uint64_t now,
+    struct jg_alert_configuration *configuration,
+    uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
+    struct jg_alert_delivery *delivery);
+
+/**
  * @brief Complete one webhook delivery attempt.
  *
  * Successful attempts become delivered. Failures use bounded exponential

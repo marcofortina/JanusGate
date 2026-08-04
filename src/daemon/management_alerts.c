@@ -750,20 +750,9 @@ static int deliver_notifications(struct management_alerts *alerts)
             mutation_active = delivery_result == 0;
         }
         if (delivery_result == 0) {
-            delivery_result = jg_database_alert_configuration_load(
-                alerts->database, &configuration);
-        }
-        if (delivery_result == 0 && !configuration.values.webhook_enabled) {
-            delivery_result = -ENOENT;
-        }
-        if (delivery_result == 0) {
-            delivery_result = jg_database_alert_webhook_secret_load(
+            delivery_result = jg_database_alert_delivery_claim(
                 alerts->database, alerts->management->secrets->totp_key,
-                secret);
-        }
-        if (delivery_result == 0) {
-            delivery_result = jg_database_alert_delivery_next(
-                alerts->database, attempted_at, &delivery);
+                attempted_at, &configuration, secret, &delivery);
         }
         if (mutation_active) {
             management_mutation_end(alerts->management);
