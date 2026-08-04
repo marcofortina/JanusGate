@@ -70,10 +70,10 @@ fi
 sudo apk add --allow-untrusted \
     "$civetweb_package" "$civetweb_development_package"
 
-source_archive="$source_directory/janusgate-0.2.0.tar.gz"
+source_archive="$source_directory/janusgate-0.2.1.tar.gz"
 source_date_epoch=$(git -C "$project_directory" log -1 --format=%ct)
 git -C "$project_directory" archive --format=tar \
-    --mtime="@$source_date_epoch" --prefix=janusgate-0.2.0/ \
+    --mtime="@$source_date_epoch" --prefix=janusgate-0.2.1/ \
     'HEAD^{tree}' -- . \
     ':(exclude)packaging/alpine/APKBUILD' |
     gzip -n >"$source_archive"

@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
   JanusGate
-  VERSION 0.2.0
+  VERSION 0.2.1
   DESCRIPTION "Transparent inline DNS policy appliance"
   HOMEPAGE_URL "https://github.com/marcofortina/JanusGate"
   LANGUAGES C)

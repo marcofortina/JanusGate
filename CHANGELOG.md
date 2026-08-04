@@ -3,6 +3,27 @@
 
 # JanusGate release notes
 
+## 0.2.1
+
+Maintenance release completing the persistence, restore, and delivery safety
+of the policy-observability and native-alerting subsystems.
+
+- Gives policy statistics immutable rule identities, including deterministic
+  identities for refreshed blocklist entries, so lifetime history cannot be
+  inherited by an unrelated rule.
+- Quiesces and drains the statistics collector across restore generations,
+  rejects stale queued samples, and exposes restore-specific drop metrics.
+- Bounds detailed statistics by total rows, per-rule hourly rows, distinct
+  domains, database size, and filesystem reserve while retaining lifetime
+  aggregates; detailed collection can be disabled independently.
+- Claims webhook deliveries durably, performs verified HTTPS outside the
+  management mutation gate, recovers interrupted claims, and computes retry
+  timing from each completed attempt.
+- Uses globally unique webhook event identities and restores webhook transport
+  and outbox state coherently while retaining current operational history.
+- Separates alert evaluation and webhook delivery health in Prometheus,
+  Alertmanager, and Grafana, and initializes libcurl once per process.
+
 ## 0.2.0
 
 Feature release for staged policy rollout, explainable impact, portable
