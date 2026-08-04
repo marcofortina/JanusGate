@@ -299,6 +299,8 @@ int jg_management_create(struct jg_database *database,
     atomic_init(&created->health->alert_deliveries_failed, 0U);
     atomic_init(&created->health->alert_last_evaluation_at, 0U);
     atomic_init(&created->health->alert_last_delivery_at, 0U);
+    atomic_init(&created->health->alert_last_delivery_attempt_at, 0U);
+    atomic_init(&created->health->alert_last_transport_revision, 0U);
     atomic_init(&created->health->certificate_expiry_timestamp, 0U);
     atomic_init(&created->health->blocklist_sources_unhealthy, 0U);
     atomic_init(&created->health->blocklist_sources_stale, 0U);
@@ -307,6 +309,8 @@ int jg_management_create(struct jg_database *database,
                 0U);
     atomic_init(&created->health->alert_evaluation_successful, false);
     atomic_init(&created->health->alert_delivery_successful, false);
+    atomic_init(&created->health->alert_last_delivery_attempt_successful,
+                false);
     atomic_init(&created->health->audit_valid, false);
     atomic_init(&created->health->policy_synchronized, false);
     created->database = database;

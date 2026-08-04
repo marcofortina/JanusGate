@@ -674,6 +674,36 @@ static json_t *management_health_json(
     return body;
 }
 
+/** @brief Encode the latest webhook transport attempt without identifiers. */
+static json_t *alert_delivery_health_json(
+    const struct management_health *health)
+{
+    const uint64_t attempted_at = atomic_load_explicit(
+        &health->alert_last_delivery_attempt_at, memory_order_acquire);
+    const uint64_t revision = atomic_load_explicit(
+        &health->alert_last_transport_revision, memory_order_acquire);
+    const bool successful = atomic_load_explicit(
+        &health->alert_last_delivery_attempt_successful, memory_order_acquire);
+    json_t *body = json_object();
+
+    if (body == NULL ||
+        json_object_set_new(
+            body, "last_attempt_at",
+            attempted_at == 0U ? json_null()
+                               : json_integer((json_int_t)attempted_at)) != 0 ||
+        json_object_set_new(body, "last_transport_revision",
+                            revision == 0U
+                                ? json_null()
+                                : json_integer((json_int_t)revision)) != 0 ||
+        json_object_set_new(
+            body, "last_attempt_successful",
+            attempted_at == 0U ? json_null() : json_boolean(successful)) != 0) {
+        json_decref(body);
+        return NULL;
+    }
+    return body;
+}
+
 /** @brief Return authenticated management, daemon, and helper health. */
 int handle_health(struct jg_management *management,
                   const struct management_request *request,
@@ -689,6 +719,7 @@ int handle_health(struct jg_management *management,
     struct jg_network_state network_state;
     json_t *body = NULL;
     json_t *management_state = NULL;
+    json_t *alerting = NULL;
     json_t *daemon = NULL;
     json_t *network = NULL;
     uint32_t degraded_reasons = 0U;
@@ -726,10 +757,11 @@ int handle_health(struct jg_management *management,
     body = json_object();
     management_state = management_health_json(
         degraded_reasons, &policy_sync, policy_available, restore_in_progress);
+    alerting = alert_delivery_health_json(management->health);
     daemon = json_object();
     network = json_object();
-    if (body == NULL || management_state == NULL || daemon == NULL ||
-        network == NULL ||
+    if (body == NULL || management_state == NULL || alerting == NULL ||
+        daemon == NULL || network == NULL ||
         json_object_set_new(body, "healthy",
                             json_boolean(degraded_reasons == 0U &&
                                          daemon_available &&
@@ -746,12 +778,14 @@ int handle_health(struct jg_management *management,
           json_object_set_new(network, "pending",
                               json_boolean(network_state.pending)) != 0)) ||
         set_object(body, "management", management_state) != 0 ||
+        set_object(body, "alerting", alerting) != 0 ||
         set_object(body, "daemon", daemon) != 0 ||
         set_object(body, "network", network) != 0) {
         result = -ENOMEM;
     }
     json_decref(network);
     json_decref(daemon);
+    json_decref(alerting);
     json_decref(management_state);
     if (result != 0) {
         json_decref(body);

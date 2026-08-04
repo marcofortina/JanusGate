@@ -5275,6 +5275,10 @@ static void test_atomic_alert_audit(void **state)
 /** @brief Verify real webhook headers, snapshots, and restore draining. */
 static void test_webhook_delivery_consistency(void **state)
 {
+    static const char health_request[] =
+        "{\"request_id\":\"webhook-delivery-health\",\"method\":\"GET\","
+        "\"path\":\"/api/v1/health\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
     struct management_fixture *fixture = *state;
     struct webhook_test_server server;
     struct jg_alert_configuration configuration = {0};
@@ -5282,6 +5286,9 @@ static void test_webhook_delivery_consistency(void **state)
     struct jg_alert_configuration disabled = {0};
     struct jg_alert_configuration_update replacement;
     struct jg_alert_storage_metrics metrics;
+    struct jg_logging_config logging;
+    struct jg_log_trace_record traces[4U];
+    struct jg_logging_stats logging_stats;
     struct management_alerts *alerts = NULL;
     struct alert_delivery_thread delivery_context = {
         .result = -EINPROGRESS,
@@ -5298,6 +5305,8 @@ static void test_webhook_delivery_consistency(void **state)
     char webhook_url[128U];
     char expected_signature[ALERT_WEBHOOK_SIGNATURE_SIZE];
     char replacement_signature[ALERT_WEBHOOK_SIGNATURE_SIZE];
+    json_t *response = NULL;
+    json_t *alerting = NULL;
     char *timestamp_end = NULL;
     unsigned long long timestamp = 0U;
     const uint64_t now = (uint64_t)time(NULL);
@@ -5305,8 +5314,13 @@ static void test_webhook_delivery_consistency(void **state)
     pthread_t delivery_thread;
     pthread_t restore_thread;
     size_t attempts = 0U;
+    size_t trace_count = 0U;
+    bool delivery_trace = false;
     int written = 0;
 
+    jg_logging_config_default(&logging);
+    logging.destinations = JG_LOG_DESTINATION_SYSLOG;
+    assert_int_equal(jg_logging_initialize("webhook-test", &logging), 0);
     webhook_test_server_open(&server, fixture->directory);
     written = snprintf(webhook_url, sizeof(webhook_url),
                        "https://localhost:%" PRIu16 "/janusgate", server.port);
@@ -5417,6 +5431,32 @@ static void test_webhook_delivery_consistency(void **state)
         jg_database_alert_storage_metrics(fixture->database, &metrics), 0);
     assert_int_equal(metrics.deliveries_pending, 0U);
     assert_int_equal(metrics.deliveries_succeeded, 1U);
+    assert_int_equal(
+        jg_logging_trace_snapshot(traces, sizeof(traces) / sizeof(traces[0U]),
+                                  &trace_count, &logging_stats),
+        0);
+    for (size_t index = 0U; index < trace_count; ++index) {
+        if (strstr(traces[index].json,
+                   "\"event\":\"alerting.delivery_attempt\"") != NULL &&
+            strstr(traces[index].json, event_id) != NULL &&
+            strstr(traces[index].json, "\"outcome\":\"delivered\"") != NULL) {
+            delivery_trace = true;
+        }
+    }
+    assert_true(delivery_trace);
+    response = process_local_request(fixture, health_request);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    alerting = json_object_get(json_object_get(response, "body"), "alerting");
+    assert_int_equal(json_integer_value(
+                         json_object_get(alerting, "last_transport_revision")),
+                     active_revision);
+    assert_true(
+        json_is_true(json_object_get(alerting, "last_attempt_successful")));
+    assert_true(
+        json_integer_value(json_object_get(alerting, "last_attempt_at")) > 0);
+    json_decref(response);
+
     management_alerts_destroy(alerts);
     webhook_test_server_close(&server);
     jg_alert_configuration_clear(&disabled);
@@ -5427,6 +5467,7 @@ static void test_webhook_delivery_consistency(void **state)
     sodium_memzero(original_secret_text, sizeof(original_secret_text));
     sodium_memzero(replacement_secret, sizeof(replacement_secret));
     sodium_memzero(original_secret, sizeof(original_secret));
+    jg_logging_shutdown();
 }
 
 /** @brief Verify malformed, cross-origin, and routing requests fail closed. */

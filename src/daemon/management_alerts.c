@@ -728,6 +728,38 @@ static bool delivery_stopping(struct management_alerts *alerts)
     return stopping;
 }
 
+/** @brief Record one transport attempt without endpoint or secret material. */
+static void trace_delivery_attempt(
+    const struct jg_alert_configuration *configuration,
+    const struct jg_alert_delivery *delivery,
+    uint64_t attempted_at,
+    uint64_t completed_at,
+    int webhook_result,
+    int completion_result)
+{
+    const int operation_result =
+        completion_result != 0 ? completion_result : webhook_result;
+    const char *outcome =
+        completion_result != 0
+            ? "completion_failed"
+            : (webhook_result == 0 ? "delivered" : "transport_failed");
+    char details[JG_LOG_DETAILS_MAX + 1U];
+    const int written =
+        snprintf(details, sizeof(details),
+                 "{\"attempt\":%" PRIu64 ",\"attempted_at\":%" PRIu64
+                 ",\"completed_at\":%" PRIu64 ",\"operation_result\":%d,"
+                 "\"outcome\":\"%s\",\"transport_revision\":%" PRIu64 "}",
+                 (uint64_t)delivery->attempts + 1U, attempted_at, completed_at,
+                 operation_result, outcome, configuration->revision);
+
+    if (written > 0 && (size_t)written < sizeof(details)) {
+        (void)jg_log_emit(operation_result == 0 ? JG_LOG_INFO : JG_LOG_WARNING,
+                          "alerting", "alerting.delivery_attempt",
+                          delivery->event_id,
+                          "Webhook delivery attempt completed", details);
+    }
+}
+
 /**
  * @brief Deliver one bounded batch while each attempt holds a restore lease.
  */
@@ -748,6 +780,8 @@ int management_alerts_deliver_pending(struct management_alerts *alerts)
         uint64_t attempted_at = 0U;
         uint64_t completed_at = 0U;
         int delivery_result = alert_time(&attempted_at);
+        int webhook_result = 0;
+        int completion_result = 0;
         bool claimed = false;
         bool mutation_active = false;
 
@@ -762,7 +796,7 @@ int management_alerts_deliver_pending(struct management_alerts *alerts)
         }
         claimed = delivery_result == 0;
         if (claimed) {
-            const int webhook_result = alert_webhook_deliver(
+            webhook_result = alert_webhook_deliver(
                 configuration.values.webhook_url,
                 configuration.values.webhook_ca_pem,
                 configuration.values.webhook_timeout_seconds, secret,
@@ -770,18 +804,36 @@ int management_alerts_deliver_pending(struct management_alerts *alerts)
 
             delivery_result = alert_time(&completed_at);
             if (delivery_result == 0) {
-                int completion_result = jg_database_alert_delivery_complete(
+                completion_result = jg_database_alert_delivery_complete(
                     alerts->database, &delivery, webhook_result == 0,
                     completed_at, webhook_result == 0 ? NULL : error);
 
                 retain_error(publish_storage_metrics(alerts),
                              &completion_result);
                 retain_error(completion_result, &delivery_result);
+            } else {
+                completion_result = delivery_result;
+                completed_at = attempted_at;
             }
             retain_error(webhook_result, &delivery_result);
         }
         if (mutation_active) {
             management_mutation_end(alerts->management);
+        }
+        if (claimed) {
+            atomic_store_explicit(
+                &alerts->management->health->alert_last_transport_revision,
+                configuration.revision, memory_order_release);
+            atomic_store_explicit(
+                &alerts->management->health->alert_last_delivery_attempt_at,
+                completed_at, memory_order_release);
+            atomic_store_explicit(&alerts->management->health
+                                       ->alert_last_delivery_attempt_successful,
+                                  webhook_result == 0 && completion_result == 0,
+                                  memory_order_release);
+            trace_delivery_attempt(&configuration, &delivery, attempted_at,
+                                   completed_at, webhook_result,
+                                   completion_result);
         }
         jg_alert_configuration_clear(&configuration);
         sodium_memzero(secret, sizeof(secret));
