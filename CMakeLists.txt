@@ -46,6 +46,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       src/netd/rtnetlink.c)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
   include(CheckCSourceRuns)
+  set(CMAKE_REQUIRED_LIBRARIES PkgConfig::CURL)
+  check_c_source_runs(
+    "#include <curl/curl.h>
+     #include <string.h>
+     /* Prevent OpenSSL and LibreSSL symbols from sharing one process. */
+     int main(void) {
+       const curl_version_info_data *info =
+         curl_version_info(CURLVERSION_NOW);
+       return info != 0 && info->ssl_version != 0 &&
+         strncmp(info->ssl_version, \"OpenSSL/\", 8) == 0 ? 0 : 1;
+     }"
+    JANUSGATE_CURL_USES_OPENSSL)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  if(NOT JANUSGATE_CURL_USES_OPENSSL)
+    message(FATAL_ERROR
+            "libcurl must use OpenSSL on OpenBSD; see docs/build.md")
+  endif()
+  list(GET CURL_LIBRARY_DIRS 0 janusgate_curl_library_directory)
+  get_filename_component(janusgate_civetweb_library_directory
+                         "${CIVETWEB_LIBRARY}" DIRECTORY)
+  list(PREPEND CMAKE_BUILD_RPATH "${janusgate_curl_library_directory}")
+  list(PREPEND CMAKE_INSTALL_RPATH "${janusgate_curl_library_directory}")
   set(CMAKE_REQUIRED_INCLUDES "${CIVETWEB_INCLUDE_DIR}")
   set(CMAKE_REQUIRED_LIBRARIES "${CIVETWEB_LIBRARY}")
   check_c_source_runs(
@@ -307,15 +329,22 @@ add_executable(janusgate-web src/web/main.c)
 target_include_directories(janusgate-web PRIVATE "${CIVETWEB_INCLUDE_DIR}")
 target_link_libraries(
   janusgate-web PRIVATE janusgate-web-core "${CIVETWEB_LIBRARY}")
-if(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
-  set_property(TARGET janusgate-web PROPERTY INSTALL_RPATH_USE_LINK_PATH TRUE)
-endif()
 janusgate_apply_compiler_options(janusgate-web)
 
 add_executable(janusgate-setup src/setup/main.c)
 target_link_libraries(
   janusgate-setup PRIVATE JanusGate::common PkgConfig::JANSSON)
 janusgate_apply_compiler_options(janusgate-setup)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+  set_target_properties(
+    janusgate-netd janusgated janusgatectl janusgate-web janusgate-setup
+    PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
+  set_property(
+    TARGET janusgate-web
+    APPEND
+    PROPERTY INSTALL_RPATH "${janusgate_civetweb_library_directory}")
+endif()
 
 install(
   TARGETS janusgate-common

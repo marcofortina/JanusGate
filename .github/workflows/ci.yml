@@ -100,8 +100,11 @@ jobs:
             libsodium ninja openssl%3.5 py3-jsonschema py3-yaml sqlite3
           run: |
             set -eu
+            curl_prefix=/usr/local/libexec/janusgate/curl
             civetweb_prefix=/usr/local/libexec/janusgate/civetweb
+            scripts/build-curl.sh "$curl_prefix"
             scripts/build-civetweb.sh "$civetweb_prefix"
+            export PKG_CONFIG_PATH="$curl_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
             civetweb_library=$(find "$civetweb_prefix/lib" -type f \
               -name 'libcivetweb.so*' -print | sort | tail -n 1)
             openssl_crypto=$(pkg_info -L openssl |

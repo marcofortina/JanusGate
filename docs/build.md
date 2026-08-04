@@ -48,8 +48,18 @@ pkg_add bash cmake cmocka curl groff jansson libidn2 libsodium \
   ninja openssl%3.5 py3-jsonschema py3-yaml sqlite3
 ```
 
+The packaged libcurl uses LibreSSL, while JanusGate requires OpenSSL 3. Loading
+both providers in one process is unsafe on OpenBSD. Build the pinned
+OpenSSL-backed libcurl in its dedicated runtime directory:
+
+```sh
+doas scripts/build-curl.sh /usr/local/libexec/janusgate/curl
+curl_prefix=/usr/local/libexec/janusgate/curl
+export PKG_CONFIG_PATH="$curl_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+```
+
 The packaged CivetWeb library omits TLS. Build the pinned, patched TLS variant
-in its dedicated runtime directory before configuring JanusGate:
+in a separate runtime directory before configuring JanusGate:
 
 ```sh
 doas scripts/build-civetweb.sh /usr/local/libexec/janusgate/civetweb
@@ -58,10 +68,11 @@ civetweb_library=$(find "$civetweb_prefix/lib" -type f \
   -name 'libcivetweb.so*' -print | sort | tail -n 1)
 ```
 
-The script verifies the same CivetWeb source and Alpine security patches used
-by the appliance package. The `pkg-config` implementation is part of the base
-system. Configure the ports OpenSSL and CivetWeb paths explicitly because the
-base system TLS library remains separately available:
+Both scripts verify immutable source inputs; the CivetWeb build also applies
+the Alpine security patches used by the appliance package. The `pkg-config`
+implementation is part of the base system. Configure the ports OpenSSL and
+CivetWeb paths explicitly because the base system TLS library remains
+separately available:
 
 ```sh
 openssl_crypto=$(pkg_info -L openssl |
