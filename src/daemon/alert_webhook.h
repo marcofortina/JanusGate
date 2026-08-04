@@ -21,13 +21,15 @@
 /**
  * @brief Create the canonical timestamp-bound webhook signature.
  *
- * The HMAC input is the decimal Unix timestamp, one period, then the exact
- * request body. This allows receivers to reject stale deliveries.
+ * The HMAC input is the decimal Unix timestamp, one period, the lowercase
+ * event identity, one period, then the exact request body. This binds replay
+ * protection and receiver deduplication to the authenticated request.
  *
  * @return 0 on success or a negative validation or cryptographic error.
  */
 int alert_webhook_signature(const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
                             uint64_t timestamp,
+                            const char event_id[JG_ALERT_EVENT_ID_SIZE],
                             const char *payload,
                             size_t payload_size,
                             char signature[ALERT_WEBHOOK_SIGNATURE_SIZE]);

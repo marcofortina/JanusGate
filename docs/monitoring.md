@@ -166,13 +166,15 @@ Rotate the HMAC secret before enabling delivery. The 64 lowercase hexadecimal
 characters are displayed once and represent a random 32-byte key. A receiver
 must:
 
-1. reject an old `X-JanusGate-Timestamp` according to its replay window;
-2. compute HMAC-SHA-256 over the decimal timestamp, one period, and the exact
-   request body bytes;
-3. compare `X-JanusGate-Signature`, including its `sha256=` prefix, in constant
+1. require `X-JanusGate-Signature-Version: 2`;
+2. reject an old `X-JanusGate-Timestamp` according to its replay window;
+3. require a 32-character lowercase hexadecimal `X-JanusGate-Event-ID`;
+4. compute HMAC-SHA-256 over the decimal timestamp, one period, the exact Event
+   ID, one period, and the exact request body bytes;
+5. compare `X-JanusGate-Signature`, including its `sha256=` prefix, in constant
    time;
-4. deduplicate the globally unique 128-bit `X-JanusGate-Event-ID` before
-   returning HTTP 2xx.
+6. after successful authentication, deduplicate the globally unique 128-bit
+   Event ID before returning HTTP 2xx.
 
 Failed requests enter bounded exponential retry and become abandoned after ten
 attempts. The outbox survives service restarts, and an interrupted claim is

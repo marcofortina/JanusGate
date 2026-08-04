@@ -97,9 +97,27 @@ static int append_header(struct curl_slist **headers, const char *header)
     return 0;
 }
 
+/** @brief Validate one complete lowercase hexadecimal event identity. */
+static bool event_id_valid(const char event_id[JG_ALERT_EVENT_ID_SIZE])
+{
+    if (event_id == NULL) {
+        return false;
+    }
+    for (size_t index = 0U; index < JG_ALERT_EVENT_ID_SIZE - 1U; ++index) {
+        const char character = event_id[index];
+
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f'))) {
+            return false;
+        }
+    }
+    return event_id[JG_ALERT_EVENT_ID_SIZE - 1U] == '\0';
+}
+
 /** @brief Create the canonical timestamp-bound webhook signature. */
 int alert_webhook_signature(const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
                             uint64_t timestamp,
+                            const char event_id[JG_ALERT_EVENT_ID_SIZE],
                             const char *payload,
                             size_t payload_size,
                             char signature[ALERT_WEBHOOK_SIGNATURE_SIZE])
@@ -110,8 +128,9 @@ int alert_webhook_signature(const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
     int written = 0;
     int result = 0;
 
-    if (secret == NULL || payload == NULL || payload_size == 0U ||
-        payload_size > JG_ALERT_PAYLOAD_MAX || signature == NULL) {
+    if (secret == NULL || !event_id_valid(event_id) || payload == NULL ||
+        payload_size == 0U || payload_size > JG_ALERT_PAYLOAD_MAX ||
+        signature == NULL) {
         return -EINVAL;
     }
     signature[0U] = '\0';
@@ -126,6 +145,10 @@ int alert_webhook_signature(const uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE],
         crypto_auth_hmacsha256_update(
             &state, (const unsigned char *)timestamp_text,
             (unsigned long long)(size_t)written) != 0 ||
+        crypto_auth_hmacsha256_update(&state, (const unsigned char *)".", 1U) !=
+            0 ||
+        crypto_auth_hmacsha256_update(&state, (const unsigned char *)event_id,
+                                      JG_ALERT_EVENT_ID_SIZE - 1U) != 0 ||
         crypto_auth_hmacsha256_update(&state, (const unsigned char *)".", 1U) !=
             0 ||
         crypto_auth_hmacsha256_update(&state, (const unsigned char *)payload,
@@ -170,6 +193,9 @@ static int create_headers(const char event_id[JG_ALERT_EVENT_ID_SIZE],
         return -EOVERFLOW;
     }
     result = append_header(headers, "Content-Type: application/json");
+    if (result == 0) {
+        result = append_header(headers, "X-JanusGate-Signature-Version: 2");
+    }
     if (result == 0) {
         result = append_header(headers, identifier_header);
     }
@@ -223,25 +249,15 @@ int alert_webhook_deliver(const char *url,
     bool http_failure = false;
     int result = 0;
 
-    if (url == NULL || secret == NULL || event_id == NULL || timestamp == 0U ||
-        payload_size == 0U || payload_size > JG_ALERT_PAYLOAD_MAX ||
-        timeout_seconds == 0U || timeout_seconds > 30U || error == NULL) {
-        return -EINVAL;
-    }
-    for (size_t index = 0U; index < JG_ALERT_EVENT_ID_SIZE - 1U; ++index) {
-        const char character = event_id[index];
-
-        if (!((character >= '0' && character <= '9') ||
-              (character >= 'a' && character <= 'f'))) {
-            return -EINVAL;
-        }
-    }
-    if (event_id[JG_ALERT_EVENT_ID_SIZE - 1U] != '\0') {
+    if (url == NULL || secret == NULL || !event_id_valid(event_id) ||
+        timestamp == 0U || payload_size == 0U ||
+        payload_size > JG_ALERT_PAYLOAD_MAX || timeout_seconds == 0U ||
+        timeout_seconds > 30U || error == NULL) {
         return -EINVAL;
     }
     error[0U] = '\0';
-    result = alert_webhook_signature(secret, timestamp, payload, payload_size,
-                                     signature);
+    result = alert_webhook_signature(secret, timestamp, event_id, payload,
+                                     payload_size, signature);
     if (result == 0) {
         result = create_headers(event_id, timestamp, signature, &headers);
     }

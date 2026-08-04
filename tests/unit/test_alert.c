@@ -403,27 +403,40 @@ static void test_alert_delivery_claim(void **state)
 /** @brief Verify deterministic timestamp-bound webhook signatures. */
 static void test_alert_signature(void **state)
 {
+    static const char event_id[JG_ALERT_EVENT_ID_SIZE] =
+        "0123456789abcdef0123456789abcdef";
+    static const char other_event_id[JG_ALERT_EVENT_ID_SIZE] =
+        "1123456789abcdef0123456789abcdef";
+    static const char invalid_event_id[JG_ALERT_EVENT_ID_SIZE] = "invalid";
     uint8_t secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
     char first[ALERT_WEBHOOK_SIGNATURE_SIZE];
     char second[ALERT_WEBHOOK_SIGNATURE_SIZE];
 
     (void)state;
     (void)memset(secret, UINT8_C(0x42), sizeof(secret));
-    assert_int_equal(
-        alert_webhook_signature(secret, 1234U, "{\"ok\":true}", 11U, first), 0);
-    assert_int_equal(
-        alert_webhook_signature(secret, 1234U, "{\"ok\":true}", 11U, second),
-        0);
+    assert_int_equal(alert_webhook_signature(secret, 1234U, event_id,
+                                             "{\"ok\":true}", 11U, first),
+                     0);
+    assert_int_equal(alert_webhook_signature(secret, 1234U, event_id,
+                                             "{\"ok\":true}", 11U, second),
+                     0);
     assert_string_equal(first, second);
     assert_string_equal(
         first,
         "sha256="
-        "3e2681d4c8599209bf2654aa944428283e82c45f2ff6e6a919ca3338d3d51a0c");
+        "5f7a28392cf5a836dd4335b873fd34ce6ffb9b8a756932c9f41cfb112aa9dc6e");
     assert_int_equal(strlen(first), ALERT_WEBHOOK_SIGNATURE_SIZE - 1U);
-    assert_int_equal(
-        alert_webhook_signature(secret, 1235U, "{\"ok\":true}", 11U, second),
-        0);
+    assert_int_equal(alert_webhook_signature(secret, 1235U, event_id,
+                                             "{\"ok\":true}", 11U, second),
+                     0);
     assert_string_not_equal(first, second);
+    assert_int_equal(alert_webhook_signature(secret, 1234U, other_event_id,
+                                             "{\"ok\":true}", 11U, second),
+                     0);
+    assert_string_not_equal(first, second);
+    assert_int_equal(alert_webhook_signature(secret, 1234U, invalid_event_id,
+                                             "{\"ok\":true}", 11U, second),
+                     -EINVAL);
     sodium_memzero(secret, sizeof(secret));
 }
 
