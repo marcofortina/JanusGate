@@ -731,10 +731,13 @@ static bool delivery_stopping(struct management_alerts *alerts)
 /**
  * @brief Deliver one bounded batch while each attempt holds a restore lease.
  */
-static int deliver_notifications(struct management_alerts *alerts)
+int management_alerts_deliver_pending(struct management_alerts *alerts)
 {
     int result = 0;
 
+    if (alerts == NULL) {
+        return -EINVAL;
+    }
     for (size_t index = 0U; result == 0 && !delivery_stopping(alerts) &&
                             index < MANAGEMENT_ALERT_DELIVERY_BATCH;
          ++index) {
@@ -868,7 +871,7 @@ static void *run_management_alerts(void *context)
                               "Native alert evaluation did not complete", NULL);
         }
 
-        delivery_result = deliver_notifications(alerts);
+        delivery_result = management_alerts_deliver_pending(alerts);
         if (alert_time(&delivery_at) != 0) {
             delivery_at = now;
         }

@@ -9,11 +9,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,7 @@
 #include <sodium.h>
 #include <sqlite3.h>
 
+#include "alert_webhook.h"
 #include "janusgate/account.h"
 #include "janusgate/alert.h"
 #include "janusgate/audit.h"
@@ -64,6 +68,335 @@ struct restore_gate_thread {
     struct jg_management *management;
     int result;
 };
+
+/** Blocking local HTTPS receiver used by the webhook integration test. */
+struct webhook_test_server {
+    char *authority;
+    char certificate_path[128U];
+    char port_path[128U];
+    char capture_path[128U];
+    char release_path[128U];
+    pid_t process;
+    uint16_t port;
+    char method[16U];
+    char uri[64U];
+    char content_type[64U];
+    char event_id[JG_ALERT_EVENT_ID_SIZE];
+    char timestamp[32U];
+    char signature[ALERT_WEBHOOK_SIGNATURE_SIZE];
+    char signature_version[8U];
+    char body[JG_ALERT_PAYLOAD_MAX + 1U];
+};
+
+/** Result storage for one synchronous alert-delivery thread. */
+struct alert_delivery_thread {
+    struct management_alerts *alerts;
+    int result;
+};
+
+/** @brief Generate one RSA key for the local HTTPS test identity. */
+static EVP_PKEY *webhook_test_key(void)
+{
+    EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY *key = NULL;
+
+    assert_non_null(context);
+    assert_int_equal(EVP_PKEY_keygen_init(context), 1);
+    assert_int_equal(EVP_PKEY_CTX_set_rsa_keygen_bits(context, 2048), 1);
+    assert_int_equal(EVP_PKEY_keygen(context, &key), 1);
+    EVP_PKEY_CTX_free(context);
+    return key;
+}
+
+/** @brief Add one textual X.509 extension to a test certificate. */
+static void webhook_test_extension(X509 *certificate,
+                                   int identifier,
+                                   const char *value)
+{
+    char configuration[128U];
+    X509_EXTENSION *extension = NULL;
+
+    assert_true(strlen(value) < sizeof(configuration));
+    (void)memcpy(configuration, value, strlen(value) + 1U);
+    extension = X509V3_EXT_conf_nid(NULL, NULL, identifier, configuration);
+
+    assert_non_null(extension);
+    assert_int_equal(X509_add_ext(certificate, extension, -1), 1);
+    X509_EXTENSION_free(extension);
+}
+
+/** @brief Configure a private CA and localhost server certificate. */
+static void webhook_test_identity(struct webhook_test_server *server,
+                                  const char *directory)
+{
+    EVP_PKEY *authority_key = webhook_test_key();
+    EVP_PKEY *server_key = webhook_test_key();
+    X509 *authority = X509_new();
+    X509 *certificate = X509_new();
+    X509_NAME *authority_name = X509_NAME_new();
+    X509_NAME *server_name = X509_NAME_new();
+    BIO *memory = BIO_new(BIO_s_mem());
+    BUF_MEM *contents = NULL;
+    FILE *certificate_file = NULL;
+    int certificate_descriptor = -1;
+    int written = 0;
+
+    assert_non_null(authority_key);
+    assert_non_null(server_key);
+    assert_non_null(authority);
+    assert_non_null(certificate);
+    assert_non_null(authority_name);
+    assert_non_null(server_name);
+    assert_non_null(memory);
+    assert_int_equal(X509_NAME_add_entry_by_txt(
+                         authority_name, "CN", MBSTRING_ASC,
+                         (const unsigned char *)"JanusGate webhook test CA", -1,
+                         -1, 0),
+                     1);
+    assert_int_equal(X509_set_version(authority, 2L), 1);
+    assert_int_equal(ASN1_INTEGER_set(X509_get_serialNumber(authority), 1001L),
+                     1);
+    assert_int_equal(X509_set_subject_name(authority, authority_name), 1);
+    assert_int_equal(X509_set_issuer_name(authority, authority_name), 1);
+    assert_int_equal(X509_set_pubkey(authority, authority_key), 1);
+    assert_non_null(X509_gmtime_adj(X509_getm_notBefore(authority), -60L));
+    assert_non_null(X509_gmtime_adj(X509_getm_notAfter(authority), 3600L));
+    webhook_test_extension(authority, NID_basic_constraints,
+                           "critical,CA:TRUE,pathlen:0");
+    webhook_test_extension(authority, NID_key_usage,
+                           "critical,keyCertSign,cRLSign");
+    assert_true(X509_sign(authority, authority_key, EVP_sha256()) > 0);
+
+    assert_int_equal(X509_NAME_add_entry_by_txt(
+                         server_name, "CN", MBSTRING_ASC,
+                         (const unsigned char *)"localhost", -1, -1, 0),
+                     1);
+    assert_int_equal(X509_set_version(certificate, 2L), 1);
+    assert_int_equal(
+        ASN1_INTEGER_set(X509_get_serialNumber(certificate), 1002L), 1);
+    assert_int_equal(X509_set_subject_name(certificate, server_name), 1);
+    assert_int_equal(X509_set_issuer_name(certificate, authority_name), 1);
+    assert_int_equal(X509_set_pubkey(certificate, server_key), 1);
+    assert_non_null(X509_gmtime_adj(X509_getm_notBefore(certificate), -60L));
+    assert_non_null(X509_gmtime_adj(X509_getm_notAfter(certificate), 3600L));
+    webhook_test_extension(certificate, NID_basic_constraints,
+                           "critical,CA:FALSE");
+    webhook_test_extension(certificate, NID_key_usage,
+                           "critical,digitalSignature,keyEncipherment");
+    webhook_test_extension(certificate, NID_ext_key_usage, "serverAuth");
+    webhook_test_extension(certificate, NID_subject_alt_name,
+                           "DNS:localhost,IP:127.0.0.1");
+    assert_true(X509_sign(certificate, authority_key, EVP_sha256()) > 0);
+
+    assert_int_equal(PEM_write_bio_X509(memory, authority), 1);
+    BIO_get_mem_ptr(memory, &contents);
+    assert_non_null(contents);
+    assert_true(contents->length > 0U);
+    server->authority = malloc(contents->length + 1U);
+    assert_non_null(server->authority);
+    (void)memcpy(server->authority, contents->data, contents->length);
+    server->authority[contents->length] = '\0';
+    written =
+        snprintf(server->certificate_path, sizeof(server->certificate_path),
+                 "%s/webhook-certificate-XXXXXX", directory);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(server->certificate_path));
+    certificate_descriptor = mkstemp(server->certificate_path);
+    assert_true(certificate_descriptor >= 0);
+    assert_int_equal(fchmod(certificate_descriptor, 0600), 0);
+    certificate_file = fdopen(certificate_descriptor, "w");
+    assert_non_null(certificate_file);
+    assert_int_equal(PEM_write_X509(certificate_file, certificate), 1);
+    assert_int_equal(PEM_write_PrivateKey(certificate_file, server_key, NULL,
+                                          NULL, 0, NULL, NULL),
+                     1);
+    assert_int_equal(fclose(certificate_file), 0);
+    BIO_free(memory);
+    X509_NAME_free(server_name);
+    X509_NAME_free(authority_name);
+    X509_free(certificate);
+    X509_free(authority);
+    EVP_PKEY_free(server_key);
+    EVP_PKEY_free(authority_key);
+}
+
+/** @brief Build one bounded fixture path below the private test directory. */
+static void webhook_test_path(char *path,
+                              size_t path_size,
+                              const char *directory,
+                              const char *name)
+{
+    const int written = snprintf(path, path_size, "%s/%s", directory, name);
+
+    assert_true(written > 0);
+    assert_true((size_t)written < path_size);
+}
+
+/** @brief Wait at most ten seconds for one complete fixture file. */
+static bool webhook_test_wait_file(const char *path)
+{
+    const struct timespec interval = {.tv_sec = 0, .tv_nsec = 10000000L};
+
+    for (size_t attempt = 0U; attempt < 1000U; ++attempt) {
+        struct stat status;
+
+        if (stat(path, &status) == 0 && S_ISREG(status.st_mode) &&
+            status.st_size > 0) {
+            return true;
+        }
+        (void)nanosleep(&interval, NULL);
+    }
+    return false;
+}
+
+/** @brief Copy one required JSON string into bounded test storage. */
+static bool webhook_test_json_value(json_t *capture,
+                                    const char *name,
+                                    char *destination,
+                                    size_t destination_size)
+{
+    const char *value = json_string_value(json_object_get(capture, name));
+    const size_t value_size = value == NULL ? 0U : strlen(value);
+
+    if (value == NULL || value_size >= destination_size) {
+        return false;
+    }
+    (void)memcpy(destination, value, value_size + 1U);
+    return true;
+}
+
+/** @brief Load and validate the captured webhook request. */
+static bool webhook_test_capture(struct webhook_test_server *server)
+{
+    json_error_t error;
+    json_t *capture = json_load_file(server->capture_path, 0U, &error);
+    bool valid = capture != NULL && json_is_object(capture);
+
+    if (valid) {
+        valid = webhook_test_json_value(capture, "method", server->method,
+                                        sizeof(server->method)) &&
+                webhook_test_json_value(capture, "path", server->uri,
+                                        sizeof(server->uri)) &&
+                webhook_test_json_value(capture, "content_type",
+                                        server->content_type,
+                                        sizeof(server->content_type)) &&
+                webhook_test_json_value(capture, "event_id", server->event_id,
+                                        sizeof(server->event_id)) &&
+                webhook_test_json_value(capture, "timestamp", server->timestamp,
+                                        sizeof(server->timestamp)) &&
+                webhook_test_json_value(capture, "signature", server->signature,
+                                        sizeof(server->signature)) &&
+                webhook_test_json_value(capture, "signature_version",
+                                        server->signature_version,
+                                        sizeof(server->signature_version)) &&
+                webhook_test_json_value(capture, "body", server->body,
+                                        sizeof(server->body));
+    }
+    json_decref(capture);
+    return valid;
+}
+
+/** @brief Start the isolated loopback HTTPS receiver. */
+static void webhook_test_server_open(struct webhook_test_server *server,
+                                     const char *directory)
+{
+    json_error_t error;
+    json_t *port = NULL;
+    json_int_t port_number = 0;
+
+    (void)memset(server, 0, sizeof(*server));
+    server->process = -1;
+    webhook_test_identity(server, directory);
+    webhook_test_path(server->port_path, sizeof(server->port_path), directory,
+                      "webhook-port.json");
+    webhook_test_path(server->capture_path, sizeof(server->capture_path),
+                      directory, "webhook-capture.json");
+    webhook_test_path(server->release_path, sizeof(server->release_path),
+                      directory, "webhook-release");
+    server->process = fork();
+    assert_true(server->process >= 0);
+    if (server->process == 0) {
+        (void)execl(JANUSGATE_TEST_PYTHON, JANUSGATE_TEST_PYTHON,
+                    JANUSGATE_TEST_WEBHOOK_SERVER, "--certificate",
+                    server->certificate_path, "--port", server->port_path,
+                    "--capture", server->capture_path, "--release",
+                    server->release_path, (char *)NULL);
+        _exit(127);
+    }
+    assert_true(webhook_test_wait_file(server->port_path));
+    port = json_load_file(server->port_path, 0U, &error);
+    assert_non_null(port);
+    assert_true(json_is_object(port));
+    port_number = json_integer_value(json_object_get(port, "port"));
+    assert_true(port_number > 0);
+    assert_true(port_number <= UINT16_MAX);
+    server->port = (uint16_t)port_number;
+    json_decref(port);
+}
+
+/** @brief Wait at most ten seconds for the local webhook request. */
+static bool webhook_test_server_wait(struct webhook_test_server *server)
+{
+    return webhook_test_wait_file(server->capture_path) &&
+           webhook_test_capture(server);
+}
+
+/** @brief Permit the blocked webhook receiver to return success. */
+static void webhook_test_server_release(struct webhook_test_server *server)
+{
+    const int descriptor = open(server->release_path,
+                                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+
+    assert_true(descriptor >= 0);
+    assert_int_equal(close(descriptor), 0);
+}
+
+/** @brief Wait for the isolated receiver and return its outcome. */
+static int webhook_test_server_join(struct webhook_test_server *server)
+{
+    int status = 0;
+    pid_t result = -1;
+
+    do {
+        result = waitpid(server->process, &status, 0);
+    } while (result < 0 && errno == EINTR);
+    server->process = -1;
+    if (result < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return -EIO;
+    }
+    return 0;
+}
+
+/** @brief Remove one optional webhook fixture file. */
+static void webhook_test_unlink(const char *path)
+{
+    if (path[0U] != '\0' && unlink(path) != 0) {
+        assert_int_equal(errno, ENOENT);
+    }
+}
+
+/** @brief Release all isolated webhook receiver resources. */
+static void webhook_test_server_close(struct webhook_test_server *server)
+{
+    if (server->process > 0) {
+        (void)kill(server->process, SIGTERM);
+        (void)waitpid(server->process, NULL, 0);
+    }
+    webhook_test_unlink(server->release_path);
+    webhook_test_unlink(server->capture_path);
+    webhook_test_unlink(server->port_path);
+    webhook_test_unlink(server->certificate_path);
+    free(server->authority);
+}
+
+/** @brief Deliver pending alerts in one helper thread. */
+static void *deliver_pending_alerts(void *context)
+{
+    struct alert_delivery_thread *thread = context;
+
+    thread->result = management_alerts_deliver_pending(thread->alerts);
+    return NULL;
+}
 
 /** @brief Wait for exclusive restore ownership in a helper thread. */
 static void *enter_restore_gate(void *context)
@@ -4939,6 +5272,163 @@ static void test_atomic_alert_audit(void **state)
     sodium_memzero(original_secret, sizeof(original_secret));
 }
 
+/** @brief Verify real webhook headers, snapshots, and restore draining. */
+static void test_webhook_delivery_consistency(void **state)
+{
+    struct management_fixture *fixture = *state;
+    struct webhook_test_server server;
+    struct jg_alert_configuration configuration = {0};
+    struct jg_alert_configuration rotated = {0};
+    struct jg_alert_configuration disabled = {0};
+    struct jg_alert_configuration_update replacement;
+    struct jg_alert_storage_metrics metrics;
+    struct management_alerts *alerts = NULL;
+    struct alert_delivery_thread delivery_context = {
+        .result = -EINPROGRESS,
+    };
+    struct restore_gate_thread restore_context = {
+        .management = fixture->management,
+        .result = -EINPROGRESS,
+    };
+    uint8_t original_secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    uint8_t replacement_secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    char original_secret_text[JG_ALERT_WEBHOOK_SECRET_TEXT_SIZE];
+    char replacement_secret_text[JG_ALERT_WEBHOOK_SECRET_TEXT_SIZE];
+    char event_id[JG_ALERT_EVENT_ID_SIZE];
+    char webhook_url[128U];
+    char expected_signature[ALERT_WEBHOOK_SIGNATURE_SIZE];
+    char replacement_signature[ALERT_WEBHOOK_SIGNATURE_SIZE];
+    char *timestamp_end = NULL;
+    unsigned long long timestamp = 0U;
+    const uint64_t now = (uint64_t)time(NULL);
+    uint64_t active_revision = 0U;
+    pthread_t delivery_thread;
+    pthread_t restore_thread;
+    size_t attempts = 0U;
+    int written = 0;
+
+    webhook_test_server_open(&server, fixture->directory);
+    written = snprintf(webhook_url, sizeof(webhook_url),
+                       "https://localhost:%" PRIu16 "/janusgate", server.port);
+    assert_true(written > 0);
+    assert_true((size_t)written < sizeof(webhook_url));
+    assert_int_equal(
+        jg_database_alert_configuration_load(fixture->database, &configuration),
+        0);
+    assert_int_equal(
+        jg_database_alert_webhook_secret_rotate(
+            fixture->database, fixture->management->secrets->totp_key,
+            configuration.revision, now, original_secret_text, &rotated),
+        0);
+    assert_int_equal(sodium_hex2bin(original_secret, sizeof(original_secret),
+                                    original_secret_text,
+                                    strlen(original_secret_text), NULL, NULL,
+                                    NULL),
+                     0);
+    replacement = rotated.values;
+    replacement.webhook_enabled = true;
+    replacement.webhook_url = webhook_url;
+    replacement.webhook_ca_pem = server.authority;
+    replacement.webhook_timeout_seconds = 10U;
+    assert_int_equal(
+        jg_database_alert_configuration_replace(
+            fixture->database, &replacement, rotated.revision, now, &disabled),
+        0);
+    active_revision = disabled.revision;
+    assert_int_equal(jg_database_alert_event_enqueue(
+                         fixture->database, "delivery.integration",
+                         JG_ALERT_SEVERITY_WARNING,
+                         "Webhook delivery integration test.", "{}", now,
+                         event_id),
+                     0);
+    jg_alert_configuration_clear(&configuration);
+    jg_alert_configuration_clear(&rotated);
+    jg_alert_configuration_clear(&disabled);
+
+    fixture->management->runtime = (struct jg_daemon_runtime *)(void *)fixture;
+    assert_int_equal(management_alerts_create(fixture->management, &alerts), 0);
+    fixture->management->runtime = NULL;
+    assert_non_null(alerts);
+    delivery_context.alerts = alerts;
+    assert_int_equal(pthread_create(&delivery_thread, NULL,
+                                    deliver_pending_alerts, &delivery_context),
+                     0);
+    assert_true(webhook_test_server_wait(&server));
+
+    assert_int_equal(
+        jg_database_alert_webhook_secret_rotate(
+            fixture->database, fixture->management->secrets->totp_key,
+            active_revision, now + 1U, replacement_secret_text, &rotated),
+        0);
+    assert_int_equal(
+        sodium_hex2bin(replacement_secret, sizeof(replacement_secret),
+                       replacement_secret_text, strlen(replacement_secret_text),
+                       NULL, NULL, NULL),
+        0);
+    replacement = rotated.values;
+    replacement.webhook_enabled = false;
+    assert_int_equal(jg_database_alert_configuration_replace(
+                         fixture->database, &replacement, rotated.revision,
+                         now + 1U, &disabled),
+                     0);
+    assert_int_equal(pthread_create(&restore_thread, NULL, enter_restore_gate,
+                                    &restore_context),
+                     0);
+    while (!management_restore_in_progress(fixture->management) &&
+           attempts < 100000U) {
+        ++attempts;
+        (void)sched_yield();
+    }
+    assert_true(management_restore_in_progress(fixture->management));
+    assert_int_equal(restore_context.result, -EINPROGRESS);
+    assert_int_equal(management_mutation_begin(fixture->management), -EBUSY);
+
+    webhook_test_server_release(&server);
+    assert_int_equal(pthread_join(delivery_thread, NULL), 0);
+    assert_int_equal(delivery_context.result, -EBUSY);
+    assert_int_equal(webhook_test_server_join(&server), 0);
+    assert_int_equal(pthread_join(restore_thread, NULL), 0);
+    assert_int_equal(restore_context.result, 0);
+    management_restore_end(fixture->management);
+
+    assert_string_equal(server.method, "POST");
+    assert_string_equal(server.uri, "/janusgate");
+    assert_string_equal(server.content_type, "application/json");
+    assert_string_equal(server.signature_version, "2");
+    assert_string_equal(server.event_id, event_id);
+    errno = 0;
+    timestamp = strtoull(server.timestamp, &timestamp_end, 10);
+    assert_int_equal(errno, 0);
+    assert_true(timestamp > 0U);
+    assert_ptr_not_equal(timestamp_end, server.timestamp);
+    assert_int_equal(*timestamp_end, '\0');
+    assert_int_equal(alert_webhook_signature(
+                         original_secret, (uint64_t)timestamp, event_id,
+                         server.body, strlen(server.body), expected_signature),
+                     0);
+    assert_int_equal(alert_webhook_signature(replacement_secret,
+                                             (uint64_t)timestamp, event_id,
+                                             server.body, strlen(server.body),
+                                             replacement_signature),
+                     0);
+    assert_string_not_equal(expected_signature, replacement_signature);
+    assert_string_equal(server.signature, expected_signature);
+    assert_int_equal(
+        jg_database_alert_storage_metrics(fixture->database, &metrics), 0);
+    assert_int_equal(metrics.deliveries_pending, 0U);
+    assert_int_equal(metrics.deliveries_succeeded, 1U);
+    management_alerts_destroy(alerts);
+    webhook_test_server_close(&server);
+    jg_alert_configuration_clear(&disabled);
+    jg_alert_configuration_clear(&rotated);
+    sodium_memzero(replacement_signature, sizeof(replacement_signature));
+    sodium_memzero(expected_signature, sizeof(expected_signature));
+    sodium_memzero(replacement_secret_text, sizeof(replacement_secret_text));
+    sodium_memzero(original_secret_text, sizeof(original_secret_text));
+    sodium_memzero(replacement_secret, sizeof(replacement_secret));
+    sodium_memzero(original_secret, sizeof(original_secret));
+}
+
 /** @brief Verify malformed, cross-origin, and routing requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -5315,6 +5805,8 @@ int jg_test_management(void)
         cmocka_unit_test_setup_teardown(test_alert_api, setup_management,
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_atomic_alert_audit,
+                                        setup_management, teardown_management),
+        cmocka_unit_test_setup_teardown(test_webhook_delivery_consistency,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),

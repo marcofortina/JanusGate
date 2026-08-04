@@ -64,6 +64,10 @@ target_link_libraries(
           PkgConfig::CMOCKA PkgConfig::JANSSON PkgConfig::SQLITE3)
 target_include_directories(
   janusgate-unit-tests PRIVATE "${CMAKE_SOURCE_DIR}/src/common")
+target_compile_definitions(
+  janusgate-unit-tests
+  PRIVATE JANUSGATE_TEST_PYTHON="${Python3_EXECUTABLE}"
+          JANUSGATE_TEST_WEBHOOK_SERVER="${CMAKE_CURRENT_SOURCE_DIR}/helpers/webhook_server.py")
 janusgate_apply_compiler_options(janusgate-unit-tests)
 
 add_test(NAME unit COMMAND janusgate-unit-tests)

@@ -401,6 +401,9 @@ int management_alerts_create(struct jg_management *management,
 /** @brief Start one fully initialized native alert worker. */
 int management_alerts_start(struct management_alerts *alerts);
 
+/** @brief Deliver one bounded pending webhook batch synchronously. */
+int management_alerts_deliver_pending(struct management_alerts *alerts);
+
 /** @brief Stop and release native alert evaluation state. */
 void management_alerts_destroy(struct management_alerts *alerts);
 
