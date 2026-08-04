@@ -21,6 +21,8 @@
 
 #include "janusgate/checked.h"
 
+#include "http_client.h"
+
 /** Complete bounded HTTP response assembled by libcurl callbacks. */
 struct download_response {
     uint8_t *body;
@@ -357,8 +359,8 @@ static int fetch_https(const char *url,
         result = append_validator(&headers, "If-Modified-Since",
                                   validators->last_modified);
     }
-    if (result == 0 && curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        result = -EIO;
+    if (result == 0) {
+        result = jg_http_client_initialize();
     }
     if (result == 0) {
         curl = curl_easy_init();

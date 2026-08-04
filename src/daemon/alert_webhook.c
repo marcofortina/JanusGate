@@ -18,6 +18,8 @@
 #include <curl/curl.h>
 #include <sodium.h>
 
+#include "http_client.h"
+
 /** Maximum ignored response body bytes. */
 #define ALERT_WEBHOOK_RESPONSE_MAX 4096U
 
@@ -255,8 +257,8 @@ int alert_webhook_deliver(const char *url,
             };
         }
     }
-    if (result == 0 && curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        result = -EIO;
+    if (result == 0) {
+        result = jg_http_client_initialize();
     }
     if (result == 0) {
         curl = curl_easy_init();

@@ -17,6 +17,8 @@
 #include "janusgate/ipc.h"
 #include "janusgate/ipc_client.h"
 
+#include "http_client.h"
+
 /** Largest accepted CLI query string. */
 #define CLI_QUERY_SIZE_MAX 256U
 
@@ -578,7 +580,6 @@ int jg_cli_remote_request(const struct jg_cli_remote_config *config,
     char *content_type = NULL;
     long status = 0L;
     CURLcode curl_status = CURLE_OK;
-    bool curl_initialized = false;
     int result = jg_cli_remote_config_validate(config);
 
     if (result == 0 &&
@@ -616,10 +617,8 @@ int jg_cli_remote_request(const struct jg_cli_remote_config *config,
     if (result == 0 && encoded != NULL) {
         result = append_header(&headers, "Content-Type", "application/json");
     }
-    if (result == 0 && curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        result = -EIO;
-    } else if (result == 0) {
-        curl_initialized = true;
+    if (result == 0) {
+        result = jg_http_client_initialize();
     }
     if (result == 0) {
         curl = curl_easy_init();
@@ -682,9 +681,6 @@ int jg_cli_remote_request(const struct jg_cli_remote_config *config,
         curl_easy_cleanup(curl);
     }
     clear_headers(headers);
-    if (curl_initialized) {
-        curl_global_cleanup();
-    }
     sodium_memzero(authorization, sizeof(authorization));
     if (encoded != NULL) {
         sodium_memzero(encoded, strlen(encoded));

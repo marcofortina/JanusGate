@@ -153,6 +153,7 @@ add_library(
   src/common/dns_policy.c
   src/common/domain.c
   src/common/event.c
+  src/common/http_client.c
   src/common/ipc.c
   src/common/ipc_client.c
   src/common/logging.c
@@ -268,7 +269,8 @@ janusgate_apply_compiler_options(janusgated)
 add_library(janusgate-cli-core STATIC src/cli/client.c)
 target_include_directories(
   janusgate-cli-core
-  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/cli>")
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/cli>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
 target_link_libraries(
   janusgate-cli-core
   PUBLIC JanusGate::common
