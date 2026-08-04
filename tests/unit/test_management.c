@@ -4817,6 +4817,128 @@ static void test_alert_api(void **state)
     json_decref(response);
 }
 
+/** @brief Verify alert mutations roll back when their audit cannot commit. */
+static void test_atomic_alert_audit(void **state)
+{
+    static const char rotate_secret[] =
+        "{\"request_id\":\"atomic-alert-secret-setup\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/alerts/webhook/secret\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":1}}";
+    static const char update_configuration[] =
+        "{\"request_id\":\"atomic-alert-config-setup\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/alerts/configuration\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":2,"
+        "\"enabled\":true,\"evaluation_interval_seconds\":120,"
+        "\"certificate_warning_days\":21,\"source_failure_threshold\":4,"
+        "\"source_stale_seconds\":7200,\"filesystem_minimum_percent\":12,"
+        "\"filesystem_minimum_bytes\":536870912,"
+        "\"queue_window_seconds\":600,\"queue_drop_threshold\":2,"
+        "\"authentication_window_seconds\":600,"
+        "\"authentication_failure_threshold\":10,"
+        "\"webhook_enabled\":true,"
+        "\"webhook_url\":\"https://alerts.example.test/janusgate\","
+        "\"webhook_ca_pem\":null,\"webhook_timeout_seconds\":15}}";
+    static const char rejected_configuration[] =
+        "{\"request_id\":\"atomic-alert-config\",\"method\":\"PUT\","
+        "\"path\":\"/api/v1/alerts/configuration\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":3,"
+        "\"enabled\":true,\"evaluation_interval_seconds\":121,"
+        "\"certificate_warning_days\":21,\"source_failure_threshold\":4,"
+        "\"source_stale_seconds\":7200,\"filesystem_minimum_percent\":12,"
+        "\"filesystem_minimum_bytes\":536870912,"
+        "\"queue_window_seconds\":600,\"queue_drop_threshold\":2,"
+        "\"authentication_window_seconds\":600,"
+        "\"authentication_failure_threshold\":10,"
+        "\"webhook_enabled\":true,"
+        "\"webhook_url\":\"https://alerts.example.test/janusgate\","
+        "\"webhook_ca_pem\":null,\"webhook_timeout_seconds\":15}}";
+    static const char rejected_secret[] =
+        "{\"request_id\":\"atomic-alert-secret\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/alerts/webhook/secret\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{\"revision\":3}}";
+    static const char rejected_test[] =
+        "{\"request_id\":\"atomic-alert-test\",\"method\":\"POST\","
+        "\"path\":\"/api/v1/alerts/webhook/test\",\"host\":\"localhost\","
+        "\"remote_address\":\"127.0.0.1\",\"body\":{}}";
+    static const char reject_audit[] =
+        "CREATE TRIGGER reject_alert_audit BEFORE INSERT ON audit_events "
+        "BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;";
+    struct management_fixture *fixture = *state;
+    struct jg_alert_configuration configuration = {0};
+    struct jg_alert_storage_metrics metrics;
+    uint8_t original_secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    uint8_t current_secret[JG_ALERT_WEBHOOK_SECRET_SIZE];
+    sqlite3 *injection = NULL;
+    json_t *response = process_local_request(fixture, rotate_secret);
+    json_t *error = NULL;
+
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    response = process_local_request(fixture, update_configuration);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     200);
+    json_decref(response);
+    assert_int_equal(jg_database_alert_webhook_secret_load(
+                         fixture->database,
+                         fixture->management->secrets->totp_key,
+                         original_secret),
+                     0);
+    assert_int_equal(
+        jg_database_alert_storage_metrics(fixture->database, &metrics), 0);
+    assert_int_equal(metrics.deliveries_pending, 0U);
+
+    assert_int_equal(sqlite3_open_v2(fixture->database_path, &injection,
+                                     SQLITE_OPEN_READWRITE, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_exec(injection, reject_audit, NULL, NULL, NULL),
+                     SQLITE_OK);
+    assert_int_equal(sqlite3_close(injection), SQLITE_OK);
+
+    response = process_local_request(fixture, rejected_configuration);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     500);
+    error = json_object_get(json_object_get(response, "body"), "error");
+    assert_string_equal(json_string_value(json_object_get(error, "code")),
+                        "audit_failure");
+    json_decref(response);
+    assert_int_equal(
+        jg_database_alert_configuration_load(fixture->database, &configuration),
+        0);
+    assert_int_equal(configuration.revision, 3U);
+    assert_int_equal(configuration.values.evaluation_interval_seconds, 120U);
+    jg_alert_configuration_clear(&configuration);
+
+    response = process_local_request(fixture, rejected_secret);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     500);
+    error = json_object_get(json_object_get(response, "body"), "error");
+    assert_string_equal(json_string_value(json_object_get(error, "code")),
+                        "webhook_secret_failed");
+    json_decref(response);
+    assert_int_equal(jg_database_alert_webhook_secret_load(
+                         fixture->database,
+                         fixture->management->secrets->totp_key,
+                         current_secret),
+                     0);
+    assert_memory_equal(current_secret, original_secret,
+                        sizeof(original_secret));
+
+    response = process_local_request(fixture, rejected_test);
+    assert_int_equal(json_integer_value(json_object_get(response, "status")),
+                     500);
+    error = json_object_get(json_object_get(response, "body"), "error");
+    assert_string_equal(json_string_value(json_object_get(error, "code")),
+                        "webhook_test_failed");
+    json_decref(response);
+    assert_int_equal(
+        jg_database_alert_storage_metrics(fixture->database, &metrics), 0);
+    assert_int_equal(metrics.deliveries_pending, 0U);
+
+    sodium_memzero(current_secret, sizeof(current_secret));
+    sodium_memzero(original_secret, sizeof(original_secret));
+}
+
 /** @brief Verify malformed, cross-origin, and routing requests fail closed. */
 static void test_request_rejection(void **state)
 {
@@ -5192,6 +5314,8 @@ int jg_test_management(void)
                                         teardown_management),
         cmocka_unit_test_setup_teardown(test_alert_api, setup_management,
                                         teardown_management),
+        cmocka_unit_test_setup_teardown(test_atomic_alert_audit,
+                                        setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_request_rejection,
                                         setup_management, teardown_management),
         cmocka_unit_test_setup_teardown(test_system_actions, setup_management,

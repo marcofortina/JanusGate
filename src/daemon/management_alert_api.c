@@ -515,54 +515,69 @@ int handle_alert_configuration(struct jg_management *management,
                 400, "invalid_body", "The alert configuration is not valid.",
                 request->request_id, output, output_size, written);
         }
-        result = jg_database_alert_configuration_replace(
-            management->database, &update, revision, now, &configuration);
+        result = audited_mutation_begin(management);
+        if (result == 0) {
+            result = jg_database_alert_configuration_replace(
+                management->database, &update, revision, now, &configuration);
+        }
+        result = audited_mutation_check(management, result);
     } else {
         result = jg_database_alert_configuration_load(management->database,
                                                       &configuration);
     }
     if (result == -EAGAIN) {
+        jg_alert_configuration_clear(&configuration);
         return respond_error(409, "revision_conflict",
                              "Alert configuration changed; reload and retry.",
                              request->request_id, output, output_size, written);
     }
     if (result == -ENOENT) {
+        jg_alert_configuration_clear(&configuration);
         return respond_error(
             409, "webhook_secret_required",
             "Generate a webhook secret before enabling delivery.",
             request->request_id, output, output_size, written);
     }
     if (result != 0) {
+        jg_alert_configuration_clear(&configuration);
         return respond_error(500, "alert_configuration_failed",
                              "Alert configuration could not be processed.",
                              request->request_id, output, output_size, written);
     }
     body = alert_configuration_json(&configuration);
     if (body == NULL) {
-        jg_alert_configuration_clear(&configuration);
-        return -ENOMEM;
+        result = -ENOMEM;
+        if (!replacing) {
+            jg_alert_configuration_clear(&configuration);
+            return result;
+        }
     }
     if (replacing) {
-        json_t *details = json_pack("{s:b,s:b}", "enabled", update.enabled,
-                                    "webhook_enabled", update.webhook_enabled);
-
-        result =
-            details == NULL
-                ? -ENOMEM
-                : append_alert_audit(management, request, remote, &actor,
-                                     "alerting.configuration.update", details,
-                                     revision, configuration.revision, now);
-        json_decref(details);
         if (result == 0) {
-            management_alerts_wake(management->alerts);
+            json_t *details =
+                json_pack("{s:b,s:b}", "enabled", update.enabled,
+                          "webhook_enabled", update.webhook_enabled);
+
+            result = details == NULL
+                         ? -ENOMEM
+                         : append_alert_audit(
+                               management, request, remote, &actor,
+                               "alerting.configuration.update", details,
+                               revision, configuration.revision, now);
+            json_decref(details);
         }
+        result = audited_mutation_finish(management, result, false);
     }
     jg_alert_configuration_clear(&configuration);
     if (result != 0) {
         json_decref(body);
         return respond_error(500, "audit_failure",
-                             "The alert configuration could not be audited.",
+                             "The alert configuration and its audit record "
+                             "were not committed.",
                              request->request_id, output, output_size, written);
+    }
+    if (replacing) {
+        management_alerts_wake(management->alerts);
     }
     return encode_response(200, body, NULL, output, output_size, written);
 }
@@ -599,22 +614,19 @@ int handle_alert_webhook_secret(struct jg_management *management,
             "A current alert configuration revision is required.",
             request->request_id, output, output_size, written);
     }
-    result = jg_database_alert_webhook_secret_rotate(
-        management->database, management->secrets->totp_key, revision, now,
-        secret, &configuration);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_database_alert_webhook_secret_rotate(
+            management->database, management->secrets->totp_key, revision, now,
+            secret, &configuration);
+    }
+    result = audited_mutation_check(management, result);
     if (result == -EAGAIN) {
+        jg_alert_configuration_clear(&configuration);
+        sodium_memzero(secret, sizeof(secret));
         return respond_error(409, "revision_conflict",
                              "Alert configuration changed; reload and retry.",
                              request->request_id, output, output_size, written);
-    }
-    if (result == 0) {
-        details = json_object();
-        result =
-            details == NULL
-                ? -ENOMEM
-                : append_alert_audit(management, request, remote, &actor,
-                                     "alerting.webhook.secret.rotate", details,
-                                     revision, configuration.revision, now);
     }
     if (result == 0) {
         body = alert_configuration_json(&configuration);
@@ -625,12 +637,24 @@ int handle_alert_webhook_secret(struct jg_management *management,
             result = -ENOMEM;
         }
     }
+    if (result == 0) {
+        details = json_object();
+        result =
+            details == NULL
+                ? -ENOMEM
+                : append_alert_audit(management, request, remote, &actor,
+                                     "alerting.webhook.secret.rotate", details,
+                                     revision, configuration.revision, now);
+    }
+    result = audited_mutation_finish(management, result, false);
     json_decref(details);
     jg_alert_configuration_clear(&configuration);
     sodium_memzero(secret, sizeof(secret));
     if (result != 0) {
+        json_decref(body);
         return respond_error(500, "webhook_secret_failed",
-                             "The webhook secret could not be rotated.",
+                             "The webhook secret and its audit record were "
+                             "not committed.",
                              request->request_id, output, output_size, written);
     }
     management_alerts_wake(management->alerts);
@@ -663,9 +687,16 @@ int handle_alert_webhook_test(struct jg_management *management,
                              "The webhook test request is not valid.",
                              request->request_id, output, output_size, written);
     }
-    result = jg_database_alert_configuration_load(management->database,
-                                                  &configuration);
+    result = audited_mutation_begin(management);
+    if (result == 0) {
+        result = jg_database_alert_configuration_load(management->database,
+                                                      &configuration);
+    }
     if (result == 0 && !configuration.values.webhook_enabled) {
+        result = -ENOENT;
+    }
+    result = audited_mutation_check(management, result);
+    if (result == -ENOENT) {
         jg_alert_configuration_clear(&configuration);
         return respond_error(409, "webhook_disabled",
                              "Enable webhook delivery before sending a test.",
@@ -677,6 +708,10 @@ int handle_alert_webhook_test(struct jg_management *management,
             "JanusGate webhook test notification.", "{}", now, event_id);
     }
     if (result == 0) {
+        body = json_pack("{s:s,s:s}", "event_id", event_id, "state", "pending");
+        result = body == NULL ? -ENOMEM : 0;
+    }
+    if (result == 0) {
         details = json_object();
         result = details == NULL
                      ? -ENOMEM
@@ -684,16 +719,14 @@ int handle_alert_webhook_test(struct jg_management *management,
                                           "alerting.webhook.test", details, 0U,
                                           0U, now);
     }
-    if (result == 0) {
-        body = json_pack("{s:s,s:s}", "event_id", event_id, "state", "pending");
-        result = body == NULL ? -ENOMEM : 0;
-    }
+    result = audited_mutation_finish(management, result, false);
     json_decref(details);
     jg_alert_configuration_clear(&configuration);
     if (result != 0) {
         json_decref(body);
         return respond_error(500, "webhook_test_failed",
-                             "The webhook test could not be queued.",
+                             "The webhook test and its audit record were not "
+                             "committed.",
                              request->request_id, output, output_size, written);
     }
     management_alerts_wake(management->alerts);
