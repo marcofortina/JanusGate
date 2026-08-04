@@ -54,7 +54,9 @@ mutations. An authorized `POST /config/reload` remains available as the
 explicit validation and publication retry. During an applied restore,
 `management.restore_in_progress` is true and
 `management.mutations_allowed` is false. New writes receive
-`503 restore_in_progress`; authenticated reads and job polling continue.
+`503 restore_in_progress`; authenticated reads and job polling continue. The
+`alerting` object reports the last webhook attempt time, outcome, and exact
+transport revision without exposing its Event ID or endpoint.
 Authentication validation for reads is itself read-only; bounded session and
 token activity timestamps are best-effort and are skipped while restore owns
 the mutation gate.

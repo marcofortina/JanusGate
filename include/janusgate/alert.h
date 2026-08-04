@@ -542,6 +542,7 @@ JG_PUBLIC int jg_database_alert_delivery_claim(
  *
  * @param[in,out] database Open database.
  * @param[in] delivery Delivery and opaque claim returned by
+ * @ref jg_database_alert_delivery_claim or
  * @ref jg_database_alert_delivery_next.
  * @param[in] delivered Whether the remote endpoint accepted the payload.
  * @param[in] now Current Unix timestamp in seconds.

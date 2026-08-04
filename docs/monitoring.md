@@ -185,9 +185,17 @@ separate health and last-run metrics, so endpoint failure does not misreport
 condition evaluation. A restore temporarily suspends both passes without
 replacing their latest completed timestamps or outcomes. Use **Send test**,
 inspect the receiver, confirm delivery metrics, and only then route production
-incidents. Rotating the secret changes the key used by claims made after the
-update; an attempt already claimed completes with its previous transport
-snapshot. Coordinate receiver changes across that bounded overlap.
+incidents. Any saved transport change—including URL, CA, timeout, enablement,
+or HMAC-secret rotation—applies only to subsequent claims. At most one request
+already claimed by the worker can finish with the complete previous transport
+snapshot, even after delivery is disabled. Coordinate receiver changes across
+that overlap, which is bounded by the previous timeout.
+
+Every attempt emits the structured `alerting.delivery_attempt` record with its
+Event ID as correlation ID, attempt number, transport revision, timestamps, and
+outcome. It never records the endpoint, CA, or secret. `/health` exposes the
+latest attempt time, outcome, and transport revision without the Event ID;
+Prometheus deliberately uses only fixed-cardinality delivery metrics.
 
 ## Operational checklist
 

@@ -1593,6 +1593,11 @@ Copyright (C) 2026 Marco Fortina <marco_fortina@hotmail.it>
                   </label>
                 </div>
                 <p class="field-hint" id="alert-secret-state">—</p>
+                <p class="field-hint">
+                  URL, CA, timeout, enablement, and secret changes apply to new
+                  delivery attempts. One request already in flight can finish
+                  with the complete previous transport settings.
+                </p>
                 <div class="button-row form-actions">
                   <button id="alert-webhook-secret" type="button">
                     Rotate HMAC secret

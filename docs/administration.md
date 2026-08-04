@@ -106,7 +106,9 @@ block inside the queue-failure counter.
 For external delivery, rotate and securely copy the one-time HMAC secret,
 configure an HTTPS receiver and optional private CA bundle, save the settings,
 then send a test. The page reports whether secret material exists but never
-reveals it again. Prometheus, Alertmanager, and Grafana setup is documented in
+reveals it again. Transport changes affect new delivery claims; one request
+already in flight can complete with the previous URL, CA, timeout, enablement,
+and secret snapshot. Prometheus, Alertmanager, and Grafana setup is documented in
 [Monitoring and native alerting](monitoring.md).
 
 ## Identities and access
