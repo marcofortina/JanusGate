@@ -626,10 +626,13 @@ int jg_policy_stats_collector_resume(
     } else if (!collector->paused) {
         result = -EALREADY;
     } else {
-        collector->generation = generation;
-        collector->paused = false;
-        collector->restore_pause = false;
-        (void)pthread_cond_broadcast(&collector->condition);
+        result = refresh_storage_stats(collector);
+        if (result == 0) {
+            collector->generation = generation;
+            collector->paused = false;
+            collector->restore_pause = false;
+            (void)pthread_cond_broadcast(&collector->condition);
+        }
     }
     status = pthread_mutex_unlock(&collector->mutex);
     return result == 0 && status != 0 ? -status : result;

@@ -58,21 +58,24 @@ static void remove_database(const char *directory, const char *path)
     (void)rmdir(directory);
 }
 
-/** @brief Retry one deliberately non-blocking event submission. */
-static void submit_event(struct jg_policy_stats_collector *collector,
-                         const struct jg_policy_stats_event *event)
+/** @brief Retry one non-blocking submission and count contention drops. */
+static uint64_t submit_event(struct jg_policy_stats_collector *collector,
+                             const struct jg_policy_stats_event *event)
 {
     const struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000L};
     size_t attempt = 0U;
+    uint64_t contention_drops = 0U;
     int result = -EAGAIN;
 
     for (attempt = 0U; attempt < 2000U && result == -EAGAIN; ++attempt) {
         result = jg_policy_stats_collector_submit(collector, event);
         if (result == -EAGAIN) {
+            ++contention_drops;
             (void)nanosleep(&pause, NULL);
         }
     }
     assert_int_equal(result, 0);
+    return contention_drops;
 }
 
 /** @brief Wait until the initial automatic cleanup transaction completes. */
@@ -202,8 +205,8 @@ static void test_collection(void **state)
                      -ECANCELED);
     assert_int_equal(jg_policy_stats_collector_start(collector), 0);
     assert_int_equal(jg_policy_stats_collector_start(collector), -EALREADY);
-    submit_event(collector, &dns);
-    submit_event(collector, &tls);
+    (void)submit_event(collector, &dns);
+    (void)submit_event(collector, &tls);
     assert_int_equal(jg_policy_stats_collector_request_stop(collector), 0);
     assert_int_equal(jg_policy_stats_collector_join(collector), 0);
     assert_int_equal(jg_policy_stats_collector_join(collector), -EINVAL);
@@ -294,9 +297,27 @@ static void test_generation_barrier(void **state)
         .domain = "generation.example",
         .query_type = 1U,
     };
+    struct jg_policy_rule_sample restored_rule = {
+        .occurred_at = 7200U,
+        .dimension = JG_POLICY_STATS_DOMAIN,
+        .rule_id = 42U,
+        .statistics_id = {0x42U},
+        .path = JG_POLICY_STATS_DNS,
+        .client =
+            {
+                .address_family = JG_POLICY_ADDRESS_IPV4,
+                .address = {192U, 0U, 2U, 21U},
+            },
+        .domain = "restored.example",
+        .query_type = 1U,
+        .decision = true,
+        .would_block = true,
+    };
+    struct jg_policy_stats_storage storage;
     struct jg_policy_stats_collector_stats stats;
     struct jg_policy_stats_collector *collector = NULL;
     struct jg_database *database = NULL;
+    uint64_t contention_drops = 0U;
 
     (void)state;
     make_database_path(directory, sizeof(directory), path, sizeof(path));
@@ -310,19 +331,34 @@ static void test_generation_barrier(void **state)
                      -EALREADY);
     assert_int_equal(jg_policy_stats_collector_submit(collector, &event),
                      -ECANCELED);
+    assert_int_equal(jg_policy_stats_collector_get_stats(collector, &stats), 0);
+    assert_int_equal(stats.detail_rows, 0U);
+    assert_int_equal(
+        jg_database_record_policy_stats(database, NULL, 0U, &restored_rule, 1U),
+        0);
+    assert_int_equal(jg_database_load_policy_stats_storage(database, &storage),
+                     0);
+    assert_int_equal(storage.detail_rows, 1U);
+    assert_int_equal(jg_policy_stats_collector_get_stats(collector, &stats), 0);
+    assert_int_equal(stats.detail_rows, 0U);
     assert_int_equal(jg_policy_stats_collector_resume(collector, 2U), 0);
+    assert_int_equal(jg_policy_stats_collector_get_stats(collector, &stats), 0);
+    assert_int_equal(stats.detail_rows, storage.detail_rows);
+    assert_int_equal(stats.estimated_bytes, storage.estimated_bytes);
+    assert_int_equal(stats.storage_suspended,
+                     storage.storage_suspended ? 1U : 0U);
     assert_int_equal(jg_policy_stats_collector_resume(collector, 2U),
                      -EALREADY);
     assert_int_equal(jg_policy_stats_collector_submit(collector, &event),
                      -ESTALE);
     event.policy_generation = 2U;
-    submit_event(collector, &event);
+    contention_drops = submit_event(collector, &event);
 
     assert_int_equal(jg_policy_stats_collector_request_stop(collector), 0);
     assert_int_equal(jg_policy_stats_collector_join(collector), 0);
     assert_int_equal(jg_policy_stats_collector_get_stats(collector, &stats), 0);
     assert_int_equal(stats.submitted, 1U);
-    assert_int_equal(stats.dropped, 2U);
+    assert_int_equal(stats.dropped, 2U + contention_drops);
     assert_int_equal(stats.restore_dropped, 1U);
     assert_int_equal(stats.stale_generation_dropped, 1U);
     assert_int_equal(stats.recorded_requests, 1U);

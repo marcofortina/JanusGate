@@ -121,8 +121,10 @@ complete document such as this to `policy statistics FILE`:
 ```
 
 Scheduled and manual cleanup remove only expired hourly detail. New detail is
-discarded at explicit cardinality limits or suspended before either storage
-threshold is crossed; lifetime rule and traffic aggregates remain active.
+discarded at explicit cardinality limits. Storage suspension begins when a
+configured threshold is observed; one bounded collector batch and SQLite WAL
+growth can produce a small overshoot. Lifetime rule and traffic aggregates
+remain active.
 
 ## Native alerting
 

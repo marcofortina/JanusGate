@@ -140,7 +140,9 @@ int jg_policy_stats_collector_create(
 int jg_policy_stats_collector_pause(struct jg_policy_stats_collector *collector,
                                     bool restore);
 
-/** @brief Resume collection for one newly published policy generation. */
+/**
+ * @brief Refresh persistent storage state and resume one policy generation.
+ */
 int jg_policy_stats_collector_resume(
     struct jg_policy_stats_collector *collector,
     uint64_t generation);

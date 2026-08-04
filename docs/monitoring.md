@@ -125,6 +125,8 @@ Detailed policy-impact storage is explicitly bounded. Prometheus exposes its
 current row and byte estimates, cardinality and storage drops, and suspension
 state without labels derived from domains or clients. Lifetime counters remain
 active when an administrator disables detail or storage thresholds suspend it.
+After an applied restore, these storage gauges are reloaded before collection
+resumes.
 
 ## Native incidents
 
